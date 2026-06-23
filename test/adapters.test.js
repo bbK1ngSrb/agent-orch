@@ -21,6 +21,17 @@ test("audit is fail-safe DISAGREE when the agent exits nonzero (F4)", async () =
   assert.equal(v.decision, "DISAGREE");
 });
 
+test("audit ignores AGREE printed by a crashed agent (F4 fail-safe)", async () => {
+  // A nonzero exit must override any verdict the agent printed before dying.
+  const adapter = makeCliAdapter({
+    name: "boom-agree",
+    bin: "sh",
+    buildArgs: () => ["-c", "echo AGREE; exit 3"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+});
+
 test("codex buildArgs uses exec --cd", () => {
   assert.deepEqual(codexArgs("PROMPT", "/wd"), ["exec", "--cd", "/wd", "PROMPT"]);
 });

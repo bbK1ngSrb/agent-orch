@@ -23,8 +23,10 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
       execFileSync(bin, buildArgs(render("author", { task }), wd), { cwd: wd, ...OPTS });
     },
     async audit(branch, wd) {
-      // F4: never throw. A crashed/nonzero agent yields a fail-safe DISAGREE.
-      const { out } = runCapture(bin, buildArgs(render("review", { branch }), wd), wd);
+      // F4: never throw, and never trust a crashed/nonzero agent. A failed run
+      // is a fail-safe DISAGREE even if it printed AGREE before dying.
+      const { out, ok } = runCapture(bin, buildArgs(render("review", { branch }), wd), wd);
+      if (!ok) return { decision: "DISAGREE", reason: "agent exited nonzero", raw: out };
       return parseVerdict(out); // unparseable/empty -> DISAGREE "unparseable verdict"
     },
   };
