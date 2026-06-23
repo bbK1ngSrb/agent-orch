@@ -1,0 +1,8 @@
+# All keys optional. Defaults shown.
+agents: [claude, codex]   # author alternates each cycle; the other audits
+test: auto                # or an explicit command, e.g. "pytest -q"
+reviseCap: 3              # max revise rounds before escalation
+merge: ff-only            # or no-ff
+scope:
+  maxLines: 0             # 0 = disabled; >0 rejects oversized author commits
+  ignore: ["*.lock", "dist/**", "*.snap"]
