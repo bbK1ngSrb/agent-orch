@@ -1,2 +1,15 @@
 node_modules/
 .orch/
+
+# stray multi-tool config files (this project is npm-only)
+.env
+.env.*
+*.local
+bunfig.toml
+.yarnrc
+.yarnrc.yml
+yarn.lock
+pnpm-lock.yaml
+.npmrc
+.mcp.json
+.gitmodules
