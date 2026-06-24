@@ -6,8 +6,8 @@ import { buildArgs as codexArgs } from "../src/adapters/codex.js";
 import { get } from "../src/adapters/index.js";
 import { makeCliAdapter } from "../src/adapters/cli-adapter.js";
 
-test("claude buildArgs uses -p", () => {
-  assert.deepEqual(claudeArgs("PROMPT", "/wd"), ["-p", "PROMPT"]);
+test("claude buildArgs uses -p with headless write permission", () => {
+  assert.deepEqual(claudeArgs("PROMPT", "/wd"), ["-p", "--dangerously-skip-permissions", "PROMPT"]);
 });
 
 test("audit is fail-safe DISAGREE when the agent exits nonzero (F4)", async () => {
@@ -32,8 +32,9 @@ test("audit ignores AGREE printed by a crashed agent (F4 fail-safe)", async () =
   assert.equal(v.decision, "DISAGREE");
 });
 
-test("codex buildArgs uses exec --cd", () => {
-  assert.deepEqual(codexArgs("PROMPT", "/wd"), ["exec", "--cd", "/wd", "PROMPT"]);
+test("codex buildArgs uses exec --cd with headless write permission", () => {
+  assert.deepEqual(codexArgs("PROMPT", "/wd"),
+    ["exec", "--cd", "/wd", "--dangerously-bypass-approvals-and-sandbox", "PROMPT"]);
 });
 
 test("registry resolves known adapters and rejects unknown", () => {
