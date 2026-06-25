@@ -22,6 +22,16 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
     async author(task, wd) {
       // Author must succeed; a failure here is a hard error (no commits made).
       execFileSync(bin, buildArgs(render("author", { task }), wd), { cwd: wd, ...OPTS });
+      // The agent edits files in the worktree but cannot be trusted to commit
+      // them — a `-p` run often leaves the work uncommitted, so the branch stays
+      // at base and the auditor reviews an empty diff. Capture the work
+      // deterministically: stage everything, and commit if anything is staged.
+      // If the agent already committed (clean tree), this is a harmless no-op.
+      execFileSync("git", ["add", "-A"], { cwd: wd, ...OPTS });
+      const staged = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: wd, ...OPTS }).trim();
+      if (staged) {
+        execFileSync("git", ["commit", "-m", `orch: ${name} authored task`], { cwd: wd, ...OPTS });
+      }
     },
     async audit(branch, wd) {
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
