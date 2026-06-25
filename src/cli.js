@@ -15,6 +15,20 @@ import { VERSION } from "./version.js";
 
 export { slugify };
 
+// init scaffold — mirrors orch.example.yml. Defaults uncommented; author/reviewer
+// commented (opt-in: they override rotation and must be set together).
+const SCAFFOLD = `# agent-orch config — all keys optional. Defaults shown.
+
+# Pick roles explicitly (set both or neither). Unset → agents rotate the author.
+# author: claude     # writes the change
+# reviewer: codex    # audits it
+
+agents: [claude, codex]   # rotation pool, used only when author/reviewer are unset
+test: auto                # or an explicit command, e.g. "pytest -q"
+reviseCap: 3              # max revise rounds before escalation
+merge: ff-only            # or no-ff
+`;
+
 export function parse(argv) {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -25,6 +39,11 @@ export function parse(argv) {
 }
 
 export function nextAuthor(cfg, orchDir) {
+  // Explicit fixed roles win over rotation — the trivial "who authors, who audits".
+  if (cfg.author && cfg.reviewer) {
+    mkdirSync(orchDir, { recursive: true });
+    return { authorName: cfg.author, reviewerName: cfg.reviewer };
+  }
   const f = join(orchDir, "last-author");
   const last = existsSync(f) ? readFileSync(f, "utf8").trim() : null;
   const i = last ? (cfg.agents.indexOf(last) + 1) % cfg.agents.length : 0;
@@ -36,10 +55,13 @@ export function nextAuthor(cfg, orchDir) {
 }
 
 function preflight(cfg) {
-  for (const name of cfg.agents) {
+  // Check the rotation pool plus any explicitly pinned roles.
+  const names = new Set([...cfg.agents, cfg.author, cfg.reviewer].filter(Boolean));
+  for (const name of names) {
     const a = adapters.get(name); // throws on unknown
-    try { execFileSync("which", [a.name], { stdio: "ignore" }); }
-    catch { throw new Error(`agent CLI not found on PATH: ${a.name}`); }
+    const exe = a.bin || a.name; // local models run via `ccr`, not their own name
+    try { execFileSync("which", [exe], { stdio: "ignore" }); }
+    catch { throw new Error(`agent CLI not found on PATH: ${exe} (for agent ${name})`); }
   }
 }
 
@@ -72,13 +94,13 @@ export async function main(argv) {
 
   if (command === "init") {
     mkdirSync(orchDir, { recursive: true });
-    const ex = join(repo, "orch.yml");
-    if (!existsSync(ex)) {
-      writeFileSync(ex, "# agent-orch config — all keys optional\nagents: [claude, codex]\ntest: auto\nreviseCap: 3\n");
+    const ex = join(orchDir, "orch.yml");
+    if (!existsSync(ex) && !existsSync(join(repo, "orch.yml"))) {
+      writeFileSync(ex, SCAFFOLD);
     }
     const cfg = load(repo);
     preflight(cfg);
-    console.log("orch: initialized (.orch/, orch.yml). Agent CLIs found.");
+    console.log("orch: initialized (.orch/orch.yml). Agent CLIs found.");
     return;
   }
 

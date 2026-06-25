@@ -4,6 +4,8 @@ import { parse } from "yaml";
 
 const DEFAULTS = {
   agents: ["claude", "codex"],
+  author: null, // explicit fixed author; null = rotate through `agents`
+  reviewer: null, // explicit fixed reviewer; pairs with `author`
   test: "auto",
   reviseCap: 3,
   merge: "ff-only",
@@ -13,6 +15,8 @@ const DEFAULTS = {
 function validate(cfg) {
   if (!Array.isArray(cfg.agents) || cfg.agents.length < 1)
     throw new Error("orch.yml: agents must be a non-empty list");
+  if ((cfg.author == null) !== (cfg.reviewer == null))
+    throw new Error("orch.yml: set both author and reviewer, or neither");
   if (!["ff-only", "no-ff"].includes(cfg.merge))
     throw new Error("orch.yml: merge must be ff-only or no-ff");
   if (!Number.isInteger(cfg.reviseCap) || cfg.reviseCap < 1)
@@ -21,9 +25,15 @@ function validate(cfg) {
     throw new Error("orch.yml: scope.maxLines must be a non-negative integer");
 }
 
+// Config lives at .orch/orch.yml. Bare orch.yml at repo root still works (back-compat).
+export function configPath(dir) {
+  const preferred = join(dir, ".orch", "orch.yml");
+  return existsSync(preferred) ? preferred : join(dir, "orch.yml");
+}
+
 export function load(dir) {
   let user = {};
-  const p = join(dir, "orch.yml");
+  const p = configPath(dir);
   if (existsSync(p)) user = parse(readFileSync(p, "utf8")) || {};
   const cfg = {
     ...DEFAULTS,

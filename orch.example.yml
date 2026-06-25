@@ -1,5 +1,14 @@
 # All keys optional. Defaults shown.
-agents: [claude, codex]   # author alternates each cycle; the other audits
+
+# Registered agents: claude, codex, and local-llm models served via ccr:
+#   qwen3-coder-30b (default coder), deepseek-coder-v2-lite (fast), glm-4.5-air (heavy)
+# Local models need `ccr` on PATH + ~/.claude-code-router/config.json (provider `local`).
+
+# Pick roles explicitly — the trivial "who authors, who audits" (set both or neither):
+# author: qwen3-coder-30b   # writes the change
+# reviewer: claude          # audits it
+
+agents: [claude, codex]   # rotation pool, used only when author/reviewer are unset
 test: auto                # or an explicit command, e.g. "pytest -q"
 reviseCap: 3              # max revise rounds before escalation
 merge: ff-only            # or no-ff
