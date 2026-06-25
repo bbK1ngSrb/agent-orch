@@ -42,5 +42,16 @@ export function mergeIntoMain(repo, branch, mode) {
   }
   const flag = mode === "no-ff" ? "--no-ff" : "--ff-only";
   const m = gitTry(["merge", flag, branch], repo);
-  return m.ok ? { ok: true, reason: "merged" } : { ok: false, reason: m.out.trim() };
+  if (m.ok) return { ok: true, reason: "merged" };
+  const reason = m.out.trim();
+  // Untracked files in main colliding with branch output is NOT a history
+  // problem — rebasing won't help. Surface the real fix and the file list.
+  if (/untracked working tree files would be overwritten/i.test(reason)) {
+    const files = reason.split("\n")
+      .filter((l) => /^\t/.test(l))
+      .map((l) => l.trim());
+    const advice = `remove or commit these untracked files in main, then rerun: ${files.join(", ")}`;
+    return { ok: false, reason, advice };
+  }
+  return { ok: false, reason };
 }

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export function phase(msg) {
@@ -28,6 +28,18 @@ export function buildDecisionBrief({ branch, reviewerCase, authorCase, diffSumma
     diffSummary || "(none)",
     ``,
   ].join("\n");
+}
+
+// Bounded run record: one JSON line per finished cycle. Outlives the wiped
+// review folder so there is still a greppable trail (branch, verdict, sha, ts).
+export function recordRun(orchDir, entry) {
+  mkdirSync(orchDir, { recursive: true });
+  appendFileSync(join(orchDir, "runs.jsonl"), JSON.stringify(entry) + "\n");
+}
+
+// Post-merge cleanup: per-branch review artifacts are throwaway once merged.
+export function cleanupReviews(orchDir, branch) {
+  rmSync(join(orchDir, "reviews", branch), { recursive: true, force: true });
 }
 
 export function escalate(orchDir, branch, brief) {

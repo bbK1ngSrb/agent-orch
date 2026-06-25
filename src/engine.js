@@ -53,10 +53,16 @@ export async function runCycle(opts, deps) {
         }
         const m = git.mergeIntoMain(repo, branch, cfg.merge);
         if (!m.ok) {
+          const fix = m.advice || `rebase ${branch} onto main`;
           return escalate(notify, orchDir, branch, round,
-            `merge failed (${m.reason}) — rebase ${branch} onto main`);
+            `merge failed (${m.reason}) — ${fix}`);
         }
         notify.phase(`merged ${branch}`);
+        notify.recordRun(orchDir, {
+          ts: new Date().toISOString(), branch, verdict: "merged",
+          sha: safeSha(git, repo), rounds: round,
+        });
+        notify.cleanupReviews(orchDir, branch);
         return { status: "merged", reason: "agreed + green + merged", rounds: round };
       }
 
@@ -91,4 +97,9 @@ function escalate(notify, orchDir, branch, round, reason) {
 function safeDiff(git, repo, branch) {
   try { return git.git(["diff", "--stat", `main...${branch}`], repo); }
   catch { return "(diff unavailable)"; }
+}
+
+function safeSha(git, repo) {
+  try { return git.git(["rev-parse", "--short", "HEAD"], repo); }
+  catch { return "(unknown)"; }
 }

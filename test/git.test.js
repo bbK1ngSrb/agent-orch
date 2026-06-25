@@ -42,6 +42,23 @@ test("attachExistingBranch refuses a missing branch (F5: no silent create)", () 
   assert.throws(() => attachExistingBranch(repo, join(repo, ".orch/wt/n"), "pr/claude/nope"), /does not exist/);
 });
 
+test("untracked collision -> advice names the files, not a rebase", () => {
+  const repo = newRepo();
+  const wt = join(repo, ".orch", "wt", "u");
+  createTaskBranch(repo, wt, "pr/claude/u", "main");
+  writeFileSync(join(wt, "spec.md"), "from branch\n");
+  git(["add", "."], wt);
+  git(["commit", "-m", "add spec"], wt);
+  pruneWorktree(repo, wt);
+  // same path exists untracked in main's working tree
+  writeFileSync(join(repo, "spec.md"), "local untracked\n");
+
+  const r = mergeIntoMain(repo, "pr/claude/u", "ff-only");
+  assert.equal(r.ok, false);
+  assert.match(r.advice, /untracked files in main/);
+  assert.match(r.advice, /spec\.md/);
+});
+
 test("ff-only merge fails (ok:false) when main moved", () => {
   const repo = newRepo();
   const wt = join(repo, ".orch", "wt", "c");

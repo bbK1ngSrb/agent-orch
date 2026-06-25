@@ -29,7 +29,12 @@ function makeDeps({ verdicts, gatePass = true, mergeOk = true, testCmd = "echo" 
     },
     gate: { detect: () => testCmd, run: () => ({ pass: gatePass, log: "" }) },
     scope: { count: () => 0 },
-    notify: { phase() {}, writeRound() { return "p"; }, buildDecisionBrief: () => "brief", escalate() { return "d"; } },
+    notify: {
+      phase() {}, writeRound() { return "p"; },
+      buildDecisionBrief: () => "brief", escalate() { return "d"; },
+      recordRun(_dir, entry) { calls.recorded = entry; },
+      cleanupReviews(_dir, branch) { calls.cleaned = branch; },
+    },
     _calls: calls,
   };
   return deps;
@@ -53,6 +58,17 @@ test("AGREE + red gate -> escalated, no merge", async () => {
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "escalated");
   assert.match(r.reason, /tests/i);
+});
+
+test("merge wipes reviews + records the run; escalation keeps them", async () => {
+  const merged = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  await runCycle(opts, merged);
+  assert.equal(merged._calls.cleaned, opts.branch);
+  assert.equal(merged._calls.recorded.verdict, "merged");
+
+  const stalled = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "no", raw: "" }] });
+  await runCycle(opts, stalled);
+  assert.equal(stalled._calls.cleaned, undefined); // reviews survive for arbitration
 });
 
 test("DISAGREE until cap -> escalated after reviseCap rounds", async () => {
