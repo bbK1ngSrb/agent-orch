@@ -59,8 +59,10 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement by opening a
-confidential report with the project maintainers via the project's repository.
+reported privately to the maintainer, Boris Milinkovic, by email at
+**bmilinkovic@gmail.com**. Reports are confidential. If you prefer GitHub, open a
+private report under the repository's **Security → Report a vulnerability** form
+(GitHub private vulnerability reporting), which is visible only to maintainers.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the

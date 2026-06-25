@@ -10,15 +10,15 @@ asks you. All compute is local.
 - At least one agent CLI on PATH: `claude`, `codex`, or `ccr` (for local-llm models)
 
 ## Install
-Run without installing (recommended):
+Not yet published to npm — install from source. The CLI is exposed as `orch`:
 ```bash
-npx agent-orch <command>
-```
-Or install the `orch` CLI globally:
-```bash
-npm install -g agent-orch
+git clone https://github.com/bbK1ngSrb/agent-orch.git
+cd agent-orch
+npm install -g .        # puts `orch` on your PATH
 orch <command>
 ```
+Prefer not to install globally? Run the CLI in place with `node bin/orch.js <command>`
+from the cloned checkout.
 
 ## Usage
 Run from inside the git repo you want orchestrated:
@@ -27,8 +27,7 @@ orch init                                  # scaffold .orch/orch.yml, verify age
 orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
 orch review pr/claude/some-branch          # audit an existing branch (no authoring)
 ```
-With `npx`, prefix each command with `npx agent-orch` instead of `orch`. Add
-`--dry` to any `task`/`review` run to simulate a cycle without touching git,
+Add `--dry` to any `task`/`review` run to simulate a cycle without touching git,
 agents, or tests. `orch` exits non-zero (`2`) when a cycle escalates for a human.
 
 ## Agents
@@ -49,8 +48,8 @@ Set both or neither. Unset → the `agents:` list rotates author each cycle.
 ## Quickstart
 ```bash
 cd your-repo
-npx agent-orch init
-npx agent-orch task "fix the flaky login test"
+orch init
+orch task "fix the flaky login test"
 ```
 
 ## Commands
