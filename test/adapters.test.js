@@ -7,7 +7,8 @@ import { get } from "../src/adapters/index.js";
 import { makeCliAdapter } from "../src/adapters/cli-adapter.js";
 
 test("claude buildArgs uses -p with headless write permission", () => {
-  assert.deepEqual(claudeArgs("PROMPT", "/wd"), ["-p", "--dangerously-skip-permissions", "PROMPT"]);
+  assert.deepEqual(claudeArgs("PROMPT", "/wd"),
+    ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions", "PROMPT"]);
 });
 
 test("audit is fail-safe DISAGREE when the agent exits nonzero (F4)", async () => {
