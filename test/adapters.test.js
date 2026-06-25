@@ -42,3 +42,15 @@ test("registry resolves known adapters and rejects unknown", () => {
   assert.equal(get("codex").name, "codex");
   assert.throws(() => get("nope"), /unknown agent/);
 });
+
+test("local models register, run via ccr, and select model by flag", () => {
+  const a = get("qwen3-coder-30b");
+  assert.equal(a.name, "qwen3-coder-30b");
+  assert.equal(a.bin, "ccr"); // preflight checks bin, not name
+  assert.ok(get("deepseek-coder-v2-lite"));
+  assert.ok(get("glm-4.5-air"));
+});
+
+test("adapter exposes bin for preflight", () => {
+  assert.equal(get("claude").bin, "claude"); // name === bin for native agents
+});

@@ -41,3 +41,13 @@ test("nextAuthor alternates and persists last-author", () => {
   const b = nextAuthor(cfg, d);
   assert.equal(b.authorName, "codex"); // alternated
 });
+
+test("nextAuthor honors explicit fixed roles over rotation", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
+  const cfg = { agents: ["claude", "codex"], author: "qwen3-coder-30b", reviewer: "claude" };
+  const a = nextAuthor(cfg, d);
+  assert.equal(a.authorName, "qwen3-coder-30b");
+  assert.equal(a.reviewerName, "claude");
+  const b = nextAuthor(cfg, d); // does not rotate
+  assert.equal(b.authorName, "qwen3-coder-30b");
+});

@@ -1,7 +1,8 @@
 import claude from "./claude.js";
 import codex from "./codex.js";
+import local from "./local.js";
 
-const REGISTRY = { claude, codex };
+const REGISTRY = { claude, codex, ...local };
 
 export function get(name) {
   const a = REGISTRY[name];

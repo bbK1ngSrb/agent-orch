@@ -18,6 +18,7 @@ function runCapture(bin, args, cwd) {
 export function makeCliAdapter({ name, bin, buildArgs }) {
   return {
     name,
+    bin, // the actual executable (may differ from name, e.g. local models run via `ccr`)
     async author(task, wd) {
       // Author must succeed; a failure here is a hard error (no commits made).
       execFileSync(bin, buildArgs(render("author", { task }), wd), { cwd: wd, ...OPTS });
