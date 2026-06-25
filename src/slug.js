@@ -1,4 +1,3 @@
-// Branch-safe slug: lowercase, non-alphanumerics to dashes, capped at 40 chars.
 export function slugify(text) {
   return String(text)
     .toLowerCase()

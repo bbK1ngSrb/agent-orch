@@ -67,4 +67,4 @@ Merge happens only when the reviewer says `AGREE` **and** the repo's tests pass.
 No test command detected → it refuses to auto-merge and tells you.
 
 ## License
-Apache-2.0 — see [LICENSE](LICENSE).
+MIT

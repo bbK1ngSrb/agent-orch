@@ -1,12 +1,10 @@
 import { mkdirSync, writeFileSync, rmSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-// Progress line to stderr (stdout stays reserved for the final result).
 export function phase(msg) {
   process.stderr.write(`▶ ${msg}\n`);
 }
 
-// Persist one audit round's verdict under .orch/reviews/<branch>/.
 export function writeRound(orchDir, branch, round, content) {
   const p = join(orchDir, "reviews", branch, `round-${round}.md`);
   mkdirSync(dirname(p), { recursive: true });
@@ -14,7 +12,6 @@ export function writeRound(orchDir, branch, round, content) {
   return p;
 }
 
-// Render the human arbitration brief shown on a stalemate.
 export function buildDecisionBrief({ branch, reviewerCase, authorCase, diffSummary, rounds }) {
   return [
     `# Decision needed — ${branch}`,
@@ -45,7 +42,6 @@ export function cleanupReviews(orchDir, branch) {
   rmSync(join(orchDir, "reviews", branch), { recursive: true, force: true });
 }
 
-// Write the escalation brief to DECISION.md and echo it to stderr for the human.
 export function escalate(orchDir, branch, brief) {
   const p = join(orchDir, "reviews", branch, "DECISION.md");
   mkdirSync(dirname(p), { recursive: true });
