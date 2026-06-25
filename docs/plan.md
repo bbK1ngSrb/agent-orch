@@ -1603,8 +1603,8 @@ asks you. All compute is local.
 ## Quickstart
 ```bash
 cd your-repo
-npx agent-orch init
-npx agent-orch task "fix the flaky login test"
+orch init
+orch task "fix the flaky login test"
 ```
 
 ## Commands

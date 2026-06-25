@@ -8,8 +8,8 @@
 coding agents** (Claude, Codex, …) in a **cross-audit loop** on any local git repo.
 One agent authors a small change on a branch; the other audits it; on agreement +
 green tests the tool merges to `main` locally; on disagreement it runs a capped
-revise loop; on stalemate it escalates to the human. Install and use are trivial:
-`npx agent-orch task "fix X"`.
+revise loop; on stalemate it escalates to the human. Install from source
+(`npm install -g .`), then `orch task "fix X"`.
 
 This generalizes the homelab `cross-audit-pr-orchestration` design by **stripping all
 deployment-specific plumbing** (NAS bare repo, `deploy.sh`, GitHub `--mirror`,
@@ -26,8 +26,9 @@ deployment-specific plumbing** (NAS bare repo, `deploy.sh`, GitHub `--mirror`,
   GitHub hosts only the **tool's own source** for distribution.
 - **"PR" is a local-workflow construct** — a local branch `pr/<author>/<topic>`.
   There is no GitHub PR. Merge is a local `git merge` into `main`.
-- **Trivial deploy/usage.** `npx agent-orch` — no separate runtime (Node is already
-  present for the agent CLIs). Most repos need zero config.
+- **Trivial deploy/usage.** Install from source (`npm install -g .` exposes the
+  `orch` bin) — no separate runtime (Node is already present for the agent CLIs).
+  Most repos need zero config.
 - **Minimum options.** Every config key has a smart default. A working setup is an
   empty `orch.yml` (or none at all).
 - **Safety rails.** Agents never write `main`. Only the engine merges, only after the
@@ -36,9 +37,9 @@ deployment-specific plumbing** (NAS bare repo, `deploy.sh`, GitHub `--mirror`,
 ## 2. Surface (the whole CLI)
 
 ```
-npx agent-orch init              # scaffold orch.yml + .orch/, verify agent CLIs on PATH
-npx agent-orch task "fix X"      # author + cross-audit + gate + merge — one cycle
-npx agent-orch review <branch>   # audit-only on an existing branch (no author step)
+orch init              # scaffold orch.yml + .orch/, verify agent CLIs on PATH
+orch task "fix X"      # author + cross-audit + gate + merge — one cycle
+orch review <branch>   # audit-only on an existing branch (no author step)
 ```
 
 Three commands. `task` is the full loop; `review` is the audit half for branches a
@@ -194,7 +195,8 @@ last such token. Malformed/missing verdict → treated as `DISAGREE` with reason
 
 ## 11. Distribution / GitHub-ready
 
-- Published to npm; run via `npx agent-orch …`. No global install needed.
+- Install from source (`npm install -g .`); run via the `orch` bin. Not published
+  to npm — the `agent-orch` name there is an unrelated package.
 - Prereq: at least one agent CLI (`claude` and/or `codex`) on PATH — documented in
   README, verified at `init` and at `task`/`review` preflight.
 - Repo ships: `README.md` (quickstart), `LICENSE` (MIT), `CONTRIBUTING.md` (adapter
