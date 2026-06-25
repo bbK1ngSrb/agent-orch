@@ -9,6 +9,27 @@ asks you. All compute is local.
 - Node ≥ 18
 - At least one agent CLI on PATH: `claude`, `codex`, or `ccr` (for local-llm models)
 
+## Install
+Not yet published to npm — install from source. The CLI is exposed as `orch`:
+```bash
+git clone https://github.com/bbK1ngSrb/agent-orch.git
+cd agent-orch
+npm install -g .        # puts `orch` on your PATH
+orch <command>
+```
+Prefer not to install globally? Run the CLI in place with `node bin/orch.js <command>`
+from the cloned checkout.
+
+## Usage
+Run from inside the git repo you want orchestrated:
+```bash
+orch init                                  # scaffold .orch/orch.yml, verify agent CLIs
+orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
+orch review pr/claude/some-branch          # audit an existing branch (no authoring)
+```
+Add `--dry` to any `task`/`review` run to simulate a cycle without touching git,
+agents, or tests. `orch` exits non-zero (`2`) when a cycle escalates for a human.
+
 ## Agents
 `claude`, `codex`, and three local-llm models served via [llama-swap] behind
 claude-code-router (`ccr`): `qwen3-coder-30b`, `deepseek-coder-v2-lite`,
@@ -27,8 +48,8 @@ Set both or neither. Unset → the `agents:` list rotates author each cycle.
 ## Quickstart
 ```bash
 cd your-repo
-npx agent-orch init
-npx agent-orch task "fix the flaky login test"
+orch init
+orch task "fix the flaky login test"
 ```
 
 ## Commands
