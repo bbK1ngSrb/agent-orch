@@ -1,6 +1,11 @@
 node_modules/
 .orch/
 
+# generated orch run artifacts
+docs/task*-run*.md
+docs/task*-audit*.md
+docs/task*-complete.md
+
 # stray multi-tool config files (this project is npm-only)
 .env
 .env.*
