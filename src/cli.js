@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { execFileSync } from "node:child_process";
@@ -54,7 +54,7 @@ export function nextAuthor(cfg, orchDir) {
   return { authorName, reviewerName };
 }
 
-function preflight(cfg) {
+export function preflight(cfg, orchDir) {
   // Check the rotation pool plus any explicitly pinned roles.
   const names = new Set([...cfg.agents, cfg.author, cfg.reviewer].filter(Boolean));
   for (const name of names) {
@@ -62,6 +62,18 @@ function preflight(cfg) {
     const exe = a.bin || a.name; // local models run via `ccr`, not their own name
     try { execFileSync("which", [exe], { stdio: "ignore" }); }
     catch { throw new Error(`agent CLI not found on PATH: ${exe} (for agent ${name})`); }
+  }
+  // Fail fast with a clear message if .orch/ is read-only (sandbox / RO mount),
+  // instead of a raw EACCES/EROFS later from the first last-author write.
+  if (orchDir) {
+    try {
+      mkdirSync(orchDir, { recursive: true });
+      const probe = join(orchDir, ".write-probe");
+      writeFileSync(probe, "");
+      rmSync(probe);
+    } catch (e) {
+      throw new Error(`.orch/ is not writable (${e.code || e.message}): ${orchDir} — orch needs to write worktrees and state here. Run from a writable repo / unsandbox this path.`);
+    }
   }
 }
 
@@ -93,13 +105,16 @@ export async function main(argv) {
   const orchDir = join(repo, ".orch");
 
   if (command === "init") {
+    // Preflight first: it probes .orch/ writability and fails with a clear
+    // message before any real write, so a read-only repo never surfaces a raw
+    // EACCES from the mkdir/writeFile below. load() tolerates a missing config.
+    const cfg = load(repo);
+    preflight(cfg, orchDir);
     mkdirSync(orchDir, { recursive: true });
     const ex = join(orchDir, "orch.yml");
     if (!existsSync(ex) && !existsSync(join(repo, "orch.yml"))) {
       writeFileSync(ex, SCAFFOLD);
     }
-    const cfg = load(repo);
-    preflight(cfg);
     console.log("orch: initialized (.orch/orch.yml). Agent CLIs found.");
     return;
   }
@@ -107,7 +122,7 @@ export async function main(argv) {
   if (command === "task" || command === "review") {
     const cfg = load(repo);
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
-    if (!dry) preflight(cfg); // dry-run never shells out, so don't require CLIs
+    if (!dry) preflight(cfg, orchDir); // dry-run never shells out, so don't require CLIs
 
     // F3: operator kill switch + one-cycle-at-a-time lock.
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");

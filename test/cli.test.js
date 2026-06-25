@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
-import { slugify, nextAuthor, parse, main } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight } from "../src/cli.js";
 
 test("slugify produces a branch-safe slug", () => {
   assert.equal(slugify("Fix the flaky test!!"), "fix-the-flaky-test");
@@ -40,6 +40,20 @@ test("nextAuthor alternates and persists last-author", () => {
   assert.equal(readFileSync(join(d, "last-author"), "utf8").trim(), "claude");
   const b = nextAuthor(cfg, d);
   assert.equal(b.authorName, "codex"); // alternated
+});
+
+test("preflight throws a clear error when .orch/ is read-only", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-ro-"));
+  chmodSync(d, 0o555); // read-only dir → child .orch write must fail
+  const orchDir = join(d, ".orch");
+  try {
+    assert.throws(
+      () => preflight({ agents: [] }, orchDir), // empty agents: skip CLI check, isolate probe
+      /not writable/,
+    );
+  } finally {
+    chmodSync(d, 0o755); // restore so tmp cleanup works
+  }
 });
 
 test("nextAuthor honors explicit fixed roles over rotation", () => {
