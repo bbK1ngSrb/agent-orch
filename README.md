@@ -9,6 +9,28 @@ asks you. All compute is local.
 - Node ≥ 18
 - At least one agent CLI on PATH: `claude`, `codex`, or `ccr` (for local-llm models)
 
+## Install
+Run without installing (recommended):
+```bash
+npx agent-orch <command>
+```
+Or install the `orch` CLI globally:
+```bash
+npm install -g agent-orch
+orch <command>
+```
+
+## Usage
+Run from inside the git repo you want orchestrated:
+```bash
+orch init                                  # scaffold .orch/orch.yml, verify agent CLIs
+orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
+orch review pr/claude/some-branch          # audit an existing branch (no authoring)
+```
+With `npx`, prefix each command with `npx agent-orch` instead of `orch`. Add
+`--dry` to any `task`/`review` run to simulate a cycle without touching git,
+agents, or tests. `orch` exits non-zero (`2`) when a cycle escalates for a human.
+
 ## Agents
 `claude`, `codex`, and three local-llm models served via [llama-swap] behind
 claude-code-router (`ccr`): `qwen3-coder-30b`, `deepseek-coder-v2-lite`,
@@ -45,4 +67,4 @@ Merge happens only when the reviewer says `AGREE` **and** the repo's tests pass.
 No test command detected → it refuses to auto-merge and tells you.
 
 ## License
-MIT
+Apache-2.0 — see [LICENSE](LICENSE).

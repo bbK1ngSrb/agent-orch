@@ -31,6 +31,7 @@ export function configPath(dir) {
   return existsSync(preferred) ? preferred : join(dir, "orch.yml");
 }
 
+// Load + validate config: user orch.yml layered over DEFAULTS. Missing file is fine.
 export function load(dir) {
   let user = {};
   const p = configPath(dir);

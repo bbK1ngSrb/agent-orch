@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 
+// Run git and return trimmed stdout; throws on nonzero exit.
 export function git(args, cwd) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
@@ -34,6 +35,8 @@ export function pruneWorktree(repo, path) {
   gitTry(["worktree", "prune"], repo);
 }
 
+// Merge branch into main (ff-only or no-ff). Returns { ok, reason, advice? }
+// rather than throwing, so the engine can escalate with a fix hint.
 export function mergeIntoMain(repo, branch, mode) {
   const cur = git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
   if (cur !== "main") {

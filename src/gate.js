@@ -6,6 +6,7 @@ function safeRead(p) {
   try { return readFileSync(p, "utf8"); } catch { return ""; }
 }
 
+// Infer a repo's test command from its ecosystem markers; null if none found.
 export function detect(dir) {
   const pkg = join(dir, "package.json");
   if (existsSync(pkg)) {
@@ -25,6 +26,7 @@ export function detect(dir) {
   return null;
 }
 
+// Run the test command in cwd; { pass } is true only on exit code 0.
 export function run(cmd, cwd) {
   const r = spawnSync(cmd, { cwd, shell: true, encoding: "utf8" });
   const log = (r.stdout || "") + (r.stderr || "");

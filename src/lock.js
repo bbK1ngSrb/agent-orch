@@ -13,10 +13,12 @@ export function acquireLock(orchDir) {
   }
 }
 
+// Release the cycle lock (idempotent — safe if it was never held).
 export function releaseLock(orchDir) {
   rmSync(join(orchDir, "lock"), { force: true });
 }
 
+// Operator kill switch: a .orch/pause file blocks new cycles.
 export function isPaused(orchDir) {
   return existsSync(join(orchDir, "pause"));
 }

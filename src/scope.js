@@ -10,6 +10,8 @@ function globToRegExp(glob) {
   return new RegExp("^" + re + "$");
 }
 
+// Sum added+deleted lines from `git diff --numstat`, skipping binaries and
+// files matching any `ignore` glob.
 export function parseNumstat(numstat, ignore = []) {
   const globs = ignore.map(globToRegExp);
   let total = 0;
@@ -24,6 +26,7 @@ export function parseNumstat(numstat, ignore = []) {
   return total;
 }
 
+// Count non-ignored changed lines for branch vs main, for the scope gate.
 export function count(branch, cwd, ignore = []) {
   const out = execFileSync("git", ["diff", "--numstat", `main...${branch}`], {
     cwd,
