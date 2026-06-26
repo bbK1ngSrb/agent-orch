@@ -1,5 +1,8 @@
-name: Claude Code
-
+name: claude
+# @claude in an issue/PR comment (or a new issue) triggers Claude Code.
+# Auth: subscription OAuth token, not an API key — no per-token billing.
+# Generate the token once with `claude setup-token` (Pro/Max) and add it as
+# the repo secret CLAUDE_CODE_OAUTH_TOKEN.
 on:
   issue_comment:
     types: [created]
