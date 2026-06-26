@@ -27,8 +27,14 @@ concurrency:
 
 jobs:
   audit:
-    # Skip label events that aren't the trigger label.
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'orch-review'
+    # Trust gate. The label can only be applied by a collaborator, AND fork PRs
+    # are blocked from this self-hosted runner — their code (npm install scripts,
+    # the PR's own tests run by `orch pr`) is untrusted and would otherwise
+    # execute on the runner with access to its secrets/network. Fork PRs must be
+    # audited locally instead. workflow_dispatch is collaborator-only (manual).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.label.name == 'orch-review' && github.event.pull_request.head.repo.fork == false)
     runs-on: [self-hosted, orch]
     steps:
       - uses: actions/checkout@v4
