@@ -166,18 +166,20 @@ export async function main(argv) {
     const worktree = join(orchDir, "wt", branch.replace(/\//g, "_"));
 
     if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
+    let result;
     try {
-      const result = await runCycle(
+      result = await runCycle(
         { mode, task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree },
         dry ? dryDeps() : realDeps()
       );
       console.log(`orch${dry ? " (dry)" : ""}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
       if (result.status === "escalated") process.exitCode = 2;
-      maybeSpawnDocs(result, cfg, { dry }); // auto docs-update on a real merge
-
     } finally {
       releaseLock(orchDir);
     }
+    // After releasing the lock: the detached docs-update runs `orch task`, which
+    // acquires the same lock. Spawning inside the try would race our own release.
+    maybeSpawnDocs(result, cfg, { dry }); // auto docs-update on a real merge
     return;
   }
 

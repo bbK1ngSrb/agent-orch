@@ -58,6 +58,9 @@ export async function runCycle(opts, deps) {
         if (noMerge) {
           return { status: "approved", reason: "agreed + green (no merge)", rounds: round };
         }
+        // Compute docs-only BEFORE merging: a ff merge makes main...branch empty,
+        // so reading it post-merge always yields [] and breaks the loop guard.
+        const docsOnly = isDocsOnly(git.changedFiles(repo, branch), cfg.docs.paths);
         const m = git.mergeIntoMain(repo, branch, cfg.merge);
         if (!m.ok) {
           const fix = m.advice || `rebase ${branch} onto main`;
@@ -70,8 +73,6 @@ export async function runCycle(opts, deps) {
           sha: safeSha(git, repo), rounds: round,
         });
         notify.cleanupReviews(orchDir, branch);
-        const files = git.changedFiles(repo, branch);
-        const docsOnly = isDocsOnly(files, cfg.docs.paths);
         return { status: "merged", reason: "agreed + green + merged", rounds: round, docsOnly };
       }
 

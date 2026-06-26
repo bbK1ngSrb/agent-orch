@@ -68,6 +68,18 @@ test("merged result stamps docsOnly=true for a docs-only change", async () => {
   assert.equal(r.docsOnly, true);
 });
 
+test("docsOnly is read BEFORE merge (ff merge empties main...branch)", async () => {
+  // Regression: a ff merge makes `main...branch` empty, so reading changedFiles
+  // after the merge always yields [] -> docsOnly=false -> broken loop guard.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: ["README.md"] });
+  let mergedYet = false;
+  deps.git.mergeIntoMain = () => { mergedYet = true; return { ok: true, reason: "merged" }; };
+  deps.git.changedFiles = () => (mergedYet ? [] : ["README.md"]);
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.docsOnly, true); // would be false if read after merge
+});
+
 test("AGREE + red gate -> escalated, no merge", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], gatePass: false });
   const r = await runCycle(opts, deps);
