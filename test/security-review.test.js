@@ -50,3 +50,33 @@ test("does not flag the +++ file header itself", () => {
   const d = `+++ b/src/process.env.helper.js\n+  return 1;`;
   assert.equal(scanDiff(d).decision, "AGREE");
 });
+
+// --- FIX 4: secret-read rule ---
+test("reading .orch/ creds → DISAGREE (secret-read)", () => {
+  const d = `+++ b/src/x.js\n+  const k = readFileSync(".orch/last-author");`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "secret-read"));
+});
+
+test("reading .ssh private key → DISAGREE (secret-read)", () => {
+  const d = `+++ b/src/x.js\n+  fs.readFileSync("/home/u/.ssh/id_rsa");`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "secret-read"));
+});
+
+// --- FIX 4: guardrail-touch rule ---
+test("writing to a workflow file → DISAGREE (guardrail-touch)", () => {
+  const d = `+++ b/src/x.js\n+  fs.writeFileSync(".github/workflows/ci.yml", x);`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "guardrail-touch"));
+});
+
+test("patching CODEOWNERS → DISAGREE (guardrail-touch)", () => {
+  const d = `+++ b/src/x.js\n+  patch("CODEOWNERS");`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "guardrail-touch"));
+});

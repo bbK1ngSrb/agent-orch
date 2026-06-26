@@ -33,7 +33,7 @@ export function publicSummary({ decision, green, branch, rounds }) {
   return [
     `orch verdict: ${d}`,
     `tests: ${green ? "green" : "red"}`,
-    `branch: ${String(branch)}`,
+    `branch: ${String(branch).replace(/[^\w./-]/g, "")}`,
     `rounds: ${Number(rounds) || 0}`,
     `Full reviewer notes were sent to the maintainer's private channel.`,
   ].join("\n");

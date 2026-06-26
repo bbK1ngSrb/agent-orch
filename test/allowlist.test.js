@@ -38,3 +38,62 @@ test("reports every violation, not just the first", () => {
 test("DEFAULT_PROTECTED is non-empty and covers workflows", () => {
   assert.ok(DEFAULT_PROTECTED.includes(".github/workflows/**"));
 });
+
+// --- FIX 1: git diff prefix normalisation and path traversal ---
+test("rejects a/src/gate.js (git diff 'a/' prefix strips, then matches)", () => {
+  const r = checkPaths(["a/src/gate.js"]);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.violations, ["a/src/gate.js"]);
+});
+
+test("rejects b/src/verdict.js (git diff 'b/' prefix strips, then matches)", () => {
+  const r = checkPaths(["b/src/verdict.js"]);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.violations, ["b/src/verdict.js"]);
+});
+
+test("rejects ./package.json (./ prefix strips, then matches)", () => {
+  const r = checkPaths(["./package.json"]);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.violations, ["./package.json"]);
+});
+
+test("rejects path with .. traversal segment (fail closed)", () => {
+  const r = checkPaths(["src/../src/gate.js"]);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.violations, ["src/../src/gate.js"]);
+});
+
+test("allows a/README.md (ordinary file after git prefix stripped)", () => {
+  const r = checkPaths(["a/README.md"]);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.violations, []);
+});
+
+// --- FIX 2: .github/actions/** in DEFAULT_PROTECTED ---
+test("DEFAULT_PROTECTED covers .github/actions/**", () => {
+  assert.ok(DEFAULT_PROTECTED.includes(".github/actions/**"));
+});
+
+test("rejects a composite action file (.github/actions/**)", () => {
+  const r = checkPaths([".github/actions/evil/action.yml"]);
+  assert.equal(r.ok, false);
+  assert.ok(r.violations.includes(".github/actions/evil/action.yml"));
+});
+
+// --- FIX 3: self-protection coverage tests ---
+test("rejects src/intake/workorder.js (src/intake/** in DEFAULT_PROTECTED)", () => {
+  assert.equal(checkPaths(["src/intake/workorder.js"]).ok, false);
+});
+
+test("rejects src/security-review.js (in DEFAULT_PROTECTED)", () => {
+  assert.equal(checkPaths(["src/security-review.js"]).ok, false);
+});
+
+test("rejects CODEOWNERS (in DEFAULT_PROTECTED)", () => {
+  assert.equal(checkPaths(["CODEOWNERS"]).ok, false);
+});
+
+test("rejects .github/CODEOWNERS (in DEFAULT_PROTECTED)", () => {
+  assert.equal(checkPaths([".github/CODEOWNERS"]).ok, false);
+});

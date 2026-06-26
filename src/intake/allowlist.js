@@ -7,6 +7,7 @@ import { globToRegExp } from "../scope.js";
 
 export const DEFAULT_PROTECTED = [
   ".github/workflows/**",
+  ".github/actions/**",
   "src/gate.js",
   "src/verdict.js",
   "src/notify.js",
@@ -20,8 +21,19 @@ export const DEFAULT_PROTECTED = [
   ".github/CODEOWNERS",
 ];
 
+/** Strip git-diff a/ or b/ prefix, then ./ prefix. */
+function normalizePath(p) {
+  return p.replace(/^[ab]\//, "").replace(/^\.\//, "");
+}
+
 export function checkPaths(changedFiles, protectedGlobs = DEFAULT_PROTECTED) {
   const res = protectedGlobs.map(globToRegExp);
-  const violations = changedFiles.filter((f) => res.some((re) => re.test(f)));
+  const violations = changedFiles.filter((f) => {
+    // Fail closed on path traversal — report original input.
+    if (f.split("/").some((seg) => seg === "..")) return true;
+    // Normalise git-diff prefixes before matching; violations keep original value.
+    const norm = normalizePath(f);
+    return res.some((re) => re.test(norm));
+  });
   return { ok: violations.length === 0, violations };
 }

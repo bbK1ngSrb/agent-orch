@@ -40,3 +40,41 @@ test("publicSummary ignores any free-form prose passed in", () => {
   assert.equal(hasSecret(s), false);
   assert.equal(s.includes("leaked"), false);
 });
+
+// --- FIX 5: additional secret pattern coverage ---
+test("detects a github_pat_ fine-grained PAT", () => {
+  const secret = "github_pat_" + "A".repeat(20);
+  assert.equal(hasSecret(secret), true);
+  assert.equal(hasSecret(redact(secret)), false);
+});
+
+test("detects an sk- prefixed provider key", () => {
+  const secret = "sk-" + "A".repeat(20);
+  assert.equal(hasSecret(secret), true);
+  assert.equal(hasSecret(redact(secret)), false);
+});
+
+test("detects an AKIA AWS access key id", () => {
+  const secret = "AKIA" + "0123456789ABCDEF";
+  assert.equal(hasSecret(secret), true);
+  assert.equal(hasSecret(redact(secret)), false);
+});
+
+test("detects a JWT token", () => {
+  const secret =
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VySWQifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+  assert.equal(hasSecret(secret), true);
+  assert.equal(hasSecret(redact(secret)), false);
+});
+
+// --- FIX 6: branch sanitization ---
+test("publicSummary strips unsafe chars from branch", () => {
+  const s = publicSummary({
+    decision: "AGREE",
+    green: true,
+    branch: "pr/x $() \nevil",
+    rounds: 1,
+  });
+  const branchLine = s.split("\n").find((l) => l.startsWith("branch:"));
+  assert.equal(branchLine, "branch: pr/xevil");
+});
