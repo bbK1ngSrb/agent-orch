@@ -45,6 +45,13 @@ test("invalid merge value throws", () => {
   assert.throws(() => load(d), /merge must be/);
 });
 
+test("github.mergeMethod defaults to squash; invalid value throws", () => {
+  assert.equal(load(tmp()).github.mergeMethod, "squash");
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "github:\n  mergeMethod: fast-forward\n");
+  assert.throws(() => load(d), /github.mergeMethod must be/);
+});
+
 test("empty agents list throws", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "agents: []\n");

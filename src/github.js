@@ -23,6 +23,9 @@ export async function runPr(opts, deps) {
   const { n, repo, orchDir, cfg, merge = false } = opts;
   const { gh, git, cycle, readVerdict, log = () => {} } = deps;
 
+  try { gh(["--version"]); }
+  catch { throw new Error("gh CLI not found — install https://cli.github.com/ and run `gh auth login`"); }
+
   const pr = JSON.parse(gh(["pr", "view", String(n), "--json", "number,headRefName,state"]));
   if (pr.state && pr.state !== "OPEN") throw new Error(`PR #${pr.number} is ${pr.state}, not open`);
 
@@ -50,6 +53,8 @@ export async function runPr(opts, deps) {
     }
     return result;
   } finally {
-    git(["branch", "-D", branch], repo); // worktree already pruned by the cycle
+    // Best-effort cleanup — never let it mask a real error from the try block.
+    try { git(["branch", "-D", branch], repo); } // worktree already pruned by the cycle
+    catch (e) { log(`warning: could not delete local branch ${branch}: ${e.message}`); }
   }
 }

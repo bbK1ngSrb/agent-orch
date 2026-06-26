@@ -24,6 +24,8 @@ function validate(cfg) {
     throw new Error("orch.yml: reviseCap must be a positive integer");
   if (!Number.isInteger(cfg.scope.maxLines) || cfg.scope.maxLines < 0)
     throw new Error("orch.yml: scope.maxLines must be a non-negative integer");
+  if (!["squash", "merge", "rebase"].includes(cfg.github.mergeMethod))
+    throw new Error("orch.yml: github.mergeMethod must be squash, merge, or rebase");
 }
 
 // Config lives at .orch/orch.yml. Bare orch.yml at repo root still works (back-compat).
