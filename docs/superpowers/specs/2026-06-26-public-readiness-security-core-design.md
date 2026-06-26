@@ -1,6 +1,6 @@
 # Public-Readiness Security Core — Design
 
-**Status:** Red-teamed (6 lenses, 11 gaps folded). Deployment topology added (two-repo clean-room + per-issue ephemeral container). Pending second red-team on the topology → user review → plan.
+**Status:** Red-teamed twice (6 lenses / 11 gaps, then 5 scoped lenses / 2 gaps + advisor). Topology (two-repo clean-room + per-issue ephemeral container) folded and hardened. Converged → user review → plan.
 **Date:** 2026-06-26
 **Scope:** Security core only. Governance / legal / release-hygiene split to a separate checklist spec (see Non-goals).
 
@@ -37,8 +37,8 @@ Two structural decisions move containment from "configured correctly" to "physic
 - **Public repo:** the user-facing face. Secret-free. Handles public issues/feature-requests. Runs orch only in the secret-free sandbox below.
 - **Seed, don't fork.** The public repo is an **independent repo seeded from a clean checkout**, **not** a GitHub fork (a fork keeps a network link — PRs/insights flow upstream, the relationship is visible). Publish via **orphan-branch / squash** — one clean root commit, **not** a copied `.git` history. History carries NAS paths, homelab IPs, `.orch/` creds, handles, self-hosted-runner CI → must be scrubbed before first publish (audit: paths, hostnames, any token ever committed, internal workflow files).
 - **Direction is one-way.** Private → public **publish** (private keeps public as a push remote for offline-developed work). Public → private is **read-only issue pull only**. Public never pushes/PRs into private.
-- **The issue→private bridge is a trust boundary** (open decision — see Open questions). If public issue text is ingested into private and auto-run with secrets, the §3 hole is rebuilt private-side. So ingested issues are either pulled **read-only and treated as untrusted** (full §3 applies private-side) **or** human-curated across the boundary (issue text = untrusted reference, never an authoritative goal).
-- **Blast radius:** worst case on public = public-repo defacement, not homelab/secret compromise. Secrets and infra are on the other side of a repo boundary the attacker cannot reach.
+- **The issue→private bridge is a trust boundary** (open decision — see Open questions). If public issue text is ingested into private and auto-run with secrets, the §3 hole is rebuilt private-side. So ingested issues are either pulled **read-only and treated as untrusted** (full §3 applies private-side) **or** human-curated across the boundary (issue text = untrusted reference, never an authoritative goal). **Hard constraint either way: no author phase ever runs over the unscrubbed private `main`** (it carries homelab IPs / `.orch` creds), because the model-egress channel (Residual #1) would exfiltrate exactly that. If the pull model is chosen, the private-side author container is seeded only from a **scrubbed/synthetic subset** (reuse the pre-publish scrub gate), never private `main`. Recommended resolution: **human-curated-crossing, author public-side only** — do not author private-side at all.
+- **Blast radius:** worst case on the **automated pipeline** = public-repo defacement, not homelab/secret compromise — secrets and infra sit behind a repo boundary the attacker cannot reach. This guarantee is **scoped to the automated pipeline.** It does **not** cover a maintainer who locally fetches+tests an untrusted fork PR: `postinstall`/`conftest`/`Makefile`/npm scripts then execute against host secrets and the LAN, outside T2 (see §5).
 
 ### T2. Per-issue ephemeral container (the concrete §3 sandbox)
 Lifecycle: **clean checkout at `main` → fresh container → ingest issue/PR input → resolve or drop → emit PR/commit → destroy container.** Properties: no persistence (no cross-issue contamination, no cache-poisoning), execution isolation (authored test/build code runs in a throwaway).
@@ -183,6 +183,7 @@ On breach: stop, comment diagnosis, escalate. Never silently retry.
 ## 5. Merge gate & rollback (layer 4)
 
 - **Human-merge-only** for public PRs. Orch opens PR, posts fixed-template summary (§3f), stops. Maintainer merges.
+- **Reviewing/testing untrusted code is a host code-execution surface.** A maintainer who fetches an untrusted fork PR (or any public-originated branch) and runs its tests locally executes `postinstall`/`conftest`/`Makefile`/npm scripts against host secrets + LAN — outside T2. Mandate: such review/test runs **only inside the same secret-free, egress-denied ephemeral container** the automated pipeline uses, never in the secret-bearing working tree. (Full fork-PR contribution policy → separate checklist spec; this is the security-floor.)
 - Branch protection requires review on public `main`; autonomous runs cannot satisfy it (§7).
 - Post-merge CI on `main` + documented rollback (revert PR). Auto-merge out of scope at launch.
 
@@ -207,7 +208,7 @@ On breach: stop, comment diagnosis, escalate. Never silently retry.
 
 ## Residual risks (accepted limits of approach C)
 
-1. **Model-API egress.** A sandboxed author still needs its model endpoint; an injection can encode repo-readable data into prompts. Stripping write token + secrets bounds loss; the channel can't fully close without crippling the author.
+1. **Model-API egress.** A sandboxed author still needs its model endpoint; an injection can encode repo-readable data into prompts. Stripping write token + secrets bounds loss — **but only when the author's read surface is already-public data.** Reading any unscrubbed/secret-bearing tree (e.g. a private-side author over private `main`) voids the bound: the egress channel would exfiltrate the root of trust. Excluded by construction (T1 hard constraint). The channel can't fully close without crippling the author.
 2. **Redaction is heuristic.** Secret-shaped scanning is pattern-based, bypassable (base64/stego/novel formats). Raises cost, not a guarantee.
 3. **LLM reviewer fallible.** The independent security reviewer is an LLM; a subtle diff that fooled the author may fool it. Defense-in-depth, not proof.
 4. **Containment vs capability (core tension).** The more the work order is reduced to closed-vocabulary + template-derived instructions, the less faithfully orch auto-heals complex public bugs. Maximal containment degrades the feature it enables — a deliberate trade.
@@ -217,6 +218,7 @@ On breach: stop, comment diagnosis, escalate. Never silently retry.
 8. **Container escape.** Containers aren't VMs; a kernel/runtime exploit defeats T2 isolation. GH-hosted (off-infra) bounds the loss to a disposable VM; self-hosted risks host + LAN → only hardened (gVisor/Kata/rootless+userns+egress-proxy).
 9. **Bridge discipline (T1).** The one-way publish + read-only-untrusted issue pull is a discipline a CI/process check must enforce; a future "auto-run ingested issues with secrets" silently rebuilds the private-side hole.
 10. **Clean-room leakage.** Seed-not-fork + history-scrub depends on a thorough pre-publish audit; a missed secret/path/handle in history or config leaks once, permanently (public + indexed).
+11. **Human-review code-execution surface.** Reviewing/testing untrusted fork PRs runs host-level code (`postinstall`/`conftest`/`Makefile`/npm) outside T2. Mitigated only by the §5 sandboxed-review mandate until the fork-PR-policy spec lands; the §3 automated-pipeline guarantees do not extend to ad-hoc local testing.
 
 ---
 
@@ -251,7 +253,7 @@ On breach: stop, comment diagnosis, escalate. Never silently retry.
 
 ## Open questions
 
-1. **Issue→private bridge model:** read-only-untrusted-pull (full §3 private-side) vs human-curated-crossing? — the one decision still open.
+1. **Issue→private bridge model:** read-only-untrusted-pull (full §3 private-side, author seeded from scrubbed subset only) vs human-curated-crossing (author public-side only)? **Red-team recommends human-curated-crossing** — never author over the private tree. Confirm before plan.
 2. Untrusted-extraction classifier — cheap model call vs rule-based heuristic?
 3. External audit sink — private repo directly, or a dedicated write-only log target?
 4. Path control — allowlist (safe paths) vs denylist (protected set)?
