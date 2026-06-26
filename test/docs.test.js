@@ -40,6 +40,14 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
 });
 
+test("the GitHub-merge surface (orch-docs Action) exists and is documented", () => {
+  const wf = read(".github/workflows/orch-docs.yml");
+  assert.match(wf, /pull_request/);
+  assert.match(wf, /merged == true/);
+  assert.match(wf, /orch task/);
+  assert.match(readme, /orch-docs\.yml/);
+});
+
 test("CODE_OF_CONDUCT gives an actionable private contact for enforcement", () => {
   const enforcement = coc.slice(coc.indexOf("## Enforcement"));
   assert.match(enforcement, /[\w.+-]+@[\w-]+\.[\w.-]+/); // a real email address

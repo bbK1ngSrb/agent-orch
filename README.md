@@ -90,11 +90,19 @@ merge never re-triggers another one — and when the merge was a no-op (empty di
 nothing to update, which would otherwise re-spawn forever). A mixed code+docs
 merge triggers once.
 
-This covers local merges done by `orch task`/`orch review`. GitHub PR merges
-(`orch pr --merge`, GitHub UI) are a separate surface, not yet wired up here.
+**Two surfaces, no double-fire:**
+- Local merges (`orch task`/`orch review`) — handled inside `orch` (above). No
+  GitHub event, so only this surface sees them.
+- GitHub PR merges (`orch pr --merge`, GitHub UI) — handled by the
+  `.github/workflows/orch-docs.yml` Action (on `pull_request` closed+merged),
+  which runs the same docs-update on the self-hosted `orch` runner and pushes to
+  `main`. It applies the same docs-only loop guard.
 
-**Portability:** the behavior ships inside `orch` — any standalone repo gets it
-by setting `docs.autoUpdate: true`.
+**Portability:** the in-tool behavior ships inside `orch` — any standalone repo
+gets it by setting `docs.autoUpdate: true`. The Action is a copy-paste template:
+drop `orch-docs.yml` into another repo (e.g. printseek). It just needs `orch` on
+the runner's PATH — the `npm install -g .` step assumes the repo vendors orch; a
+repo that doesn't should install orch from an orch checkout instead.
 
 ## License
 [Apache-2.0](LICENSE)

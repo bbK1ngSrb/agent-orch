@@ -1,0 +1,58 @@
+name: orch-docs
+# Auto-refresh docs after a PR merges (the GitHub-merge surface; the local
+# `orch task`/`review` surface is handled inside orch itself).
+#
+# Requires a SELF-HOSTED runner labelled `orch`: the agent CLIs (claude, codex)
+# and their API keys live there, same as orch-pr.yml. Skips docs-only merges so
+# the docs-update's own merge can't re-trigger this workflow.
+#
+# Portable template: copy into any standalone repo. The `npm install -g .` step
+# assumes the repo vendors orch; a repo that doesn't should install orch from an
+# orch checkout so `orch` is on the runner's PATH.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write   # push the refreshed docs to main
+
+# One docs-update per repo at a time — matches orch's own .orch/lock.
+concurrency:
+  group: orch-docs-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  docs:
+    # Only on a real merge, and never from a fork: fork code (npm install
+    # scripts, the docs-update agent run) is untrusted and would otherwise run
+    # on the self-hosted runner with its secrets/network.
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: [self-hosted, orch]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, ref: main }
+      - name: skip docs-only merges (loop guard)
+        id: guard
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          files=$(git diff --name-only "$BASE" "$HEAD")
+          if [ -z "$files" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # docs-only globs mirror cfg.docs.paths defaults (*.md, docs/)
+          if echo "$files" | grep -qvE '(\.md$|^docs/)'; then
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=1" >> "$GITHUB_OUTPUT"   # docs-only -> skip
+          fi
+      - if: steps.guard.outputs.skip == '0'
+        run: npm install -g .   # non-vendored repos: npm install -g agent-orch
+      - if: steps.guard.outputs.skip == '0'
+        name: refresh docs and push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          orch task "update documentation to reflect the latest merged changes"
+          git push origin HEAD:main

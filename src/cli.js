@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { execFileSync, spawn } from "node:child_process";
@@ -17,21 +17,30 @@ import { VERSION } from "./version.js";
 export { slugify };
 
 // Fire-and-forget a detached `orch task <prompt>` after a successful merge.
-// ponytail: no log capture — if the spawned task fails it's invisible.
-// Upgrade path: redirect stdio to .orch/auto-docs.log if visibility is needed.
-export function spawnDocsTask(prompt, deps = { spawn }) {
-  deps.spawn(process.execPath, [process.argv[1], "task", prompt],
-    { detached: true, stdio: "ignore" }).unref();
+// Task mode derives the branch name from the prompt slug, so a FIXED prompt
+// collides on the second run (git.js rejects an existing task branch) and, under
+// detached stdio, fails invisibly. Lead the prompt with a short unique stamp so
+// every run gets a unique slug/branch. stdio is captured to .orch/auto-docs.log
+// (when orchDir is known) so a failed detached run leaves a trail.
+// ponytail: ms stamp + in-process counter (so two merges in one ms still differ)
+// + append-only log; rotate the log if it ever grows.
+let docsSeq = 0;
+export function spawnDocsTask(prompt, deps = { spawn }, orchDir) {
+  const tagged = `auto-docs ${Date.now().toString(36)}${(docsSeq++).toString(36)} ${prompt}`;
+  let stdio = "ignore";
+  if (orchDir) { const fd = openSync(join(orchDir, "auto-docs.log"), "a"); stdio = ["ignore", fd, fd]; }
+  deps.spawn(process.execPath, [process.argv[1], "task", tagged],
+    { detached: true, stdio }).unref();
   console.log("▶ post-merge: docs-update spawned");
 }
 
 // Loop guard + opt-in gate around spawnDocsTask. Real merge only (never --dry).
 // Skips docs-only merges (the docs-update's own merge can't re-trigger) AND no-op
 // merges (an empty diff would re-spawn forever, since it's not docs-only either).
-export function maybeSpawnDocs(res, cfg, deps = {}) {
+export function maybeSpawnDocs(res, cfg, deps = {}, orchDir) {
   const { dry = false, spawn: spawnFn = spawn } = deps;
   if (dry || res.status !== "merged" || !cfg.docs.autoUpdate || res.docsOnly || res.noop) return false;
-  spawnDocsTask(cfg.docs.prompt, { spawn: spawnFn });
+  spawnDocsTask(cfg.docs.prompt, { spawn: spawnFn }, orchDir);
   return true;
 }
 
@@ -180,7 +189,7 @@ export async function main(argv) {
     }
     // After releasing the lock: the detached docs-update runs `orch task`, which
     // acquires the same lock. Spawning inside the try would race our own release.
-    maybeSpawnDocs(result, cfg, { dry }); // auto docs-update on a real merge
+    maybeSpawnDocs(result, cfg, { dry }, orchDir); // auto docs-update on a real merge
     return;
   }
 

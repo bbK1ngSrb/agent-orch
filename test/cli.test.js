@@ -18,7 +18,18 @@ test("maybeSpawnDocs spawns once when merged + autoUpdate + !docsOnly", () => {
   const ok = maybeSpawnDocs({ status: "merged", docsOnly: false }, docsCfg, { spawn: m.spawn });
   assert.equal(ok, true);
   assert.equal(m.calls.length, 1);
-  assert.deepEqual(m.calls[0][1].slice(1), ["task", "update docs"]); // [scriptPath, "task", prompt]
+  const argv = m.calls[0][1]; // [scriptPath, "task", prompt]
+  assert.equal(argv[1], "task");
+  assert.match(argv[2], /update docs$/); // ends with the configured prompt
+  assert.match(argv[2], /^auto-docs [0-9a-z]+ /); // leads with a unique stamp
+});
+
+test("auto-docs prompts yield unique branch slugs (no existing-branch collision)", () => {
+  const m = mockSpawn();
+  maybeSpawnDocs({ status: "merged", docsOnly: false }, docsCfg, { spawn: m.spawn });
+  maybeSpawnDocs({ status: "merged", docsOnly: false }, docsCfg, { spawn: m.spawn });
+  const slug = (a) => slugify(a[1][2]);
+  assert.notEqual(slug(m.calls[0]), slug(m.calls[1]));
 });
 
 test("maybeSpawnDocs does not spawn for a docs-only merge (loop guard)", () => {

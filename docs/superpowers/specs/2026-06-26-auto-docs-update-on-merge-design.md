@@ -131,16 +131,30 @@ if (res.status === "merged" && cfg.docs.autoUpdate && !res.docsOnly) {
 `▶ post-merge: docs-update spawned`:
 
 ```js
-function spawnDocsTask(prompt, deps = { spawn }) {
-  deps.spawn(process.execPath, [process.argv[1], "task", prompt],
-    { detached: true, stdio: "ignore" }).unref();
+let docsSeq = 0;
+function spawnDocsTask(prompt, deps = { spawn }, orchDir) {
+  // task mode derives the branch from the prompt slug, so a FIXED prompt would
+  // collide on the 2nd run (git rejects an existing task branch) and fail
+  // invisibly. Lead with a unique stamp -> unique slug/branch every run.
+  const tagged = `auto-docs ${Date.now().toString(36)}${(docsSeq++).toString(36)} ${prompt}`;
+  let stdio = "ignore";
+  if (orchDir) { const fd = openSync(join(orchDir, "auto-docs.log"), "a"); stdio = ["ignore", fd, fd]; }
+  deps.spawn(process.execPath, [process.argv[1], "task", tagged],
+    { detached: true, stdio }).unref();
 }
 ```
 
-ponytail ceiling: fire-and-forget, no log capture; if the spawned task fails
-it's invisible. Upgrade path: write its output to `.orch/auto-docs.log` if
-visibility is needed. The spawned task uses a distinct topic → distinct branch
-name, so it never collides with the parent's worktree/branch.
+**Branch-collision guard (review finding):** a fixed prompt yields a fixed slug
+→ fixed branch `pr/<author>/<slug>`. `git.js` rejects an existing branch and
+merged branches are not deleted, so the 2nd post-merge docs-update would fail —
+silently, under detached stdio. Fix: lead the prompt with a unique stamp
+(`Date.now()` + an in-process counter so two merges in one ms still differ),
+giving a unique slug/branch per run. Output is captured to `.orch/auto-docs.log`
+(when `orchDir` is known) so a failed detached run leaves a trail.
+
+ponytail ceiling: ms stamp + counter + append-only log; rotate the log if it
+ever grows. Unique branches accumulate the same way every `orch task` branch
+already does (the tool does not auto-delete merged task branches).
 
 ### 5. GitHub Action — `.github/workflows/orch-docs.yml`
 
@@ -181,7 +195,7 @@ jobs:
             echo "skip=1" >> "$GITHUB_OUTPUT"   # docs-only -> skip
           fi
       - if: steps.guard.outputs.skip == '0'
-        run: npm install -g .          # printseek/others: npm install -g agent-orch
+        run: npm install -g .          # assumes the repo vendors orch
       - if: steps.guard.outputs.skip == '0'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -196,8 +210,9 @@ Notes:
 - ponytail ceiling: direct `git push origin HEAD:main`. If branch protection
   later requires PRs, switch this step to open a PR via `gh` (docs-only guard
   already prevents that PR from re-triggering).
-- For printseek and future repos: copy this file, change `npm install -g .` to
-  `npm install -g agent-orch` (or the repo's install method).
+- For printseek and future repos: copy this file. It needs `orch` on the
+  runner's PATH; a repo that doesn't vendor orch installs it from an orch
+  checkout (agent-orch is not published to npm).
 
 ### 6. agent-orch config change
 
