@@ -84,21 +84,17 @@ docs:
   prompt: "update documentation to reflect the latest merged changes"
   paths: ["*.md", "docs/**", "**/*.md"]   # docs-only globs = loop guard
 ```
-**Loop guard:** if the merged branch changed only docs files (every path matches
-`docs.paths`), the trigger is skipped — so the docs-update's own docs-only merge
-never re-triggers another one. A mixed code+docs merge triggers once.
+**Loop guard:** the trigger is skipped when the merged branch changed only docs
+files (every path matches `docs.paths`) — so the docs-update's own docs-only
+merge never re-triggers another one — and when the merge was a no-op (empty diff:
+nothing to update, which would otherwise re-spawn forever). A mixed code+docs
+merge triggers once.
 
 This covers local merges done by `orch task`/`orch review`. GitHub PR merges
-(`orch pr --merge`, GitHub UI) are a separate surface — the two never
-double-fire. For those, copy the `.github/workflows/orch-docs.yml` Action: it
-fires on `pull_request` closed+merged, applies the same docs-only skip, runs
-`orch task`, and pushes to `main`. It needs a self-hosted `[self-hosted, orch]`
-runner with the agent CLIs and keys.
+(`orch pr --merge`, GitHub UI) are a separate surface, not yet wired up here.
 
-**Portability:** items above ship inside `orch` — any standalone repo gets the
-behavior by setting `docs.autoUpdate: true`. The Action is a copy-paste template:
-for other repos, change the `npm install -g .` step to that repo's own install
-method.
+**Portability:** the behavior ships inside `orch` — any standalone repo gets it
+by setting `docs.autoUpdate: true`.
 
 ## License
 [Apache-2.0](LICENSE)

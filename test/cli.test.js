@@ -27,6 +27,12 @@ test("maybeSpawnDocs does not spawn for a docs-only merge (loop guard)", () => {
   assert.equal(m.calls.length, 0);
 });
 
+test("maybeSpawnDocs does not spawn for a no-op merge (empty-diff loop guard)", () => {
+  const m = mockSpawn();
+  assert.equal(maybeSpawnDocs({ status: "merged", docsOnly: false, noop: true }, docsCfg, { spawn: m.spawn }), false);
+  assert.equal(m.calls.length, 0);
+});
+
 test("maybeSpawnDocs does not spawn when autoUpdate is off", () => {
   const m = mockSpawn();
   const cfg = { docs: { ...docsCfg.docs, autoUpdate: false } };

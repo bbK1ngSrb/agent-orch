@@ -80,6 +80,16 @@ test("docsOnly is read BEFORE merge (ff merge empties main...branch)", async () 
   assert.equal(r.docsOnly, true); // would be false if read after merge
 });
 
+test("merged result stamps noop=true for an empty diff (loop-guard for no-op merges)", async () => {
+  // A no-op merge yields changedFiles=[] -> isDocsOnly returns false. Without the
+  // noop flag the guard would re-spawn a docs-update forever on an empty diff.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: [] });
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.noop, true);
+  assert.equal(r.docsOnly, false);
+});
+
 test("AGREE + red gate -> escalated, no merge", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], gatePass: false });
   const r = await runCycle(opts, deps);

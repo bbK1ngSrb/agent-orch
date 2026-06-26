@@ -25,11 +25,12 @@ export function spawnDocsTask(prompt, deps = { spawn }) {
   console.log("▶ post-merge: docs-update spawned");
 }
 
-// Loop guard + opt-in gate around spawnDocsTask. Real merge only (never --dry),
-// skips docs-only merges so the docs-update's own merge can't re-trigger.
+// Loop guard + opt-in gate around spawnDocsTask. Real merge only (never --dry).
+// Skips docs-only merges (the docs-update's own merge can't re-trigger) AND no-op
+// merges (an empty diff would re-spawn forever, since it's not docs-only either).
 export function maybeSpawnDocs(res, cfg, deps = {}) {
   const { dry = false, spawn: spawnFn = spawn } = deps;
-  if (dry || res.status !== "merged" || !cfg.docs.autoUpdate || res.docsOnly) return false;
+  if (dry || res.status !== "merged" || !cfg.docs.autoUpdate || res.docsOnly || res.noop) return false;
   spawnDocsTask(cfg.docs.prompt, { spawn: spawnFn });
   return true;
 }

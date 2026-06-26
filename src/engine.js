@@ -58,9 +58,12 @@ export async function runCycle(opts, deps) {
         if (noMerge) {
           return { status: "approved", reason: "agreed + green (no merge)", rounds: round };
         }
-        // Compute docs-only BEFORE merging: a ff merge makes main...branch empty,
-        // so reading it post-merge always yields [] and breaks the loop guard.
-        const docsOnly = isDocsOnly(git.changedFiles(repo, branch), cfg.docs.paths);
+        // Compute the loop-guard signals BEFORE merging: a ff merge makes
+        // main...branch empty, so reading it post-merge always yields [] —
+        // which both breaks docsOnly AND looks like a no-op forever.
+        const changed = git.changedFiles(repo, branch);
+        const docsOnly = isDocsOnly(changed, cfg.docs.paths);
+        const noop = changed.length === 0; // empty diff: nothing to update -> never re-spawn
         const m = git.mergeIntoMain(repo, branch, cfg.merge);
         if (!m.ok) {
           const fix = m.advice || `rebase ${branch} onto main`;
@@ -73,7 +76,7 @@ export async function runCycle(opts, deps) {
           sha: safeSha(git, repo), rounds: round,
         });
         notify.cleanupReviews(orchDir, branch);
-        return { status: "merged", reason: "agreed + green + merged", rounds: round, docsOnly };
+        return { status: "merged", reason: "agreed + green + merged", rounds: round, docsOnly, noop };
       }
 
       // DISAGREE — review mode (cap=1) escalates here on round 1, never revising.
