@@ -1,7 +1,7 @@
 // Pure state machine. All side-effecting collaborators arrive via `deps`,
 // so tests stub them and dry-run is just another set of stubs.
 export async function runCycle(opts, deps) {
-  const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree } = opts;
+  const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false } = opts;
   const { adapters, git, gate, scope, notify } = deps;
   const author = adapters.get(authorName);
   const reviewer = adapters.get(reviewerName);
@@ -50,6 +50,11 @@ export async function runCycle(opts, deps) {
         if (!pass) {
           return escalate(notify, orchDir, branch, round,
             "AGREE but tests are red — not merging");
+        }
+        // PR-bridge audit: report the verdict, let GitHub own the merge. Reviews
+        // are kept (not cleaned) so the caller can quote them in a PR comment.
+        if (noMerge) {
+          return { status: "approved", reason: "agreed + green (no merge)", rounds: round };
         }
         const m = git.mergeIntoMain(repo, branch, cfg.merge);
         if (!m.ok) {

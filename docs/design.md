@@ -40,6 +40,7 @@ deployment-specific plumbing** (NAS bare repo, `deploy.sh`, GitHub `--mirror`,
 orch init              # scaffold orch.yml + .orch/, verify agent CLIs on PATH
 orch task "fix X"      # author + cross-audit + gate + merge — one cycle
 orch review <branch>   # audit-only on an existing branch (no author step)
+orch pr <n> [--merge]  # audit a GitHub PR via gh, comment the verdict, optionally merge
 ```
 
 Three commands. `task` is the full loop; `review` is the audit half for branches a

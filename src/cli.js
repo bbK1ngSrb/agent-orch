@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { execFileSync } from "node:child_process";
 import { load } from "./config.js";
 import { runCycle } from "./engine.js";
+import { runPr } from "./github.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -33,7 +34,7 @@ export function parse(argv) {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { dry: { type: "boolean" }, version: { type: "boolean" } },
+    options: { dry: { type: "boolean" }, version: { type: "boolean" }, merge: { type: "boolean" } },
   });
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
 }
@@ -159,5 +160,49 @@ export async function main(argv) {
     return;
   }
 
-  console.log(`agent-orch ${VERSION}\nUsage:\n  orch init\n  orch task "change"\n  orch review <branch>\n  (flags: --dry, --version)`);
+  if (command === "pr") {
+    const cfg = load(repo);
+    const n = rest[0];
+    if (!n) throw new Error("usage: orch pr <number> [--merge]");
+    preflight(cfg, orchDir);
+    if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
+    if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
+    try {
+      const result = await runPr(
+        { n, repo, orchDir, cfg, merge: Boolean(flags.merge) },
+        githubDeps(),
+      );
+      console.log(`orch pr #${n}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
+      if (result.status !== "approved") process.exitCode = 2;
+    } finally {
+      releaseLock(orchDir);
+    }
+    return;
+  }
+
+  console.log(`agent-orch ${VERSION}\nUsage:\n  orch init\n  orch task "change"\n  orch review <branch>\n  orch pr <number> [--merge]\n  (flags: --dry, --version)`);
+}
+
+// Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds
+// the engine to its real deps; readVerdict pulls the reviewer's written case.
+function githubDeps() {
+  return {
+    gh: (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString(),
+    git: git.git,
+    cycle: (o) => runCycle(o, realDeps()),
+    readVerdict,
+    log: (m) => process.stderr.write(`▶ ${m}\n`),
+  };
+}
+
+function readVerdict(orchDir, branch) {
+  const dir = join(orchDir, "reviews", branch);
+  const decision = join(dir, "DECISION.md");
+  if (existsSync(decision)) return readFileSync(decision, "utf8");
+  if (!existsSync(dir)) return "";
+  return readdirSync(dir)
+    .filter((f) => f.startsWith("round-"))
+    .sort()
+    .map((f) => readFileSync(join(dir, f), "utf8"))
+    .join("\n");
 }

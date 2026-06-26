@@ -105,6 +105,17 @@ test("scope cap exceeded -> escalated before review", async () => {
   assert.match(r.reason, /scope/i);
 });
 
+test("noMerge: AGREE + green -> approved, no merge/record/clean (PR bridge)", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  let merged = false;
+  deps.git.mergeIntoMain = () => { merged = true; return { ok: true, reason: "merged" }; };
+  const r = await runCycle({ ...opts, mode: "review", noMerge: true }, deps);
+  assert.equal(r.status, "approved");
+  assert.equal(merged, false);
+  assert.equal(deps._calls.recorded, undefined); // no run recorded
+  assert.equal(deps._calls.cleaned, undefined); // reviews kept for the PR comment
+});
+
 test("review mode never invokes the author (F1)", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   const r = await runCycle({ ...opts, mode: "review" }, deps);

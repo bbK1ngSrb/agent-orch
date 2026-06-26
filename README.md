@@ -26,9 +26,18 @@ Run from inside the git repo you want orchestrated:
 orch init                                  # scaffold .orch/orch.yml, verify agent CLIs
 orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
 orch review pr/claude/some-branch          # audit an existing branch (no authoring)
+orch pr 42                                  # audit a GitHub PR, post verdict as a comment
+orch pr 42 --merge                          # ...and merge it via gh if agents approve
 ```
 Add `--dry` to any `task`/`review` run to simulate a cycle without touching git,
 agents, or tests. `orch` exits non-zero (`2`) when a cycle escalates for a human.
+
+`orch pr <n>` needs the [`gh`] CLI authenticated. It fetches the PR head, runs an
+audit-only cycle (local `main` is never touched — GitHub owns the merge), and
+posts the verdict as a PR comment. With `--merge` it runs `gh pr merge` when the
+agents approve and tests pass.
+
+[`gh`]: https://cli.github.com/
 
 ## Agents
 `claude`, `codex`, and three local-llm models served via [llama-swap] behind
@@ -56,6 +65,7 @@ orch task "fix the flaky login test"
 - `orch init` — scaffold `.orch/orch.yml`, verify agent CLIs.
 - `orch task "..."` — author + cross-audit + test-gate + merge.
 - `orch review <branch>` — audit an existing branch.
+- `orch pr <n> [--merge]` — audit a GitHub PR, comment the verdict, optionally merge via `gh`.
 
 ## Config (`.orch/orch.yml`, all optional)
 See `orch.example.yml`. Most repos need no config. A bare `orch.yml` at the

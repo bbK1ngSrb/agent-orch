@@ -10,6 +10,7 @@ const DEFAULTS = {
   reviseCap: 3,
   merge: "ff-only",
   scope: { maxLines: 0, ignore: ["*.lock", "dist/**", "*.snap"] },
+  github: { mergeMethod: "squash" }, // gh pr merge strategy for `orch pr <n> --merge`
 };
 
 function validate(cfg) {
@@ -39,6 +40,7 @@ export function load(dir) {
     ...DEFAULTS,
     ...user,
     scope: { ...DEFAULTS.scope, ...(user.scope || {}) },
+    github: { ...DEFAULTS.github, ...(user.github || {}) },
   };
   validate(cfg);
   return cfg;

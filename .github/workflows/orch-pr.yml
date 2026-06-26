@@ -1,0 +1,45 @@
+name: orch-pr
+# Audit a PR with agent-orch and post the verdict as a comment.
+#
+# Requires a SELF-HOSTED runner labelled `orch`: the agent CLIs (claude, codex)
+# and their API keys live there, not on GitHub-hosted runners. Set the keys as
+# runner env / secrets so the agent CLIs can authenticate. `gh` auths via the
+# built-in GITHUB_TOKEN.
+#
+# Triggers: a PR labelled `orch-review`, or manual dispatch with a PR number.
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to audit
+        required: true
+
+permissions:
+  contents: write        # merge with --merge
+  pull-requests: write   # post the verdict comment
+
+# One audit per PR at a time — matches orch's own .orch/lock.
+concurrency:
+  group: orch-pr-${{ github.event.pull_request.number || github.event.inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    # Skip label events that aren't the trigger label.
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'orch-review'
+    runs-on: [self-hosted, orch]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: npm install -g .
+      - name: orch pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+        run: |
+          case "$PR" in
+            ''|*[!0-9]*) echo "invalid PR number: $PR" >&2; exit 1 ;;
+          esac
+          orch pr "$PR"
