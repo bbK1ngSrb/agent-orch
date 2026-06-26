@@ -75,5 +75,30 @@ repo root is still read for back-compat, but `.orch/orch.yml` wins if both exist
 Merge happens only when the reviewer says `AGREE` **and** the repo's tests pass.
 No test command detected → it refuses to auto-merge and tells you.
 
+## Auto docs-update on merge
+Opt-in per repo. With `docs.autoUpdate: true` in `.orch/orch.yml`, a successful
+merge auto-spawns a detached `orch task` that refreshes documentation:
+```yaml
+docs:
+  autoUpdate: true   # off by default
+  prompt: "update documentation to reflect the latest merged changes"
+  paths: ["*.md", "docs/**", "**/*.md"]   # docs-only globs = loop guard
+```
+**Loop guard:** if the merged branch changed only docs files (every path matches
+`docs.paths`), the trigger is skipped — so the docs-update's own docs-only merge
+never re-triggers another one. A mixed code+docs merge triggers once.
+
+This covers local merges done by `orch task`/`orch review`. GitHub PR merges
+(`orch pr --merge`, GitHub UI) are a separate surface — the two never
+double-fire. For those, copy the `.github/workflows/orch-docs.yml` Action: it
+fires on `pull_request` closed+merged, applies the same docs-only skip, runs
+`orch task`, and pushes to `main`. It needs a self-hosted `[self-hosted, orch]`
+runner with the agent CLIs and keys.
+
+**Portability:** items above ship inside `orch` — any standalone repo gets the
+behavior by setting `docs.autoUpdate: true`. The Action is a copy-paste template:
+for other repos, change the `npm install -g .` step to that repo's own install
+method.
+
 ## License
 [Apache-2.0](LICENSE)

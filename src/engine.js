@@ -1,3 +1,5 @@
+import { isDocsOnly } from "./scope.js";
+
 // Pure state machine. All side-effecting collaborators arrive via `deps`,
 // so tests stub them and dry-run is just another set of stubs.
 export async function runCycle(opts, deps) {
@@ -68,7 +70,9 @@ export async function runCycle(opts, deps) {
           sha: safeSha(git, repo), rounds: round,
         });
         notify.cleanupReviews(orchDir, branch);
-        return { status: "merged", reason: "agreed + green + merged", rounds: round };
+        const files = git.changedFiles(repo, branch);
+        const docsOnly = isDocsOnly(files, cfg.docs.paths);
+        return { status: "merged", reason: "agreed + green + merged", rounds: round, docsOnly };
       }
 
       // DISAGREE — review mode (cap=1) escalates here on round 1, never revising.

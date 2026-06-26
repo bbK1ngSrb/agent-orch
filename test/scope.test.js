@@ -1,6 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseNumstat } from "../src/scope.js";
+import { parseNumstat, isDocsOnly } from "../src/scope.js";
+
+const DOCS = ["*.md", "docs/**", "**/*.md"];
+
+test("isDocsOnly: all docs paths -> true", () => {
+  assert.equal(isDocsOnly(["README.md", "docs/x.md", "src/nested/y.md"], DOCS), true);
+});
+
+test("isDocsOnly: any non-docs path -> false", () => {
+  assert.equal(isDocsOnly(["README.md", "src/a.js"], DOCS), false);
+});
+
+test("isDocsOnly: empty list -> false", () => {
+  assert.equal(isDocsOnly([], DOCS), false);
+});
 
 const NUMSTAT = [
   "10\t5\tsrc/a.js",

@@ -11,6 +11,11 @@ const DEFAULTS = {
   merge: "ff-only",
   scope: { maxLines: 0, ignore: ["*.lock", "dist/**", "*.snap"] },
   github: { mergeMethod: "squash" }, // gh pr merge strategy for `orch pr <n> --merge`
+  docs: {
+    autoUpdate: false, // opt-in per repo; flip true in .orch/orch.yml
+    prompt: "update documentation to reflect the latest merged changes",
+    paths: ["*.md", "docs/**", "**/*.md"], // docs-only globs = loop guard
+  },
 };
 
 function validate(cfg) {
@@ -26,6 +31,12 @@ function validate(cfg) {
     throw new Error("orch.yml: scope.maxLines must be a non-negative integer");
   if (!["squash", "merge", "rebase"].includes(cfg.github.mergeMethod))
     throw new Error("orch.yml: github.mergeMethod must be squash, merge, or rebase");
+  if (typeof cfg.docs.autoUpdate !== "boolean")
+    throw new Error("orch.yml: docs.autoUpdate must be a boolean");
+  if (typeof cfg.docs.prompt !== "string" || !cfg.docs.prompt.trim())
+    throw new Error("orch.yml: docs.prompt must be a non-empty string");
+  if (!Array.isArray(cfg.docs.paths) || !cfg.docs.paths.every((p) => typeof p === "string"))
+    throw new Error("orch.yml: docs.paths must be an array of strings");
 }
 
 // Config lives at .orch/orch.yml. Bare orch.yml at repo root still works (back-compat).
@@ -43,6 +54,7 @@ export function load(dir) {
     ...user,
     scope: { ...DEFAULTS.scope, ...(user.scope || {}) },
     github: { ...DEFAULTS.github, ...(user.github || {}) },
+    docs: { ...DEFAULTS.docs, ...(user.docs || {}) },
   };
   validate(cfg);
   return cfg;

@@ -6,11 +6,17 @@ export function git(args, cwd) {
 
 function gitTry(args, cwd) {
   try {
-    execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
-    return { ok: true, out: "" };
+    const out = execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
+    return { ok: true, out: (out || "").toString() };
   } catch (e) {
     return { ok: false, out: (e.stderr || e.stdout || e.message || "").toString() };
   }
+}
+
+// Files changed on `branch` since its merge-base with main (matches scope.count).
+export function changedFiles(repo, branch) {
+  const out = gitTry(["diff", "--name-only", `main...${branch}`], repo);
+  return out.ok ? out.out.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 }
 
 export function branchExists(repo, branch) {

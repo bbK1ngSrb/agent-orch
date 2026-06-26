@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { load } from "./config.js";
 import { runCycle } from "./engine.js";
 import { runPr } from "./github.js";
@@ -15,6 +15,24 @@ import { slugify } from "./slug.js";
 import { VERSION } from "./version.js";
 
 export { slugify };
+
+// Fire-and-forget a detached `orch task <prompt>` after a successful merge.
+// ponytail: no log capture — if the spawned task fails it's invisible.
+// Upgrade path: redirect stdio to .orch/auto-docs.log if visibility is needed.
+export function spawnDocsTask(prompt, deps = { spawn }) {
+  deps.spawn(process.execPath, [process.argv[1], "task", prompt],
+    { detached: true, stdio: "ignore" }).unref();
+  console.log("▶ post-merge: docs-update spawned");
+}
+
+// Loop guard + opt-in gate around spawnDocsTask. Real merge only (never --dry),
+// skips docs-only merges so the docs-update's own merge can't re-trigger.
+export function maybeSpawnDocs(res, cfg, deps = {}) {
+  const { dry = false, spawn: spawnFn = spawn } = deps;
+  if (dry || res.status !== "merged" || !cfg.docs.autoUpdate || res.docsOnly) return false;
+  spawnDocsTask(cfg.docs.prompt, { spawn: spawnFn });
+  return true;
+}
 
 // init scaffold — mirrors orch.example.yml. Defaults uncommented; author/reviewer
 // commented (opt-in: they override rotation and must be set together).
@@ -91,6 +109,7 @@ function dryDeps() {
       createTaskBranch() {}, attachExistingBranch() {}, pruneWorktree() {},
       mergeIntoMain() { return { ok: true, reason: "dry-run" }; },
       git() { return "(dry-run diff)"; },
+      changedFiles() { return []; },
     },
     gate: { detect: () => "true", run: () => ({ pass: true, log: "(dry-run)" }) },
     scope: { count: () => 0 },
@@ -154,6 +173,8 @@ export async function main(argv) {
       );
       console.log(`orch${dry ? " (dry)" : ""}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
       if (result.status === "escalated") process.exitCode = 2;
+      maybeSpawnDocs(result, cfg, { dry }); // auto docs-update on a real merge
+
     } finally {
       releaseLock(orchDir);
     }

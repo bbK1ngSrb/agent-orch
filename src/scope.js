@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 
 const DOUBLE_STAR = "__ORCH_DOUBLE_STAR__";
-function globToRegExp(glob) {
+export function globToRegExp(glob) {
   const re = glob
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*\*/g, DOUBLE_STAR)
@@ -22,6 +22,12 @@ export function parseNumstat(numstat, ignore = []) {
     total += Number(added) + Number(deleted);
   }
   return total;
+}
+
+export function isDocsOnly(files, globs) {
+  if (!files.length) return false;
+  const res = globs.map(globToRegExp);
+  return files.every((f) => res.some((re) => re.test(f)));
 }
 
 export function count(branch, cwd, ignore = []) {

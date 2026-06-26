@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCycle } from "../src/engine.js";
 
-function makeDeps({ verdicts, gatePass = true, mergeOk = true, testCmd = "echo" }) {
+function makeDeps({ verdicts, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
   const calls = { authors: 0, audits: 0, revises: 0 };
   const reviewer = {
     name: "rev",
@@ -26,6 +26,7 @@ function makeDeps({ verdicts, gatePass = true, mergeOk = true, testCmd = "echo" 
       pruneWorktree() {},
       mergeIntoMain() { return mergeOk ? { ok: true, reason: "merged" } : { ok: false, reason: "non-ff" }; },
       git() { return "diff summary"; },
+      changedFiles() { return changed; },
     },
     gate: { detect: () => testCmd, run: () => ({ pass: gatePass, log: "" }) },
     scope: { count: () => 0 },
@@ -42,7 +43,7 @@ function makeDeps({ verdicts, gatePass = true, mergeOk = true, testCmd = "echo" 
 
 const opts = {
   task: "do x", branch: "pr/auth/x", authorName: "auth", reviewerName: "rev",
-  cfg: { reviseCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] } },
+  cfg: { reviseCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
   orchDir: "/o", repo: "/r", worktree: "/wt",
 };
 
@@ -51,6 +52,20 @@ test("AGREE + green gate -> merged", async () => {
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "merged");
   assert.equal(deps._calls.authors, 1);
+});
+
+test("merged result stamps docsOnly=false for a code change", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: ["src/a.js", "README.md"] });
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.docsOnly, false);
+});
+
+test("merged result stamps docsOnly=true for a docs-only change", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: ["README.md", "docs/x.md"] });
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.docsOnly, true);
 });
 
 test("AGREE + red gate -> escalated, no merge", async () => {

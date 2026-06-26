@@ -4,7 +4,47 @@ import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
-import { slugify, nextAuthor, parse, main, preflight } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs } from "../src/cli.js";
+
+const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
+function mockSpawn() {
+  const calls = [];
+  const spawn = (...args) => { calls.push(args); return { unref() {} }; };
+  return { spawn, calls };
+}
+
+test("maybeSpawnDocs spawns once when merged + autoUpdate + !docsOnly", () => {
+  const m = mockSpawn();
+  const ok = maybeSpawnDocs({ status: "merged", docsOnly: false }, docsCfg, { spawn: m.spawn });
+  assert.equal(ok, true);
+  assert.equal(m.calls.length, 1);
+  assert.deepEqual(m.calls[0][1].slice(1), ["task", "update docs"]); // [scriptPath, "task", prompt]
+});
+
+test("maybeSpawnDocs does not spawn for a docs-only merge (loop guard)", () => {
+  const m = mockSpawn();
+  assert.equal(maybeSpawnDocs({ status: "merged", docsOnly: true }, docsCfg, { spawn: m.spawn }), false);
+  assert.equal(m.calls.length, 0);
+});
+
+test("maybeSpawnDocs does not spawn when autoUpdate is off", () => {
+  const m = mockSpawn();
+  const cfg = { docs: { ...docsCfg.docs, autoUpdate: false } };
+  assert.equal(maybeSpawnDocs({ status: "merged", docsOnly: false }, cfg, { spawn: m.spawn }), false);
+  assert.equal(m.calls.length, 0);
+});
+
+test("maybeSpawnDocs does not spawn when not merged", () => {
+  const m = mockSpawn();
+  assert.equal(maybeSpawnDocs({ status: "escalated" }, docsCfg, { spawn: m.spawn }), false);
+  assert.equal(m.calls.length, 0);
+});
+
+test("maybeSpawnDocs does not spawn under --dry", () => {
+  const m = mockSpawn();
+  assert.equal(maybeSpawnDocs({ status: "merged", docsOnly: false }, docsCfg, { spawn: m.spawn, dry: true }), false);
+  assert.equal(m.calls.length, 0);
+});
 
 test("slugify produces a branch-safe slug", () => {
   assert.equal(slugify("Fix the flaky test!!"), "fix-the-flaky-test");

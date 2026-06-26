@@ -1,0 +1,2 @@
+docs:
+  autoUpdate: true   # auto-refresh docs on every successful merge

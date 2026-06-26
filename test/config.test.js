@@ -52,6 +52,40 @@ test("github.mergeMethod defaults to squash; invalid value throws", () => {
   assert.throws(() => load(d), /github.mergeMethod must be/);
 });
 
+test("docs defaults present; off by default", () => {
+  const c = load(tmp());
+  assert.equal(c.docs.autoUpdate, false);
+  assert.equal(typeof c.docs.prompt, "string");
+  assert.deepEqual(c.docs.paths, ["*.md", "docs/**", "**/*.md"]);
+});
+
+test("docs user override shallow-merges (keeps default prompt/paths)", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "docs:\n  autoUpdate: true\n");
+  const c = load(d);
+  assert.equal(c.docs.autoUpdate, true);
+  assert.equal(c.docs.prompt, "update documentation to reflect the latest merged changes");
+  assert.deepEqual(c.docs.paths, ["*.md", "docs/**", "**/*.md"]); // default kept
+});
+
+test("invalid docs.autoUpdate throws", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "docs:\n  autoUpdate: yes please\n");
+  assert.throws(() => load(d), /docs.autoUpdate must be a boolean/);
+});
+
+test("empty docs.prompt throws", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), 'docs:\n  prompt: ""\n');
+  assert.throws(() => load(d), /docs.prompt must be a non-empty string/);
+});
+
+test("non-array docs.paths throws", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "docs:\n  paths: nope\n");
+  assert.throws(() => load(d), /docs.paths must be an array of strings/);
+});
+
 test("empty agents list throws", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "agents: []\n");
