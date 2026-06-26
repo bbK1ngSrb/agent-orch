@@ -18,3 +18,16 @@ pnpm-lock.yaml
 .npmrc
 .mcp.json
 .gitmodules
+
+# home-style dotfiles/dirs that leak into `git status` from a worktree quirk —
+# never part of this project; anchored to repo root so they can't hide real files
+/.bash_profile
+/.bashrc
+/.gitconfig
+/.profile
+/.ripgreprc
+/.zprofile
+/.zshrc
+/.idea
+/.vscode
+/scripts
