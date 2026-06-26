@@ -31,7 +31,7 @@ jobs:
       github.event.pull_request.head.repo.fork == false
     runs-on: [self-hosted, orch]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0, ref: main }
       - name: skip docs-only merges (loop guard)
         id: guard
