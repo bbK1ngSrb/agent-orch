@@ -31,3 +31,5 @@ pnpm-lock.yaml
 /.idea
 /.vscode
 /scripts
+# Exception: load-bearing security lint (§3g) must stay tracked, not swept by /scripts.
+!/scripts/lint-token-step.js
