@@ -25,6 +25,7 @@ Run from inside the git repo you want orchestrated:
 ```bash
 orch init                                  # scaffold .orch/orch.yml, verify agent CLIs
 orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
+orch task "fix x" --authors claude,codex --reviewers claude,codex
 orch review pr/claude/some-branch          # audit an existing branch (no authoring)
 orch pr 42                                  # audit a GitHub PR, post verdict as a comment
 orch pr 42 --merge                          # ...and merge it via gh if agents approve
@@ -51,6 +52,13 @@ author: qwen3-coder-30b   # writes the change
 reviewer: claude          # audits it
 ```
 Set both or neither. Unset → the `agents:` list rotates author each cycle.
+For parallel authors/reviewers, use plural lists:
+```yaml
+authors: [claude, codex]     # each writes a separate branch
+reviewers: [claude, codex]   # all audit each branch, except its author
+```
+CLI flags override `orch.yml`: `--author/--reviewer` or comma-separated
+`--authors/--reviewers`.
 
 [llama-swap]: http://192.168.10.60:8080/
 
@@ -66,13 +74,15 @@ orch task "fix the flaky login test"
 - `orch task "..."` — author + cross-audit + test-gate + merge.
 - `orch review <branch>` — audit an existing branch.
 - `orch pr <n> [--merge]` — audit a GitHub PR, comment the verdict, optionally merge via `gh`.
+Add `--reviewer name` or `--reviewers a,b` to override review agents for
+`review`/`pr` runs.
 
 ## Config (`.orch/orch.yml`, all optional)
 See `orch.example.yml`. Most repos need no config. A bare `orch.yml` at the
 repo root is still read for back-compat, but `.orch/orch.yml` wins if both exist.
 
 ## How it decides to merge
-Merge happens only when the reviewer says `AGREE` **and** the repo's tests pass.
+Merge happens only when every reviewer says `AGREE` **and** the repo's tests pass.
 No test command detected → it refuses to auto-merge and tells you.
 
 ## Auto docs-update on merge

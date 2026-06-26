@@ -2,22 +2,31 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCycle } from "../src/engine.js";
 
-function makeDeps({ verdicts, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
-  const calls = { authors: 0, audits: 0, revises: 0 };
-  const reviewer = {
-    name: "rev",
-    async audit() {
-      calls.audits++;
-      return verdicts[Math.min(calls.audits - 1, verdicts.length - 1)];
-    },
+function makeDeps({ verdicts, reviewerVerdicts = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
+  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [] };
+  const reviewerCache = new Map();
+  const reviewerFor = (name) => {
+    if (!reviewerCache.has(name)) {
+      reviewerCache.set(name, {
+        name,
+        async audit() {
+          calls.audits++;
+          calls.auditsBy[name] = (calls.auditsBy[name] || 0) + 1;
+          const list = reviewerVerdicts?.[name] || verdicts;
+          const verdict = list[Math.min(calls.auditsBy[name] - 1, list.length - 1)];
+          return typeof verdict === "function" ? verdict() : verdict;
+        },
+      });
+    }
+    return reviewerCache.get(name);
   };
   const author = {
     name: "auth",
-    async author() { calls.authors++; },
+    async author(prompt) { calls.authors++; calls.prompts.push(prompt); },
     async audit() { return { decision: "AGREE", reason: "", raw: "" }; },
   };
   // revise reuses author.author via engine; count via wrapper
-  const adapters = { get: (n) => (n === "auth" ? author : reviewer) };
+  const adapters = { get: (n) => (n === "auth" ? author : reviewerFor(n)) };
   const deps = {
     adapters,
     git: {
@@ -125,6 +134,49 @@ test("DISAGREE then AGREE -> merged on round 2", async () => {
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "merged");
   assert.equal(r.rounds, 2);
+});
+
+test("all parallel reviewers must agree before merge", async () => {
+  let rev2Started = false;
+  const deps = makeDeps({
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }],
+    reviewerVerdicts: {
+      rev: [async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(rev2Started, true);
+        return { decision: "AGREE", reason: "ok", raw: "" };
+      }],
+      rev2: [async () => {
+        rev2Started = true;
+        return { decision: "AGREE", reason: "also ok", raw: "" };
+      }],
+    },
+  });
+  const r = await runCycle({ ...opts, reviewerNames: ["rev", "rev2"] }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(deps._calls.auditsBy.rev, 1);
+  assert.equal(deps._calls.auditsBy.rev2, 1);
+});
+
+test("one parallel reviewer disagreement drives a combined revision", async () => {
+  const deps = makeDeps({
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }],
+    reviewerVerdicts: {
+      rev: [
+        { decision: "AGREE", reason: "ok", raw: "" },
+        { decision: "AGREE", reason: "ok", raw: "" },
+      ],
+      rev2: [
+        { decision: "DISAGREE", reason: "needs fix", raw: "" },
+        { decision: "AGREE", reason: "fixed", raw: "" },
+      ],
+    },
+  });
+  const r = await runCycle({ ...opts, reviewerNames: ["rev", "rev2"] }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.rounds, 2);
+  assert.match(deps._calls.prompts[1], /rev2/);
+  assert.match(deps._calls.prompts[1], /needs fix/);
 });
 
 test("no test gate + AGREE -> escalated (refuse untested merge)", async () => {

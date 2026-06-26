@@ -6,6 +6,8 @@ const DEFAULTS = {
   agents: ["claude", "codex"],
   author: null, // explicit fixed author; null = rotate through `agents`
   reviewer: null, // explicit fixed reviewer; pairs with `author`
+  authors: null, // plural fixed authors; pairs with `reviewers`
+  reviewers: null, // plural fixed reviewers; pairs with `authors`
   test: "auto",
   reviseCap: 3,
   merge: "ff-only",
@@ -23,6 +25,12 @@ function validate(cfg) {
     throw new Error("orch.yml: agents must be a non-empty list");
   if ((cfg.author == null) !== (cfg.reviewer == null))
     throw new Error("orch.yml: set both author and reviewer, or neither");
+  if ((cfg.authors == null) !== (cfg.reviewers == null))
+    throw new Error("orch.yml: set both authors and reviewers, or neither");
+  if (cfg.authors != null && (!Array.isArray(cfg.authors) || cfg.authors.length < 1 || !cfg.authors.every((a) => typeof a === "string" && a.trim())))
+    throw new Error("orch.yml: authors must be a non-empty list of strings");
+  if (cfg.reviewers != null && (!Array.isArray(cfg.reviewers) || cfg.reviewers.length < 1 || !cfg.reviewers.every((r) => typeof r === "string" && r.trim())))
+    throw new Error("orch.yml: reviewers must be a non-empty list of strings");
   if (!["ff-only", "no-ff"].includes(cfg.merge))
     throw new Error("orch.yml: merge must be ff-only or no-ff");
   if (!Number.isInteger(cfg.reviseCap) || cfg.reviseCap < 1)

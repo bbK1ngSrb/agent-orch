@@ -44,13 +44,15 @@ export function maybeSpawnDocs(res, cfg, deps = {}, orchDir) {
   return true;
 }
 
-// init scaffold — mirrors orch.example.yml. Defaults uncommented; author/reviewer
+// init scaffold — mirrors orch.example.yml. Defaults uncommented; role overrides
 // commented (opt-in: they override rotation and must be set together).
 const SCAFFOLD = `# agent-orch config — all keys optional. Defaults shown.
 
-# Pick roles explicitly (set both or neither). Unset → agents rotate the author.
+# Pick roles explicitly (set both sides or neither). Unset → agents rotate the author.
 # author: claude     # writes the change
 # reviewer: codex    # audits it
+# authors: [claude, codex]    # each writes a separate branch
+# reviewers: [claude, codex]  # all audit each branch, except its author
 
 agents: [claude, codex]   # rotation pool, used only when author/reviewer are unset
 test: auto                # or an explicit command, e.g. "pytest -q"
@@ -62,16 +64,75 @@ export function parse(argv) {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { dry: { type: "boolean" }, version: { type: "boolean" }, merge: { type: "boolean" } },
+    options: {
+      dry: { type: "boolean" },
+      version: { type: "boolean" },
+      merge: { type: "boolean" },
+      author: { type: "string" },
+      reviewer: { type: "string" },
+      authors: { type: "string" },
+      reviewers: { type: "string" },
+    },
   });
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
 }
 
+function splitNames(value) {
+  if (value == null) return null;
+  const values = Array.isArray(value) ? value : String(value).split(",");
+  const names = values.map((v) => String(v).trim()).filter(Boolean);
+  if (names.length === 0) throw new Error("role override must name at least one agent");
+  return names;
+}
+
+function fixedRoles(cfg) {
+  if (cfg.authors && cfg.reviewers) {
+    return { authorNames: splitNames(cfg.authors), reviewerNames: splitNames(cfg.reviewers) };
+  }
+  if (cfg.author && cfg.reviewer) {
+    return { authorNames: [cfg.author], reviewerNames: [cfg.reviewer] };
+  }
+  return null;
+}
+
+function configuredReviewers(cfg) {
+  if (cfg.reviewers) return splitNames(cfg.reviewers);
+  if (cfg.reviewer) return [cfg.reviewer];
+  return null;
+}
+
+export function applyRoleOverrides(cfg, flags, opts = {}) {
+  const authorValue = flags.authors ?? flags.author;
+  const reviewerValue = flags.reviewers ?? flags.reviewer;
+  if (authorValue == null && reviewerValue != null && opts.allowReviewerOnly) {
+    return {
+      ...cfg,
+      reviewer: null,
+      reviewers: splitNames(reviewerValue),
+    };
+  }
+  if ((authorValue == null) !== (reviewerValue == null))
+    throw new Error("set both --author(s) and --reviewer(s), or neither");
+  if (authorValue == null) return cfg;
+  return {
+    ...cfg,
+    author: null,
+    reviewer: null,
+    authors: splitNames(authorValue),
+    reviewers: splitNames(reviewerValue),
+  };
+}
+
 export function nextAuthor(cfg, orchDir) {
   // Explicit fixed roles win over rotation — the trivial "who authors, who audits".
-  if (cfg.author && cfg.reviewer) {
+  const fixed = fixedRoles(cfg);
+  if (fixed) {
     mkdirSync(orchDir, { recursive: true });
-    return { authorName: cfg.author, reviewerName: cfg.reviewer };
+    return {
+      authorName: fixed.authorNames[0],
+      reviewerName: fixed.reviewerNames[0],
+      ...fixed,
+    };
   }
   const f = join(orchDir, "last-author");
   const last = existsSync(f) ? readFileSync(f, "utf8").trim() : null;
@@ -80,12 +141,18 @@ export function nextAuthor(cfg, orchDir) {
   const reviewerName = cfg.agents[(i + 1) % cfg.agents.length] || authorName;
   mkdirSync(orchDir, { recursive: true });
   writeFileSync(f, authorName + "\n");
-  return { authorName, reviewerName };
+  return { authorName, reviewerName, authorNames: [authorName], reviewerNames: [reviewerName] };
 }
 
 export function preflight(cfg, orchDir) {
   // Check the rotation pool plus any explicitly pinned roles.
-  const names = new Set([...cfg.agents, cfg.author, cfg.reviewer].filter(Boolean));
+  const names = new Set([
+    ...cfg.agents,
+    cfg.author,
+    cfg.reviewer,
+    ...(cfg.authors || []),
+    ...(cfg.reviewers || []),
+  ].filter(Boolean));
   for (const name of names) {
     const a = adapters.get(name); // throws on unknown
     const exe = a.bin || a.name; // local models run via `ccr`, not their own name
@@ -127,6 +194,11 @@ function dryDeps() {
   };
 }
 
+function reviewersForAuthor(authorName, reviewerNames) {
+  const others = reviewerNames.filter((name) => name !== authorName);
+  return others.length ? others : reviewerNames;
+}
+
 export async function main(argv) {
   const { command, rest, flags } = parse(argv);
   if (flags.version || command === "version") { console.log(VERSION); return; }
@@ -150,7 +222,7 @@ export async function main(argv) {
   }
 
   if (command === "task" || command === "review") {
-    const cfg = load(repo);
+    const cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: command === "review" });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     if (!dry) preflight(cfg, orchDir); // dry-run never shells out, so don't require CLIs
 
@@ -158,43 +230,59 @@ export async function main(argv) {
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
 
     const mode = command; // "task" | "review"
-    let authorName, reviewerName, branch, task;
+    let runs, task;
     if (mode === "task") {
       task = rest.join(" ");
       if (!task) throw new Error('usage: orch task "describe the change"');
-      ({ authorName, reviewerName } = nextAuthor(cfg, orchDir));
-      branch = `pr/${authorName}/${slugify(task)}`;
+      const { authorNames, reviewerNames } = nextAuthor(cfg, orchDir);
+      runs = authorNames.map((authorName) => {
+        const branch = `pr/${authorName}/${slugify(task)}`;
+        const reviewerList = reviewersForAuthor(authorName, reviewerNames);
+        return {
+          mode, task, branch, authorName,
+          reviewerName: reviewerList[0], reviewerNames: reviewerList,
+          cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
+        };
+      });
     } else {
-      branch = rest[0];
+      const branch = rest[0];
       if (!branch) throw new Error("usage: orch review <branch>");
-      // audit-only: reviewer = first agent != branch author. authorName unused by engine.
+      // audit-only: reviewers default to all agents except branch author. authorName unused by engine.
       const branchAuthor = branch.split("/")[1];
-      reviewerName = cfg.agents.find((a) => a !== branchAuthor) || cfg.agents[0];
-      authorName = branchAuthor && cfg.agents.includes(branchAuthor) ? branchAuthor : cfg.agents[0];
+      const configured = configuredReviewers(cfg);
+      const reviewerList = configured
+        ? reviewersForAuthor(branchAuthor, configured)
+        : cfg.agents.filter((a) => a !== branchAuthor);
+      const reviewers = reviewerList.length ? reviewerList : [cfg.agents[0]];
+      const authorName = branchAuthor && cfg.agents.includes(branchAuthor) ? branchAuthor : cfg.agents[0];
       task = null;
+      runs = [{
+        mode, task, branch, authorName,
+        reviewerName: reviewers[0], reviewerNames: reviewers,
+        cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
+      }];
     }
-    const worktree = join(orchDir, "wt", branch.replace(/\//g, "_"));
 
     if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
-    let result;
+    const results = [];
     try {
-      result = await runCycle(
-        { mode, task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree },
-        dry ? dryDeps() : realDeps()
-      );
-      console.log(`orch${dry ? " (dry)" : ""}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
-      if (result.status === "escalated") process.exitCode = 2;
+      for (const run of runs) {
+        const result = await runCycle(run, dry ? dryDeps() : realDeps());
+        results.push(result);
+        console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
+        if (result.status === "escalated") process.exitCode = 2;
+      }
     } finally {
       releaseLock(orchDir);
     }
     // After releasing the lock: the detached docs-update runs `orch task`, which
     // acquires the same lock. Spawning inside the try would race our own release.
-    maybeSpawnDocs(result, cfg, { dry }, orchDir); // auto docs-update on a real merge
+    for (const result of results) maybeSpawnDocs(result, cfg, { dry }, orchDir); // auto docs-update on a real merge
     return;
   }
 
   if (command === "pr") {
-    const cfg = load(repo);
+    const cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: true });
     const n = rest[0];
     if (!n) throw new Error("usage: orch pr <number> [--merge]");
     preflight(cfg, orchDir);
@@ -213,7 +301,7 @@ export async function main(argv) {
     return;
   }
 
-  console.log(`agent-orch ${VERSION}\nUsage:\n  orch init\n  orch task "change"\n  orch review <branch>\n  orch pr <number> [--merge]\n  (flags: --dry, --version)`);
+  console.log(`agent-orch ${VERSION}\nUsage:\n  orch init\n  orch task "change" [--author A --reviewer B]\n  orch review <branch> [--reviewer A,B]\n  orch pr <number> [--merge] [--reviewer A,B]\n  (flags: --dry, --version)`);
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds

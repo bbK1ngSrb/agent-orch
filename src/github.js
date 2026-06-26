@@ -35,11 +35,12 @@ export async function runPr(opts, deps) {
   git(["fetch", "origin", `+pull/${pr.number}/head:${branch}`], repo);
 
   try {
-    // Review mode: reviewer = first configured agent; PR branch has no orch author.
-    const reviewerName = cfg.agents[0];
+    // Review mode: reviewers default to the first configured agent; PR branch has no orch author.
+    const reviewerNames = cfg.reviewers || (cfg.reviewer ? [cfg.reviewer] : [cfg.agents[0]]);
+    const reviewerName = reviewerNames[0];
     const result = await cycle({
       mode: "review", noMerge: true, task: null, branch,
-      authorName: reviewerName, reviewerName, cfg, orchDir, repo, worktree,
+      authorName: reviewerName, reviewerName, reviewerNames, cfg, orchDir, repo, worktree,
     });
 
     const verdict = readVerdict(orchDir, branch);

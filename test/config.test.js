@@ -105,3 +105,17 @@ test("explicit author/reviewer load through", () => {
   assert.equal(c.author, "qwen3-coder-30b");
   assert.equal(c.reviewer, "claude");
 });
+
+test("plural authors/reviewers load through", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "authors: [claude, codex]\nreviewers: [codex, claude]\n");
+  const c = load(d);
+  assert.deepEqual(c.authors, ["claude", "codex"]);
+  assert.deepEqual(c.reviewers, ["codex", "claude"]);
+});
+
+test("plural authors/reviewers must be set together", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "authors: [claude, codex]\n");
+  assert.throws(() => load(d), /both authors and reviewers/);
+});

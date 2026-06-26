@@ -6,7 +6,8 @@ export async function runCycle(opts, deps) {
   const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false } = opts;
   const { adapters, git, gate, scope, notify } = deps;
   const author = adapters.get(authorName);
-  const reviewer = adapters.get(reviewerName);
+  const reviewerNames = opts.reviewerNames || [reviewerName];
+  const reviewers = reviewerNames.map((name) => adapters.get(name));
 
   // F5: task mode owns a fresh branch; review mode requires an existing one.
   notify.phase(`worktree ${branch} (${mode})`);
@@ -37,8 +38,16 @@ export async function runCycle(opts, deps) {
 
     let round = 1;
     for (;;) {
-      notify.phase(`${reviewer.name} auditing (round ${round})`);
-      const verdict = await reviewer.audit(branch, worktree);
+      notify.phase(`${reviewers.map((r) => r.name).join(", ")} auditing (round ${round})`);
+      const verdicts = await Promise.all(reviewers.map(async (reviewer) => ({
+        reviewer: reviewer.name,
+        ...(await reviewer.audit(branch, worktree)),
+      })));
+      const disagree = verdicts.filter((v) => v.decision !== "AGREE");
+      const verdict = {
+        decision: disagree.length ? "DISAGREE" : "AGREE",
+        reason: verdicts.map((v) => `## ${v.reviewer}\n\n${v.decision}: ${v.reason}`).join("\n\n"),
+      };
       notify.writeRound(orchDir, branch, round,
         `# Round ${round}\n\nVerdict: ${verdict.decision}\n\n${verdict.reason}\n`);
 

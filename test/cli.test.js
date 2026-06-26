@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
-import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides } from "../src/cli.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
 function mockSpawn() {
@@ -82,10 +82,12 @@ test("--dry completes without any agent CLI on PATH (F2)", async () => {
 });
 
 test("parse splits command, rest, and flags", () => {
-  const p = parse(["task", "do x", "--dry"]);
+  const p = parse(["task", "do x", "--dry", "--authors", "claude,codex", "--reviewers", "codex,claude"]);
   assert.equal(p.command, "task");
   assert.deepEqual(p.rest, ["do x"]);
   assert.equal(p.flags.dry, true);
+  assert.equal(p.flags.authors, "claude,codex");
+  assert.equal(p.flags.reviewers, "codex,claude");
 });
 
 test("nextAuthor alternates and persists last-author", () => {
@@ -121,4 +123,29 @@ test("nextAuthor honors explicit fixed roles over rotation", () => {
   assert.equal(a.reviewerName, "claude");
   const b = nextAuthor(cfg, d); // does not rotate
   assert.equal(b.authorName, "qwen3-coder-30b");
+});
+
+test("nextAuthor returns plural fixed roles when configured", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
+  const cfg = { agents: ["claude", "codex"], authors: ["claude", "codex"], reviewers: ["codex", "claude"] };
+  const a = nextAuthor(cfg, d);
+  assert.deepEqual(a.authorNames, ["claude", "codex"]);
+  assert.deepEqual(a.reviewerNames, ["codex", "claude"]);
+  assert.equal(a.authorName, "claude");
+  assert.equal(a.reviewerName, "codex");
+});
+
+test("CLI role overrides replace orch.yml fixed roles", () => {
+  const cfg = {
+    agents: ["claude", "codex"],
+    author: "qwen3-coder-30b",
+    reviewer: "claude",
+    authors: null,
+    reviewers: null,
+  };
+  const overridden = applyRoleOverrides(cfg, { authors: "claude,codex", reviewers: "codex,claude" });
+  assert.equal(overridden.author, null);
+  assert.equal(overridden.reviewer, null);
+  assert.deepEqual(overridden.authors, ["claude", "codex"]);
+  assert.deepEqual(overridden.reviewers, ["codex", "claude"]);
 });
