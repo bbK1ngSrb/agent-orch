@@ -97,3 +97,9 @@ test("rejects CODEOWNERS (in DEFAULT_PROTECTED)", () => {
 test("rejects .github/CODEOWNERS (in DEFAULT_PROTECTED)", () => {
   assert.equal(checkPaths([".github/CODEOWNERS"]).ok, false);
 });
+
+test("rejects an absolute path to a protected file (no fail-open on leading /)", () => {
+  const r = checkPaths(["/src/gate.js"]);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.violations, ["/src/gate.js"]);
+});

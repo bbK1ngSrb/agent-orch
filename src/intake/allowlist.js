@@ -21,9 +21,16 @@ export const DEFAULT_PROTECTED = [
   ".github/CODEOWNERS",
 ];
 
-/** Strip git-diff a/ or b/ prefix, then ./ prefix. */
+// Input contract: `changedFiles` are RELATIVE paths (git `diff --name-only`
+// style). We still normalise a leading git-diff a/ or b/ prefix, a ./ prefix,
+// and a leading slash, so an absolute path (e.g. a cwd-prefixed path from an OS
+// hook) can never slip a protected file past the glob match — the gate is
+// fail-open on a miss, so an unmatched absolute path would otherwise pass.
 function normalizePath(p) {
-  return p.replace(/^[ab]\//, "").replace(/^\.\//, "");
+  return p
+    .replace(/^\/+/, "")
+    .replace(/^[ab]\//, "")
+    .replace(/^\.\//, "");
 }
 
 export function checkPaths(changedFiles, protectedGlobs = DEFAULT_PROTECTED) {
