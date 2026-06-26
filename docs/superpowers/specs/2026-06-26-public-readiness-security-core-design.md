@@ -1,6 +1,6 @@
 # Public-Readiness Security Core — Design
 
-**Status:** Red-teamed twice (6 lenses / 11 gaps, then 5 scoped lenses / 2 gaps + advisor). Topology (two-repo clean-room + per-issue ephemeral container) folded and hardened. Converged → user review → plan.
+**Status:** Red-teamed twice (6 lenses / 11 gaps, then 5 scoped lenses / 2 gaps + advisor). Topology (two-repo clean-room + per-issue ephemeral container) folded and hardened. Bridge model resolved (human-curated-crossing). Converged → **plan**.
 **Date:** 2026-06-26
 **Scope:** Security core only. Governance / legal / release-hygiene split to a separate checklist spec (see Non-goals).
 
@@ -253,7 +253,7 @@ On breach: stop, comment diagnosis, escalate. Never silently retry.
 
 ## Open questions
 
-1. **Issue→private bridge model:** read-only-untrusted-pull (full §3 private-side, author seeded from scrubbed subset only) vs human-curated-crossing (author public-side only)? **Red-team recommends human-curated-crossing** — never author over the private tree. Confirm before plan.
+1. **Issue→private bridge model:** ~~read-only-untrusted-pull vs human-curated-crossing?~~ **RESOLVED (2026-06-26): human-curated-crossing.** Author runs **public-side only**; orch never authors over the private tree. Public issue text crossing to private is untrusted *reference data* a human curates into an authoritative goal — never an auto-run goal. The private-side author container + scrubbed-subset seeding from option (a) are therefore **out of scope** for the build.
 2. Untrusted-extraction classifier — cheap model call vs rule-based heuristic?
 3. External audit sink — private repo directly, or a dedicated write-only log target?
 4. Path control — allowlist (safe paths) vs denylist (protected set)?
