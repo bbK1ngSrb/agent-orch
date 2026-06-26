@@ -8,6 +8,7 @@ const read = (rel) =>
 
 const pkg = JSON.parse(read("package.json"));
 const readme = read("README.md");
+const design = read("docs/design.md");
 const coc = read("CODE_OF_CONDUCT.md");
 
 test("the CLI bin is `orch`", () => {
@@ -23,6 +24,14 @@ test("README does not promise install commands that resolve to a different npm p
 
 test("README documents the `orch` CLI", () => {
   assert.match(readme, /orch\s+init/);
+});
+
+test("design doc reflects the GitHub PR bridge", () => {
+  assert.match(design, /orch pr <n>/);
+  assert.match(design, /GitHub PR bridge/);
+  assert.doesNotMatch(design, /There is no GitHub PR/);
+  assert.doesNotMatch(design, /Three commands/);
+  assert.doesNotMatch(design, /Any GitHub PR \/ Actions \/ remote integration/);
 });
 
 test("CODE_OF_CONDUCT gives an actionable private contact for enforcement", () => {

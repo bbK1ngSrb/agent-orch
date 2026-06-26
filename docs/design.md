@@ -21,11 +21,12 @@ deployment-specific plumbing** (NAS bare repo, `deploy.sh`, GitHub `--mirror`,
 
 - **Repo-agnostic.** Works on any local git repo. No assumptions about remote,
   CI provider, or project language.
-- **All compute is local.** Agents run as locally-installed CLIs on the user's
-  machine. No cloud orchestration, no GitHub Actions, no external services.
-  GitHub hosts only the **tool's own source** for distribution.
-- **"PR" is a local-workflow construct** — a local branch `pr/<author>/<topic>`.
-  There is no GitHub PR. Merge is a local `git merge` into `main`.
+- **Agent compute is local.** Agents run as locally-installed CLIs on the user's
+  machine. The optional GitHub PR bridge shells out to authenticated `gh` only to
+  fetch PR heads, post verdict comments, and merge approved PRs.
+- **Two PR surfaces.** `orch task` still creates local branches
+  `pr/<author>/<topic>` and merges locally. `orch pr <n>` audits an existing
+  GitHub PR without touching local `main`; GitHub owns the comment and merge.
 - **Trivial deploy/usage.** Install from source (`npm install -g .` exposes the
   `orch` bin) — no separate runtime (Node is already present for the agent CLIs).
   Most repos need zero config.
@@ -43,8 +44,8 @@ orch review <branch>   # audit-only on an existing branch (no author step)
 orch pr <n> [--merge]  # audit a GitHub PR via gh, comment the verdict, optionally merge
 ```
 
-Three commands. `task` is the full loop; `review` is the audit half for branches a
-human or another tool already produced.
+Four commands. `task` is the full local loop; `review` audits an existing local
+branch; `pr` is the GitHub PR bridge via `gh`.
 
 ## 3. Agent model
 
@@ -174,6 +175,7 @@ scope:                    # small-PR discipline — OFF by default
 | `scope.js` | changed-line count vs `main`, honor ignore globs | `count(branch) → n` |
 | `verdict.js` | parse `AGREE`/`DISAGREE` + reason from agent output | `parse(text) → Verdict` |
 | `git.js` | worktree create/prune, branch, merge (ff-only/rebase) | thin wrappers |
+| `github.js` | fetch GitHub PR heads, run review-only cycles, comment/merge via `gh` | `runPr(opts, deps)` |
 | `config.js` | load `orch.yml`, apply defaults, validate | `load(dir) → cfg` |
 | `notify.js` | terminal stream, write `round-N.md`, build/emit decision brief | `phase()`, `escalate()` |
 | `prompts/author.md`, `prompts/review.md` | prompt templates, branch-parameterized | template render |
@@ -216,7 +218,8 @@ last such token. Malformed/missing verdict → treated as `DISAGREE` with reason
 ## 13. Out of scope (YAGNI)
 
 - Background daemon / file-watcher auto-trigger (`orch watch`) — later opt-in.
-- Any GitHub PR / Actions / remote integration.
+- Cloud-hosted agent execution. The PR workflow requires a trusted self-hosted
+  runner because PR tests and agent CLIs run locally on that runner.
 - More than one concurrent cycle per repo (global lock).
 - Autonomous task-picking (the human supplies the task string).
 - Desktop/Slack/telegram notifications (terminal + local file only at v1).
