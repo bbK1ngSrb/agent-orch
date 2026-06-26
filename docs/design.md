@@ -67,6 +67,11 @@ branch; `pr` is the GitHub PR bridge via `gh`.
   reviews. Cross-vendor audit is the point — diversity catches more. Alternation is
   stateless across runs except for a one-line marker `.orch/last-author`; absent →
   first agent in `agents:` authors.
+- **Explicit / parallel roles:** pin roles with `author:`/`reviewer:` (set both or
+  neither) to skip rotation. The plural `authors:`/`reviewers:` lists fan out: each
+  author writes its own `pr/<author>/<slug>` branch, and every reviewer audits each
+  branch *except* the one whose author it is. CLI flags `--author(s)`/`--reviewer(s)`
+  (comma-separated) override `orch.yml` for a single run.
 - **`review <branch>` (audit-only):** every configured agent except the branch author
   audits; with the default two agents that's the single opposite agent. Merge on
   unanimous `AGREE` + green gate, same rails as `task`.
@@ -150,6 +155,10 @@ summary, links to each round. Choices: merge as-is / revise / abandon.
 
 ```yaml
 agents: [claude, codex]   # order; author alternates per cycle. ≥1 required to run.
+# author: claude          # pin roles (set both or neither) to skip rotation
+# reviewer: codex
+# authors: [claude, codex]    # parallel: each writes its own branch
+# reviewers: [claude, codex]  # each audits every branch except its own author's
 test: auto                # auto-detect, or an explicit command string
 reviseCap: 3              # max revise rounds before escalation
 merge: ff-only            # or "no-ff"
