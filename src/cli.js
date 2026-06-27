@@ -4,15 +4,18 @@ import { parseArgs } from "node:util";
 import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runCycle } from "./engine.js";
-import { runPr } from "./github.js";
+import { runPr, demote } from "./github.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
 import * as scope from "./scope.js";
 import * as notify from "./notify.js";
-import { acquireLock, releaseLock, isPaused } from "./lock.js";
+import { acquireLock, releaseLock, acquireBlocking, isPaused } from "./lock.js";
 import { slugify } from "./slug.js";
 import { VERSION } from "./version.js";
+import { newSid } from "./sid.js";
+import * as inflight from "./inflight.js";
+import { finalize } from "./finalize.js";
 
 export { slugify };
 
@@ -214,7 +217,10 @@ export function preflight(cfg, orchDir) {
 // F2: real collaborators, or fully stubbed ones under --dry / ORCH_DRYRUN=1.
 // Dry deps touch NO real git, agent, or test process.
 function realDeps() {
-  return { adapters, git, gate, scope, notify };
+  const ghShell = (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString();
+  const githubDep = { demote: (ctx) => demote(ctx, { gh: ghShell, git: git.git, notify, log: (m) => process.stderr.write(`▶ ${m}\n`) }) };
+  const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify });
+  return { adapters, git, gate, scope, notify, inflight, finalize: finalizeDep };
 }
 function dryDeps() {
   const verdict = { decision: "AGREE", reason: "(dry-run: assumed agree)", raw: "" };
@@ -222,13 +228,13 @@ function dryDeps() {
     adapters: { get: (n) => ({ name: n, async author() {}, async audit() { return verdict; } }) },
     git: {
       createTaskBranch() {}, attachExistingBranch() {}, pruneWorktree() {},
-      git() { return "(dry-run diff)"; },
+      git() { return "(dry-run)"; },
       changedFiles() { return []; },
     },
     gate: { detect: () => "true", run: () => ({ pass: true, log: "(dry-run)" }) },
     scope: { count: () => 0 },
     inflight: { setPaths() {} },
-    finalize: async () => ({ status: "merged", reason: "merged (dry-run)" }),
+    finalize: async () => ({ status: "merged", reason: "dry-run", sha: "dry" }),
     notify,
   };
 }
@@ -298,10 +304,11 @@ export async function main(argv, deps = {}) {
       const { authors, reviewers } = nextAuthor(cfg, orchDir);
       runs = authors.map((authorSpec) => {
         const authorName = authorSpec.agent;
-        const branch = `pr/${authorName}/${slugify(task)}`;
+        const sid = newSid();
+        const branch = `pr/${authorName}/${slugify(task)}-${sid}`;
         const reviewerList = reviewersForAuthor(authorName, reviewers);
         return {
-          mode, task, branch, authorName, author: authorSpec,
+          mode, task, branch, sid, authorName, author: authorSpec,
           reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
           reviewers: reviewerList,
           cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
@@ -319,30 +326,48 @@ export async function main(argv, deps = {}) {
       const reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
       const authorName = branchAuthor && cfg.agents.includes(branchAuthor) ? branchAuthor : cfg.agents[0];
       task = null;
+      const sid = newSid();
       runs = [{
-        mode, task, branch, authorName, author: { agent: authorName, model: null, effort: null },
+        mode, task, branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
         reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
         reviewers,
         cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
       }];
     }
 
-    if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
-    if (!dry) git.reclaimOrphanWorktrees(repo, orchDir); // clear orphans from a crashed prior cycle
+    // Integration worktree owns `main`; cwd must be on a working branch.
+    if (!dry) {
+      const head = git.git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
+      if (head === "main")
+        throw new Error("orch needs `main` for its .orch/integration worktree — switch cwd to a working branch (e.g. `git switch -c work`) and rerun.");
+      git.reclaimOrphanWorktrees(repo, orchDir); // PID-aware: clears dead cycles, spares live peers
+    }
+
     const results = [];
-    try {
-      for (const run of runs) {
+    for (const run of runs) {
+      if (!dry) {
+        const baseSha = git.git(["rev-parse", "main"], repo);
+        inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha });
+        const live = inflight.countLive(orchDir);
+        if (live > cfg.concurrency) {
+          inflight.deregister(orchDir, run.sid);
+          console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
+          process.exitCode = 2;
+          continue;
+        }
+      }
+      try {
         const result = await runCycle(run, dry ? dryDeps() : realDeps());
         results.push(result);
         console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
-        if (result.status === "escalated") process.exitCode = 2;
+        if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
+      } finally {
+        if (!dry) inflight.deregister(orchDir, run.sid);
       }
-    } finally {
-      releaseLock(orchDir);
     }
-    // After releasing the lock: the detached docs-update runs `orch task`, which
-    // acquires the same lock. Spawning inside the try would race our own release.
-    for (const result of results) maybeSpawnDocs(result, cfg, { dry }, orchDir); // auto docs-update on a real merge
+    // After the cycles: the detached docs-update runs `orch task`, so spawn it
+    // outside the loop. maybeSpawnDocs only fires on a real `merged` result.
+    for (const result of results) maybeSpawnDocs(result, cfg, { dry }, orchDir);
     return;
   }
 

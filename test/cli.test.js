@@ -1,10 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
+import { execFileSync } from "node:child_process";
 import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides } from "../src/cli.js";
+import * as inflight from "../src/inflight.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
 function mockSpawn() {
@@ -224,4 +226,76 @@ test("CLI role overrides replace orch.yml fixed roles", () => {
   assert.equal(overridden.reviewer, null);
   assert.deepEqual(overridden.authors, ["claude", "codex"]);
   assert.deepEqual(overridden.reviewers, ["codex", "claude"]);
+});
+
+async function runMainCapture(argv, deps = {}) {
+  const d = mkdtempSync(join(tmpdir(), "orch-mc-"));
+  const prev = cwd();
+  chdir(d);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    await main(argv, deps);
+    return logs;
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+}
+
+test("task branch includes a sid suffix", async () => {
+  const logs = await runMainCapture(["task", "do a thing", "--dry"]);
+  assert.match(logs.join("\n"), /pr\/[a-z]+\/do-a-thing-\d+-[0-9a-z]+:/);
+});
+
+test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cap-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    execFileSync("git", ["init", "-b", "main"], { cwd: d });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: d });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: d });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: d });
+    execFileSync("git", ["checkout", "-b", "work"], { cwd: d });
+    const orchDir = join(d, ".orch");
+    mkdirSync(orchDir, { recursive: true });
+    for (let i = 0; i < 4; i++) {
+      inflight.register(orchDir, `cap-seed-${i}`, { branch: `pr/test/b-${i}`, pid: process.pid, baseSha: "abc" });
+    }
+    process.exitCode = 0;
+    const logs = [];
+    const origLog = console.log;
+    console.log = (...args) => logs.push(args.map(String).join(" "));
+    try {
+      await main(["task", "some task"], { preflight() {} });
+    } finally {
+      console.log = origLog;
+    }
+    assert.equal(process.exitCode, 2);
+    assert.match(logs.join("\n"), /concurrency cap 4 reached/);
+  } finally {
+    chdir(prev);
+    process.exitCode = 0;
+  }
+});
+
+test("orch task errors clearly when cwd HEAD is main", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-main-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    execFileSync("git", ["init", "-b", "main"], { cwd: d });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: d });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: d });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: d });
+    await assert.rejects(
+      () => main(["task", "some task"], { preflight() {} }),
+      /switch.*working branch|integration worktree|main/,
+    );
+  } finally {
+    chdir(prev);
+    process.exitCode = 0;
+  }
 });
