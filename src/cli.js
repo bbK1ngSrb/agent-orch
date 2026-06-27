@@ -417,7 +417,7 @@ function githubDeps() {
 }
 
 function readVerdict(orchDir, branch) {
-  const dir = join(orchDir, "reviews", branch);
+  const dir = notify.reviewsDir(orchDir, branch);
   const decision = join(dir, "DECISION.md");
   if (existsSync(decision)) return readFileSync(decision, "utf8");
   if (!existsSync(dir)) return "";

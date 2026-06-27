@@ -25,8 +25,21 @@ export function detect(dir) {
   return null;
 }
 
+// ponytail: quote-aware argv split, no shell operators (| && ; $() redirects).
+// A `test:` needing a pipeline must call a script. Upgrade path: drop a
+// run-tests.sh in the repo and set `test: ./run-tests.sh`.
+export function splitArgs(cmd) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(cmd)) !== null) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+
 export function run(cmd, cwd) {
-  const r = spawnSync(cmd, { cwd, shell: true, encoding: "utf8" });
-  const log = (r.stdout || "") + (r.stderr || "");
+  const argv = splitArgs(cmd || "");
+  if (argv.length === 0) return { pass: false, log: "empty test command" };
+  const r = spawnSync(argv[0], argv.slice(1), { cwd, encoding: "utf8" });
+  const log = (r.stdout || "") + (r.stderr || "") + (r.error ? String(r.error.message) : "");
   return { pass: r.status === 0, log };
 }

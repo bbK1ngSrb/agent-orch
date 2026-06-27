@@ -60,7 +60,7 @@ export async function runPr(opts, deps) {
     return result;
   } finally {
     // Best-effort cleanup — never let it mask a real error from the try block.
-    try { git(["branch", "-D", branch], repo); } // worktree already pruned by the cycle
+    try { git(["branch", "-D", "--", branch], repo); } // worktree already pruned by the cycle
     catch (e) { log(`warning: could not delete local branch ${branch}: ${e.message}`); }
   }
 }

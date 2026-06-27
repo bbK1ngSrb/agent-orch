@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detect, run } from "../src/gate.js";
+import { detect, run, splitArgs } from "../src/gate.js";
 
 function tmp() { return mkdtempSync(join(tmpdir(), "orch-gate-")); }
 
@@ -30,6 +30,20 @@ test("returns null when nothing detected", () => {
 });
 
 test("run reports pass/fail by exit code", () => {
-  assert.equal(run("exit 0", tmp()).pass, true);
-  assert.equal(run("exit 1", tmp()).pass, false);
+  assert.equal(run("node -e process.exit(0)", tmp()).pass, true);
+  assert.equal(run("node -e process.exit(1)", tmp()).pass, false);
+});
+
+test("splitArgs is quote-aware", () => {
+  assert.deepEqual(splitArgs("npm test"), ["npm", "test"]);
+  assert.deepEqual(splitArgs("go test ./..."), ["go", "test", "./..."]);
+  assert.deepEqual(splitArgs('node -e "process.exit(0)"'), ["node", "-e", "process.exit(0)"]);
+});
+
+test("run does not interpret shell metacharacters", () => {
+  const d = tmp();
+  // If a shell ran this, the `;` would chain and `touch` would fire.
+  const r = run("node -e process.exit(1) ; touch pwned", d);
+  assert.equal(r.pass, false); // `;` is a literal argv token, not a command chain
+  assert.equal(existsSync(join(d, "pwned")), false); // touch never ran
 });
