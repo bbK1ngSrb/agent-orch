@@ -3,6 +3,7 @@
 // merge), posts the verdict as a PR comment, and optionally merges via the
 // GitHub API. All shell-outs arrive via `deps` so tests stub them.
 import { join } from "node:path";
+import { parseRoleSpec, parseRoleSpecs } from "./config.js";
 
 // Build the PR comment body from the cycle result + the reviewer's written case.
 export function buildComment(result, verdict) {
@@ -36,11 +37,15 @@ export async function runPr(opts, deps) {
 
   try {
     // Review mode: reviewers default to the first configured agent; PR branch has no orch author.
-    const reviewerNames = cfg.reviewers || (cfg.reviewer ? [cfg.reviewer] : [cfg.agents[0]]);
-    const reviewerName = reviewerNames[0];
+    // Role specs ("<agent> [model] [effort]") are parsed so model/effort reach the adapters,
+    // matching the task/review paths — otherwise a spec string becomes a bogus agent name.
+    const reviewers = cfg.reviewers ? parseRoleSpecs(cfg.reviewers)
+      : cfg.reviewer ? [parseRoleSpec(cfg.reviewer)]
+      : [{ agent: cfg.agents[0], model: null, effort: null }];
+    const reviewerName = reviewers[0].agent;
     const result = await cycle({
       mode: "review", noMerge: true, task: null, branch,
-      authorName: reviewerName, reviewerName, reviewerNames, cfg, orchDir, repo, worktree,
+      authorName: reviewerName, reviewers, cfg, orchDir, repo, worktree,
     });
 
     const verdict = readVerdict(orchDir, branch);

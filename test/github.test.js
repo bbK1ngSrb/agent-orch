@@ -60,3 +60,27 @@ test("runPr merges only with merge flag + approved", async () => {
 test("runPr refuses a non-open PR", async () => {
   await assert.rejects(() => runPr(opts, makeDeps({ state: "MERGED" })), /not open/);
 });
+
+test("runPr parses reviewer role specs (model/effort) into cycle reviewers", async () => {
+  const deps = makeDeps();
+  const cfg = { ...opts.cfg, reviewers: ["claude opus-4.8 high", "codex gpt-5.1"] };
+  await runPr({ ...opts, cfg }, deps);
+  const { reviewers } = deps._calls.cycleOpts;
+  // Specs are parsed, not passed as raw "agent model effort" strings.
+  assert.deepEqual(reviewers, [
+    { agent: "claude", model: "opus-4.8", effort: "high" },
+    { agent: "codex", model: "gpt-5.1", effort: null },
+  ]);
+  // authorName is a bare agent name (engine calls adapters.get on it).
+  assert.equal(deps._calls.cycleOpts.authorName, "claude");
+});
+
+test("runPr handles a single reviewer spec and bare-name default", async () => {
+  const single = makeDeps();
+  await runPr({ ...opts, cfg: { ...opts.cfg, reviewer: "codex gpt-5.1" } }, single);
+  assert.deepEqual(single._calls.cycleOpts.reviewers, [{ agent: "codex", model: "gpt-5.1", effort: null }]);
+
+  const dflt = makeDeps();
+  await runPr(opts, dflt); // no reviewer config → first agent, no model/effort
+  assert.deepEqual(dflt._calls.cycleOpts.reviewers, [{ agent: "claude", model: null, effort: null }]);
+});

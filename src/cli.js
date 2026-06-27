@@ -236,19 +236,22 @@ function reviewersForAuthor(authorName, reviewerSpecs) {
   return others.length ? others : reviewerSpecs;
 }
 
-export async function main(argv) {
+export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
   if (flags.version || command === "version") { console.log(VERSION); return; }
 
   const repo = process.cwd();
   const orchDir = join(repo, ".orch");
+  // preflight shells out to `which <agent-cli>`; tests stub it so the suite
+  // is green in a CLI-less environment (e.g. clean CI). Production passes none.
+  const preflightFn = deps.preflight || preflight;
 
   if (command === "init") {
     // Preflight first: it probes .orch/ writability and fails with a clear
     // message before any real write, so a read-only repo never surfaces a raw
     // EACCES from the mkdir/writeFile below. load() tolerates a missing config.
     const cfg = load(repo);
-    preflight(cfg, orchDir);
+    preflightFn(cfg, orchDir);
     mkdirSync(orchDir, { recursive: true });
     const ex = join(orchDir, "orch.yml");
     if (!existsSync(ex) && !existsSync(join(repo, "orch.yml"))) {
@@ -280,7 +283,7 @@ export async function main(argv) {
   if (command === "task" || command === "review") {
     const cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: command === "review" });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
-    if (!dry) preflight(cfg, orchDir); // dry-run never shells out, so don't require CLIs
+    if (!dry) preflightFn(cfg, orchDir); // dry-run never shells out, so don't require CLIs
 
     // F3: operator kill switch + one-cycle-at-a-time lock.
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -344,7 +347,7 @@ export async function main(argv) {
     const cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: true });
     const n = rest[0];
     if (!n) throw new Error("usage: orch pr <number> [--merge]");
-    preflight(cfg, orchDir);
+    preflightFn(cfg, orchDir);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
     if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
     try {

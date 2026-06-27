@@ -185,7 +185,7 @@ test("agent add appends a known agent to the pool, preserving comments", async (
   const prev = cwd();
   chdir(d);
   try {
-    await main(["init"]);
+    await main(["init"], { preflight() {} }); // stub: no real agent CLIs needed in tests
     await main(["agent", "add", "qwen3-coder-30b"]);
     const text = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
     assert.match(text, /agents: \[claude, codex, qwen3-coder-30b\]/);
@@ -204,7 +204,7 @@ test("agent add rejects an unknown agent", async () => {
   const prev = cwd();
   chdir(d);
   try {
-    await main(["init"]);
+    await main(["init"], { preflight() {} }); // stub: no real agent CLIs needed in tests
     await assert.rejects(() => main(["agent", "add", "nope"]), /unknown agent/);
   } finally {
     chdir(prev);
