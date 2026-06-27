@@ -113,7 +113,7 @@ orch task "add rate-limit header" --authors codex  --reviewers claude &
 over-cap launch exits immediately with code 2 and logs:
 
 ```
-orch: concurrency cap 4 reached — 4 cycles live; skipping pr/claude/<slug>-<sid>
+orch: concurrency cap 4 reached — 5 cycles live; skipping pr/claude/<slug>-<sid>
 ```
 
 Reduce the cap or wait for a live cycle to finish, then rerun.
