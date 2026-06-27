@@ -34,6 +34,25 @@ test("clear removes the record", () => {
   resume.clear(d, "do x", "claude"); // idempotent — no throw on missing
 });
 
+test("lookupForTask finds records across authors for the same task (#27)", () => {
+  const d = freshDir();
+  resume.record(d, "do x", "claude", { branch: "pr/claude/do-x-1", sid: "1" });
+  resume.record(d, "do x", "codex", { branch: "pr/codex/do-x-2", sid: "2" });
+  resume.record(d, "do y", "claude", { branch: "pr/claude/do-y-3", sid: "3" });
+  const recs = resume.lookupForTask(d, "do x");
+  assert.deepEqual(
+    recs.map((r) => `${r.author}:${r.branch}`).sort(),
+    ["claude:pr/claude/do-x-1", "codex:pr/codex/do-x-2"], // both authors of "do x", not "do y"
+  );
+});
+
+test("lookupForTask is empty for an unknown task or absent dir", () => {
+  const d = freshDir();
+  assert.deepEqual(resume.lookupForTask(d, "never recorded"), []); // dir doesn't exist yet
+  resume.record(d, "do x", "claude", { branch: "b", sid: "s" });
+  assert.deepEqual(resume.lookupForTask(d, "do z"), []); // recorded, but different task
+});
+
 test("key is full task text, not the slug (collision safety)", () => {
   const d = freshDir();
   // Two prompts that slugify identically but differ in full text must not collide.

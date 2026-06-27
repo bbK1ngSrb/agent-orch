@@ -160,6 +160,21 @@ test("reclaim SWEEPS a worktree whose owner PID is dead", () => {
   assert.doesNotMatch(git(["worktree", "list"], repo), /pr_claude_dead/);
 });
 
+test("reclaim PRESERVES a dead-pid orphan branch that has committed work (#27)", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_committed");
+  createTaskBranch(repo, wt, "pr/claude/committed", "main", "999999999\ncommitted-1"); // dead pid
+  // author committed before the kill → branch carries work that must survive
+  writeFileSync(join(wt, "authored.txt"), "work\n");
+  git(["add", "."], wt); git(["commit", "-m", "author result"], wt);
+
+  reclaimOrphanWorktrees(repo, orchDir);
+
+  assert.equal(branchExists(repo, "pr/claude/committed"), true); // committed work kept for resume
+  assert.doesNotMatch(git(["worktree", "list"], repo), /pr_claude_committed/); // worktree still reclaimed
+});
+
 test("reclaim SWEEPS a worktree with an empty (pre-PID / died-early) marker", () => {
   const repo = newRepo();
   const orchDir = join(repo, ".orch");
