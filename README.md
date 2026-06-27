@@ -100,22 +100,26 @@ No test command detected → it refuses to auto-merge and tells you.
 A killed `orch task` can leave worktrees under `.orch/wt`. Before starting, a run
 sweeps those orphans. The sweep is PID-aware: each worktree carries an ownership
 marker (`pid\nsid`); only worktrees whose owner process is dead are removed, so a
-live peer's worktree is never disturbed. A branch is deleted **only** when an
-orch-created ownership marker is present — so a same-slug `orch task` retry works,
-while a branch you handed to `orch review` is always preserved, never auto-deleted.
-`--dry` never deletes worktrees or branches.
+live peer's worktree is never disturbed. The branch is deleted **only** when an
+orch-created marker is present **and** it carries no commits beyond `main` (a
+killed-before-commit throwaway) — so a same-slug retry works, while a branch with a
+committed author result is kept for resume (see below) and a branch you handed to
+`orch review` is always preserved. `--dry` never deletes worktrees or branches.
 
 `orch pr` is still serialized by `.orch/lock` (one at a time per repo dir); the same
 PID-liveness logic lets a crashed `orch pr` be reclaimed on the next run.
 
-**Resume after a quota abort.** When a usage limit aborts an `orch task` mid-cycle,
-the author's committed work survives on its branch; the run's sid is recorded in
-`.orch/resume/` keyed on the task text. The next run with the **same task** reattaches
-that branch and continues from the committed work (audit → gate → merge) instead of
-re-authoring from scratch — so `harness/orch-loop.sh` resumes rather than restarts
-(issue #24). It restarts cleanly if the limit hit before any commit, or if a hard
-kill left no branch to resume. Resume is per-author-branch and never hijacks a live
-peer's branch.
+**Resume after an abort or hard kill.** When an `orch task` cycle dies after the
+author has committed — a usage-limit abort (issue #24) *or* a hard process kill /
+SIGKILL between the commit and review (issue #27) — the committed work survives on its
+branch, and the run is recorded in `.orch/resume/` keyed on the task text (with the
+author). The next run with the **same task** reattaches that branch and continues from
+the committed work (audit → gate → merge) instead of re-authoring from scratch — so
+`harness/orch-loop.sh` resumes rather than restarts. Resume is independent of how the
+run died and of author rotation: if the rotation pool has since advanced to a
+different agent, the resuming run pins the surviving branch's original author rather
+than authoring fresh under the next one. It restarts cleanly only if the run died
+before any commit (nothing to resume), and never hijacks a live peer's branch.
 
 ## Concurrent cycles
 

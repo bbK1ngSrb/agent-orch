@@ -72,8 +72,11 @@ export function pruneWorktree(repo, path) {
 // own worktree in a finally, so anything still here is from a cycle killed
 // before that ran. Safe to sweep because the caller holds the single-cycle
 // lock: no live cycle owns these. A branch is deleted ONLY when its orch-task
-// marker is present (so a same-slug task retry doesn't throw on `worktree add
-// -b`); review-attached user branches have no marker and are always preserved.
+// marker is present AND it carries no commits beyond main (a killed-before-commit
+// throwaway); review-attached user branches have no marker and are always preserved.
+// A branch with committed author work (killed AFTER the author commit) is kept so
+// `orch task` can reattach and resume it instead of re-authoring (#27) — losing
+// committed work is the real defect; a stray empty-worktree branch is recoverable.
 export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) {
   // Canonicalize: git stores worktree paths as realpaths, but orchDir may arrive
   // via a symlink (this repo is reachable through /mnt/... and a ~/...-symlink).
@@ -108,7 +111,10 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
           return;
         }
         gitTry(["worktree", "remove", "--force", path], repo);
-        if (branch && owned) gitTry(["branch", "-D", "--", branch], repo); // never a user branch
+        // Delete only a throwaway with no committed work; keep committed branches
+        // so a resume can reattach (#27). changedFiles is `diff main...branch`.
+        if (branch && owned && changedFiles(repo, branch).length === 0)
+          gitTry(["branch", "-D", "--", branch], repo); // never a user branch
         rmSync(marker, { force: true });
       }
       path = null;

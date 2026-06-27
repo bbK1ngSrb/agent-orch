@@ -155,7 +155,7 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
   };
 }
 
-export function nextAuthor(cfg, orchDir) {
+export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
   // Explicit fixed roles win over rotation — the trivial "who authors, who audits".
   // Returns role specs ({agent, model, effort}) plus plain name arrays for back-compat.
   const fixed = fixedRoles(cfg);
@@ -171,11 +171,23 @@ export function nextAuthor(cfg, orchDir) {
     };
   }
   const f = join(orchDir, "last-author");
+  mkdirSync(orchDir, { recursive: true });
+  // Resuming a surviving branch (#27): pin its author and DON'T advance rotation —
+  // this run is the prior run continuing, not a new author's turn.
+  if (pinnedAuthor && cfg.agents.includes(pinnedAuthor)) {
+    const pi = cfg.agents.indexOf(pinnedAuthor);
+    const reviewerName = cfg.agents[(pi + 1) % cfg.agents.length] || pinnedAuthor;
+    return {
+      authorName: pinnedAuthor, reviewerName,
+      authorNames: [pinnedAuthor], reviewerNames: [reviewerName],
+      authors: [{ agent: pinnedAuthor, model: null, effort: null }],
+      reviewers: [{ agent: reviewerName, model: null, effort: null }],
+    };
+  }
   const last = existsSync(f) ? readFileSync(f, "utf8").trim() : null;
   const i = last ? (cfg.agents.indexOf(last) + 1) % cfg.agents.length : 0;
   const authorName = cfg.agents[i];
   const reviewerName = cfg.agents[(i + 1) % cfg.agents.length] || authorName;
-  mkdirSync(orchDir, { recursive: true });
   writeFileSync(f, authorName + "\n");
   return {
     authorName, reviewerName,
@@ -243,6 +255,22 @@ function dryDeps() {
 function reviewersForAuthor(authorName, reviewerSpecs) {
   const others = reviewerSpecs.filter((s) => s.agent !== authorName);
   return others.length ? others : reviewerSpecs;
+}
+
+// The author of a surviving committed branch to resume, or null. Scans resume
+// records for this task across authors (#27): a hard kill rotates the pool, so the
+// re-run's author no longer matches the record's per-author key. Returns the author
+// only when its branch still exists, carries committed work, and isn't a live peer —
+// the same staleness guards resolveTaskBranch re-applies before it actually resumes.
+export function pinnedResumeAuthor(ctx, deps = { git, resume }) {
+  const { orchDir, task, repo, dry = false, liveBranches = new Set() } = ctx;
+  const { git: g, resume: r } = deps;
+  if (dry) return null;
+  const hit = r.lookupForTask(orchDir, task).find((rec) =>
+    g.branchExists(repo, rec.branch) &&
+    g.changedFiles(repo, rec.branch).length > 0 &&
+    !liveBranches.has(rec.branch));
+  return hit ? hit.author : null;
 }
 
 // Pick the branch/sid for one author in task mode, resuming a quota-aborted run
@@ -341,7 +369,11 @@ export async function main(argv, deps = {}) {
     if (mode === "task") {
       task = flags.file ? readFileSync(flags.file, "utf8").trim() : rest.join(" ");
       if (!task) throw new Error('usage: orch task "describe the change" (or --file path)');
-      const { authors, reviewers } = nextAuthor(cfg, orchDir);
+      // Pin the author of a surviving committed branch from a prior killed run so the
+      // rotation pool resumes it instead of authoring fresh under the next agent (#27).
+      // resolveTaskBranch re-validates below; this only steers author selection.
+      const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches });
+      const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned);
       runs = authors.map((authorSpec) => {
         const authorName = authorSpec.agent;
         const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches });

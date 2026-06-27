@@ -125,6 +125,24 @@ test("nextAuthor alternates and persists last-author", () => {
   assert.equal(b.authorName, "codex"); // alternated
 });
 
+test("nextAuthor pins a resumed author without advancing rotation (#27)", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
+  const cfg = { agents: ["claude", "codex"] };
+  nextAuthor(cfg, d); // last-author = claude
+  const r = nextAuthor(cfg, d, "claude"); // resume claude's branch, don't rotate to codex
+  assert.equal(r.authorName, "claude");
+  assert.equal(r.reviewerName, "codex"); // reviewer is the next agent, excludes the author
+  assert.equal(readFileSync(join(d, "last-author"), "utf8").trim(), "claude"); // pointer untouched
+  assert.equal(nextAuthor(cfg, d).authorName, "codex"); // normal rotation still resumes from claude
+});
+
+test("nextAuthor ignores a pin not in the agents pool (#27)", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
+  const cfg = { agents: ["claude", "codex"] };
+  const r = nextAuthor(cfg, d, "ghost"); // unknown agent → fall back to rotation
+  assert.equal(r.authorName, "claude");
+});
+
 test("preflight throws a clear error when .orch/ is read-only", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-ro-"));
   chmodSync(d, 0o555); // read-only dir → child .orch write must fail
@@ -367,4 +385,63 @@ test("resolveTaskBranch: dry never reads or writes the store (#24)", () => {
   assert.equal(r.resume, false);
   assert.equal(looked, 0);
   assert.equal(spy.recorded.length, 0);
+});
+
+import { pinnedResumeAuthor } from "../src/cli.js";
+import { branchExists, createTaskBranch, git as rawGit } from "../src/git.js";
+import * as resume from "../src/resume.js";
+
+function pinStubs({ records = [], exists = true, changed = ["a"] }) {
+  return {
+    git: { branchExists: () => exists, changedFiles: () => changed },
+    resume: { lookupForTask: () => records },
+  };
+}
+
+test("pinnedResumeAuthor pins the recorded author of a surviving committed branch (#27)", () => {
+  // The rotation pool advanced to codex, but claude's killed branch still carries
+  // committed work — pin claude regardless of the per-author key.
+  const deps = pinStubs({ records: [{ author: "claude", branch: "pr/claude/do-x-1" }] });
+  assert.equal(pinnedResumeAuthor({ repo: "/r", orchDir: "/o", task: "do x" }, deps), "claude");
+});
+
+test("pinnedResumeAuthor returns null when the branch has no committed work (#27)", () => {
+  const deps = pinStubs({ records: [{ author: "claude", branch: "pr/claude/empty" }], changed: [] });
+  assert.equal(pinnedResumeAuthor({ repo: "/r", orchDir: "/o", task: "do x" }, deps), null);
+});
+
+test("pinnedResumeAuthor skips a branch that is a live peer, and is null under dry (#27)", () => {
+  const deps = pinStubs({ records: [{ author: "claude", branch: "pr/claude/do-x-1" }] });
+  const live = new Set(["pr/claude/do-x-1"]);
+  assert.equal(pinnedResumeAuthor({ repo: "/r", orchDir: "/o", task: "do x", liveBranches: live }, deps), null);
+  assert.equal(pinnedResumeAuthor({ repo: "/r", orchDir: "/o", task: "do x", dry: true }, deps), null);
+});
+
+// The linchpin: a SIGKILL leaves a dead-pid inflight entry on disk (no deregister).
+// main() builds liveBranches from inflight.listLive — if that returned dead entries,
+// the branch would look "live", the pin would null out, and #27 would persist. Prove
+// the real listLive filters dead pids so the committed branch is pinnable end-to-end.
+test("pinnedResumeAuthor resolves through real inflight.listLive on a dead-pid SIGKILL (#27)", () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-pin-"));
+  rawGit(["init", "-b", "main"], repo);
+  rawGit(["config", "user.email", "t@t"], repo);
+  rawGit(["config", "user.name", "t"], repo);
+  writeFileSync(join(repo, "a.txt"), "1\n");
+  rawGit(["add", "."], repo); rawGit(["commit", "-m", "init"], repo);
+
+  const orchDir = join(repo, ".orch");
+  const branch = "pr/claude/do-x-1";
+  // author committed before the kill
+  const wt = join(orchDir, "wt", "pr_claude_do-x-1");
+  createTaskBranch(repo, wt, branch, "main", "999999999\ndo-x-1"); // dead pid in marker
+  writeFileSync(join(wt, "work.txt"), "x\n");
+  rawGit(["add", "."], wt); rawGit(["commit", "-m", "author result"], wt);
+  // SIGKILL: inflight entry left registered with a dead pid, resume record on disk
+  inflight.register(orchDir, "do-x-1", { branch, pid: 999999999, baseSha: "deadbeef" });
+  resume.record(orchDir, "do x", "claude", { branch, sid: "do-x-1" });
+
+  const liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
+  assert.equal(liveBranches.has(branch), false); // dead pid filtered → not "live"
+  // real git + real resume deps: the committed branch is pinnable
+  assert.equal(pinnedResumeAuthor({ repo, orchDir, task: "do x", liveBranches }), "claude");
 });
