@@ -157,6 +157,60 @@ test("nextAuthor returns plural fixed roles when configured", () => {
   assert.equal(a.reviewerName, "codex");
 });
 
+test("nextAuthor parses model/effort from fixed role specs", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
+  const cfg = { agents: ["claude", "codex"], author: "claude opus-4.8 high", reviewer: "codex gpt-5.1" };
+  const a = nextAuthor(cfg, d);
+  assert.deepEqual(a.authors, [{ agent: "claude", model: "opus-4.8", effort: "high" }]);
+  assert.deepEqual(a.reviewers, [{ agent: "codex", model: "gpt-5.1", effort: null }]);
+  assert.equal(a.authorName, "claude"); // back-compat name still exposed
+  assert.deepEqual(a.reviewerNames, ["codex"]);
+});
+
+test("rotation specs carry null model/effort", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
+  const a = nextAuthor({ agents: ["claude", "codex"] }, d);
+  assert.deepEqual(a.authors, [{ agent: "claude", model: null, effort: null }]);
+});
+
+test("--author flag accepts an agent/model/effort spec", () => {
+  const cfg = { agents: ["claude", "codex"], author: null, reviewer: null, authors: null, reviewers: null };
+  const overridden = applyRoleOverrides(cfg, { author: "claude opus-4.8 high", reviewer: "codex" });
+  assert.deepEqual(overridden.authors, ["claude opus-4.8 high"]);
+  assert.deepEqual(overridden.reviewers, ["codex"]);
+});
+
+test("agent add appends a known agent to the pool, preserving comments", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await main(["init"]);
+    await main(["agent", "add", "qwen3-coder-30b"]);
+    const text = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
+    assert.match(text, /agents: \[claude, codex, qwen3-coder-30b\]/);
+    assert.match(text, /# === Agents ===/); // comments survived
+    // idempotent: a second add is a no-op
+    await main(["agent", "add", "qwen3-coder-30b"]);
+    const again = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
+    assert.equal((again.match(/qwen3-coder-30b/g) || []).length, text.match(/qwen3-coder-30b/g).length);
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("agent add rejects an unknown agent", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await main(["init"]);
+    await assert.rejects(() => main(["agent", "add", "nope"]), /unknown agent/);
+  } finally {
+    chdir(prev);
+  }
+});
+
 test("CLI role overrides replace orch.yml fixed roles", () => {
   const cfg = {
     agents: ["claude", "codex"],

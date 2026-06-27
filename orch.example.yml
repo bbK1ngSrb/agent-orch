@@ -1,21 +1,38 @@
-# All keys optional. Defaults shown.
+# agent-orch config — all keys optional. Commented keys show the default.
 
-# Registered agents: claude, codex, and local-llm models served via ccr:
-#   qwen3-coder-30b (default coder), deepseek-coder-v2-lite (fast), glm-4.5-air (heavy)
-# Local models need `ccr` on PATH + ~/.claude-code-router/config.json (provider `local`).
+# === Agents ===
+# Rotation pool: picks author/reviewer when no explicit roles are set below.
+# Built-in: claude, codex. Local llm models (run via ccr): qwen3-coder-30b,
+# deepseek-coder-v2-lite, glm-4.5-air. Append a known agent with `orch agent add <name>`.
+agents: [claude, codex]   # default: [claude, codex]
 
-# Pick roles explicitly (set both sides or neither):
-# author: qwen3-coder-30b   # writes the change
-# reviewer: claude          # audits it
-# authors: [claude, codex]     # each writes a separate branch
-# reviewers: [claude, codex]   # all audit each branch, except its author
+# === Roles (optional; set both sides or neither) ===
+# A role is a spec "<agent> [model] [effort]":
+#   agent  — required; one of the agents above
+#   model  — optional model id, may carry a subversion (e.g. opus-4.8, gpt-5.1)
+#   effort — optional reasoning effort (e.g. low | medium | high)
+# Unset → the agents pool rotates the author; the next agent reviews.
+# author: claude opus-4.8 high      # single author spec
+# reviewer: codex gpt-5.1           # single reviewer spec
+# authors: [claude opus-4.8 high, codex]     # each writes its own branch
+# reviewers: [claude, codex high]            # all audit each branch, except its author
 
-agents: [claude, codex]   # rotation pool, used only when author/reviewer are unset
-test: auto                # or an explicit command, e.g. "pytest -q"
-reviseCap: 3              # max revise rounds before escalation
-merge: ff-only            # or no-ff
+# === Cycle ===
+test: auto                # "auto" detects the test command, or set one, e.g. "pytest -q"
+reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
+merge: ff-only            # merge into main: ff-only | no-ff; default: ff-only
+
+# === Scope gate (optional) ===
 scope:
   maxLines: 0             # 0 = disabled; >0 rejects oversized author commits
-  ignore: ["*.lock", "dist/**", "*.snap"]
+  ignore: ["*.lock", "dist/**", "*.snap"]   # globs excluded from the line count
+
+# === GitHub PR bridge (orch pr <n>) ===
 github:
-  mergeMethod: squash     # `orch pr <n> --merge` strategy: squash | merge | rebase
+  mergeMethod: squash     # gh pr merge strategy: squash | merge | rebase; default: squash
+
+# === Auto docs-update after a real merge (optional) ===
+docs:
+  autoUpdate: false       # true = spawn a docs-update task after a merge; default: false
+  prompt: update documentation to reflect the latest merged changes
+  paths: ["*.md", "docs/**", "**/*.md"]   # docs-only globs (loop guard)

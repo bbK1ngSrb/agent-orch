@@ -5,9 +5,15 @@ import { isDocsOnly } from "./scope.js";
 export async function runCycle(opts, deps) {
   const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false } = opts;
   const { adapters, git, gate, scope, notify } = deps;
-  const author = adapters.get(authorName);
-  const reviewerNames = opts.reviewerNames || [reviewerName];
-  const reviewers = reviewerNames.map((name) => adapters.get(name));
+  // Role specs carry optional model/effort. Fall back to bare names so callers
+  // that pass only authorName/reviewerNames (e.g. the PR bridge) keep working.
+  const authorSpec = opts.author || { agent: authorName };
+  const author = adapters.get(authorSpec.agent);
+  const authorOpts = { model: authorSpec.model, effort: authorSpec.effort };
+  const reviewerSpecs = opts.reviewers || (opts.reviewerNames || [reviewerName]).map((name) => ({ agent: name }));
+  const reviewers = reviewerSpecs.map((s) => ({
+    name: s.agent, adapter: adapters.get(s.agent), opts: { model: s.model, effort: s.effort },
+  }));
 
   // F5: task mode owns a fresh branch; review mode requires an existing one.
   notify.phase(`worktree ${branch} (${mode})`);
@@ -18,7 +24,7 @@ export async function runCycle(opts, deps) {
     // F1: author step + scope gate only in task mode. Review never writes.
     if (mode === "task") {
       notify.phase(`${author.name} authoring`);
-      await author.author(task, worktree);
+      await author.author(task, worktree, authorOpts);
 
       // Scope gate (optional).
       if (cfg.scope.maxLines > 0) {
@@ -41,7 +47,7 @@ export async function runCycle(opts, deps) {
       notify.phase(`${reviewers.map((r) => r.name).join(", ")} auditing (round ${round})`);
       const verdicts = await Promise.all(reviewers.map(async (reviewer) => ({
         reviewer: reviewer.name,
-        ...(await reviewer.audit(branch, worktree)),
+        ...(await reviewer.adapter.audit(branch, worktree, reviewer.opts)),
       })));
       const disagree = verdicts.filter((v) => v.decision !== "AGREE");
       const verdict = {
@@ -103,7 +109,7 @@ export async function runCycle(opts, deps) {
       }
 
       notify.phase(`${author.name} revising (round ${round + 1})`);
-      await author.author(`Revise per review findings:\n${verdict.reason}`, worktree);
+      await author.author(`Revise per review findings:\n${verdict.reason}`, worktree, authorOpts);
       round += 1;
     }
   } finally {

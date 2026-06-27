@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { execFileSync, spawn } from "node:child_process";
-import { load } from "./config.js";
+import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runCycle } from "./engine.js";
 import { runPr } from "./github.js";
 import * as adapters from "./adapters/index.js";
@@ -44,20 +44,46 @@ export function maybeSpawnDocs(res, cfg, deps = {}, orchDir) {
   return true;
 }
 
-// init scaffold — mirrors orch.example.yml. Defaults uncommented; role overrides
-// commented (opt-in: they override rotation and must be set together).
-const SCAFFOLD = `# agent-orch config — all keys optional. Defaults shown.
+// init scaffold — mirrors orch.example.yml. Every key is listed with its
+// possible values and default; commented keys use the shown default.
+const SCAFFOLD = `# agent-orch config — all keys optional. Commented keys show the default.
 
-# Pick roles explicitly (set both sides or neither). Unset → agents rotate the author.
-# author: claude     # writes the change
-# reviewer: codex    # audits it
-# authors: [claude, codex]    # each writes a separate branch
-# reviewers: [claude, codex]  # all audit each branch, except its author
+# === Agents ===
+# Rotation pool: picks author/reviewer when no explicit roles are set below.
+# Built-in: claude, codex. Local llm models (run via ccr): qwen3-coder-30b,
+# deepseek-coder-v2-lite, glm-4.5-air. Append a known agent with \`orch agent add <name>\`.
+agents: [claude, codex]   # default: [claude, codex]
 
-agents: [claude, codex]   # rotation pool, used only when author/reviewer are unset
-test: auto                # or an explicit command, e.g. "pytest -q"
-reviseCap: 3              # max revise rounds before escalation
-merge: ff-only            # or no-ff
+# === Roles (optional; set both sides or neither) ===
+# A role is a spec "<agent> [model] [effort]":
+#   agent  — required; one of the agents above
+#   model  — optional model id, may carry a subversion (e.g. opus-4.8, gpt-5.1)
+#   effort — optional reasoning effort (e.g. low | medium | high)
+# Unset → the agents pool rotates the author; the next agent reviews.
+# author: claude opus-4.8 high      # single author spec
+# reviewer: codex gpt-5.1           # single reviewer spec
+# authors: [claude opus-4.8 high, codex]   # each writes its own branch
+# reviewers: [claude, codex high]          # all audit each branch, except its author
+
+# === Cycle ===
+test: auto                # "auto" detects the test command, or set one, e.g. "pytest -q"
+reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
+merge: ff-only            # merge into main: ff-only | no-ff; default: ff-only
+
+# === Scope gate (optional) ===
+scope:
+  maxLines: 0             # 0 = disabled; >0 escalates author commits over this many changed lines
+  ignore: ["*.lock", "dist/**", "*.snap"]   # globs excluded from the line count
+
+# === GitHub PR bridge (orch pr <n>) ===
+github:
+  mergeMethod: squash     # gh pr merge strategy: squash | merge | rebase; default: squash
+
+# === Auto docs-update after a real merge (optional) ===
+docs:
+  autoUpdate: false       # true = spawn a docs-update task after a merge; default: false
+  prompt: update documentation to reflect the latest merged changes
+  paths: ["*.md", "docs/**", "**/*.md"]   # docs-only globs (loop guard)
 `;
 
 export function parse(argv) {
@@ -88,17 +114,17 @@ function splitNames(value) {
 
 function fixedRoles(cfg) {
   if (cfg.authors && cfg.reviewers) {
-    return { authorNames: splitNames(cfg.authors), reviewerNames: splitNames(cfg.reviewers) };
+    return { authors: parseRoleSpecs(cfg.authors), reviewers: parseRoleSpecs(cfg.reviewers) };
   }
   if (cfg.author && cfg.reviewer) {
-    return { authorNames: [cfg.author], reviewerNames: [cfg.reviewer] };
+    return { authors: [parseRoleSpec(cfg.author)], reviewers: [parseRoleSpec(cfg.reviewer)] };
   }
   return null;
 }
 
 function configuredReviewers(cfg) {
-  if (cfg.reviewers) return splitNames(cfg.reviewers);
-  if (cfg.reviewer) return [cfg.reviewer];
+  if (cfg.reviewers) return parseRoleSpecs(cfg.reviewers);
+  if (cfg.reviewer) return [parseRoleSpec(cfg.reviewer)];
   return null;
 }
 
@@ -126,13 +152,17 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
 
 export function nextAuthor(cfg, orchDir) {
   // Explicit fixed roles win over rotation — the trivial "who authors, who audits".
+  // Returns role specs ({agent, model, effort}) plus plain name arrays for back-compat.
   const fixed = fixedRoles(cfg);
   if (fixed) {
     mkdirSync(orchDir, { recursive: true });
     return {
-      authorName: fixed.authorNames[0],
-      reviewerName: fixed.reviewerNames[0],
-      ...fixed,
+      authorName: fixed.authors[0].agent,
+      reviewerName: fixed.reviewers[0].agent,
+      authorNames: fixed.authors.map((s) => s.agent),
+      reviewerNames: fixed.reviewers.map((s) => s.agent),
+      authors: fixed.authors,
+      reviewers: fixed.reviewers,
     };
   }
   const f = join(orchDir, "last-author");
@@ -142,18 +172,24 @@ export function nextAuthor(cfg, orchDir) {
   const reviewerName = cfg.agents[(i + 1) % cfg.agents.length] || authorName;
   mkdirSync(orchDir, { recursive: true });
   writeFileSync(f, authorName + "\n");
-  return { authorName, reviewerName, authorNames: [authorName], reviewerNames: [reviewerName] };
+  return {
+    authorName, reviewerName,
+    authorNames: [authorName], reviewerNames: [reviewerName],
+    authors: [{ agent: authorName, model: null, effort: null }],
+    reviewers: [{ agent: reviewerName, model: null, effort: null }],
+  };
 }
 
 export function preflight(cfg, orchDir) {
-  // Check the rotation pool plus any explicitly pinned roles.
-  const names = new Set([
-    ...cfg.agents,
+  // Check the rotation pool plus any explicitly pinned roles. Role entries are
+  // specs ("<agent> [model] [effort]"); only the agent name needs a CLI on PATH.
+  const roleNames = [
     cfg.author,
     cfg.reviewer,
     ...(cfg.authors || []),
     ...(cfg.reviewers || []),
-  ].filter(Boolean));
+  ].filter(Boolean).map((s) => parseRoleSpec(s).agent);
+  const names = new Set([...cfg.agents, ...roleNames].filter(Boolean));
   for (const name of names) {
     const a = adapters.get(name); // throws on unknown
     const exe = a.bin || a.name; // local models run via `ccr`, not their own name
@@ -195,9 +231,9 @@ function dryDeps() {
   };
 }
 
-function reviewersForAuthor(authorName, reviewerNames) {
-  const others = reviewerNames.filter((name) => name !== authorName);
-  return others.length ? others : reviewerNames;
+function reviewersForAuthor(authorName, reviewerSpecs) {
+  const others = reviewerSpecs.filter((s) => s.agent !== authorName);
+  return others.length ? others : reviewerSpecs;
 }
 
 export async function main(argv) {
@@ -222,6 +258,25 @@ export async function main(argv) {
     return;
   }
 
+  if (command === "agent") {
+    // `orch agent add <name>` appends a known agent to the `agents:` rotation
+    // pool in orch.yml, preserving the file's comments. Only registered agents
+    // are accepted so the next run's preflight stays valid.
+    if (rest[0] !== "add" || !rest[1]) throw new Error("usage: orch agent add <name>");
+    const name = rest[1];
+    adapters.get(name); // throws "unknown agent: <name>" for unregistered names
+    const file = configPath(repo);
+    if (!existsSync(file)) throw new Error("no orch.yml — run `orch init` first");
+    if (load(repo).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
+    const text = readFileSync(file, "utf8");
+    const re = /^(agents:\s*\[)([^\]]*)(\])/m;
+    if (!re.test(text)) throw new Error("could not find `agents: [...]` in orch.yml — add it manually");
+    writeFileSync(file, text.replace(re, (_m, open, inner, close) =>
+      `${open}${inner.trim() ? inner.trim() + ", " : ""}${name}${close}`));
+    console.log(`orch: added ${name} to agents`);
+    return;
+  }
+
   if (command === "task" || command === "review") {
     const cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: command === "review" });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
@@ -235,13 +290,15 @@ export async function main(argv) {
     if (mode === "task") {
       task = flags.file ? readFileSync(flags.file, "utf8").trim() : rest.join(" ");
       if (!task) throw new Error('usage: orch task "describe the change" (or --file path)');
-      const { authorNames, reviewerNames } = nextAuthor(cfg, orchDir);
-      runs = authorNames.map((authorName) => {
+      const { authors, reviewers } = nextAuthor(cfg, orchDir);
+      runs = authors.map((authorSpec) => {
+        const authorName = authorSpec.agent;
         const branch = `pr/${authorName}/${slugify(task)}`;
-        const reviewerList = reviewersForAuthor(authorName, reviewerNames);
+        const reviewerList = reviewersForAuthor(authorName, reviewers);
         return {
-          mode, task, branch, authorName,
-          reviewerName: reviewerList[0], reviewerNames: reviewerList,
+          mode, task, branch, authorName, author: authorSpec,
+          reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
+          reviewers: reviewerList,
           cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
         };
       });
@@ -253,13 +310,14 @@ export async function main(argv) {
       const configured = configuredReviewers(cfg);
       const reviewerList = configured
         ? reviewersForAuthor(branchAuthor, configured)
-        : cfg.agents.filter((a) => a !== branchAuthor);
-      const reviewers = reviewerList.length ? reviewerList : [cfg.agents[0]];
+        : cfg.agents.filter((a) => a !== branchAuthor).map((a) => ({ agent: a, model: null, effort: null }));
+      const reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
       const authorName = branchAuthor && cfg.agents.includes(branchAuthor) ? branchAuthor : cfg.agents[0];
       task = null;
       runs = [{
-        mode, task, branch, authorName,
-        reviewerName: reviewers[0], reviewerNames: reviewers,
+        mode, task, branch, authorName, author: { agent: authorName, model: null, effort: null },
+        reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
+        reviewers,
         cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
       }];
     }
@@ -302,7 +360,15 @@ export async function main(argv) {
     return;
   }
 
-  console.log(`agent-orch ${VERSION}\nUsage:\n  orch init\n  orch task "change" [--author A --reviewer B]   (or: orch task --file task.md)\n  orch review <branch> [--reviewer A,B]\n  orch pr <number> [--merge] [--reviewer A,B]\n  (flags: --dry, --version)`);
+  console.log(`agent-orch ${VERSION}
+Usage:
+  orch init
+  orch agent add <name>
+  orch task "change" [--author "<agent> [model] [effort]" --reviewer "<agent> [model] [effort]"]   (or: orch task --file task.md)
+  orch review <branch> [--reviewer "claude opus-4.8 high, codex"]
+  orch pr <number> [--merge] [--reviewer ...]
+  A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. opus-4.8).
+  (flags: --dry, --version)`);
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds
