@@ -31,3 +31,12 @@ Let many `orch task` cycles run at the same time in one repo, instead of one-at-
 
 ## Launch model (v1)
 Manual: user runs `orch task` N times with explicit roles. No daemon, no batch launcher (both deferred to v2 / future supervisor).
+
+---
+
+## Status: Implemented
+
+All 12 tasks executed and reviewed.
+Implementation commit range: `bef56bb..68b6fa3` (13 commits).
+Full plan: `docs/superpowers/plans/2026-06-27-concurrent-orch-sessions.md`.
+Feature is on branch `feat/concurrent-orch-sessions`, pending merge to `main`.

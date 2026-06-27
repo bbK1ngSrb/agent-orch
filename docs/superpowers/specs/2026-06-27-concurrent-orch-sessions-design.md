@@ -1,7 +1,7 @@
 # Concurrent orch sessions on one repo — design
 
 **Date:** 2026-06-27
-**Status:** Design approved, pending spec review
+**Status:** Implemented
 **Scope:** Allow multiple `orch task` cycles to run in parallel against the *same* repo directory, safely. This is the headline benefit of long-run headless orchestration: fire N tasks, run them concurrently, harvest results.
 
 ---
@@ -118,6 +118,7 @@ If a finalize crashes mid-merge, the next finalize (holding the lock) resets `.o
 - **Uncovered semantic conflicts** are irreducible for parallel auto-merge: two disjoint edits that each pass their own gate, merge cleanly, and break main together *only via an interaction no test covers* and *with no path overlap*. Layered defense (overlap → re-test) shrinks this to the floor; it does not eliminate it. The floor demotes nothing — it's the residual risk the user accepts by enabling auto-merge.
 - **Non-Node toolchains:** the "worktree inherits deps via upward resolution" property is Node-specific. Python venvs / per-dir build artifacts may need a setup step in the integration worktree. v1 documents this; projects with such toolchains set a `pretest`/setup hook or run overlap-only.
 - **NFS portability:** O_EXCL atomicity validated on *this* mount only.
+- **cwd-on-main ceiling:** The integration worktree owns `main`, so orch requires cwd be on a non-main branch. The cwd-on-main hybrid (merge directly in cwd under the merge-lock — safe because merge-lock serializes finalize) is a documented upgrade path, not built in v1.
 
 ## 8. Testing strategy
 

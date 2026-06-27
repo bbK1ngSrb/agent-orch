@@ -87,21 +87,63 @@ Merge happens only when every reviewer says `AGREE` **and** the repo's tests pas
 No test command detected → it refuses to auto-merge and tells you.
 
 ## Crash recovery
-Only one cycle runs at a time, guarded by `.orch/lock`. The lock holds the
-owner's PID, so a cycle killed mid-run can't wedge the repo: the next run
-reclaims the lock if its owner is gone (or the file is empty — a death before
-the PID was written). Reclaim is by liveness, never a timeout, so a slow-but-live
-cycle is never stolen from.
+A killed `orch task` can leave worktrees under `.orch/wt`. Before starting, a run
+sweeps those orphans. The sweep is PID-aware: each worktree carries an ownership
+marker (`pid\nsid`); only worktrees whose owner process is dead are removed, so a
+live peer's worktree is never disturbed. A branch is deleted **only** when an
+orch-created ownership marker is present — so a same-slug `orch task` retry works,
+while a branch you handed to `orch review` is always preserved, never auto-deleted.
+`--dry` never deletes worktrees or branches.
 
-A killed cycle can also leave a worktree under `.orch/wt`. Before starting, a run
-sweeps those orphans. It deletes an orphan's branch **only** when an
-orch-created ownership marker is present — so a same-slug `orch task` retry
-works, while a branch you handed to `orch review` is always preserved, never
-auto-deleted. `--dry` reclaims the lock but never deletes worktrees or branches.
+`orch pr` is still serialized by `.orch/lock` (one at a time per repo dir); the same
+PID-liveness logic lets a crashed `orch pr` be reclaimed on the next run.
 
-> One clone runs one cycle. Don't drive `orch` from two sessions against the same
-> working tree — the lock serializes cycles, not concurrent checkouts. Give a
-> second session its own `git worktree`.
+## Concurrent cycles
+
+Multiple `orch task` runs can drive the same repo directory in parallel. Launch
+each with explicit author and reviewer roles so they don't round-robin into each
+other:
+
+```bash
+orch task "migrate auth module"   --authors claude --reviewers codex &
+orch task "add rate-limit header" --authors codex  --reviewers claude &
+```
+
+**Concurrency cap.** Set `concurrency: 4` in `.orch/orch.yml` (default 4). An
+over-cap launch exits immediately with code 2 and logs:
+
+```
+orch: concurrency cap 4 reached — 4 cycles live; skipping pr/claude/<slug>-<sid>
+```
+
+Reduce the cap or wait for a live cycle to finish, then rerun.
+
+**Precondition: cwd must not be `main`.** The integration worktree keeps `main`
+checked out inside `.orch/integration`; git forbids the same branch in two
+worktrees at once. Launching from `main` exits with:
+
+```
+orch needs `main` for its .orch/integration worktree — switch cwd to a working
+branch (e.g. `git switch -c work`) and rerun.
+```
+
+Switch to any other branch before running `orch task`.
+
+**Merge path.** When all reviewers agree and tests pass, the cycle merges into
+local `main` through `.orch/integration` under a brief `merge.lock` — no push.
+Two guards run while the lock is held: a file-overlap pre-check (comparing your
+changed paths against live peers' paths and anything that landed on `main` since
+your cycle started) and a post-merge re-test against the integrated tree.
+
+**PR-fallback.** A cycle demotes to a PR (or local escalation) when:
+- `overlap` — your files collide with a concurrent cycle or a landed commit
+- `conflict` — the merge itself fails
+- `post-merge-test-fail` — tests fail after merge into `.orch/integration`
+- `merge-lock timeout` — the lock was never acquired
+
+With a git remote and `gh` CLI available, the branch is pushed and a PR is
+opened. Without them, `.orch/reviews/<branch>/DECISION.md` is written and the
+branch is kept for manual review.
 
 ## Auto docs-update on merge
 Opt-in per repo. With `docs.autoUpdate: true` in `.orch/orch.yml`, a successful
