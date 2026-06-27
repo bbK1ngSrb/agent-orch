@@ -40,12 +40,14 @@ deployment-specific plumbing** (NAS bare repo, `deploy.sh`, GitHub `--mirror`,
 ```
 orch init              # scaffold orch.yml + .orch/, verify agent CLIs on PATH
 orch task "fix X"      # author + cross-audit + gate + merge — one cycle
+orch task --file task.md # load the task description from a file
 orch review <branch>   # audit-only on an existing branch (no author step)
 orch pr <n> [--merge]  # audit a GitHub PR via gh, comment the verdict, optionally merge
 ```
 
 Four commands. `task` is the full local loop; `review` audits an existing local
-branch; `pr` is the GitHub PR bridge via `gh`.
+branch; `pr` is the GitHub PR bridge via `gh`. `task` accepts either inline text
+or `--file <path>` for longer prompts.
 
 ## 3. Agent model
 
@@ -231,7 +233,7 @@ last such token. Malformed/missing verdict → treated as `DISAGREE` with reason
 - Cloud-hosted agent execution. The PR workflow requires a trusted self-hosted
   runner because PR tests and agent CLIs run locally on that runner.
 - More than one concurrent cycle per repo (global lock).
-- Autonomous task-picking (the human supplies the task string).
+- Autonomous task-picking (the human supplies the task string or file).
 - Desktop/Slack/telegram notifications (terminal + local file only at v1).
 
 ## 14. Defaults chosen (flag on review)
