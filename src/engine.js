@@ -1,4 +1,5 @@
 import { isDocsOnly } from "./scope.js";
+import { checkPaths } from "./intake/allowlist.js";
 
 // Pure state machine. All side-effecting collaborators arrive via `deps`,
 // so tests stub them and dry-run is just another set of stubs.
@@ -32,7 +33,9 @@ export async function runCycle(opts, deps) {
       // so a too-big resumed diff is caught even if quota aborted before it ran.
       if (!resume) {
         notify.phase(`${author.name} authoring`);
-        await author.author(task, worktree, authorOpts);
+        // §3b: for untrusted intake (work order), the author runs against a
+        // fenced prompt; free-text tasks pass through unchanged.
+        await author.author(opts.authorPrompt || task, worktree, authorOpts);
       }
 
       // Scope gate (optional).
@@ -88,6 +91,16 @@ export async function runCycle(opts, deps) {
         // Compute the loop-guard signals BEFORE finalize: a ff merge makes
         // main...branch empty, so reading it post-merge always yields [].
         const changed = git.changedFiles(repo, branch);
+        // §3c: protected-path floor at the MERGE boundary. Gating the FINAL diff
+        // (not just round 1) covers the initial author, every revise, resume, and
+        // an `orch review` merge — the same set CODEOWNERS guards at review time.
+        // The agent can't be trusted to comply voluntarily, so the deterministic
+        // gate, not the prompt, is what keeps guardrail files out of main.
+        const prot = checkPaths(changed);
+        if (!prot.ok) {
+          return escalate(notify, orchDir, branch, round,
+            `protected paths touched: ${prot.violations.join(", ")} — orch will not merge guardrail files`);
+        }
         const docsOnly = isDocsOnly(changed, cfg.docs.paths);
         const noop = changed.length === 0;
         const fin = await finalize({

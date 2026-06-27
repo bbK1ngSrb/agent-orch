@@ -98,10 +98,18 @@ test("parse captures --file flag", () => {
   assert.equal(p.flags.file, "task.md");
 });
 
-test("--file loads task from file (dry)", async () => {
+const WORK_ORDER = JSON.stringify({
+  title: "fix the flaky retry",
+  problem: "retries double-fire under load",
+  repro_steps: ["hammer the endpoint"],
+  suspected_paths: ["src/retry.js"],
+  acceptance_criteria: ["no double-fire"],
+});
+
+test("--file loads an untrusted JSON work order (dry)", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-file-"));
-  const f = join(d, "task.md");
-  writeFileSync(f, "  do the thing from a file\n");
+  const f = join(d, "work-order.json");
+  writeFileSync(f, WORK_ORDER);
   const prev = cwd();
   chdir(d);
   try {
@@ -112,6 +120,20 @@ test("--file loads task from file (dry)", async () => {
     chdir(prev);
     process.exitCode = 0;
   }
+});
+
+test("--file rejects non-JSON content", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-file-"));
+  const f = join(d, "task.md");
+  writeFileSync(f, "do the thing from a file\n");
+  await assert.rejects(() => main(["task", "--file", f, "--dry"]), /JSON work order/);
+});
+
+test("--file rejects a JSON object that fails work-order shape", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-file-"));
+  const f = join(d, "bad.json");
+  writeFileSync(f, JSON.stringify({ title: "", problem: "x" })); // empty title + missing arrays
+  await assert.rejects(() => main(["task", "--file", f, "--dry"]), /work order/i);
 });
 
 test("nextAuthor alternates and persists last-author", () => {

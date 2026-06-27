@@ -40,14 +40,16 @@ deployment-specific plumbing** (NAS bare repo, `deploy.sh`, GitHub `--mirror`,
 ```
 orch init              # scaffold orch.yml + .orch/, verify agent CLIs on PATH
 orch task "fix X"      # author + cross-audit + gate + merge — one cycle
-orch task --file task.md # load the task description from a file
+orch task --file wo.json # untrusted JSON work order (§3a) — validated + fenced
 orch review <branch>   # audit-only on an existing branch (no author step)
 orch pr <n> [--merge]  # audit a GitHub PR via gh, comment the verdict, optionally merge
 ```
 
 Four commands. `task` is the full local loop; `review` audits an existing local
 branch; `pr` is the GitHub PR bridge via `gh`. `task` accepts either inline text
-or `--file <path>` for longer prompts.
+(trusted, operator-typed) or `--file <path>`, which is treated as an **untrusted
+JSON work order** (§3a/§3b): shape-validated, then quoted inside a neutralized
+fence the author treats as reference, not instructions.
 
 ## 3. Agent model
 

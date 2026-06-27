@@ -4,9 +4,12 @@
 // GitHub API. All shell-outs arrive via `deps` so tests stub them.
 import { join } from "node:path";
 import { parseRoleSpec, parseRoleSpecs } from "./config.js";
+import { redact, publicSummary } from "./redact.js";
 
-// Build the PR comment body from the cycle result + the reviewer's written case.
-export function buildComment(result, verdict) {
+// Build the PR comment body. §3f: `body` is the constrained machine summary
+// (publicSummary), never attacker-influenced reviewer prose — those notes stay
+// in the maintainer's private channel (.orch/reviews/).
+export function buildComment(result, body) {
   const approved = result.status === "approved";
   const head = approved
     ? "✅ **agent-orch: APPROVED** — agents agree, tests green"
@@ -14,7 +17,7 @@ export function buildComment(result, verdict) {
   return [
     head,
     "",
-    verdict || "(no reviewer notes captured)",
+    body || "(no summary)",
     "",
     `_${result.rounds} round(s); merge${approved ? " ready" : " blocked"} — GitHub owns the merge._`,
   ].join("\n");
@@ -22,7 +25,7 @@ export function buildComment(result, verdict) {
 
 export async function runPr(opts, deps) {
   const { n, repo, orchDir, cfg, merge = false } = opts;
-  const { gh, git, cycle, readVerdict, log = () => {} } = deps;
+  const { gh, git, cycle, log = () => {} } = deps;
 
   try { gh(["--version"]); }
   catch { throw new Error("gh CLI not found — install https://cli.github.com/ and run `gh auth login`"); }
@@ -48,8 +51,16 @@ export async function runPr(opts, deps) {
       authorName: reviewerName, reviewers, cfg, orchDir, repo, worktree,
     });
 
-    const verdict = readVerdict(orchDir, branch);
-    const body = buildComment(result, verdict);
+    // §3f: post the machine summary only — reviewer prose never reaches the
+    // public PR. redact is the final scrub on the exact bytes sent to gh.
+    const approved = result.status === "approved";
+    const summary = publicSummary({
+      decision: approved ? "AGREE" : "DISAGREE",
+      green: approved, // review mode escalates before the gate; approved ⇒ green
+      branch,
+      rounds: result.rounds,
+    });
+    const body = redact(buildComment(result, summary));
     gh(["pr", "comment", String(n), "--body-file", "-"], body);
     log(`commented on PR #${pr.number}: ${result.status}`);
 
@@ -84,10 +95,13 @@ export async function demote(ctx, deps) {
     return { prUrl: null };
   }
   git(["push", "-u", "origin", branch], repo);
+  // §3f: --head must carry the real ref so gh finds the branch; the
+  // human-readable title/body are scrubbed (a secret-shaped branch name leaks
+  // through publicSummary's \w sanitizer otherwise).
   const url = gh([
     "pr", "create", "--head", branch, "--base", "main",
-    "--title", `orch: ${branch}`,
-    "--body", `Auto-demoted by agent-orch (reason: ${reason}). Agents agreed and the branch was green in isolation, but it could not be safely auto-merged into main.`,
+    "--title", redact(`orch: ${branch}`),
+    "--body", redact(`Auto-demoted by agent-orch (reason: ${reason}). Agents agreed and the branch was green in isolation, but it could not be safely auto-merged into main.`),
   ]).trim();
   log(`opened PR for ${branch}: ${url}`);
   return { prUrl: url };
