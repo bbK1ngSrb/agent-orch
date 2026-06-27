@@ -66,7 +66,7 @@ test("empty dir yields defaults", () => {
   const c = load(tmp());
   assert.deepEqual(c.agents, ["claude", "codex"]);
   assert.equal(c.reviseCap, 3);
-  assert.equal(c.merge, "ff-only");
+  assert.equal(c.merge, "no-ff");
   assert.equal(c.scope.maxLines, 0);
 });
 

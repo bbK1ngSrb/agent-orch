@@ -10,7 +10,7 @@ const DEFAULTS = {
   reviewers: null, // plural fixed reviewers; pairs with `authors`
   test: "auto",
   reviseCap: 3,
-  merge: "ff-only",
+  merge: "no-ff", // default no-ff so concurrent disjoint cycles both land (ff-only can't fast-forward once a peer merges)
   concurrency: 4, // max concurrent cycles per repo dir; over this, a cycle exits rather than blocks
   scope: { maxLines: 0, ignore: ["*.lock", "dist/**", "*.snap"] },
   github: { mergeMethod: "squash" }, // gh pr merge strategy for `orch pr <n> --merge`

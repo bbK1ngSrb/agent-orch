@@ -71,7 +71,7 @@ agents: [claude, codex]   # default: [claude, codex]
 # === Cycle ===
 test: auto                # "auto" detects the test command, or set one, e.g. "pytest -q"
 reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
-merge: ff-only            # merge into main: ff-only | no-ff; default: ff-only
+merge: no-ff              # merge into main: ff-only | no-ff; default: no-ff (concurrent disjoint cycles both land; ff-only = linear but extra cycles fall back to PR)
 concurrency: 4            # max concurrent orch cycles in this repo dir; over this a cycle exits; default: 4
 
 # === Scope gate (optional) ===
