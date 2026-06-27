@@ -67,11 +67,12 @@ branch; `pr` is the GitHub PR bridge via `gh`.
   reviews. Cross-vendor audit is the point — diversity catches more. Alternation is
   stateless across runs except for a one-line marker `.orch/last-author`; absent →
   first agent in `agents:` authors.
-- **Explicit / parallel roles:** pin roles with `author:`/`reviewer:` (set both or
+- **Explicit / multi-author roles:** pin roles with `author:`/`reviewer:` (set both or
   neither) to skip rotation. The plural `authors:`/`reviewers:` lists fan out: each
-  author writes its own `pr/<author>/<slug>` branch, and every reviewer audits each
-  branch *except* the one whose author it is. CLI flags `--author(s)`/`--reviewer(s)`
-  (comma-separated) override `orch.yml` for a single run.
+  author writes its own `pr/<author>/<slug>` branch (branches run one at a time), and
+  every reviewer audits each branch *except* the one whose author it is — those
+  reviewers run concurrently. CLI flags `--author(s)`/`--reviewer(s)` (comma-separated)
+  override `orch.yml` for a single run.
 - **`review <branch>` (audit-only):** every configured agent except the branch author
   audits; with the default two agents that's the single opposite agent. Merge on
   unanimous `AGREE` + green gate, same rails as `task`.
