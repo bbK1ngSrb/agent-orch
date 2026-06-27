@@ -222,12 +222,13 @@ function dryDeps() {
     adapters: { get: (n) => ({ name: n, async author() {}, async audit() { return verdict; } }) },
     git: {
       createTaskBranch() {}, attachExistingBranch() {}, pruneWorktree() {},
-      mergeIntoMain() { return { ok: true, reason: "dry-run" }; },
       git() { return "(dry-run diff)"; },
       changedFiles() { return []; },
     },
     gate: { detect: () => "true", run: () => ({ pass: true, log: "(dry-run)" }) },
     scope: { count: () => 0 },
+    inflight: { setPaths() {} },
+    finalize: async () => ({ status: "merged", reason: "merged (dry-run)" }),
     notify,
   };
 }
