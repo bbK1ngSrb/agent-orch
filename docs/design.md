@@ -118,6 +118,14 @@ orch task "fix X"
   (`Round: N`). Hard cap `reviseCap` (default 3).
 - **Verdict storage:** `.orch/reviews/<branch>/round-N.md` (gitignored working area,
   not committed to the branch, so it never pollutes the merge).
+- **One cycle at a time + crash recovery:** `.orch/lock` (holding the owner PID)
+  serializes cycles. A run killed mid-cycle is self-healing — the next run
+  reclaims the lock when its owner is dead or the file is empty (liveness, not a
+  timeout, so a slow live cycle is never stolen). It also sweeps orphan worktrees
+  left under `.orch/wt`, deleting an orphan's branch **only** when an orch-created
+  ownership marker is present — `pr/<author>/<slug>` task branches are reclaimable,
+  but a branch attached for `orch review` is never auto-deleted. The lock scopes to
+  one working tree: two sessions sharing a clone still collide on `git checkout`.
 
 ## 5. Auto-monitoring (all local)
 

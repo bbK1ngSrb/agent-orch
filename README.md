@@ -86,6 +86,23 @@ repo root is still read for back-compat, but `.orch/orch.yml` wins if both exist
 Merge happens only when every reviewer says `AGREE` **and** the repo's tests pass.
 No test command detected → it refuses to auto-merge and tells you.
 
+## Crash recovery
+Only one cycle runs at a time, guarded by `.orch/lock`. The lock holds the
+owner's PID, so a cycle killed mid-run can't wedge the repo: the next run
+reclaims the lock if its owner is gone (or the file is empty — a death before
+the PID was written). Reclaim is by liveness, never a timeout, so a slow-but-live
+cycle is never stolen from.
+
+A killed cycle can also leave a worktree under `.orch/wt`. Before starting, a run
+sweeps those orphans. It deletes an orphan's branch **only** when an
+orch-created ownership marker is present — so a same-slug `orch task` retry
+works, while a branch you handed to `orch review` is always preserved, never
+auto-deleted. `--dry` reclaims the lock but never deletes worktrees or branches.
+
+> One clone runs one cycle. Don't drive `orch` from two sessions against the same
+> working tree — the lock serializes cycles, not concurrent checkouts. Give a
+> second session its own `git worktree`.
+
 ## Auto docs-update on merge
 Opt-in per repo. With `docs.autoUpdate: true` in `.orch/orch.yml`, a successful
 merge auto-spawns a detached `orch task` that refreshes documentation:
