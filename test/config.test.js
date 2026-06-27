@@ -21,11 +21,6 @@ test("parseRoleSpec: agent + model only", () => {
     { agent: "codex", model: "gpt-5.1", effort: null });
 });
 
-test("parseRoleSpec: object form from YAML", () => {
-  assert.deepEqual(parseRoleSpec({ agent: "claude", model: "opus-4.8", effort: "low" }),
-    { agent: "claude", model: "opus-4.8", effort: "low" });
-});
-
 test("parseRoleSpec: rejects empty spec", () => {
   assert.throws(() => parseRoleSpec("  "), /must name an agent/);
 });
@@ -38,6 +33,28 @@ test("parseRoleSpecs: array of specs", () => {
 test("parseRoleSpecs: comma-separated string", () => {
   assert.deepEqual(parseRoleSpecs("claude opus high, codex"),
     [{ agent: "claude", model: "opus", effort: "high" }, { agent: "codex", model: null, effort: null }]);
+});
+
+test("load() round-trips role specs written in orch.yml", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"),
+    "agents: [claude, codex]\nauthor: claude opus-4.8 high\nreviewer: codex gpt-5.1\n");
+  const c = load(d);
+  // The yaml plain scalar survives load() intact, and validate() accepts it.
+  assert.equal(c.author, "claude opus-4.8 high");
+  assert.deepEqual(parseRoleSpec(c.author), { agent: "claude", model: "opus-4.8", effort: "high" });
+  assert.deepEqual(parseRoleSpec(c.reviewer), { agent: "codex", model: "gpt-5.1", effort: null });
+});
+
+test("load() round-trips plural role specs (flow list with internal spaces)", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"),
+    "agents: [claude, codex]\nauthors: [claude opus-4.8 high, codex]\nreviewers: [codex, claude sonnet-4.6 low]\n");
+  const c = load(d);
+  assert.deepEqual(parseRoleSpecs(c.authors),
+    [{ agent: "claude", model: "opus-4.8", effort: "high" }, { agent: "codex", model: null, effort: null }]);
+  assert.deepEqual(parseRoleSpecs(c.reviewers),
+    [{ agent: "codex", model: null, effort: null }, { agent: "claude", model: "sonnet-4.6", effort: "low" }]);
 });
 
 test("empty dir yields defaults", () => {

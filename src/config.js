@@ -51,15 +51,10 @@ function validate(cfg) {
 //   agent  — required; one of the registered agents
 //   model  — optional model id, may carry a subversion (e.g. opus-4.8); opaque
 //   effort — optional reasoning effort (e.g. low | medium | high); opaque
+// String form only — it covers both CLI flags and YAML plain scalars.
 // Bare names ("claude") parse to { agent: "claude", model: null, effort: null },
 // so old configs and CLI flags keep working unchanged.
 export function parseRoleSpec(spec) {
-  if (spec && typeof spec === "object" && !Array.isArray(spec)) {
-    // YAML object form: { agent, model, effort }
-    const agent = String(spec.agent ?? "").trim();
-    if (!agent) throw new Error("role spec must name an agent");
-    return { agent, model: spec.model ?? null, effort: spec.effort ?? null };
-  }
   const parts = String(spec ?? "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) throw new Error("role spec must name an agent");
   const [agent, model = null, effort = null] = parts;
