@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { buildArgs as claudeArgs } from "../src/adapters/claude.js";
 import { buildArgs as codexArgs } from "../src/adapters/codex.js";
 import { get } from "../src/adapters/index.js";
-import { makeCliAdapter } from "../src/adapters/cli-adapter.js";
+import { makeCliAdapter, isUsageLimit } from "../src/adapters/cli-adapter.js";
 
 test("claude buildArgs uses -p with headless write permission", () => {
   assert.deepEqual(claudeArgs("PROMPT", "/wd"),
@@ -82,6 +82,25 @@ test("audit ignores AGREE printed by a crashed agent (F4 fail-safe)", async () =
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "DISAGREE");
+});
+
+test("audit rethrows on usage limit instead of masking as DISAGREE", async () => {
+  // A quota hit must propagate so the harness can wait for reset and resume —
+  // logging a DISAGREE here would silently corrupt the audit verdict.
+  const adapter = makeCliAdapter({
+    name: "limited",
+    bin: "sh",
+    buildArgs: () => ["-c", "echo 'Claude usage limit reached. resets at 3pm'; exit 1"],
+  });
+  await assert.rejects(() => adapter.audit("pr/x/y", tmpdir()), /usage limit/);
+});
+
+test("isUsageLimit matches limit messages but not generic failures", () => {
+  assert.ok(isUsageLimit("Claude usage limit reached"));
+  assert.ok(isUsageLimit("Error 429: too many requests"));
+  assert.ok(isUsageLimit("model overloaded"));
+  assert.ok(!isUsageLimit("compile error: undefined symbol"));
+  assert.ok(!isUsageLimit(""));
 });
 
 test("codex buildArgs uses exec --cd with headless write permission", () => {
