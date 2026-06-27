@@ -64,3 +64,31 @@ export async function runPr(opts, deps) {
     catch (e) { log(`warning: could not delete local branch ${branch}: ${e.message}`); }
   }
 }
+
+function hasRemote(repo, git) {
+  try { return git(["remote"], repo).trim().length > 0; } catch { return false; }
+}
+
+function ghAvailable(gh) {
+  try { gh(["--version"]); return true; } catch { return false; }
+}
+
+// Demote an approved-but-unmergeable branch: open a PR if we can, else escalate
+// locally (keep the branch + write DECISION.md). Never pushes to main.
+export async function demote(ctx, deps) {
+  const { repo, orchDir, branch, reason } = ctx;
+  const { gh, git, notify, log = () => {} } = deps;
+  if (!hasRemote(repo, git) || !ghAvailable(gh)) {
+    notify.escalate(orchDir, branch,
+      `# Escalation — ${branch}\n\nAuto-merge demoted (reason: ${reason}). No git remote or gh CLI available to open a PR. The branch is kept for manual review.\n`);
+    return { prUrl: null };
+  }
+  git(["push", "-u", "origin", branch], repo);
+  const url = gh([
+    "pr", "create", "--head", branch, "--base", "main",
+    "--title", `orch: ${branch}`,
+    "--body", `Auto-demoted by agent-orch (reason: ${reason}). Agents agreed and the branch was green in isolation, but it could not be safely auto-merged into main.`,
+  ]).trim();
+  log(`opened PR for ${branch}: ${url}`);
+  return { prUrl: url };
+}
