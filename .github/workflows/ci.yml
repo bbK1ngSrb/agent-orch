@@ -9,6 +9,8 @@ jobs:
         with: { node-version: "24" }
       - run: npm ci || npm install
       - run: npm test
+      - name: token-step invariant (§3g)
+        run: node scripts/lint-token-step.js .github/workflows/*.yml
       - name: bash selftest
         run: |
           if [ -f harness/orch-loop.sh ]; then
