@@ -55,6 +55,10 @@ claude-code-router (`ccr`): `qwen3-coder-30b`, `deepseek-coder-v2-lite`,
 `glm-4.5-air`. Local models need `ccr` on PATH and `~/.claude-code-router/config.json`
 defining a `local` provider (see `local-llm/configs/`).
 
+> **External testers:** use the `claude` / `codex` CLI agents. `llama-swap` is
+> host-specific (the maintainer's LAN proxy) and not required — the CLI-agent
+> fallback already works.
+
 Pick who authors and who audits explicitly in `orch.yml`:
 ```yaml
 author: qwen3-coder-30b   # writes the change
