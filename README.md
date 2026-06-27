@@ -50,7 +50,7 @@ agents approve and tests pass.
 [`gh`]: https://cli.github.com/
 
 ## Agents
-`claude`, `codex`, and three local-llm models served via [llama-swap] behind
+`claude`, `codex`, and three local-llm models served via llama-swap behind
 claude-code-router (`ccr`): `qwen3-coder-30b`, `deepseek-coder-v2-lite`,
 `glm-4.5-air`. Local models need `ccr` on PATH and `~/.claude-code-router/config.json`
 defining a `local` provider (see `local-llm/configs/`).
@@ -72,8 +72,6 @@ reviewers: [claude, codex]   # all audit each branch, except its author
 ```
 CLI flags override `orch.yml`: `--author/--reviewer` or comma-separated
 `--authors/--reviewers`.
-
-[llama-swap]: http://192.168.10.60:8080/
 
 ## Quickstart
 ```bash
