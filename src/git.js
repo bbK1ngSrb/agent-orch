@@ -48,7 +48,7 @@ export function branchExists(repo, branch) {
 // task mode: branch must NOT exist (orch owns it). Fail otherwise.
 export function createTaskBranch(repo, path, branch, base, markerContent = "") {
   if (branchExists(repo, branch)) throw new Error(`branch already exists: ${branch}`);
-  git(["worktree", "add", "-b", branch, path, base], repo);
+  git(["worktree", "add", "-b", branch, "--", path, base], repo);
   // Marker now records the owner so the sweep can spare LIVE peers (no global
   // lock anymore). Empty marker = died before writing = swept (legacy parity).
   writeFileSync(taskMarker(realpathSync(path)), markerContent);
@@ -57,7 +57,7 @@ export function createTaskBranch(repo, path, branch, base, markerContent = "") {
 // review mode: branch MUST exist (human/other tool made it). Never create it.
 export function attachExistingBranch(repo, path, branch) {
   if (!branchExists(repo, branch)) throw new Error(`branch does not exist: ${branch}`);
-  git(["worktree", "add", path, branch], repo);
+  git(["worktree", "add", "--", path, branch], repo);
 }
 
 export function pruneWorktree(repo, path) {
@@ -108,7 +108,7 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
           return;
         }
         gitTry(["worktree", "remove", "--force", path], repo);
-        if (branch && owned) gitTry(["branch", "-D", branch], repo); // never a user branch
+        if (branch && owned) gitTry(["branch", "-D", "--", branch], repo); // never a user branch
         rmSync(marker, { force: true });
       }
       path = null;

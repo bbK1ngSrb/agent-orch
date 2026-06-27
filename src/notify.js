@@ -5,8 +5,20 @@ export function phase(msg) {
   process.stderr.write(`▶ ${msg}\n`);
 }
 
+// `branch` reaches us from --branch and from a PR's headRefName (attacker-shaped
+// under public intake). It is interpolated straight into a path, so a name like
+// `../../etc` would let writeRound/escalate write — and cleanupReviews rm -rf —
+// outside .orch/reviews. Reject traversal/absolute names before any join.
+export function reviewsDir(orchDir, branch) {
+  if (typeof branch !== "string" || branch === "" || branch.includes("\0") ||
+      branch.startsWith("/") || /(^|\/)\.\.(\/|$)/.test(branch)) {
+    throw new Error(`unsafe branch name for review path: ${branch}`);
+  }
+  return join(orchDir, "reviews", branch);
+}
+
 export function writeRound(orchDir, branch, round, content) {
-  const p = join(orchDir, "reviews", branch, `round-${round}.md`);
+  const p = join(reviewsDir(orchDir, branch), `round-${round}.md`);
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, content);
   return p;
@@ -39,11 +51,11 @@ export function recordRun(orchDir, entry) {
 
 // Post-merge cleanup: per-branch review artifacts are throwaway once merged.
 export function cleanupReviews(orchDir, branch) {
-  rmSync(join(orchDir, "reviews", branch), { recursive: true, force: true });
+  rmSync(reviewsDir(orchDir, branch), { recursive: true, force: true });
 }
 
 export function escalate(orchDir, branch, brief) {
-  const p = join(orchDir, "reviews", branch, "DECISION.md");
+  const p = join(reviewsDir(orchDir, branch), "DECISION.md");
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, brief);
   process.stderr.write(`\n${brief}\n`);
