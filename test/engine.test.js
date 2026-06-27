@@ -79,16 +79,22 @@ test("merged result stamps docsOnly=true for a docs-only change", async () => {
   assert.equal(r.docsOnly, true);
 });
 
-test("docsOnly is read BEFORE merge (ff merge empties main...branch)", async () => {
+test("docsOnly is read BEFORE finalize (ff merge empties main...branch)", async () => {
   // Regression: a ff merge makes `main...branch` empty, so reading changedFiles
-  // after the merge always yields [] -> docsOnly=false -> broken loop guard.
+  // after finalize always yields [] -> docsOnly=false -> broken loop guard.
+  // Assert ordering: changedFiles must be called before finalize runs.
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: ["README.md"] });
-  let mergedYet = false;
-  deps.git.mergeIntoMain = () => { mergedYet = true; return { ok: true, reason: "merged" }; };
-  deps.git.changedFiles = () => (mergedYet ? [] : ["README.md"]);
+  let changedFilesCalled = false;
+  let changedFilesCalledWhenFinalizeRan = false;
+  deps.git.changedFiles = () => { changedFilesCalled = true; return ["README.md"]; };
+  deps.finalize = async () => {
+    changedFilesCalledWhenFinalizeRan = changedFilesCalled;
+    return { status: "merged", reason: "merged", sha: "x" };
+  };
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "merged");
-  assert.equal(r.docsOnly, true); // would be false if read after merge
+  assert.equal(r.docsOnly, true, "changedFiles result must drive docsOnly");
+  assert.equal(changedFilesCalledWhenFinalizeRan, true, "changedFiles must run before finalize");
 });
 
 test("merged result stamps noop=true for an empty diff (loop-guard for no-op merges)", async () => {
