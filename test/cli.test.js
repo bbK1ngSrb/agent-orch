@@ -300,3 +300,71 @@ test("orch task errors clearly when cwd HEAD is main", async () => {
     process.exitCode = 0;
   }
 });
+
+import { resolveTaskBranch } from "../src/cli.js";
+
+function resumeStubs({ record = null, exists = true, changed = ["a"] }) {
+  const spy = { recorded: [], cleared: 0 };
+  const deps = {
+    git: { branchExists: () => exists, changedFiles: () => changed },
+    resume: {
+      lookup: () => record,
+      record: (...a) => spy.recorded.push(a),
+      clear: () => { spy.cleared++; },
+    },
+  };
+  return { deps, spy };
+}
+
+test("resolveTaskBranch: no record -> fresh sid/branch, record written (#24)", () => {
+  const { deps, spy } = resumeStubs({ record: null });
+  const r = resolveTaskBranch({ repo: "/r", orchDir: "/o", task: "do x", authorName: "claude" }, deps);
+  assert.equal(r.resume, false);
+  assert.match(r.branch, /^pr\/claude\/do-x-\d+-[0-9a-z]+$/);
+  assert.equal(spy.recorded.length, 1); // fresh run leaves a record to resume from
+  assert.equal(spy.cleared, 0);
+});
+
+test("resolveTaskBranch: live branch with commits -> resume (#24)", () => {
+  const rec = { branch: "pr/claude/do-x-9-z", sid: "9-z" };
+  const { deps, spy } = resumeStubs({ record: rec, exists: true, changed: ["src/a.js"] });
+  const r = resolveTaskBranch({ repo: "/r", orchDir: "/o", task: "do x", authorName: "claude" }, deps);
+  assert.deepEqual(r, { sid: "9-z", branch: "pr/claude/do-x-9-z", resume: true });
+  assert.equal(spy.recorded.length, 0); // resume reuses the record, doesn't rewrite
+  assert.equal(spy.cleared, 0);
+});
+
+test("resolveTaskBranch: record but branch vanished -> clear stale, fresh (#24)", () => {
+  const rec = { branch: "pr/claude/gone", sid: "1" };
+  const { deps, spy } = resumeStubs({ record: rec, exists: false });
+  const r = resolveTaskBranch({ repo: "/r", orchDir: "/o", task: "do x", authorName: "claude" }, deps);
+  assert.equal(r.resume, false);
+  assert.equal(spy.cleared, 1); // stale record dropped
+});
+
+test("resolveTaskBranch: record but no commits -> clear stale, fresh (#24)", () => {
+  const rec = { branch: "pr/claude/empty", sid: "1" };
+  const { deps, spy } = resumeStubs({ record: rec, exists: true, changed: [] });
+  const r = resolveTaskBranch({ repo: "/r", orchDir: "/o", task: "do x", authorName: "claude" }, deps);
+  assert.equal(r.resume, false);
+  assert.equal(spy.cleared, 1); // mid-author abort before commit -> author fresh
+});
+
+test("resolveTaskBranch: recorded branch is a live peer -> no resume, no clobber (#24)", () => {
+  const rec = { branch: "pr/claude/do-x-9-z", sid: "9-z" };
+  const { deps, spy } = resumeStubs({ record: rec, exists: true, changed: ["a"] });
+  const live = new Set(["pr/claude/do-x-9-z"]);
+  const r = resolveTaskBranch({ repo: "/r", orchDir: "/o", task: "do x", authorName: "claude", liveBranches: live }, deps);
+  assert.equal(r.resume, false); // don't hijack a concurrent live cycle
+  assert.equal(spy.cleared, 0);  // and don't clear its record
+});
+
+test("resolveTaskBranch: dry never reads or writes the store (#24)", () => {
+  const { deps, spy } = resumeStubs({ record: { branch: "x", sid: "1" } });
+  let looked = 0;
+  deps.resume.lookup = () => { looked++; return { branch: "x", sid: "1" }; };
+  const r = resolveTaskBranch({ repo: "/r", orchDir: "/o", task: "do x", authorName: "claude", dry: true }, deps);
+  assert.equal(r.resume, false);
+  assert.equal(looked, 0);
+  assert.equal(spy.recorded.length, 0);
+});

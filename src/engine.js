@@ -3,7 +3,7 @@ import { isDocsOnly } from "./scope.js";
 // Pure state machine. All side-effecting collaborators arrive via `deps`,
 // so tests stub them and dry-run is just another set of stubs.
 export async function runCycle(opts, deps) {
-  const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false, sid } = opts;
+  const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false, sid, resume = false } = opts;
   const { adapters, git, gate, scope, notify, finalize, inflight } = deps;
   // Role specs carry optional model/effort. Fall back to bare names so callers
   // that pass only authorName/reviewerNames (e.g. the PR bridge) keep working.
@@ -16,8 +16,10 @@ export async function runCycle(opts, deps) {
   }));
 
   // F5: task mode owns a fresh branch; review mode requires an existing one.
-  notify.phase(`worktree ${branch} (${mode})`);
-  if (mode === "review") git.attachExistingBranch(repo, worktree, branch);
+  // A resumed task (#24) re-attaches the quota-aborted branch — its authored
+  // commits are already there, so we skip the initial author step below.
+  notify.phase(`worktree ${branch} (${mode}${resume ? ", resume" : ""})`);
+  if (mode === "review" || resume) git.attachExistingBranch(repo, worktree, branch);
   else git.createTaskBranch(repo, worktree, branch, "main", `${process.pid}\n${sid}`);
 
   const baseSha = git.git(["rev-parse", "main"], repo);
@@ -25,8 +27,13 @@ export async function runCycle(opts, deps) {
   try {
     // F1: author step + scope gate only in task mode. Review never writes.
     if (mode === "task") {
-      notify.phase(`${author.name} authoring`);
-      await author.author(task, worktree, authorOpts);
+      // On resume the author's work is already committed on the branch — skip
+      // re-authoring and go straight to audit. The scope gate below still runs,
+      // so a too-big resumed diff is caught even if quota aborted before it ran.
+      if (!resume) {
+        notify.phase(`${author.name} authoring`);
+        await author.author(task, worktree, authorOpts);
+      }
 
       // Scope gate (optional).
       if (cfg.scope.maxLines > 0) {
