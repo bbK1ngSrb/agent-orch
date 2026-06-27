@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, branchExists, createTaskBranch, attachExistingBranch, pruneWorktree, mergeIntoMain } from "../src/git.js";
+import { existsSync } from "node:fs";
+import { git, branchExists, createTaskBranch, attachExistingBranch, pruneWorktree, mergeIntoMain, reclaimOrphanWorktrees } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -57,6 +58,50 @@ test("untracked collision -> advice names the files, not a rebase", () => {
   assert.equal(r.ok, false);
   assert.match(r.advice, /untracked files in main/);
   assert.match(r.advice, /spec\.md/);
+});
+
+test("reclaimOrphanWorktrees removes a crashed cycle's worktree AND its branch", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  // simulate a cycle that died before its finally: worktree + branch left behind
+  const wt = join(orchDir, "wt", "pr_claude_orphan");
+  createTaskBranch(repo, wt, "pr/claude/orphan", "main");
+  assert.equal(branchExists(repo, "pr/claude/orphan"), true);
+
+  reclaimOrphanWorktrees(repo, orchDir);
+
+  assert.equal(branchExists(repo, "pr/claude/orphan"), false); // same-slug retry can now re-create it
+  assert.doesNotMatch(git(["worktree", "list"], repo), /pr_claude_orphan/);
+});
+
+test("reclaimOrphanWorktrees PRESERVES a review-attached user branch (only sweeps the worktree)", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  // a human's real branch, attached for `orch review` — NOT orch-created
+  git(["branch", "feature/human"], repo);
+  const wt = join(orchDir, "wt", "feature_human");
+  attachExistingBranch(repo, wt, "feature/human"); // review mode: no ownership marker
+
+  reclaimOrphanWorktrees(repo, orchDir);
+
+  assert.equal(branchExists(repo, "feature/human"), true); // user branch must survive a crashed review
+  assert.doesNotMatch(git(["worktree", "list"], repo), /feature_human/); // worktree still reclaimed
+});
+
+test("createTaskBranch leaves no marker behind after a normal prune", () => {
+  const repo = newRepo();
+  const wt = join(repo, ".orch", "wt", "pr_claude_z");
+  createTaskBranch(repo, wt, "pr/claude/z", "main");
+  pruneWorktree(repo, wt);
+  assert.equal(existsSync(`${wt}.orch-task`), false);
+});
+
+test("reclaimOrphanWorktrees leaves the main worktree and other branches alone", () => {
+  const repo = newRepo();
+  git(["branch", "keep/me"], repo); // a branch with no orphan worktree
+  reclaimOrphanWorktrees(repo, join(repo, ".orch"));
+  assert.equal(branchExists(repo, "keep/me"), true);
+  assert.equal(branchExists(repo, "main"), true);
 });
 
 test("ff-only merge fails (ok:false) when main moved", () => {

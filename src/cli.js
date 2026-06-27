@@ -326,6 +326,7 @@ export async function main(argv, deps = {}) {
     }
 
     if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
+    if (!dry) git.reclaimOrphanWorktrees(repo, orchDir); // clear orphans from a crashed prior cycle
     const results = [];
     try {
       for (const run of runs) {
@@ -350,6 +351,7 @@ export async function main(argv, deps = {}) {
     preflightFn(cfg, orchDir);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
     if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
+    git.reclaimOrphanWorktrees(repo, orchDir); // clear orphans from a crashed prior cycle
     try {
       const result = await runPr(
         { n, repo, orchDir, cfg, merge: Boolean(flags.merge) },
