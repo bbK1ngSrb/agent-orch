@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Ownership marker: a sibling file next to an orch-created task worktree. Its
@@ -120,24 +120,42 @@ export function reclaimOrphanWorktrees(repo, orchDir) {
   gitTry(["worktree", "prune"], repo);
 }
 
-export function mergeIntoMain(repo, branch, mode) {
-  const cur = git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
-  if (cur !== "main") {
-    const co = gitTry(["checkout", "main"], repo);
-    if (!co.ok) return { ok: false, reason: `cannot checkout main: ${co.out}` };
-  }
+// One reused worktree, checked out on the `main` branch, where all merges land.
+// Because it owns `main`, cwd must NOT be on main (enforced by the CLI preflight)
+// — git forbids the same branch in two worktrees. The merge commit advances main
+// directly; no ref-move gymnastics.
+export function ensureIntegrationWorktree(repo, orchDir) {
+  const path = join(orchDir, "integration");
+  mkdirSync(orchDir, { recursive: true });
+  gitTry(["worktree", "prune"], repo); // clear a stale registration if the dir was removed
+  if (!existsSync(path)) git(["worktree", "add", path, "main"], repo);
+  return path;
+}
+
+// Pull the integration worktree to main's current tip and drop any leftover
+// half-merge / untracked cruft from a crashed finalize (§6.4).
+export function syncWorktreeToMain(integrationPath) {
+  git(["reset", "--hard", "main"], integrationPath);
+  git(["clean", "-fd"], integrationPath);
+}
+
+// Merge `branch` into the worktree's checked-out main. On any failure, abort so
+// the worktree is left clean for the next finalize.
+export function mergeInWorktree(integrationPath, branch, mode) {
   const flag = mode === "no-ff" ? "--no-ff" : "--ff-only";
-  const m = gitTry(["merge", flag, branch], repo);
+  const m = gitTry(["merge", flag, branch], integrationPath);
   if (m.ok) return { ok: true, reason: "merged" };
   const reason = m.out.trim();
-  // Untracked files in main colliding with branch output is NOT a history
-  // problem — rebasing won't help. Surface the real fix and the file list.
+  gitTry(["merge", "--abort"], integrationPath); // ff-only failures are no-ops here; harmless
   if (/untracked working tree files would be overwritten/i.test(reason)) {
-    const files = reason.split("\n")
-      .filter((l) => /^\t/.test(l))
-      .map((l) => l.trim());
-    const advice = `remove or commit these untracked files in main, then rerun: ${files.join(", ")}`;
-    return { ok: false, reason, advice };
+    const files = reason.split("\n").filter((l) => /^\t/.test(l)).map((l) => l.trim());
+    return { ok: false, reason, advice: `remove or commit these untracked files in main: ${files.join(", ")}` };
   }
   return { ok: false, reason };
+}
+
+// Files changed on main since a given sha (what landed after a branch's base).
+export function changedSince(repo, sha) {
+  const out = gitTry(["diff", "--name-only", `${sha}..main`], repo);
+  return out.ok ? out.out.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 }

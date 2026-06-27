@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, createTaskBranch, attachExistingBranch, pruneWorktree, mergeIntoMain, reclaimOrphanWorktrees } from "../src/git.js";
+import { git, branchExists, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -17,18 +17,21 @@ function newRepo() {
   return d;
 }
 
-test("createTaskBranch lifecycle + ff-only merge", () => {
+test("createTaskBranch lifecycle + ff-only merge in the integration worktree", () => {
   const repo = newRepo();
+  git(["checkout", "-b", "work"], repo); // cwd off main so integration can own main
   const wt = join(repo, ".orch", "wt", "b");
-  createTaskBranch(repo, wt, "pr/claude/x", "main");
+  createTaskBranch(repo, wt, "pr/claude/x", "main", "");
   writeFileSync(join(wt, "b.txt"), "2\n");
   git(["add", "."], wt);
   git(["commit", "-m", "add b"], wt);
   pruneWorktree(repo, wt);
 
-  const r = mergeIntoMain(repo, "pr/claude/x", "ff-only");
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  syncWorktreeToMain(integ);
+  const r = mergeInWorktree(integ, "pr/claude/x", "ff-only");
   assert.equal(r.ok, true);
-  assert.match(git(["log", "--oneline"], repo), /add b/);
+  assert.match(git(["log", "--oneline", "main"], repo), /add b/);
 });
 
 test("createTaskBranch refuses an existing branch", () => {
@@ -43,21 +46,24 @@ test("attachExistingBranch refuses a missing branch (F5: no silent create)", () 
   assert.throws(() => attachExistingBranch(repo, join(repo, ".orch/wt/n"), "pr/claude/nope"), /does not exist/);
 });
 
-test("untracked collision -> advice names the files, not a rebase", () => {
+test("merge conflict in the integration worktree returns ok:false and aborts cleanly", () => {
   const repo = newRepo();
+  git(["checkout", "-b", "work"], repo);
+  // two branches off main that both edit a.txt → real content conflict
   const wt = join(repo, ".orch", "wt", "u");
-  createTaskBranch(repo, wt, "pr/claude/u", "main");
-  writeFileSync(join(wt, "spec.md"), "from branch\n");
-  git(["add", "."], wt);
-  git(["commit", "-m", "add spec"], wt);
+  createTaskBranch(repo, wt, "pr/claude/u", "main", "");
+  writeFileSync(join(wt, "a.txt"), "from branch u\n");
+  git(["add", "."], wt); git(["commit", "-m", "edit a (u)"], wt);
   pruneWorktree(repo, wt);
-  // same path exists untracked in main's working tree
-  writeFileSync(join(repo, "spec.md"), "local untracked\n");
+  // advance main with a conflicting edit
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  writeFileSync(join(integ, "a.txt"), "from main\n");
+  git(["add", "."], integ); git(["commit", "-m", "edit a (main)"], integ);
 
-  const r = mergeIntoMain(repo, "pr/claude/u", "ff-only");
+  const r = mergeInWorktree(integ, "pr/claude/u", "no-ff");
   assert.equal(r.ok, false);
-  assert.match(r.advice, /untracked files in main/);
-  assert.match(r.advice, /spec\.md/);
+  // worktree left clean (merge aborted) — a fresh merge can run next
+  assert.equal(git(["status", "--porcelain"], integ), "");
 });
 
 test("reclaimOrphanWorktrees removes a crashed cycle's worktree AND its branch", () => {
@@ -104,21 +110,20 @@ test("reclaimOrphanWorktrees leaves the main worktree and other branches alone",
   assert.equal(branchExists(repo, "main"), true);
 });
 
-test("ff-only merge fails (ok:false) when main moved", () => {
+test("ff-only merge fails when main moved past the branch base", () => {
   const repo = newRepo();
+  git(["checkout", "-b", "work"], repo);
   const wt = join(repo, ".orch", "wt", "c");
-  createTaskBranch(repo, wt, "pr/claude/y", "main");
+  createTaskBranch(repo, wt, "pr/claude/y", "main", "");
   writeFileSync(join(wt, "c.txt"), "3\n");
-  git(["add", "."], wt);
-  git(["commit", "-m", "add c"], wt);
+  git(["add", "."], wt); git(["commit", "-m", "add c"], wt);
   pruneWorktree(repo, wt);
-  // move main forward so the branch no longer fast-forwards
-  writeFileSync(join(repo, "a.txt"), "changed\n");
-  git(["add", "."], repo);
-  git(["commit", "-m", "move main"], repo);
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  writeFileSync(join(integ, "d.txt"), "4\n"); // move main forward (disjoint file)
+  git(["add", "."], integ); git(["commit", "-m", "move main"], integ);
 
-  const r = mergeIntoMain(repo, "pr/claude/y", "ff-only");
-  assert.equal(r.ok, false);
+  const r = mergeInWorktree(integ, "pr/claude/y", "ff-only");
+  assert.equal(r.ok, false); // no longer a fast-forward
 });
 
 test("createTaskBranch writes pid\\nsid into the ownership marker", () => {
@@ -164,4 +169,21 @@ test("reclaim SWEEPS a worktree with an empty (pre-PID / died-early) marker", ()
   reclaimOrphanWorktrees(repo, orchDir);
 
   assert.equal(branchExists(repo, "pr/claude/empty"), false);
+});
+
+test("changedSince lists files merged into main after a base sha", () => {
+  const repo = newRepo();
+  const base = git(["rev-parse", "main"], repo);
+  writeFileSync(join(repo, "new.txt"), "x\n");
+  git(["add", "."], repo); git(["commit", "-m", "land new"], repo);
+  assert.deepEqual(changedSince(repo, base), ["new.txt"]);
+});
+
+test("reclaim never sweeps the .orch/integration worktree", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "work"], repo);
+  const orchDir = join(repo, ".orch");
+  ensureIntegrationWorktree(repo, orchDir);
+  reclaimOrphanWorktrees(repo, orchDir);
+  assert.match(git(["worktree", "list"], repo), /integration/); // outside wt/ → untouched
 });
