@@ -19,9 +19,9 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
   return {
     name,
     bin, // the actual executable (may differ from name, e.g. local models run via `ccr`)
-    async author(task, wd) {
+    async author(task, wd, opts = {}) {
       // Author must succeed; a failure here is a hard error (no commits made).
-      execFileSync(bin, buildArgs(render("author", { task }), wd), { cwd: wd, ...OPTS });
+      execFileSync(bin, buildArgs(render("author", { task }), wd, opts), { cwd: wd, ...OPTS });
       // The agent edits files in the worktree but cannot be trusted to commit
       // them — a `-p` run often leaves the work uncommitted, so the branch stays
       // at base and the auditor reviews an empty diff. Capture the work
@@ -33,10 +33,10 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
         execFileSync("git", ["commit", "-m", `orch: ${name} authored task`], { cwd: wd, ...OPTS });
       }
     },
-    async audit(branch, wd) {
+    async audit(branch, wd, opts = {}) {
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
-      const { out, ok } = runCapture(bin, buildArgs(render("review", { branch }), wd), wd);
+      const { out, ok } = runCapture(bin, buildArgs(render("review", { branch }), wd, opts), wd);
       if (!ok) return { decision: "DISAGREE", reason: "agent exited nonzero", raw: out };
       return parseVerdict(out); // unparseable/empty -> DISAGREE "unparseable verdict"
     },

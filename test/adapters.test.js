@@ -14,6 +14,35 @@ test("claude buildArgs uses -p with headless write permission", () => {
     ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions", "PROMPT"]);
 });
 
+test("claude buildArgs appends --model and --effort when given", () => {
+  assert.deepEqual(claudeArgs("PROMPT", "/wd", { model: "opus-4.8", effort: "high" }),
+    ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions",
+      "--model", "opus-4.8", "--effort", "high", "PROMPT"]);
+});
+
+test("codex buildArgs appends --model and reasoning-effort config when given", () => {
+  assert.deepEqual(codexArgs("PROMPT", "/wd", { model: "gpt-5.1", effort: "medium" }),
+    ["exec", "--cd", "/wd", "--dangerously-bypass-approvals-and-sandbox",
+      "--model", "gpt-5.1", "-c", 'model_reasoning_effort="medium"', "PROMPT"]);
+});
+
+test("buildArgs omits model/effort flags when absent (no regression)", () => {
+  assert.deepEqual(claudeArgs("P", "/wd", {}),
+    ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions", "P"]);
+  assert.deepEqual(codexArgs("P", "/wd", {}),
+    ["exec", "--cd", "/wd", "--dangerously-bypass-approvals-and-sandbox", "P"]);
+});
+
+test("adapter forwards model/effort opts to buildArgs", async () => {
+  let seen;
+  const adapter = makeCliAdapter({
+    name: "spy", bin: "true",
+    buildArgs: (_p, _wd, opts) => { seen = opts; return ["--version"]; },
+  });
+  await adapter.audit("pr/x/y", tmpdir(), { model: "m1", effort: "low" });
+  assert.deepEqual(seen, { model: "m1", effort: "low" });
+});
+
 test("author commits worktree changes the agent left uncommitted", async () => {
   const wd = mkdtempSync(join(tmpdir(), "orch-author-"));
   const g = (...a) => execFileSync("git", a, { cwd: wd, encoding: "utf8" });

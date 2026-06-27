@@ -9,8 +9,12 @@ import { makeCliAdapter } from "./cli-adapter.js";
 //     flag below and would otherwise leave the author unable to edit files.
 //   --dangerously-skip-permissions: full bypass when env-scrub is NOT in effect.
 const ALLOWED_TOOLS = "Edit,Write,Read,Bash,Glob,Grep";
-export function buildArgs(prompt, _wd) {
-  return ["-p", "--allowedTools", ALLOWED_TOOLS, "--dangerously-skip-permissions", prompt];
+export function buildArgs(prompt, _wd, opts = {}) {
+  const args = ["-p", "--allowedTools", ALLOWED_TOOLS, "--dangerously-skip-permissions"];
+  if (opts.model) args.push("--model", opts.model);
+  if (opts.effort) args.push("--effort", opts.effort);
+  args.push(prompt);
+  return args;
 }
 
 export default makeCliAdapter({ name: "claude", bin: "claude", buildArgs });
