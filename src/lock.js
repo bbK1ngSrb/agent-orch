@@ -6,9 +6,9 @@ import { join } from "node:path";
 // a death before the PID was written) can be reclaimed instead of wedging every
 // future run behind a dead lock. Time-based staleness is unsafe here: a real
 // cycle can run well past any timeout, so liveness is the only correct signal.
-export function acquireLock(orchDir, retried = false) {
+export function acquireLock(orchDir, lockName = "lock", retried = false) {
   mkdirSync(orchDir, { recursive: true });
-  const lockPath = join(orchDir, "lock");
+  const lockPath = join(orchDir, lockName);
   try {
     writeFileSync(lockPath, String(process.pid), { flag: "wx" });
     return true;
@@ -16,7 +16,7 @@ export function acquireLock(orchDir, retried = false) {
     if (e.code !== "EEXIST") throw e;
     if (!retried && isStale(lockPath)) {
       rmSync(lockPath, { force: true });
-      return acquireLock(orchDir, true); // one shot — never recurse on a re-crash
+      return acquireLock(orchDir, lockName, true); // one shot — never recurse on a re-crash
     }
     return false;
   }
@@ -40,8 +40,24 @@ function isStale(lockPath) {
   }
 }
 
-export function releaseLock(orchDir) {
-  rmSync(join(orchDir, "lock"), { force: true });
+export function releaseLock(orchDir, lockName = "lock") {
+  rmSync(join(orchDir, lockName), { force: true });
+}
+
+// Block until the named lock is acquired or the timeout elapses. Used for the
+// merge-lock: finalize must serialize (wait its turn), not skip its merge.
+export function acquireBlocking(orchDir, lockName = "lock", { intervalMs = 200, timeoutMs = 300000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (acquireLock(orchDir, lockName)) return true;
+    if (Date.now() >= deadline) return false;
+    sleepSync(intervalMs);
+  }
+}
+
+// Synchronous sleep with no busy-spin and no dependencies.
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 export function isPaused(orchDir) {
