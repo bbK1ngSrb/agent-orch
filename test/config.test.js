@@ -21,6 +21,11 @@ test("parseRoleSpec: agent + model only", () => {
     { agent: "codex", model: "gpt-5.1", effort: null });
 });
 
+test("parseRoleSpec: agent + effort only (effort keyword, no model)", () => {
+  assert.deepEqual(parseRoleSpec("codex high"),
+    { agent: "codex", model: null, effort: "high" });
+});
+
 test("parseRoleSpec: rejects empty spec", () => {
   assert.throws(() => parseRoleSpec("  "), /must name an agent/);
 });

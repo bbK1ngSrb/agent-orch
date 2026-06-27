@@ -50,14 +50,24 @@ function validate(cfg) {
 // A role spec is "<agent> [model] [effort]" — whitespace-separated fields.
 //   agent  — required; one of the registered agents
 //   model  — optional model id, may carry a subversion (e.g. opus-4.8); opaque
-//   effort — optional reasoning effort (e.g. low | medium | high); opaque
+//   effort — optional reasoning effort; one of EFFORTS below
 // String form only — it covers both CLI flags and YAML plain scalars.
 // Bare names ("claude") parse to { agent: "claude", model: null, effort: null },
 // so old configs and CLI flags keep working unchanged.
+// A trailing token matching a known effort keyword is taken as effort, so
+// "codex high" => {effort:"high"} (not model:"high") and effort is settable
+// without also naming a model. ponytail: a model literally named like an effort
+// keyword would be misread — none exists, and effort is a reserved trailing word.
+const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "minimal"]);
 export function parseRoleSpec(spec) {
   const parts = String(spec ?? "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) throw new Error("role spec must name an agent");
-  const [agent, model = null, effort = null] = parts;
+  const [agent, ...rest] = parts;
+  let effort = null;
+  if (rest.length && EFFORTS.has(rest[rest.length - 1].toLowerCase())) {
+    effort = rest.pop();
+  }
+  const model = rest.length ? rest[0] : null;
   return { agent, model, effort };
 }
 
