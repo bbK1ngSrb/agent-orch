@@ -90,6 +90,28 @@ test("parse splits command, rest, and flags", () => {
   assert.equal(p.flags.reviewers, "codex,claude");
 });
 
+test("parse captures --file flag", () => {
+  const p = parse(["task", "--file", "task.md", "--dry"]);
+  assert.equal(p.command, "task");
+  assert.equal(p.flags.file, "task.md");
+});
+
+test("--file loads task from file (dry)", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-file-"));
+  const f = join(d, "task.md");
+  writeFileSync(f, "  do the thing from a file\n");
+  const prev = cwd();
+  chdir(d);
+  try {
+    process.exitCode = 0;
+    await main(["task", "--file", f, "--dry"]);
+    assert.notEqual(process.exitCode, 2);
+  } finally {
+    chdir(prev);
+    process.exitCode = 0;
+  }
+});
+
 test("nextAuthor alternates and persists last-author", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
   const cfg = { agents: ["claude", "codex"] };

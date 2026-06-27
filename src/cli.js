@@ -72,6 +72,7 @@ export function parse(argv) {
       reviewer: { type: "string" },
       authors: { type: "string" },
       reviewers: { type: "string" },
+      file: { type: "string" },
     },
   });
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
@@ -232,8 +233,8 @@ export async function main(argv) {
     const mode = command; // "task" | "review"
     let runs, task;
     if (mode === "task") {
-      task = rest.join(" ");
-      if (!task) throw new Error('usage: orch task "describe the change"');
+      task = flags.file ? readFileSync(flags.file, "utf8").trim() : rest.join(" ");
+      if (!task) throw new Error('usage: orch task "describe the change" (or --file path)');
       const { authorNames, reviewerNames } = nextAuthor(cfg, orchDir);
       runs = authorNames.map((authorName) => {
         const branch = `pr/${authorName}/${slugify(task)}`;
@@ -301,7 +302,7 @@ export async function main(argv) {
     return;
   }
 
-  console.log(`agent-orch ${VERSION}\nUsage:\n  orch init\n  orch task "change" [--author A --reviewer B]\n  orch review <branch> [--reviewer A,B]\n  orch pr <number> [--merge] [--reviewer A,B]\n  (flags: --dry, --version)`);
+  console.log(`agent-orch ${VERSION}\nUsage:\n  orch init\n  orch task "change" [--author A --reviewer B]   (or: orch task --file task.md)\n  orch review <branch> [--reviewer A,B]\n  orch pr <number> [--merge] [--reviewer A,B]\n  (flags: --dry, --version)`);
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds

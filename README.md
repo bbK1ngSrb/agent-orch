@@ -26,6 +26,7 @@ Run from inside the git repo you want orchestrated:
 orch init                                  # scaffold .orch/orch.yml, verify agent CLIs
 orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
 orch task "fix x" --authors claude,codex --reviewers claude,codex
+orch task --file task.md                    # load the task description from a file
 orch review pr/claude/some-branch          # audit an existing branch (no authoring)
 orch pr 42                                  # audit a GitHub PR, post verdict as a comment
 orch pr 42 --merge                          # ...and merge it via gh if agents approve
