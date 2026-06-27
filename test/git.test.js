@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
@@ -119,4 +119,49 @@ test("ff-only merge fails (ok:false) when main moved", () => {
 
   const r = mergeIntoMain(repo, "pr/claude/y", "ff-only");
   assert.equal(r.ok, false);
+});
+
+test("createTaskBranch writes pid\\nsid into the ownership marker", () => {
+  const repo = newRepo();
+  const wt = join(repo, ".orch", "wt", "pr_claude_m");
+  createTaskBranch(repo, wt, "pr/claude/m", "main", `${process.pid}\nabc-1`);
+  const marker = readFileSync(`${realpathSync(wt)}.orch-task`, "utf8");
+  assert.equal(marker, `${process.pid}\nabc-1`);
+  pruneWorktree(repo, wt);
+});
+
+test("reclaim PRESERVES a worktree whose owner PID is alive (live peer)", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_live");
+  createTaskBranch(repo, wt, "pr/claude/live", "main", `${process.pid}\nlive-1`); // our pid = alive
+
+  reclaimOrphanWorktrees(repo, orchDir);
+
+  assert.equal(branchExists(repo, "pr/claude/live"), true); // live peer untouched
+  assert.match(git(["worktree", "list"], repo), /pr_claude_live/);
+  pruneWorktree(repo, wt);
+});
+
+test("reclaim SWEEPS a worktree whose owner PID is dead", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_dead");
+  createTaskBranch(repo, wt, "pr/claude/dead", "main", "999999999\ndead-1"); // PID that cannot run
+
+  reclaimOrphanWorktrees(repo, orchDir);
+
+  assert.equal(branchExists(repo, "pr/claude/dead"), false);
+  assert.doesNotMatch(git(["worktree", "list"], repo), /pr_claude_dead/);
+});
+
+test("reclaim SWEEPS a worktree with an empty (pre-PID / died-early) marker", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_empty");
+  createTaskBranch(repo, wt, "pr/claude/empty", "main", ""); // legacy empty marker
+
+  reclaimOrphanWorktrees(repo, orchDir);
+
+  assert.equal(branchExists(repo, "pr/claude/empty"), false);
 });

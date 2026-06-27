@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Ownership marker: a sibling file next to an orch-created task worktree. Its
@@ -7,6 +7,20 @@ import { join } from "node:path";
 // review-attached user branches (no marker) are never auto-deleted. Sited next
 // to the worktree dir, not inside it, so `git worktree remove` can't touch it.
 const taskMarker = (path) => `${path}.orch-task`;
+
+// First line of the ownership marker is the owner PID. Empty/garbage → null.
+function ownerPid(markerPath) {
+  try {
+    const pid = parseInt(readFileSync(markerPath, "utf8").split("\n")[0].trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; }
+}
 
 export function git(args, cwd) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -32,12 +46,12 @@ export function branchExists(repo, branch) {
 }
 
 // task mode: branch must NOT exist (orch owns it). Fail otherwise.
-export function createTaskBranch(repo, path, branch, base) {
+export function createTaskBranch(repo, path, branch, base, markerContent = "") {
   if (branchExists(repo, branch)) throw new Error(`branch already exists: ${branch}`);
   git(["worktree", "add", "-b", branch, path, base], repo);
-  // Mark this branch as an orch throwaway so a crash sweep may delete it. The
-  // marker is canonicalized to match the realpath the sweep reads from git.
-  writeFileSync(taskMarker(realpathSync(path)), "");
+  // Marker now records the owner so the sweep can spare LIVE peers (no global
+  // lock anymore). Empty marker = died before writing = swept (legacy parity).
+  writeFileSync(taskMarker(realpathSync(path)), markerContent);
 }
 
 // review mode: branch MUST exist (human/other tool made it). Never create it.
@@ -77,10 +91,18 @@ export function reclaimOrphanWorktrees(repo, orchDir) {
     let branch = null;
     const flush = () => {
       if (path && path.startsWith(wtRoot)) {
-        const owned = existsSync(taskMarker(path)); // orch-created throwaway?
+        const marker = taskMarker(path);
+        const owned = existsSync(marker); // orch-created throwaway?
+        const pid = owned ? ownerPid(marker) : null;
+        if (owned && pid !== null && pidAlive(pid)) {
+          // live peer in a concurrent cycle — leave it entirely alone
+          path = null;
+          branch = null;
+          return;
+        }
         gitTry(["worktree", "remove", "--force", path], repo);
         if (branch && owned) gitTry(["branch", "-D", branch], repo); // never a user branch
-        rmSync(taskMarker(path), { force: true });
+        rmSync(marker, { force: true });
       }
       path = null;
       branch = null;
