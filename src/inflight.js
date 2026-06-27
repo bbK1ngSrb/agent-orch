@@ -13,11 +13,15 @@ export function register(orchDir, sid, { branch, pid, baseSha }) {
 
 export function setPaths(orchDir, sid, paths, baseSha) {
   const p = file(orchDir, sid);
-  if (!existsSync(p)) return;
-  const e = JSON.parse(readFileSync(p, "utf8"));
-  e.paths = paths;
-  if (baseSha) e.baseSha = baseSha;
-  writeFileSync(p, JSON.stringify(e));
+  try {
+    const e = JSON.parse(readFileSync(p, "utf8"));
+    e.paths = paths;
+    if (baseSha !== undefined) e.baseSha = baseSha;
+    writeFileSync(p, JSON.stringify(e));
+  } catch (err) {
+    // Treat missing file (ENOENT) and parse errors as silent no-op.
+    // In multi-process designs, the file may be removed or corrupted between calls.
+  }
 }
 
 export function deregister(orchDir, sid) {

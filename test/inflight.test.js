@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { register, setPaths, deregister, listLive, countLive, peerPaths } from "../src/inflight.js";
@@ -31,4 +31,12 @@ test("peerPaths excludes the caller's own sid", () => {
   setPaths(d, "me", ["a.js"]);
   setPaths(d, "peer", ["b.js", "c.js"]);
   assert.deepEqual(peerPaths(d, "me").sort(), ["b.js", "c.js"]);
+});
+
+test("listLive deletes a corrupt entry", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-if-"));
+  register(d, "good", { branch: "b", pid: process.pid, baseSha: "z" });
+  mkdirSync(join(d, "inflight"), { recursive: true });
+  writeFileSync(join(d, "inflight", "corrupt.json"), "{bad json");
+  assert.equal(countLive(d), 1); // corrupt dropped, good kept
 });
