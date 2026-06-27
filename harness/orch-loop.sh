@@ -52,7 +52,19 @@ sleep_secs() {
         local ampm="${BASH_REMATCH[4],,}"
         [ "$ampm" = pm ] && [ "$hh" -lt 12 ] && hh=$(( hh + 12 ))
         [ "$ampm" = am ] && [ "$hh" -eq 12 ] && hh=0
-        local target; target=$(date -d "today ${hh}:${mm}" +%s 2>/dev/null) || target=""
+        # Claude states the reset in UTC ("reset at 3pm (UTC)"). Resolve the wall
+        # time in the zone the message names, not the host's local zone — else a
+        # non-UTC host computes the wrong target and oversleeps (see issue #21).
+        # ponytail: only UTC/GMT recognized (that's what the CLI emits); any other
+        # explicit offset would need a real tz parse — POLL fallback still bounds it.
+        # NB: TZ="" means UTC on glibc, not local — so only export TZ for the UTC
+        # case and run a bare `date` (host local zone) otherwise.
+        local target
+        if [[ "$msg" =~ (UTC|GMT) ]]; then
+            target=$(TZ=UTC date -d "today ${hh}:${mm}" +%s 2>/dev/null) || target=""
+        else
+            target=$(date -d "today ${hh}:${mm}" +%s 2>/dev/null) || target=""
+        fi
         if [ -n "$target" ]; then
             [ "$target" -le "$now" ] && target=$(( target + 86400 ))  # already passed -> tomorrow
             echo $(( target - now + 30 )); return
@@ -121,6 +133,16 @@ selftest() {
     POLL=900 f=$(sleep_secs "usage limit reached, try later"); [ "$f" -eq 900 ] || { echo "FAIL poll fallback ($f)"; exit 1; }
     # am/pm parse returns something positive and < 24h
     f=$(sleep_secs "your limit will reset at 3pm"); [ "$f" -gt 0 ] && [ "$f" -le 86430 ] || { echo "FAIL ampm parse ($f)"; exit 1; }
+    # UTC marker honored regardless of host TZ (issue #21): under a non-UTC zone,
+    # "reset at 3pm (UTC)" must target 15:00 UTC, not 15:00 local. Compare against
+    # an independent 15:00-UTC computation; allow 60s for grace + clock drift.
+    local want got delta
+    want=$(TZ=UTC date -d "today 15:00" +%s); now=$(date +%s)
+    [ "$want" -le "$now" ] && want=$(( want + 86400 ))
+    want=$(( want - now + 30 ))
+    got=$(TZ="America/New_York" sleep_secs "Your limit will reset at 3pm (UTC)")
+    delta=$(( got - want )); delta=${delta#-}
+    [ "$delta" -le 60 ] || { echo "FAIL utc tz (got=$got want=$want)"; exit 1; }
     echo "selftest OK"
 }
 
