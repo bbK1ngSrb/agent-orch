@@ -74,7 +74,7 @@ export function pruneWorktree(repo, path) {
 // lock: no live cycle owns these. A branch is deleted ONLY when its orch-task
 // marker is present (so a same-slug task retry doesn't throw on `worktree add
 // -b`); review-attached user branches have no marker and are always preserved.
-export function reclaimOrphanWorktrees(repo, orchDir) {
+export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) {
   // Canonicalize: git stores worktree paths as realpaths, but orchDir may arrive
   // via a symlink (this repo is reachable through /mnt/... and a ~/...-symlink).
   // Without this the prefix match silently skips every orphan on the alt path.
@@ -91,11 +91,18 @@ export function reclaimOrphanWorktrees(repo, orchDir) {
     let branch = null;
     const flush = () => {
       if (path && path.startsWith(wtRoot)) {
+        // Belt 1: branch is registered as in-flight (worktree may not have marker yet —
+        // this protects the window between `git worktree add` and `writeFileSync(marker)`).
+        if (branch && liveBranches.has(branch)) {
+          path = null;
+          branch = null;
+          return;
+        }
         const marker = taskMarker(path);
         const owned = existsSync(marker); // orch-created throwaway?
         const pid = owned ? ownerPid(marker) : null;
         if (owned && pid !== null && pidAlive(pid)) {
-          // live peer in a concurrent cycle — leave it entirely alone
+          // Belt 2: live peer in a concurrent cycle — leave it entirely alone
           path = null;
           branch = null;
           return;

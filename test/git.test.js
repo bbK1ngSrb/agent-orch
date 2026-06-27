@@ -179,6 +179,29 @@ test("changedSince lists files merged into main after a base sha", () => {
   assert.deepEqual(changedSince(repo, base), ["new.txt"]);
 });
 
+test("reclaim PRESERVES a worktree whose branch is in liveBranches even when marker has dead pid (final-review I3)", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_inflight");
+  createTaskBranch(repo, wt, "pr/claude/inflight", "main", "999999999\ninflight-1"); // dead pid — would normally be swept
+  // pass the branch as live-in-flight → must be preserved (marker-before-add race)
+  reclaimOrphanWorktrees(repo, orchDir, new Set(["pr/claude/inflight"]));
+  assert.equal(branchExists(repo, "pr/claude/inflight"), true); // branch preserved
+  assert.match(git(["worktree", "list"], repo), /pr_claude_inflight/); // worktree preserved
+  pruneWorktree(repo, wt); // cleanup
+});
+
+test("reclaim still sweeps a dead-pid worktree NOT listed in liveBranches", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_deadx");
+  createTaskBranch(repo, wt, "pr/claude/deadx", "main", "999999999\ndead-x"); // dead pid
+  // pass a different branch as live — deadx is not protected
+  reclaimOrphanWorktrees(repo, orchDir, new Set(["pr/claude/some-other"]));
+  assert.equal(branchExists(repo, "pr/claude/deadx"), false); // swept
+  assert.doesNotMatch(git(["worktree", "list"], repo), /pr_claude_deadx/);
+});
+
 test("reclaim never sweeps the .orch/integration worktree", () => {
   const repo = newRepo();
   git(["checkout", "-b", "work"], repo);

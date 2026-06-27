@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Atomic lock via O_EXCL (flag "wx") — fails if the lock already exists. The
@@ -15,8 +15,20 @@ export function acquireLock(orchDir, lockName = "lock", retried = false) {
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
     if (!retried && isStale(lockPath)) {
-      rmSync(lockPath, { force: true });
-      return acquireLock(orchDir, lockName, true); // one shot — never recurse on a re-crash
+      // Atomic steal: rename the stale lock to a private name. Exactly one racer
+      // wins the rename; the rest get ENOENT (file already moved) and retry. Only
+      // the winner removes the stolen file, then recreates via wx. rm-then-create
+      // was a non-atomic CAS — two racers could each delete the other's fresh lock
+      // and both acquire. (final-review C1)
+      const steal = `${lockPath}.steal.${process.pid}`;
+      try {
+        renameSync(lockPath, steal);
+      } catch (re) {
+        if (re.code === "ENOENT") return acquireLock(orchDir, lockName, true); // lost the steal; one retry
+        throw re;
+      }
+      rmSync(steal, { force: true });
+      return acquireLock(orchDir, lockName, true); // won the steal; create fresh
     }
     return false;
   }

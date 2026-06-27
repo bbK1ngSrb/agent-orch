@@ -340,7 +340,8 @@ export async function main(argv, deps = {}) {
       const head = git.git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
       if (head === "main")
         throw new Error("orch needs `main` for its .orch/integration worktree — switch cwd to a working branch (e.g. `git switch -c work`) and rerun.");
-      git.reclaimOrphanWorktrees(repo, orchDir); // PID-aware: clears dead cycles, spares live peers
+      const liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
+      git.reclaimOrphanWorktrees(repo, orchDir, liveBranches); // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers
     }
 
     const results = [];

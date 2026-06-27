@@ -47,7 +47,7 @@ function overlaps(mine, others) {
 async function demote(ctx, deps, reason) {
   const { orchDir, branch, rounds } = ctx;
   const { github, notify } = deps;
-  const r = await github.demote(ctx);
+  const r = await github.demote({ ...ctx, reason });
   notify.recordRun(orchDir, {
     ts: new Date().toISOString(), branch, verdict: "pr-fallback", reason, rounds,
     ...(r.prUrl ? { prUrl: r.prUrl } : {}),

@@ -73,13 +73,26 @@ test("post-merge test failure → reset + pr-fallback", async () => {
   assert.ok(resets.length === 1); // rolled main back to pre-merge sha
 });
 
+test("demote reason is forwarded to github.demote (final-review I2)", async () => {
+  let capturedCtx;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, mergeInWorktree: () => ({ ok: false, reason: "CONFLICT" }) },
+    github: { demote: async (c) => { capturedCtx = c; return { prUrl: "https://x/pr/1" }; } },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "pr-fallback");
+  assert.equal(capturedCtx.reason, "conflict"); // reason threaded via { ...ctx, reason }
+});
+
 test("merge-lock timeout → pr-fallback without touching the worktree", async () => {
   let ensured = false;
+  let releaseCalls = 0;
   const { deps } = baseDeps({
-    lock: { acquireBlocking: () => false, releaseLock: () => {} },
+    lock: { acquireBlocking: () => false, releaseLock: () => { releaseCalls++; } },
     git: { ...baseDeps().deps.git, ensureIntegrationWorktree: () => { ensured = true; return "/integ"; } },
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "pr-fallback");
   assert.equal(ensured, false);
+  assert.equal(releaseCalls, 0); // must not release a lock we never acquired
 });

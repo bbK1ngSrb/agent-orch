@@ -60,6 +60,18 @@ test("a named lock is independent of the default lock", () => {
   assert.equal(existsSync(join(d, "merge.lock")), false);
 });
 
+test("stale-lock atomic steal: dead-owner lock is stolen, reacquired with our pid, then returns false (live holder)", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
+  writeFileSync(join(d, "lock"), "999999999"); // dead PID — stale lock
+  // steal succeeds
+  assert.equal(acquireLock(d), true);
+  // winner's lock now holds our PID
+  assert.equal(readFileSync(join(d, "lock"), "utf8").trim(), String(process.pid));
+  // second acquire must return false — we're alive, not a stale entry
+  assert.equal(acquireLock(d), false);
+  releaseLock(d);
+});
+
 test("acquireBlocking returns true when free, false on timeout when held by a live owner", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
   assert.equal(acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 100 }), true);

@@ -250,6 +250,7 @@ test("task branch includes a sid suffix", async () => {
 });
 
 test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
+  const savedExitCode = process.exitCode; // save before test body so finally can restore, not force 0
   const d = mkdtempSync(join(tmpdir(), "orch-cap-"));
   const prev = cwd();
   chdir(d);
@@ -277,7 +278,7 @@ test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
     assert.match(logs.join("\n"), /concurrency cap 4 reached/);
   } finally {
     chdir(prev);
-    process.exitCode = 0;
+    process.exitCode = savedExitCode; // restore instead of unconditionally forcing 0
   }
 });
 
