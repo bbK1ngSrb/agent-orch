@@ -4,13 +4,24 @@ import { parseVerdict } from "../verdict.js";
 
 const OPTS = { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 };
 
+// True if CLI output looks like a Claude usage/rate-limit message. Keep this in
+// sync with the regex in harness/orch-loop.sh (is_limit) — that wrapper waits
+// out the limit and resumes, so the error must propagate, not get masked.
+const LIMIT_RE = /usage limit|rate.?limit|limit (will )?reset|resets? at|\b429\b|overloaded/i;
+export function isUsageLimit(text) {
+  return LIMIT_RE.test(text || "");
+}
+
 // Returns { out, ok }. On nonzero exit / crash, still captures whatever the
-// agent printed so audit() can fail safely instead of throwing.
+// agent printed so audit() can fail safely instead of throwing — EXCEPT a usage
+// limit, which we rethrow so the run aborts (rather than logging a bogus
+// DISAGREE) and the harness can wait for reset and resume.
 function runCapture(bin, args, cwd) {
   try {
     return { out: execFileSync(bin, args, { cwd, ...OPTS }), ok: true };
   } catch (e) {
     const out = `${e.stdout || ""}${e.stderr || ""}` || (e.message || "");
+    if (isUsageLimit(out)) throw new Error(`usage limit hit: ${out.trim().slice(0, 200)}`);
     return { out, ok: false };
   }
 }
