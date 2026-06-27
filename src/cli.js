@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync, openSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { execFileSync, spawn } from "node:child_process";
@@ -17,6 +17,7 @@ import { newSid } from "./sid.js";
 import * as inflight from "./inflight.js";
 import * as resume from "./resume.js";
 import { finalize } from "./finalize.js";
+import { validateWorkOrder, buildAuthorPrompt } from "./intake/workorder.js";
 
 export { slugify };
 
@@ -254,6 +255,19 @@ function reviewersForAuthor(authorName, reviewerSpecs) {
 // tasks share one key and the later fresh start clobbers the record — same
 // fixed-prompt collision spawnDocsTask already stamps around; sequential retry
 // (the real case) resumes and never overwrites.
+// §3a: read + shape-validate an untrusted work-order file. JSON only — a
+// free-text file is rejected with a clear message (breaking change vs. the old
+// free-text --file). Returns the validated work order or throws.
+export function parseWorkOrderFile(path) {
+  const raw = readFileSync(path, "utf8");
+  let obj;
+  try { obj = JSON.parse(raw); }
+  catch { throw new Error(`--file must be a JSON work order {title, problem, repro_steps, suspected_paths, acceptance_criteria}: ${path}`); }
+  const v = validateWorkOrder(obj);
+  if (!v.ok) throw new Error(`invalid work order in ${path}:\n- ${v.errors.join("\n- ")}`);
+  return v.workOrder;
+}
+
 export function resolveTaskBranch(ctx, deps = { git, resume }) {
   const { repo, orchDir, task, authorName, dry = false, liveBranches = new Set() } = ctx;
   const { git: g, resume: r } = deps;
@@ -339,15 +353,28 @@ export async function main(argv, deps = {}) {
 
     let runs, task;
     if (mode === "task") {
-      task = flags.file ? readFileSync(flags.file, "utf8").trim() : rest.join(" ");
-      if (!task) throw new Error('usage: orch task "describe the change" (or --file path)');
+      // §3a/§3b: a --file task is UNTRUSTED intake — it must be a JSON work order,
+      // validated for shape, then wrapped in a neutralized fence the author treats
+      // as reference, not instructions. Free-text `orch task "..."` (operator-typed,
+      // trusted) is unchanged. `task` stays a short human label (drives slug/resume);
+      // `authorPrompt` is what the author actually sees.
+      let authorPrompt;
+      if (flags.file) {
+        const wo = parseWorkOrderFile(flags.file);
+        task = wo.title;
+        authorPrompt = buildAuthorPrompt(wo);
+      } else {
+        task = rest.join(" ");
+        authorPrompt = task;
+      }
+      if (!task) throw new Error('usage: orch task "describe the change" (or --file work-order.json)');
       const { authors, reviewers } = nextAuthor(cfg, orchDir);
       runs = authors.map((authorSpec) => {
         const authorName = authorSpec.agent;
         const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches });
         const reviewerList = reviewersForAuthor(authorName, reviewers);
         return {
-          mode, task, branch, sid, resume, authorName, author: authorSpec,
+          mode, task, authorPrompt, branch, sid, resume, authorName, author: authorSpec,
           reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
           reviewers: reviewerList,
           cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
@@ -430,7 +457,9 @@ export async function main(argv, deps = {}) {
 Usage:
   orch init
   orch agent add <name>
-  orch task "change" [--author "<agent> [model] [effort]" --reviewer "<agent> [model] [effort]"]   (or: orch task --file task.md)
+  orch task "change" [--author "<agent> [model] [effort]" --reviewer "<agent> [model] [effort]"]
+    (or: orch task --file work-order.json — an UNTRUSTED JSON work order:
+     {title, problem, repro_steps[], suspected_paths[], acceptance_criteria[]}; title/problem required)
   orch review <branch> [--reviewer "claude opus-4.8 high, codex"]
   orch pr <number> [--merge] [--reviewer ...]
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. opus-4.8).
@@ -438,25 +467,13 @@ Usage:
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds
-// the engine to its real deps; readVerdict pulls the reviewer's written case.
+// the engine to its real deps. §3f: the public PR comment is a machine summary
+// only (built in github.runPr), so no reviewer prose is read back here.
 function githubDeps() {
   return {
     gh: (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString(),
     git: git.git,
     cycle: (o) => runCycle(o, realDeps()),
-    readVerdict,
     log: (m) => process.stderr.write(`▶ ${m}\n`),
   };
-}
-
-function readVerdict(orchDir, branch) {
-  const dir = notify.reviewsDir(orchDir, branch);
-  const decision = join(dir, "DECISION.md");
-  if (existsSync(decision)) return readFileSync(decision, "utf8");
-  if (!existsSync(dir)) return "";
-  return readdirSync(dir)
-    .filter((f) => f.startsWith("round-"))
-    .sort()
-    .map((f) => readFileSync(join(dir, f), "utf8"))
-    .join("\n");
 }

@@ -309,3 +309,54 @@ test("resume:true still runs the scope gate on the resumed work", async () => {
   assert.equal(r.status, "escalated");
   assert.match(r.reason, /scope/);
 });
+
+test("§3c: a protected-path diff is blocked at the merge boundary", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: ["src/gate.js"] });
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /protected path/i);
+  assert.match(r.reason, /src\/gate\.js/);
+  assert.notEqual(deps._calls.finalized, true, "must escalate before finalize merges");
+});
+
+test("§3c: a CLEAN round 1 then a protected-path REVISE is still blocked", async () => {
+  // The hole the merge-boundary gate closes: an early/first-pass gate would let a
+  // dirty revise through. Gating the FINAL diff catches the revise.
+  const deps = makeDeps({
+    verdicts: [{ decision: "DISAGREE", reason: "nope", raw: "" }, { decision: "AGREE", reason: "ok", raw: "" }],
+    changed: ["src/verdict.js"],
+  });
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /protected path/i);
+  assert.equal(deps._calls.authors, 2, "initial author + one revise both ran");
+  assert.equal(deps._calls.audits, 2, "gate fires only after the revise round's AGREE");
+});
+
+test("§3c: protected-path gate also catches a resumed dangerous diff", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: ["src/intake/allowlist.js"] });
+  deps.git.attachExistingBranch = () => {};
+  const r = await runCycle({ ...opts, resume: true }, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /protected path/i);
+  assert.equal(deps._calls.authors, 0, "resume skips authoring; gate still fires on the resumed diff");
+});
+
+test("§3c: an `orch review` merge of a protected path is blocked too (any author)", async () => {
+  // Intended widening: the gate sits at the merge boundary, so guardrail files
+  // never auto-land regardless of who wrote the branch — CODEOWNERS-equivalent.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: ["package.json"] });
+  deps.git.attachExistingBranch = () => {};
+  const r = await runCycle({ ...opts, mode: "review" }, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /protected path/i);
+  assert.notEqual(deps._calls.finalized, true, "review must not merge a guardrail-file branch");
+});
+
+test("§3b: initial author receives opts.authorPrompt verbatim (fenced work order)", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  const fenced = "BEGIN UNTRUSTED REFERENCE\nproblem: x\nEND UNTRUSTED REFERENCE";
+  const r = await runCycle({ ...opts, authorPrompt: fenced }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(deps._calls.prompts[0], fenced, "the fenced prompt drives the author, not the bare task");
+});

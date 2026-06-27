@@ -6,6 +6,13 @@ docs/task*-run*.md
 docs/task*-audit*.md
 docs/task*-complete.md
 
+# internal working docs — not for the public repo (leak homelab paths/IPs)
+docs/superpowers/
+docs/2026-06-23-cross-audit-pr-orchestration.md
+docs/2026-06-23-cross-audit-pr-orchestration-design.md
+docs/audit-findings.md
+tasks/homelab-leak-audit.md
+
 # stray multi-tool config files (this project is npm-only)
 .env
 .env.*

@@ -34,13 +34,25 @@ Run from inside the git repo you want orchestrated:
 orch init                                  # scaffold .orch/orch.yml, verify agent CLIs
 orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
 orch task "fix x" --authors claude,codex --reviewers claude,codex
-orch task --file task.md                    # load the task description from a file
+orch task --file wo.json                    # untrusted JSON work order (validated + fenced)
 orch review pr/claude/some-branch          # audit an existing branch (no authoring)
 orch pr 42                                  # audit a GitHub PR, post verdict as a comment
 orch pr 42 --merge                          # ...and merge it via gh if agents approve
 ```
 Add `--dry` to any `task`/`review` run to simulate a cycle without touching git,
 agents, or tests. `orch` exits non-zero (`2`) when a cycle escalates for a human.
+
+`--file` takes a JSON **work order** (untrusted intake — its free text is fenced,
+never executed as instructions). `title` and `problem` are required; the arrays
+may be empty:
+
+```json
+{ "title": "fix the flaky login test",
+  "problem": "login test fails ~1 in 5 runs under load",
+  "repro_steps": ["run npm test 5x"],
+  "suspected_paths": ["src/auth.js"],
+  "acceptance_criteria": ["test passes 20x in a row"] }
+```
 
 `orch pr <n>` needs the [`gh`] CLI authenticated. It fetches the PR head, runs an
 audit-only cycle (local `main` is never touched — GitHub owns the merge), and
@@ -50,7 +62,7 @@ agents approve and tests pass.
 [`gh`]: https://cli.github.com/
 
 ## Agents
-`claude`, `codex`, and three local-llm models served via [llama-swap] behind
+`claude`, `codex`, and three local-llm models served via llama-swap behind
 claude-code-router (`ccr`): `qwen3-coder-30b`, `deepseek-coder-v2-lite`,
 `glm-4.5-air`. Local models need `ccr` on PATH and `~/.claude-code-router/config.json`
 defining a `local` provider (see `local-llm/configs/`).
@@ -72,8 +84,6 @@ reviewers: [claude, codex]   # all audit each branch, except its author
 ```
 CLI flags override `orch.yml`: `--author/--reviewer` or comma-separated
 `--authors/--reviewers`.
-
-[llama-swap]: http://192.168.10.60:8080/
 
 ## Quickstart
 ```bash

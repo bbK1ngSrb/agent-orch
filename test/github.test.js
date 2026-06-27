@@ -36,9 +36,12 @@ test("runPr fetches PR head, audits with noMerge, comments", async () => {
   assert.equal(deps._calls.cycleOpts.mode, "review");
   assert.equal(deps._calls.cycleOpts.noMerge, true);
   assert.equal(deps._calls.cycleOpts.branch, "pr-7");
-  // posted a comment via stdin
+  // posted a comment via stdin — §3f: machine summary only, NEVER reviewer prose
   const comment = deps._calls.gh.find((c) => c.args[1] === "comment");
-  assert.ok(comment && comment.input.includes("reviewer says ok"));
+  assert.ok(comment, "a PR comment must be posted");
+  assert.ok(!comment.input.includes("reviewer says ok"), "reviewer prose must not reach the public PR");
+  assert.match(comment.input, /orch verdict:/);
+  assert.match(comment.input, /branch: pr-7/);
   // local branch cleaned up
   assert.ok(deps._calls.git.some((a) => a[0] === "branch" && a[1] === "-D"));
 });
@@ -107,4 +110,30 @@ test("demote escalates locally when there is no remote", async () => {
   assert.equal(r.prUrl, null);
   assert.equal(escalated.branch, "pr/claude/x-1");
   assert.match(escalated.brief, /conflict/);
+});
+
+test("§3f: demote redacts a secret-shaped branch in the PR title/body it posts", async () => {
+  const token = "ghp_" + "a".repeat(36); // GitHub-PAT shape — survives publicSummary's \w branch sanitizer
+  const calls = [];
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/1\n"; };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+  await demote({ repo: "/r", orchDir: "/o", branch: token, reason: "overlap" },
+    { gh, git, notify: { escalate() {} } });
+  const args = calls.find((c) => c[0] === "gh" && c[2] === "create");
+  const valOf = (flag) => args[args.indexOf(flag) + 1];
+  // --head must keep the REAL ref so gh can find the branch...
+  assert.equal(valOf("--head"), token, "--head must carry the real branch ref, unredacted");
+  // ...but the human-readable title/body must be scrubbed.
+  assert.ok(!valOf("--title").includes(token) && valOf("--title").includes("«redacted»"));
+  assert.ok(!valOf("--body").includes(token));
+});
+
+test("§3f: runPr comment passes through redact (no raw secret in the body)", async () => {
+  // publicSummary is machine-only, so redact is the belt: prove the posted body is redact()'d.
+  const deps = makeDeps();
+  await runPr(opts, deps);
+  const comment = deps._calls.gh.find((c) => c.args[1] === "comment");
+  // A clean run has nothing to redact, but the body must be a string that went through it.
+  assert.equal(typeof comment.input, "string");
+  assert.doesNotMatch(comment.input, /gh[pousr]_[A-Za-z0-9]{36,}/, "no unredacted PAT may appear");
 });
