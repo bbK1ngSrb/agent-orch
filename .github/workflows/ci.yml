@@ -9,3 +9,10 @@ jobs:
         with: { node-version: "24" }
       - run: npm ci || npm install
       - run: npm test
+      - name: bash selftest
+        run: |
+          if [ -f harness/orch-loop.sh ]; then
+            bash harness/orch-loop.sh --selftest
+          else
+            echo "harness/orch-loop.sh absent on this ref, skipping"
+          fi
