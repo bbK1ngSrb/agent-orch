@@ -19,6 +19,19 @@ test("uses the LAST verdict token when several appear", () => {
   assert.equal(v.decision, "AGREE");
 });
 
+test("keeps the reason when the reviewer ends WITH the verdict token", () => {
+  // Reasoning-before-verdict: the reason precedes the token, nothing follows it.
+  const v = parseVerdict("Tests are missing and scope is too wide.\nDISAGREE");
+  assert.equal(v.decision, "DISAGREE");
+  assert.match(v.reason, /Tests are missing/);
+  assert.notEqual(v.reason, "(no reason given)");
+});
+
+test("prefers the after-token reason over before-token text", () => {
+  const v = parseVerdict("preamble\nDISAGREE the real reason is here");
+  assert.equal(v.reason, "the real reason is here");
+});
+
 test("missing verdict is a fail-safe DISAGREE", () => {
   const v = parseVerdict("no verdict here");
   assert.equal(v.decision, "DISAGREE");
