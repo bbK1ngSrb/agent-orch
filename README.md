@@ -110,6 +110,15 @@ while a branch you handed to `orch review` is always preserved, never auto-delet
 `orch pr` is still serialized by `.orch/lock` (one at a time per repo dir); the same
 PID-liveness logic lets a crashed `orch pr` be reclaimed on the next run.
 
+**Resume after a quota abort.** When a usage limit aborts an `orch task` mid-cycle,
+the author's committed work survives on its branch; the run's sid is recorded in
+`.orch/resume/` keyed on the task text. The next run with the **same task** reattaches
+that branch and continues from the committed work (audit → gate → merge) instead of
+re-authoring from scratch — so `harness/orch-loop.sh` resumes rather than restarts
+(issue #24). It restarts cleanly if the limit hit before any commit, or if a hard
+kill left no branch to resume. Resume is per-author-branch and never hijacks a live
+peer's branch.
+
 ## Concurrent cycles
 
 Multiple `orch task` runs can drive the same repo directory in parallel. Launch

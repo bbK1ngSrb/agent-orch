@@ -284,3 +284,28 @@ test("AGREE + green but finalize demotes → status pr-fallback", async () => {
   }, deps);
   assert.equal(res.status, "pr-fallback");
 });
+
+test("resume:true attaches the existing branch and skips the initial author (issue #24)", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  const calls = { create: 0, attach: 0 };
+  deps.git.createTaskBranch = () => { calls.create++; };
+  deps.git.attachExistingBranch = () => { calls.attach++; };
+  const r = await runCycle({ ...opts, resume: true }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(calls.attach, 1, "resume must attach the existing branch");
+  assert.equal(calls.create, 0, "resume must not create a fresh branch");
+  assert.equal(deps._calls.authors, 0, "resume must skip the initial author step (work already committed)");
+  assert.equal(deps._calls.audits, 1, "resume proceeds straight to audit");
+});
+
+test("resume:true still runs the scope gate on the resumed work", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.attachExistingBranch = () => {};
+  deps.scope.count = () => 999; // over cap
+  const r = await runCycle(
+    { ...opts, resume: true, cfg: { ...opts.cfg, scope: { maxLines: 10, ignore: [] } } },
+    deps,
+  );
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /scope/);
+});

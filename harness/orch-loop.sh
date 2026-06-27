@@ -8,6 +8,11 @@
 # 5h limit is up, it sleeps until reset (parsed from the CLI message, else a
 # fixed poll) and retries, so a single invocation survives the limit window.
 #
+# Resume: on retry, `orch task` reattaches the quota-aborted branch (its sid is
+# recorded in .orch/resume/) and continues from the author's committed work
+# instead of re-authoring from scratch (issue #24). If the limit hit before any
+# commit — or after a hard kill that left no branch — it cleanly restarts.
+#
 # Usage:   orch-loop.sh [orch args ...]        e.g.  orch-loop.sh task
 #          orch-loop.sh --selftest             run internal assertions, exit
 # Env:     ORCH_CMD   command to run orch         (default: orch)

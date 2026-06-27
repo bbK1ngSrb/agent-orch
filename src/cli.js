@@ -15,6 +15,7 @@ import { slugify } from "./slug.js";
 import { VERSION } from "./version.js";
 import { newSid } from "./sid.js";
 import * as inflight from "./inflight.js";
+import * as resume from "./resume.js";
 import { finalize } from "./finalize.js";
 
 export { slugify };
@@ -244,6 +245,31 @@ function reviewersForAuthor(authorName, reviewerSpecs) {
   return others.length ? others : reviewerSpecs;
 }
 
+// Pick the branch/sid for one author in task mode, resuming a quota-aborted run
+// when one is on record (issue #24). Resume only when the recorded branch still
+// exists, carries committed work, and isn't a live peer's branch — otherwise the
+// record is stale (branch vanished / empty), so drop it and author fresh. A fresh
+// run records its branch *before* the cycle; cli clears it after runCycle returns.
+// ponytail: the record key ignores sid, so two truly-concurrent identical-text
+// tasks share one key and the later fresh start clobbers the record — same
+// fixed-prompt collision spawnDocsTask already stamps around; sequential retry
+// (the real case) resumes and never overwrites.
+export function resolveTaskBranch(ctx, deps = { git, resume }) {
+  const { repo, orchDir, task, authorName, dry = false, liveBranches = new Set() } = ctx;
+  const { git: g, resume: r } = deps;
+  const found = dry ? null : r.lookup(orchDir, task, authorName);
+  if (found && !liveBranches.has(found.branch)) {
+    if (g.branchExists(repo, found.branch) && g.changedFiles(repo, found.branch).length > 0) {
+      return { sid: found.sid, branch: found.branch, resume: true };
+    }
+    r.clear(orchDir, task, authorName); // record points at a vanished/empty branch
+  }
+  const sid = newSid();
+  const branch = `pr/${authorName}/${slugify(task)}-${sid}`;
+  if (!dry) r.record(orchDir, task, authorName, { branch, sid });
+  return { sid, branch, resume: false };
+}
+
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
   if (flags.version || command === "version") { console.log(VERSION); return; }
@@ -297,6 +323,20 @@ export async function main(argv, deps = {}) {
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
 
     const mode = command; // "task" | "review"
+
+    // Integration worktree owns `main`; cwd must be on a working branch. Reclaim
+    // orphaned worktrees BEFORE picking branches so resume resolution (#24) sees
+    // post-reclaim truth — a hard-killed orphan branch is already gone by then,
+    // so resume safely degrades to a fresh start instead of attaching a dead ref.
+    let liveBranches = new Set();
+    if (!dry) {
+      const head = git.git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
+      if (head === "main")
+        throw new Error("orch needs `main` for its .orch/integration worktree — switch cwd to a working branch (e.g. `git switch -c work`) and rerun.");
+      liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
+      git.reclaimOrphanWorktrees(repo, orchDir, liveBranches); // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers
+    }
+
     let runs, task;
     if (mode === "task") {
       task = flags.file ? readFileSync(flags.file, "utf8").trim() : rest.join(" ");
@@ -304,11 +344,10 @@ export async function main(argv, deps = {}) {
       const { authors, reviewers } = nextAuthor(cfg, orchDir);
       runs = authors.map((authorSpec) => {
         const authorName = authorSpec.agent;
-        const sid = newSid();
-        const branch = `pr/${authorName}/${slugify(task)}-${sid}`;
+        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches });
         const reviewerList = reviewersForAuthor(authorName, reviewers);
         return {
-          mode, task, branch, sid, authorName, author: authorSpec,
+          mode, task, branch, sid, resume, authorName, author: authorSpec,
           reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
           reviewers: reviewerList,
           cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
@@ -335,15 +374,6 @@ export async function main(argv, deps = {}) {
       }];
     }
 
-    // Integration worktree owns `main`; cwd must be on a working branch.
-    if (!dry) {
-      const head = git.git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
-      if (head === "main")
-        throw new Error("orch needs `main` for its .orch/integration worktree — switch cwd to a working branch (e.g. `git switch -c work`) and rerun.");
-      const liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
-      git.reclaimOrphanWorktrees(repo, orchDir, liveBranches); // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers
-    }
-
     const results = [];
     for (const run of runs) {
       if (!dry) {
@@ -360,6 +390,9 @@ export async function main(argv, deps = {}) {
       try {
         const result = await runCycle(run, dry ? dryDeps() : realDeps());
         results.push(result);
+        // Cycle returned (any terminal status) → drop the resume record. A quota
+        // throw skips this line, leaving the record for the next run to resume (#24).
+        if (!dry && run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
         console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
         if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
       } finally {
