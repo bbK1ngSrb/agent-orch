@@ -3,9 +3,42 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { load } from "../src/config.js";
+import { load, parseRoleSpec, parseRoleSpecs } from "../src/config.js";
 
 function tmp() { return mkdtempSync(join(tmpdir(), "orch-cfg-")); }
+
+test("parseRoleSpec: bare agent name", () => {
+  assert.deepEqual(parseRoleSpec("claude"), { agent: "claude", model: null, effort: null });
+});
+
+test("parseRoleSpec: agent + model + effort", () => {
+  assert.deepEqual(parseRoleSpec("claude opus-4.8 high"),
+    { agent: "claude", model: "opus-4.8", effort: "high" });
+});
+
+test("parseRoleSpec: agent + model only", () => {
+  assert.deepEqual(parseRoleSpec("codex gpt-5.1"),
+    { agent: "codex", model: "gpt-5.1", effort: null });
+});
+
+test("parseRoleSpec: object form from YAML", () => {
+  assert.deepEqual(parseRoleSpec({ agent: "claude", model: "opus-4.8", effort: "low" }),
+    { agent: "claude", model: "opus-4.8", effort: "low" });
+});
+
+test("parseRoleSpec: rejects empty spec", () => {
+  assert.throws(() => parseRoleSpec("  "), /must name an agent/);
+});
+
+test("parseRoleSpecs: array of specs", () => {
+  assert.deepEqual(parseRoleSpecs(["claude opus-4.8 high", "codex"]),
+    [{ agent: "claude", model: "opus-4.8", effort: "high" }, { agent: "codex", model: null, effort: null }]);
+});
+
+test("parseRoleSpecs: comma-separated string", () => {
+  assert.deepEqual(parseRoleSpecs("claude opus high, codex"),
+    [{ agent: "claude", model: "opus", effort: "high" }, { agent: "codex", model: null, effort: null }]);
+});
 
 test("empty dir yields defaults", () => {
   const c = load(tmp());

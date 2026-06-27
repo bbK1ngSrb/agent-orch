@@ -47,6 +47,33 @@ function validate(cfg) {
     throw new Error("orch.yml: docs.paths must be an array of strings");
 }
 
+// A role spec is "<agent> [model] [effort]" — whitespace-separated fields.
+//   agent  — required; one of the registered agents
+//   model  — optional model id, may carry a subversion (e.g. opus-4.8); opaque
+//   effort — optional reasoning effort (e.g. low | medium | high); opaque
+// Bare names ("claude") parse to { agent: "claude", model: null, effort: null },
+// so old configs and CLI flags keep working unchanged.
+export function parseRoleSpec(spec) {
+  if (spec && typeof spec === "object" && !Array.isArray(spec)) {
+    // YAML object form: { agent, model, effort }
+    const agent = String(spec.agent ?? "").trim();
+    if (!agent) throw new Error("role spec must name an agent");
+    return { agent, model: spec.model ?? null, effort: spec.effort ?? null };
+  }
+  const parts = String(spec ?? "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) throw new Error("role spec must name an agent");
+  const [agent, model = null, effort = null] = parts;
+  return { agent, model, effort };
+}
+
+// Parse a list of role specs from a YAML array or a comma-separated string.
+export function parseRoleSpecs(value) {
+  const items = Array.isArray(value) ? value : String(value).split(",");
+  const specs = items.map((v) => (typeof v === "string" ? v.trim() : v)).filter(Boolean).map(parseRoleSpec);
+  if (!specs.length) throw new Error("role override must name at least one agent");
+  return specs;
+}
+
 // Config lives at .orch/orch.yml. Bare orch.yml at repo root still works (back-compat).
 export function configPath(dir) {
   const preferred = join(dir, ".orch", "orch.yml");
