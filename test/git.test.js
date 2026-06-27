@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, createTaskBranch, attachExistingBranch, pruneWorktree, mergeIntoMain, reclaimOrphanWorktrees } from "../src/git.js";
+import { git, branchExists, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -17,18 +17,21 @@ function newRepo() {
   return d;
 }
 
-test("createTaskBranch lifecycle + ff-only merge", () => {
+test("createTaskBranch lifecycle + ff-only merge in the integration worktree", () => {
   const repo = newRepo();
+  git(["checkout", "-b", "work"], repo); // cwd off main so integration can own main
   const wt = join(repo, ".orch", "wt", "b");
-  createTaskBranch(repo, wt, "pr/claude/x", "main");
+  createTaskBranch(repo, wt, "pr/claude/x", "main", "");
   writeFileSync(join(wt, "b.txt"), "2\n");
   git(["add", "."], wt);
   git(["commit", "-m", "add b"], wt);
   pruneWorktree(repo, wt);
 
-  const r = mergeIntoMain(repo, "pr/claude/x", "ff-only");
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  syncWorktreeToMain(integ);
+  const r = mergeInWorktree(integ, "pr/claude/x", "ff-only");
   assert.equal(r.ok, true);
-  assert.match(git(["log", "--oneline"], repo), /add b/);
+  assert.match(git(["log", "--oneline", "main"], repo), /add b/);
 });
 
 test("createTaskBranch refuses an existing branch", () => {
@@ -43,21 +46,24 @@ test("attachExistingBranch refuses a missing branch (F5: no silent create)", () 
   assert.throws(() => attachExistingBranch(repo, join(repo, ".orch/wt/n"), "pr/claude/nope"), /does not exist/);
 });
 
-test("untracked collision -> advice names the files, not a rebase", () => {
+test("merge conflict in the integration worktree returns ok:false and aborts cleanly", () => {
   const repo = newRepo();
+  git(["checkout", "-b", "work"], repo);
+  // two branches off main that both edit a.txt → real content conflict
   const wt = join(repo, ".orch", "wt", "u");
-  createTaskBranch(repo, wt, "pr/claude/u", "main");
-  writeFileSync(join(wt, "spec.md"), "from branch\n");
-  git(["add", "."], wt);
-  git(["commit", "-m", "add spec"], wt);
+  createTaskBranch(repo, wt, "pr/claude/u", "main", "");
+  writeFileSync(join(wt, "a.txt"), "from branch u\n");
+  git(["add", "."], wt); git(["commit", "-m", "edit a (u)"], wt);
   pruneWorktree(repo, wt);
-  // same path exists untracked in main's working tree
-  writeFileSync(join(repo, "spec.md"), "local untracked\n");
+  // advance main with a conflicting edit
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  writeFileSync(join(integ, "a.txt"), "from main\n");
+  git(["add", "."], integ); git(["commit", "-m", "edit a (main)"], integ);
 
-  const r = mergeIntoMain(repo, "pr/claude/u", "ff-only");
+  const r = mergeInWorktree(integ, "pr/claude/u", "no-ff");
   assert.equal(r.ok, false);
-  assert.match(r.advice, /untracked files in main/);
-  assert.match(r.advice, /spec\.md/);
+  // worktree left clean (merge aborted) — a fresh merge can run next
+  assert.equal(git(["status", "--porcelain"], integ), "");
 });
 
 test("reclaimOrphanWorktrees removes a crashed cycle's worktree AND its branch", () => {
@@ -104,19 +110,103 @@ test("reclaimOrphanWorktrees leaves the main worktree and other branches alone",
   assert.equal(branchExists(repo, "main"), true);
 });
 
-test("ff-only merge fails (ok:false) when main moved", () => {
+test("ff-only merge fails when main moved past the branch base", () => {
   const repo = newRepo();
+  git(["checkout", "-b", "work"], repo);
   const wt = join(repo, ".orch", "wt", "c");
-  createTaskBranch(repo, wt, "pr/claude/y", "main");
+  createTaskBranch(repo, wt, "pr/claude/y", "main", "");
   writeFileSync(join(wt, "c.txt"), "3\n");
-  git(["add", "."], wt);
-  git(["commit", "-m", "add c"], wt);
+  git(["add", "."], wt); git(["commit", "-m", "add c"], wt);
   pruneWorktree(repo, wt);
-  // move main forward so the branch no longer fast-forwards
-  writeFileSync(join(repo, "a.txt"), "changed\n");
-  git(["add", "."], repo);
-  git(["commit", "-m", "move main"], repo);
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  writeFileSync(join(integ, "d.txt"), "4\n"); // move main forward (disjoint file)
+  git(["add", "."], integ); git(["commit", "-m", "move main"], integ);
 
-  const r = mergeIntoMain(repo, "pr/claude/y", "ff-only");
-  assert.equal(r.ok, false);
+  const r = mergeInWorktree(integ, "pr/claude/y", "ff-only");
+  assert.equal(r.ok, false); // no longer a fast-forward
+});
+
+test("createTaskBranch writes pid\\nsid into the ownership marker", () => {
+  const repo = newRepo();
+  const wt = join(repo, ".orch", "wt", "pr_claude_m");
+  createTaskBranch(repo, wt, "pr/claude/m", "main", `${process.pid}\nabc-1`);
+  const marker = readFileSync(`${realpathSync(wt)}.orch-task`, "utf8");
+  assert.equal(marker, `${process.pid}\nabc-1`);
+  pruneWorktree(repo, wt);
+});
+
+test("reclaim PRESERVES a worktree whose owner PID is alive (live peer)", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_live");
+  createTaskBranch(repo, wt, "pr/claude/live", "main", `${process.pid}\nlive-1`); // our pid = alive
+
+  reclaimOrphanWorktrees(repo, orchDir);
+
+  assert.equal(branchExists(repo, "pr/claude/live"), true); // live peer untouched
+  assert.match(git(["worktree", "list"], repo), /pr_claude_live/);
+  pruneWorktree(repo, wt);
+});
+
+test("reclaim SWEEPS a worktree whose owner PID is dead", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_dead");
+  createTaskBranch(repo, wt, "pr/claude/dead", "main", "999999999\ndead-1"); // PID that cannot run
+
+  reclaimOrphanWorktrees(repo, orchDir);
+
+  assert.equal(branchExists(repo, "pr/claude/dead"), false);
+  assert.doesNotMatch(git(["worktree", "list"], repo), /pr_claude_dead/);
+});
+
+test("reclaim SWEEPS a worktree with an empty (pre-PID / died-early) marker", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_empty");
+  createTaskBranch(repo, wt, "pr/claude/empty", "main", ""); // legacy empty marker
+
+  reclaimOrphanWorktrees(repo, orchDir);
+
+  assert.equal(branchExists(repo, "pr/claude/empty"), false);
+});
+
+test("changedSince lists files merged into main after a base sha", () => {
+  const repo = newRepo();
+  const base = git(["rev-parse", "main"], repo);
+  writeFileSync(join(repo, "new.txt"), "x\n");
+  git(["add", "."], repo); git(["commit", "-m", "land new"], repo);
+  assert.deepEqual(changedSince(repo, base), ["new.txt"]);
+});
+
+test("reclaim PRESERVES a worktree whose branch is in liveBranches even when marker has dead pid (final-review I3)", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_inflight");
+  createTaskBranch(repo, wt, "pr/claude/inflight", "main", "999999999\ninflight-1"); // dead pid — would normally be swept
+  // pass the branch as live-in-flight → must be preserved (marker-before-add race)
+  reclaimOrphanWorktrees(repo, orchDir, new Set(["pr/claude/inflight"]));
+  assert.equal(branchExists(repo, "pr/claude/inflight"), true); // branch preserved
+  assert.match(git(["worktree", "list"], repo), /pr_claude_inflight/); // worktree preserved
+  pruneWorktree(repo, wt); // cleanup
+});
+
+test("reclaim still sweeps a dead-pid worktree NOT listed in liveBranches", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_deadx");
+  createTaskBranch(repo, wt, "pr/claude/deadx", "main", "999999999\ndead-x"); // dead pid
+  // pass a different branch as live — deadx is not protected
+  reclaimOrphanWorktrees(repo, orchDir, new Set(["pr/claude/some-other"]));
+  assert.equal(branchExists(repo, "pr/claude/deadx"), false); // swept
+  assert.doesNotMatch(git(["worktree", "list"], repo), /pr_claude_deadx/);
+});
+
+test("reclaim never sweeps the .orch/integration worktree", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "work"], repo);
+  const orchDir = join(repo, ".orch");
+  ensureIntegrationWorktree(repo, orchDir);
+  reclaimOrphanWorktrees(repo, orchDir);
+  assert.match(git(["worktree", "list"], repo), /integration/); // outside wt/ → untouched
 });

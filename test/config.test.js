@@ -66,7 +66,7 @@ test("empty dir yields defaults", () => {
   const c = load(tmp());
   assert.deepEqual(c.agents, ["claude", "codex"]);
   assert.equal(c.reviseCap, 3);
-  assert.equal(c.merge, "ff-only");
+  assert.equal(c.merge, "no-ff");
   assert.equal(c.scope.maxLines, 0);
 });
 
@@ -173,4 +173,16 @@ test("plural authors/reviewers must be set together", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "authors: [claude, codex]\n");
   assert.throws(() => load(d), /both authors and reviewers/);
+});
+
+test("concurrency defaults to 4 and must be a positive integer", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cfg-"));
+  assert.equal(load(d).concurrency, 4);
+
+  mkdirSync(join(d, ".orch"), { recursive: true });
+  writeFileSync(join(d, ".orch", "orch.yml"), "concurrency: 8\n");
+  assert.equal(load(d).concurrency, 8);
+
+  writeFileSync(join(d, ".orch", "orch.yml"), "concurrency: 0\n");
+  assert.throws(() => load(d), /concurrency must be a positive integer/);
 });

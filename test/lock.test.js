@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireLock, releaseLock, isPaused } from "../src/lock.js";
+import { acquireLock, releaseLock, acquireBlocking, isPaused } from "../src/lock.js";
 
 test("acquireLock is exclusive until released", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
@@ -48,4 +48,34 @@ test("isPaused reflects the pause file", () => {
   assert.equal(isPaused(d), false);
   writeFileSync(join(d, "pause"), "");
   assert.equal(isPaused(d), true);
+});
+
+test("a named lock is independent of the default lock", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
+  assert.equal(acquireLock(d, "merge.lock"), true);
+  assert.equal(acquireLock(d, "lock"), true); // different file, not blocked
+  assert.equal(acquireLock(d, "merge.lock"), false); // same file, held
+  releaseLock(d, "merge.lock");
+  releaseLock(d, "lock");
+  assert.equal(existsSync(join(d, "merge.lock")), false);
+});
+
+test("stale-lock atomic steal: dead-owner lock is stolen, reacquired with our pid, then returns false (live holder)", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
+  writeFileSync(join(d, "lock"), "999999999"); // dead PID — stale lock
+  // steal succeeds
+  assert.equal(acquireLock(d), true);
+  // winner's lock now holds our PID
+  assert.equal(readFileSync(join(d, "lock"), "utf8").trim(), String(process.pid));
+  // second acquire must return false — we're alive, not a stale entry
+  assert.equal(acquireLock(d), false);
+  releaseLock(d);
+});
+
+test("acquireBlocking returns true when free, false on timeout when held by a live owner", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
+  assert.equal(acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 100 }), true);
+  // still held by us (live PID) → a second blocking acquire must time out, not hang
+  assert.equal(acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 50 }), false);
+  releaseLock(d, "merge.lock");
 });

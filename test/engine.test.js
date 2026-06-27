@@ -45,6 +45,8 @@ function makeDeps({ verdicts, reviewerVerdicts = null, gatePass = true, mergeOk 
       recordRun(_dir, entry) { calls.recorded = entry; },
       cleanupReviews(_dir, branch) { calls.cleaned = branch; },
     },
+    inflight: { setPaths() {} },
+    finalize: async () => { calls.finalized = true; return { status: "merged", reason: "merged", sha: "x" }; },
     _calls: calls,
   };
   return deps;
@@ -77,16 +79,22 @@ test("merged result stamps docsOnly=true for a docs-only change", async () => {
   assert.equal(r.docsOnly, true);
 });
 
-test("docsOnly is read BEFORE merge (ff merge empties main...branch)", async () => {
+test("docsOnly is read BEFORE finalize (ff merge empties main...branch)", async () => {
   // Regression: a ff merge makes `main...branch` empty, so reading changedFiles
-  // after the merge always yields [] -> docsOnly=false -> broken loop guard.
+  // after finalize always yields [] -> docsOnly=false -> broken loop guard.
+  // Assert ordering: changedFiles must be called before finalize runs.
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: ["README.md"] });
-  let mergedYet = false;
-  deps.git.mergeIntoMain = () => { mergedYet = true; return { ok: true, reason: "merged" }; };
-  deps.git.changedFiles = () => (mergedYet ? [] : ["README.md"]);
+  let changedFilesCalled = false;
+  let changedFilesCalledWhenFinalizeRan = false;
+  deps.git.changedFiles = () => { changedFilesCalled = true; return ["README.md"]; };
+  deps.finalize = async () => {
+    changedFilesCalledWhenFinalizeRan = changedFilesCalled;
+    return { status: "merged", reason: "merged", sha: "x" };
+  };
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "merged");
-  assert.equal(r.docsOnly, true); // would be false if read after merge
+  assert.equal(r.docsOnly, true, "changedFiles result must drive docsOnly");
+  assert.equal(changedFilesCalledWhenFinalizeRan, true, "changedFiles must run before finalize");
 });
 
 test("merged result stamps noop=true for an empty diff (loop-guard for no-op merges)", async () => {
@@ -108,12 +116,13 @@ test("AGREE + red gate -> escalated, no merge", async () => {
 
 test("merge wipes reviews + records the run; escalation keeps them", async () => {
   const merged = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
-  await runCycle(opts, merged);
-  assert.equal(merged._calls.cleaned, opts.branch);
-  assert.equal(merged._calls.recorded.verdict, "merged");
+  const r1 = await runCycle(opts, merged);
+  assert.equal(r1.status, "merged");
+  assert.equal(merged._calls.finalized, true); // finalize now owns recording + cleanup
 
   const stalled = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "no", raw: "" }] });
-  await runCycle(opts, stalled);
+  const r2 = await runCycle(opts, stalled);
+  assert.equal(r2.status, "escalated");
   assert.equal(stalled._calls.cleaned, undefined); // reviews survive for arbitration
 });
 
@@ -218,4 +227,60 @@ test("review mode escalates on first DISAGREE without revising (F1)", async () =
   assert.equal(r.status, "escalated");
   assert.equal(r.rounds, 1);
   assert.equal(deps._calls.authors, 0);
+});
+
+test("AGREE + green → finalize lands the merge (status merged)", async () => {
+  const calls = [];
+  const deps = {
+    adapters: { get: () => ({ name: "claude", async author() {}, async audit() { return { decision: "AGREE", reason: "ok" }; } }) },
+    git: {
+      createTaskBranch() {}, attachExistingBranch() {}, pruneWorktree() {},
+      changedFiles: () => ["src/a.js"],
+      git: (args) => (args[0] === "rev-parse" ? "base" : ""),
+    },
+    gate: { detect: () => "npm test", run: () => ({ pass: true }) },
+    scope: { count: () => 0 },
+    inflight: { setPaths: (...a) => calls.push(["setPaths", ...a]) },
+    finalize: async () => ({ status: "merged", reason: "merged", sha: "abc" }),
+    notify: {
+      phase() {}, writeRound() { return "p"; },
+      buildDecisionBrief: () => "brief", escalate() {},
+      recordRun() {}, cleanupReviews() {},
+    },
+  };
+  const res = await runCycle({
+    mode: "task", task: "do x", branch: "pr/claude/x-1", sid: "1",
+    authorName: "claude", reviewerName: "claude",
+    cfg: { reviseCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
+    orchDir: "/o", repo: "/r", worktree: "/o/wt/x",
+  }, deps);
+  assert.equal(res.status, "merged");
+  assert.ok(calls.some((c) => c[0] === "setPaths"));
+});
+
+test("AGREE + green but finalize demotes → status pr-fallback", async () => {
+  const deps = {
+    adapters: { get: () => ({ name: "claude", async author() {}, async audit() { return { decision: "AGREE", reason: "ok" }; } }) },
+    git: {
+      createTaskBranch() {}, attachExistingBranch() {}, pruneWorktree() {},
+      changedFiles: () => ["src/a.js"],
+      git: (args) => (args[0] === "rev-parse" ? "base" : ""),
+    },
+    gate: { detect: () => "npm test", run: () => ({ pass: true }) },
+    scope: { count: () => 0 },
+    inflight: { setPaths() {} },
+    finalize: async () => ({ status: "pr-fallback", reason: "overlap → PR https://x/1", prUrl: "https://x/1" }),
+    notify: {
+      phase() {}, writeRound() { return "p"; },
+      buildDecisionBrief: () => "brief", escalate() {},
+      recordRun() {}, cleanupReviews() {},
+    },
+  };
+  const res = await runCycle({
+    mode: "task", task: "do x", branch: "pr/claude/x-1", sid: "1",
+    authorName: "claude", reviewerName: "claude",
+    cfg: { reviseCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
+    orchDir: "/o", repo: "/r", worktree: "/o/wt/x",
+  }, deps);
+  assert.equal(res.status, "pr-fallback");
 });

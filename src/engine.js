@@ -3,8 +3,8 @@ import { isDocsOnly } from "./scope.js";
 // Pure state machine. All side-effecting collaborators arrive via `deps`,
 // so tests stub them and dry-run is just another set of stubs.
 export async function runCycle(opts, deps) {
-  const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false } = opts;
-  const { adapters, git, gate, scope, notify } = deps;
+  const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false, sid } = opts;
+  const { adapters, git, gate, scope, notify, finalize, inflight } = deps;
   // Role specs carry optional model/effort. Fall back to bare names so callers
   // that pass only authorName/reviewerNames (e.g. the PR bridge) keep working.
   const authorSpec = opts.author || { agent: authorName };
@@ -18,7 +18,9 @@ export async function runCycle(opts, deps) {
   // F5: task mode owns a fresh branch; review mode requires an existing one.
   notify.phase(`worktree ${branch} (${mode})`);
   if (mode === "review") git.attachExistingBranch(repo, worktree, branch);
-  else git.createTaskBranch(repo, worktree, branch, "main");
+  else git.createTaskBranch(repo, worktree, branch, "main", `${process.pid}\n${sid}`);
+
+  const baseSha = git.git(["rev-parse", "main"], repo);
 
   try {
     // F1: author step + scope gate only in task mode. Review never writes.
@@ -35,6 +37,9 @@ export async function runCycle(opts, deps) {
         }
       }
     }
+
+    // Publish changed paths for peer overlap checks (best-effort; finalize re-reads at land time).
+    if (inflight) inflight.setPaths(orchDir, sid, git.changedFiles(repo, branch), baseSha);
 
     // Review mode escalates on first DISAGREE; task mode revises up to the cap.
     const cap = mode === "review" ? 1 : cfg.reviseCap;
@@ -73,25 +78,17 @@ export async function runCycle(opts, deps) {
         if (noMerge) {
           return { status: "approved", reason: "agreed + green (no merge)", rounds: round };
         }
-        // Compute the loop-guard signals BEFORE merging: a ff merge makes
-        // main...branch empty, so reading it post-merge always yields [] —
-        // which both breaks docsOnly AND looks like a no-op forever.
+        // Compute the loop-guard signals BEFORE finalize: a ff merge makes
+        // main...branch empty, so reading it post-merge always yields [].
         const changed = git.changedFiles(repo, branch);
         const docsOnly = isDocsOnly(changed, cfg.docs.paths);
-        const noop = changed.length === 0; // empty diff: nothing to update -> never re-spawn
-        const m = git.mergeIntoMain(repo, branch, cfg.merge);
-        if (!m.ok) {
-          const fix = m.advice || `rebase ${branch} onto main`;
-          return escalate(notify, orchDir, branch, round,
-            `merge failed (${m.reason}) — ${fix}`);
-        }
-        notify.phase(`merged ${branch}`);
-        notify.recordRun(orchDir, {
-          ts: new Date().toISOString(), branch, verdict: "merged",
-          sha: safeSha(git, repo), rounds: round,
-        });
-        notify.cleanupReviews(orchDir, branch);
-        return { status: "merged", reason: "agreed + green + merged", rounds: round, docsOnly, noop };
+        const noop = changed.length === 0;
+        const fin = await finalize({
+          repo, orchDir, branch, sid, baseSha, paths: changed,
+          testCmd, cfg, rounds: round,
+        }, deps);
+        notify.phase(fin.status === "merged" ? `merged ${branch}` : `demoted ${branch} (${fin.reason})`);
+        return { status: fin.status, reason: fin.reason, rounds: round, docsOnly, noop };
       }
 
       // DISAGREE — review mode (cap=1) escalates here on round 1, never revising.
@@ -125,9 +122,4 @@ function escalate(notify, orchDir, branch, round, reason) {
 function safeDiff(git, repo, branch) {
   try { return git.git(["diff", "--stat", `main...${branch}`], repo); }
   catch { return "(diff unavailable)"; }
-}
-
-function safeSha(git, repo) {
-  try { return git.git(["rev-parse", "--short", "HEAD"], repo); }
-  catch { return "(unknown)"; }
 }

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Ownership marker: a sibling file next to an orch-created task worktree. Its
@@ -7,6 +7,20 @@ import { join } from "node:path";
 // review-attached user branches (no marker) are never auto-deleted. Sited next
 // to the worktree dir, not inside it, so `git worktree remove` can't touch it.
 const taskMarker = (path) => `${path}.orch-task`;
+
+// First line of the ownership marker is the owner PID. Empty/garbage → null.
+function ownerPid(markerPath) {
+  try {
+    const pid = parseInt(readFileSync(markerPath, "utf8").split("\n")[0].trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; }
+}
 
 export function git(args, cwd) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -32,12 +46,12 @@ export function branchExists(repo, branch) {
 }
 
 // task mode: branch must NOT exist (orch owns it). Fail otherwise.
-export function createTaskBranch(repo, path, branch, base) {
+export function createTaskBranch(repo, path, branch, base, markerContent = "") {
   if (branchExists(repo, branch)) throw new Error(`branch already exists: ${branch}`);
   git(["worktree", "add", "-b", branch, path, base], repo);
-  // Mark this branch as an orch throwaway so a crash sweep may delete it. The
-  // marker is canonicalized to match the realpath the sweep reads from git.
-  writeFileSync(taskMarker(realpathSync(path)), "");
+  // Marker now records the owner so the sweep can spare LIVE peers (no global
+  // lock anymore). Empty marker = died before writing = swept (legacy parity).
+  writeFileSync(taskMarker(realpathSync(path)), markerContent);
 }
 
 // review mode: branch MUST exist (human/other tool made it). Never create it.
@@ -60,7 +74,7 @@ export function pruneWorktree(repo, path) {
 // lock: no live cycle owns these. A branch is deleted ONLY when its orch-task
 // marker is present (so a same-slug task retry doesn't throw on `worktree add
 // -b`); review-attached user branches have no marker and are always preserved.
-export function reclaimOrphanWorktrees(repo, orchDir) {
+export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) {
   // Canonicalize: git stores worktree paths as realpaths, but orchDir may arrive
   // via a symlink (this repo is reachable through /mnt/... and a ~/...-symlink).
   // Without this the prefix match silently skips every orphan on the alt path.
@@ -77,10 +91,25 @@ export function reclaimOrphanWorktrees(repo, orchDir) {
     let branch = null;
     const flush = () => {
       if (path && path.startsWith(wtRoot)) {
-        const owned = existsSync(taskMarker(path)); // orch-created throwaway?
+        // Belt 1: branch is registered as in-flight (worktree may not have marker yet —
+        // this protects the window between `git worktree add` and `writeFileSync(marker)`).
+        if (branch && liveBranches.has(branch)) {
+          path = null;
+          branch = null;
+          return;
+        }
+        const marker = taskMarker(path);
+        const owned = existsSync(marker); // orch-created throwaway?
+        const pid = owned ? ownerPid(marker) : null;
+        if (owned && pid !== null && pidAlive(pid)) {
+          // Belt 2: live peer in a concurrent cycle — leave it entirely alone
+          path = null;
+          branch = null;
+          return;
+        }
         gitTry(["worktree", "remove", "--force", path], repo);
         if (branch && owned) gitTry(["branch", "-D", branch], repo); // never a user branch
-        rmSync(taskMarker(path), { force: true });
+        rmSync(marker, { force: true });
       }
       path = null;
       branch = null;
@@ -98,24 +127,42 @@ export function reclaimOrphanWorktrees(repo, orchDir) {
   gitTry(["worktree", "prune"], repo);
 }
 
-export function mergeIntoMain(repo, branch, mode) {
-  const cur = git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
-  if (cur !== "main") {
-    const co = gitTry(["checkout", "main"], repo);
-    if (!co.ok) return { ok: false, reason: `cannot checkout main: ${co.out}` };
-  }
+// One reused worktree, checked out on the `main` branch, where all merges land.
+// Because it owns `main`, cwd must NOT be on main (enforced by the CLI preflight)
+// — git forbids the same branch in two worktrees. The merge commit advances main
+// directly; no ref-move gymnastics.
+export function ensureIntegrationWorktree(repo, orchDir) {
+  const path = join(orchDir, "integration");
+  mkdirSync(orchDir, { recursive: true });
+  gitTry(["worktree", "prune"], repo); // clear a stale registration if the dir was removed
+  if (!existsSync(path)) git(["worktree", "add", path, "main"], repo);
+  return path;
+}
+
+// Pull the integration worktree to main's current tip and drop any leftover
+// half-merge / untracked cruft from a crashed finalize (§6.4).
+export function syncWorktreeToMain(integrationPath) {
+  git(["reset", "--hard", "main"], integrationPath);
+  git(["clean", "-fd"], integrationPath);
+}
+
+// Merge `branch` into the worktree's checked-out main. On any failure, abort so
+// the worktree is left clean for the next finalize.
+export function mergeInWorktree(integrationPath, branch, mode) {
   const flag = mode === "no-ff" ? "--no-ff" : "--ff-only";
-  const m = gitTry(["merge", flag, branch], repo);
+  const m = gitTry(["merge", flag, branch], integrationPath);
   if (m.ok) return { ok: true, reason: "merged" };
   const reason = m.out.trim();
-  // Untracked files in main colliding with branch output is NOT a history
-  // problem — rebasing won't help. Surface the real fix and the file list.
+  gitTry(["merge", "--abort"], integrationPath); // ff-only failures are no-ops here; harmless
   if (/untracked working tree files would be overwritten/i.test(reason)) {
-    const files = reason.split("\n")
-      .filter((l) => /^\t/.test(l))
-      .map((l) => l.trim());
-    const advice = `remove or commit these untracked files in main, then rerun: ${files.join(", ")}`;
-    return { ok: false, reason, advice };
+    const files = reason.split("\n").filter((l) => /^\t/.test(l)).map((l) => l.trim());
+    return { ok: false, reason, advice: `remove or commit these untracked files in main: ${files.join(", ")}` };
   }
   return { ok: false, reason };
+}
+
+// Files changed on main since a given sha (what landed after a branch's base).
+export function changedSince(repo, sha) {
+  const out = gitTry(["diff", "--name-only", `${sha}..main`], repo);
+  return out.ok ? out.out.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 }

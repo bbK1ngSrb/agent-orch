@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runPr, buildComment } from "../src/github.js";
+import { runPr, buildComment, demote } from "../src/github.js";
 
 function makeDeps({ status = "approved", state = "OPEN" } = {}) {
   const calls = { gh: [], git: [] };
@@ -83,4 +83,28 @@ test("runPr handles a single reviewer spec and bare-name default", async () => {
   const dflt = makeDeps();
   await runPr(opts, dflt); // no reviewer config → first agent, no model/effort
   assert.deepEqual(dflt._calls.cycleOpts.reviewers, [{ agent: "claude", model: null, effort: null }]);
+});
+
+test("demote opens a PR when a remote and gh are present", async () => {
+  const calls = [];
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/7\n"; };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+  const notify = { escalate: () => { throw new Error("should not escalate when PR opens"); } };
+
+  const r = await demote({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", reason: "overlap" }, { gh, git, notify });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/7");
+  assert.ok(calls.some((c) => c[0] === "git" && c[1] === "push"));
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
+});
+
+test("demote escalates locally when there is no remote", async () => {
+  let escalated = null;
+  const gh = () => "gh 2";
+  const git = (args) => (args[0] === "remote" ? "" : ""); // no remotes
+  const notify = { escalate: (orchDir, branch, brief) => { escalated = { branch, brief }; } };
+
+  const r = await demote({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", reason: "conflict" }, { gh, git, notify });
+  assert.equal(r.prUrl, null);
+  assert.equal(escalated.branch, "pr/claude/x-1");
+  assert.match(escalated.brief, /conflict/);
 });
