@@ -174,3 +174,15 @@ test("plural authors/reviewers must be set together", () => {
   writeFileSync(join(d, "orch.yml"), "authors: [claude, codex]\n");
   assert.throws(() => load(d), /both authors and reviewers/);
 });
+
+test("concurrency defaults to 4 and must be a positive integer", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cfg-"));
+  assert.equal(load(d).concurrency, 4);
+
+  mkdirSync(join(d, ".orch"), { recursive: true });
+  writeFileSync(join(d, ".orch", "orch.yml"), "concurrency: 8\n");
+  assert.equal(load(d).concurrency, 8);
+
+  writeFileSync(join(d, ".orch", "orch.yml"), "concurrency: 0\n");
+  assert.throws(() => load(d), /concurrency must be a positive integer/);
+});

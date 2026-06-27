@@ -11,6 +11,7 @@ const DEFAULTS = {
   test: "auto",
   reviseCap: 3,
   merge: "ff-only",
+  concurrency: 4, // max concurrent cycles per repo dir; over this, a cycle exits rather than blocks
   scope: { maxLines: 0, ignore: ["*.lock", "dist/**", "*.snap"] },
   github: { mergeMethod: "squash" }, // gh pr merge strategy for `orch pr <n> --merge`
   docs: {
@@ -35,6 +36,8 @@ function validate(cfg) {
     throw new Error("orch.yml: merge must be ff-only or no-ff");
   if (!Number.isInteger(cfg.reviseCap) || cfg.reviseCap < 1)
     throw new Error("orch.yml: reviseCap must be a positive integer");
+  if (!Number.isInteger(cfg.concurrency) || cfg.concurrency < 1)
+    throw new Error("orch.yml: concurrency must be a positive integer");
   if (!Number.isInteger(cfg.scope.maxLines) || cfg.scope.maxLines < 0)
     throw new Error("orch.yml: scope.maxLines must be a non-negative integer");
   if (!["squash", "merge", "rebase"].includes(cfg.github.mergeMethod))
