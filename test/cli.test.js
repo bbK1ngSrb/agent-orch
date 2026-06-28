@@ -7,6 +7,7 @@ import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides } from "../src/cli.js";
 import * as inflight from "../src/inflight.js";
+import * as gitDep from "../src/git.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
 function mockSpawn() {
@@ -284,6 +285,45 @@ async function runMainCapture(argv, deps = {}) {
   }
 }
 
+function initGitRepo(prefix = "orch-main-") {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  gitDep.git(["init", "-b", "main"], d);
+  gitDep.git(["config", "user.email", "t@t"], d);
+  gitDep.git(["config", "user.name", "t"], d);
+  writeFileSync(join(d, "a.txt"), "1\n");
+  gitDep.git(["add", "."], d);
+  gitDep.git(["commit", "-m", "init"], d);
+  return d;
+}
+
+function fakeCycleDeps() {
+  const verdict = { decision: "AGREE", reason: "ok", raw: "" };
+  return {
+    adapters: { get: (name) => ({ name, async author() {}, async audit() { return verdict; } }) },
+    git: gitDep,
+    gate: { detect: () => "true", run: () => ({ pass: true, log: "" }) },
+    scope: { count: () => 0 },
+    notify: { phase() {}, writeRound() {}, escalate() {}, buildDecisionBrief() { return ""; } },
+    inflight: { setPaths() {} },
+    finalize: async () => ({ status: "merged", reason: "test", sha: "abc" }),
+  };
+}
+
+async function runMainInRepo(repo, argv, deps = {}) {
+  const prev = cwd();
+  chdir(repo);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    await main(argv, { preflight() {}, cycleDeps: fakeCycleDeps(), ...deps });
+    return logs;
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+}
+
 test("task branch includes a sid suffix", async () => {
   const logs = await runMainCapture(["task", "do a thing", "--dry"]);
   assert.match(logs.join("\n"), /pr\/[a-z]+\/do-a-thing-\d+-[0-9a-z]+:/);
@@ -322,23 +362,42 @@ test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
   }
 });
 
-test("orch task errors clearly when cwd HEAD is main", async () => {
-  const d = mkdtempSync(join(tmpdir(), "orch-main-"));
-  const prev = cwd();
-  chdir(d);
-  try {
-    execFileSync("git", ["init", "-b", "main"], { cwd: d });
-    execFileSync("git", ["config", "user.email", "t@t"], { cwd: d });
-    execFileSync("git", ["config", "user.name", "t"], { cwd: d });
-    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: d });
-    await assert.rejects(
-      () => main(["task", "some task"], { preflight() {} }),
-      /switch.*working branch|integration worktree|main/,
-    );
-  } finally {
-    chdir(prev);
-    process.exitCode = 0;
-  }
+test("orch task on main auto-creates and switches to an orch slug branch", async () => {
+  const repo = initGitRepo();
+  const logs = await runMainInRepo(repo, ["task", "some task"]);
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task");
+  assert.match(logs.join("\n"), /created and switched to orch\/some-task/);
+  assert.match(logs.join("\n"), /orch: pr\/claude\/some-task-\d+-[0-9a-z]+: merged \(test\)/);
+});
+
+test("orch task on main appends a numeric suffix when the orch slug branch exists", async () => {
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/some-task"], repo);
+  gitDep.git(["branch", "orch/some-task-2"], repo);
+  const logs = await runMainInRepo(repo, ["task", "some task"]);
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task-3");
+  assert.match(logs.join("\n"), /created and switched to orch\/some-task-3/);
+});
+
+test("orch task already off main leaves cwd branch unchanged", async () => {
+  const repo = initGitRepo();
+  gitDep.git(["switch", "-c", "work"], repo);
+  const logs = await runMainInRepo(repo, ["task", "some task"]);
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "work");
+  assert.doesNotMatch(logs.join("\n"), /created and switched/);
+});
+
+test("orch task on main carries uncommitted cwd changes to the new branch", async () => {
+  const repo = initGitRepo();
+  writeFileSync(join(repo, "a.txt"), "dirty\n");
+  writeFileSync(join(repo, "scratch.txt"), "untracked\n");
+  await runMainInRepo(repo, ["task", "touch dirty"]);
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/touch-dirty");
+  assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "dirty\n");
+  assert.equal(readFileSync(join(repo, "scratch.txt"), "utf8"), "untracked\n");
+  const status = gitDep.git(["status", "--porcelain"], repo);
+  assert.match(status, /M a\.txt/);
+  assert.match(status, /\?\? scratch\.txt/);
 });
 
 test("--help / -h print usage and exit cleanly (no unknown-option error)", async () => {
