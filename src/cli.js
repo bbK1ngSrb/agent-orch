@@ -63,12 +63,12 @@ agents: [claude, codex]   # default: [claude, codex]
 # === Roles (optional; set both sides or neither) ===
 # A role is a spec "<agent> [model] [effort]":
 #   agent  — required; one of the agents above
-#   model  — optional model id, may carry a subversion (e.g. opus-4.8, gpt-5.1)
+#   model  — optional model id, may carry a subversion (e.g. claude-opus-4-8, gpt-5.1)
 #   effort — optional reasoning effort (e.g. low | medium | high)
 # Unset → the agents pool rotates the author; the next agent reviews.
-# author: claude opus-4.8 high      # single author spec
+# author: claude claude-opus-4-8 high      # single author spec
 # reviewer: codex gpt-5.1           # single reviewer spec
-# authors: [claude opus-4.8 high, codex]   # each writes its own branch
+# authors: [claude claude-opus-4-8 high, codex]   # each writes its own branch
 # reviewers: [claude, codex high]          # all audit each branch, except its author
 
 # === Cycle ===
@@ -515,9 +515,9 @@ Usage:
   orch task "change" [--author "<agent> [model] [effort]" --reviewer "<agent> [model] [effort]"]
     (or: orch task --file work-order.json — an UNTRUSTED JSON work order:
      {title, problem, repro_steps[], suspected_paths[], acceptance_criteria[]}; title/problem required)
-  orch review <branch> [--reviewer "claude opus-4.8 high, codex"]
+  orch review <branch> [--reviewer "claude claude-opus-4-8 high, codex"]
   orch pr <number> [--merge] [--reviewer ...]
-  A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. opus-4.8).
+  A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).
   (flags: --dry, --version, --help)`);
 }
 
