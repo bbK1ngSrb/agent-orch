@@ -341,6 +341,21 @@ test("orch task errors clearly when cwd HEAD is main", async () => {
   }
 });
 
+test("--help / -h print usage and exit cleanly (no unknown-option error)", async () => {
+  for (const flag of ["--help", "-h"]) {
+    assert.doesNotThrow(() => parse([flag])); // node:util parseArgs must not reject it
+    const logs = [];
+    const orig = console.log;
+    console.log = (m) => logs.push(m);
+    try {
+      await main([flag], { preflight() {} }); // must not throw, must not shell out
+    } finally {
+      console.log = orig;
+    }
+    assert.match(logs.join("\n"), /Usage:/);
+  }
+});
+
 import { resolveTaskBranch } from "../src/cli.js";
 
 function resumeStubs({ record = null, exists = true, changed = ["a"] }) {

@@ -99,6 +99,7 @@ export function parse(argv) {
     options: {
       dry: { type: "boolean" },
       version: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
       merge: { type: "boolean" },
       author: { type: "string" },
       reviewer: { type: "string" },
@@ -315,6 +316,7 @@ export function resolveTaskBranch(ctx, deps = { git, resume }) {
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
   if (flags.version || command === "version") { console.log(VERSION); return; }
+  if (flags.help || command === "help") { printUsage(); return; }
 
   const repo = process.cwd();
   const orchDir = join(repo, ".orch");
@@ -374,7 +376,7 @@ export async function main(argv, deps = {}) {
     if (!dry) {
       const head = git.git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
       if (head === "main")
-        throw new Error("orch needs `main` for its .orch/integration worktree — switch cwd to a working branch (e.g. `git switch -c work`) and rerun.");
+        throw new Error("orch needs `main` free for its .orch/integration worktree — switch cwd to a working branch and rerun: git switch -c <your-branch>");
       liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
       git.reclaimOrphanWorktrees(repo, orchDir, liveBranches); // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers
     }
@@ -485,6 +487,10 @@ export async function main(argv, deps = {}) {
     return;
   }
 
+  printUsage();
+}
+
+function printUsage() {
   console.log(`agent-orch ${VERSION}
 Usage:
   orch init
@@ -495,7 +501,7 @@ Usage:
   orch review <branch> [--reviewer "claude opus-4.8 high, codex"]
   orch pr <number> [--merge] [--reviewer ...]
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. opus-4.8).
-  (flags: --dry, --version)`);
+  (flags: --dry, --version, --help)`);
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds
