@@ -107,6 +107,7 @@ export function parse(argv) {
       authors: { type: "string" },
       reviewers: { type: "string" },
       file: { type: "string" },
+      "no-banner": { type: "boolean" },
     },
   });
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
@@ -258,6 +259,35 @@ function dryDeps() {
 function reviewersForAuthor(authorName, reviewerSpecs) {
   const others = reviewerSpecs.filter((s) => s.agent !== authorName);
   return others.length ? others : reviewerSpecs;
+}
+
+function roleLabel(spec) {
+  const detail = [spec.model, spec.effort].filter(Boolean).join("/");
+  return detail ? `${spec.agent} (${detail})` : spec.agent;
+}
+
+export function startupBanner(run) {
+  const rows = [
+    `orch ${VERSION} :: ${run.mode}`,
+    `agents: ${run.cfg.agents.join(", ")}`,
+    `roles: ${roleLabel(run.author)} -> ${run.reviewers.map(roleLabel).join(", ")}`,
+    `test: ${run.cfg.test}`,
+    `merge: ${run.cfg.merge}`,
+  ];
+  const width = Math.max(...rows.map((row) => row.length));
+  const border = `+${"-".repeat(width + 2)}+`;
+  return [
+    border,
+    ...rows.map((row) => `| ${row.padEnd(width)} |`),
+    border,
+  ].join("\n");
+}
+
+function maybePrintBanner(run, flags, deps) {
+  if (flags["no-banner"]) return;
+  const isTTY = deps.isTTY ?? process.stdout.isTTY;
+  if (!isTTY) return;
+  console.log(startupBanner(run));
 }
 
 function nextAvailableOrchBranch(repo, slugSource) {
@@ -484,6 +514,7 @@ export async function main(argv, deps = {}) {
           continue;
         }
       }
+      maybePrintBanner(run, flags, deps);
       try {
         const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
         results.push(result);
@@ -538,7 +569,7 @@ Usage:
   orch pr <number> [--merge] [--reviewer ...]
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).
   If launched from main, orch creates and switches to orch/<slug> first.
-  (flags: --dry, --version, --help)`);
+  (flags: --dry, --no-banner, --version, --help)`);
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds

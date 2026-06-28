@@ -99,6 +99,11 @@ test("parse captures --file flag", () => {
   assert.equal(p.flags.file, "task.md");
 });
 
+test("parse captures --no-banner flag", () => {
+  const p = parse(["task", "do x", "--no-banner"]);
+  assert.equal(p.flags["no-banner"], true);
+});
+
 const WORK_ORDER = JSON.stringify({
   title: "fix the flaky retry",
   problem: "retries double-fire under load",
@@ -327,6 +332,25 @@ async function runMainInRepo(repo, argv, deps = {}) {
 test("task branch includes a sid suffix", async () => {
   const logs = await runMainCapture(["task", "do a thing", "--dry"]);
   assert.match(logs.join("\n"), /pr\/[a-z]+\/do-a-thing-\d+-[0-9a-z]+:/);
+});
+
+test("task prints a compact startup banner on a TTY", async () => {
+  const logs = await runMainCapture(["task", "do a thing", "--dry"], { isTTY: true });
+  const out = logs.join("\n");
+  assert.match(out, /\+-+\+/);
+  assert.match(out, /orch 0\.1\.0 :: task/);
+  assert.match(out, /agents: claude, codex/);
+  assert.match(out, /roles: claude -> codex/);
+  assert.match(out, /test: auto/);
+  assert.match(out, /merge: no-ff/);
+});
+
+test("startup banner is suppressed with --no-banner or without a TTY", async () => {
+  const hidden = await runMainCapture(["task", "do a thing", "--dry", "--no-banner"], { isTTY: true });
+  assert.doesNotMatch(hidden.join("\n"), /orch 0\.1\.0 :: task/);
+
+  const nonTty = await runMainCapture(["task", "do a thing", "--dry"], { isTTY: false });
+  assert.doesNotMatch(nonTty.join("\n"), /orch 0\.1\.0 :: task/);
 });
 
 test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
