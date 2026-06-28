@@ -24,6 +24,7 @@ test("README does not promise install commands that resolve to a different npm p
 
 test("README documents the `orch` CLI", () => {
   assert.match(readme, /orch\s+init/);
+  assert.match(readme, /orch agent add <name>/);
 });
 
 test("design doc reflects the GitHub PR bridge", () => {

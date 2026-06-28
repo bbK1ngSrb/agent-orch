@@ -98,6 +98,7 @@ orch task "fix the flaky login test"
 
 ## Commands
 - `orch init` — scaffold `.orch/orch.yml`, verify agent CLIs.
+- `orch agent add <name>` — append a registered agent to `.orch/orch.yml`.
 - `orch task "..."` — author + cross-audit + test-gate + merge.
 - `orch review <branch>` — audit an existing branch.
 - `orch pr <n> [--merge]` — audit a GitHub PR, comment the verdict, optionally merge via `gh`.
