@@ -19,11 +19,13 @@ export async function runCycle(opts, deps) {
   const done = (result) => ({ ...result, runStats });
   const recordUsage = (role, agent, result, fallbackModel = null) => {
     const usage = result?.usage || {};
+    const tokens = Number(usage.tokens) || 0;
+    if (tokens <= 0) return;
     runStats.push({
       role,
       agent,
       model: usage.model || fallbackModel || "default",
-      tokens: Number(usage.tokens) || 0,
+      tokens,
     });
   };
 

@@ -145,3 +145,16 @@ test("summary includes aggregated run statistics", async () => {
   assert.match(s, /reviewer codex used gpt-5\.1: 1,000 tokens \(50%\)/);
   assert.match(s, /Total: 2,000 tokens/);
 });
+
+test("summary omits run statistics when token usage is unmeasured", async () => {
+  const { deps, summary } = mk();
+  await finishRun(ctx({
+    runStats: [
+      { role: "author", agent: "claude", model: "claude-opus-4.8", tokens: 0 },
+      { role: "reviewer", agent: "codex", model: "gpt-5.1", tokens: 0 },
+    ],
+  }), deps);
+  const s = summary();
+  assert.doesNotMatch(s, /Run statistics:/);
+  assert.doesNotMatch(s, /Total: 0 tokens/);
+});

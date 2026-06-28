@@ -82,6 +82,20 @@ test("merged result carries author and reviewer run statistics", async () => {
   ]);
 });
 
+test("merged result omits run statistics when adapters report no measured tokens", async () => {
+  const deps = makeDeps({
+    authorUsage: { usage: { model: "claude-opus-4.8", tokens: 0 } },
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-5.1", tokens: 0 } }],
+  });
+  const r = await runCycle({
+    ...opts,
+    author: { agent: "auth", model: "claude-opus-4.8" },
+    reviewers: [{ agent: "rev", model: "gpt-5.1" }],
+  }, deps);
+  assert.equal(r.status, "merged");
+  assert.deepEqual(r.runStats, []);
+});
+
 test("merged result stamps docsOnly=false for a code change", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: ["src/a.js", "README.md"] });
   const r = await runCycle(opts, deps);

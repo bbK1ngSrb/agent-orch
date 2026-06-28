@@ -65,9 +65,10 @@ function formatInt(n) {
 }
 
 function summarizeStats(runStats) {
-  if (!runStats.length) return [];
+  const measuredStats = runStats.filter((stat) => (Number(stat.tokens) || 0) > 0);
+  if (!measuredStats.length) return [];
   const rows = new Map();
-  for (const stat of runStats) {
+  for (const stat of measuredStats) {
     const role = stat.role || "agent";
     const agent = stat.agent || "unknown";
     const model = stat.model || "default";
@@ -104,8 +105,9 @@ function summarize({ task, sha, push, deleted, leftover, operatorBranch, parked,
     L.push(`  • Tidied up ${n} temporary work ${n === 1 ? "branch" : "branches"} and orch's scratch files.`);
   }
   L.push("");
-  L.push(...summarizeStats(runStats));
-  if (runStats.length) L.push("");
+  const statsLines = summarizeStats(runStats);
+  L.push(...statsLines);
+  if (statsLines.length) L.push("");
   if (docsPending) {
     L.push("📝 A documentation update is still running in the background — it will be saved");
     L.push("   and tidied up the same way when it finishes.");
