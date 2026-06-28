@@ -71,6 +71,21 @@ test("audit is fail-safe DISAGREE when the agent exits nonzero (F4)", async () =
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "DISAGREE");
+  assert.equal(v.agentError, true, "a crash with no verdict is flagged for fast-escalate (#33)");
+});
+
+test("audit preserves an explicit DISAGREE from a nonzero agent (not agentError) (#33)", async () => {
+  // A nonzero AGREE is untrusted, but an explicit DISAGREE is a safe, actionable
+  // review finding — keep it and do NOT flag agentError (it's a real review).
+  const adapter = makeCliAdapter({
+    name: "boom-disagree",
+    bin: "sh",
+    buildArgs: () => ["-c", "echo 'DISAGREE add a regression test'; exit 3"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+  assert.match(v.reason, /add a regression test/);
+  assert.equal(v.agentError, undefined);
 });
 
 test("audit surfaces the agent's actual error in the DISAGREE reason (#31)", async () => {
@@ -84,6 +99,7 @@ test("audit surfaces the agent's actual error in the DISAGREE reason (#31)", asy
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "DISAGREE");
   assert.match(v.reason, /opus-4\.8/, "reason must include the agent's error output");
+  assert.equal(v.agentError, true, "a bare crash is also flagged for fast-escalate (#33)");
 });
 
 test("audit ignores AGREE printed by a crashed agent (F4 fail-safe)", async () => {
