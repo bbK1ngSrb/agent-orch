@@ -26,6 +26,13 @@ function runCapture(bin, args, cwd) {
   }
 }
 
+// Last few non-blank lines of an agent's failure output, trimmed for a verdict
+// reason. Empty string when there's nothing useful, so the reason stays clean.
+function detail(out) {
+  const tail = (out || "").trim().split("\n").map((l) => l.trim()).filter(Boolean).slice(-3).join(" ");
+  return tail ? `: ${tail.slice(-300)}` : "";
+}
+
 export function makeCliAdapter({ name, bin, buildArgs }) {
   return {
     name,
@@ -48,7 +55,10 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
       const { out, ok } = runCapture(bin, buildArgs(render("review", { branch }), wd, opts), wd);
-      if (!ok) return { decision: "DISAGREE", reason: "agent exited nonzero", raw: out };
+      // Surface WHY it died (#31): a bad model id, missing flag, etc. lives in
+      // `out` — fold a trimmed tail into the reason so the round file / escalation
+      // is diagnosable instead of a blank "exited nonzero". Local files only.
+      if (!ok) return { decision: "DISAGREE", reason: `agent exited nonzero${detail(out)}`, raw: out };
       return parseVerdict(out); // unparseable/empty -> DISAGREE "unparseable verdict"
     },
   };
