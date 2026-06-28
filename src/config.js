@@ -52,7 +52,7 @@ function validate(cfg) {
 
 // A role spec is "<agent> [model] [effort]" — whitespace-separated fields.
 //   agent  — required; one of the registered agents
-//   model  — optional model id, may carry a subversion (e.g. opus-4.8); opaque
+//   model  — optional model id, may carry a subversion (e.g. claude-opus-4-8); opaque
 //   effort — optional reasoning effort; one of EFFORTS below
 // String form only — it covers both CLI flags and YAML plain scalars.
 // Bare names ("claude") parse to { agent: "claude", model: null, effort: null },
