@@ -18,6 +18,7 @@ import * as inflight from "./inflight.js";
 import * as resume from "./resume.js";
 import { finalize } from "./finalize.js";
 import { validateWorkOrder, buildAuthorPrompt } from "./intake/workorder.js";
+import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.js";
 
 export { slugify };
 
@@ -320,6 +321,22 @@ export async function main(argv, deps = {}) {
 
   const repo = process.cwd();
   const orchDir = join(repo, ".orch");
+
+  // Optional GitHub App auth: if ORCH_APP_ID + ORCH_APP_PRIVATE_KEY are set,
+  // mint a short-lived installation token and expose it to every `gh` shell-out
+  // via GH_TOKEN (execFileSync inherits process.env). orch then acts as
+  // orch[bot]. Falls back to ambient `gh auth` when unset or on any failure —
+  // never a hard dependency. An explicit GH_TOKEN wins and skips minting.
+  // ponytail: process.env mutation at the CLI entrypoint; the lazy correct wiring.
+  const appCreds = !process.env.GH_TOKEN && appCredsFromEnv();
+  if (appCreds) {
+    try {
+      const slug = parseRepoSlug(git.git(["remote", "get-url", "origin"], repo));
+      process.env.GH_TOKEN = await installationToken({ ...appCreds, ...slug });
+    } catch (e) {
+      process.stderr.write(`▶ orch: GitHub App auth unavailable (${e.message}); using ambient gh auth\n`);
+    }
+  }
   // preflight shells out to `which <agent-cli>`; tests stub it so the suite
   // is green in a CLI-less environment (e.g. clean CI). Production passes none.
   const preflightFn = deps.preflight || preflight;
