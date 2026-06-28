@@ -1,0 +1,53 @@
+# Publish the installable CLI/runtime, not repo-local workflow state.
+
+# Tests and development-only material
+test/
+harness/
+tasks/
+docs/
+scripts/
+renovate.json
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+CLAUDE.md
+
+# Repository and automation metadata
+.gitignore
+.npmignore
+.github/
+.agents/
+.codex/
+.claude/
+.code-review-graph/
+.orch/
+.remember/
+.superpowers/
+
+# Local environment and secret-bearing config
+.env
+.env.*
+*.local
+.npmrc
+.mcp.json
+.gitmodules
+
+# Dependency installs, caches, and generated output
+node_modules/
+coverage/
+.nyc_output/
+dist/
+build/
+tmp/
+*.log
+*.tgz
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# This package is npm-only.
+bunfig.toml
+.yarnrc
+.yarnrc.yml
+yarn.lock
+pnpm-lock.yaml
+package-lock.json
