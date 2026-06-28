@@ -260,6 +260,22 @@ function reviewersForAuthor(authorName, reviewerSpecs) {
   return others.length ? others : reviewerSpecs;
 }
 
+function nextAvailableOrchBranch(repo, slugSource) {
+  const base = `orch/${slugify(slugSource)}`;
+  let branch = base;
+  for (let i = 2; git.branchExists(repo, branch); i++) branch = `${base}-${i}`;
+  return branch;
+}
+
+function switchFromMain(repo, slugSource) {
+  const head = git.git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
+  if (head !== "main") return null;
+  const branch = nextAvailableOrchBranch(repo, slugSource);
+  git.git(["switch", "-c", branch], repo);
+  console.log(`orch: main is reserved for the integration worktree - created and switched to ${branch} (your changes carried over)`);
+  return branch;
+}
+
 // The author of a surviving committed branch to resume, or null. Scans resume
 // records for this task across authors (#27): a hard kill rotates the pool, so the
 // re-run's author no longer matches the record's per-author key. Returns the author
@@ -384,28 +400,13 @@ export async function main(argv, deps = {}) {
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
 
     const mode = command; // "task" | "review"
-
-    // Integration worktree owns `main`; cwd must be on a working branch. Reclaim
-    // orphaned worktrees BEFORE picking branches so resume resolution (#24) sees
-    // post-reclaim truth — a hard-killed orphan branch is already gone by then,
-    // so resume safely degrades to a fresh start instead of attaching a dead ref.
-    let liveBranches = new Set();
-    if (!dry) {
-      const head = git.git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
-      if (head === "main")
-        throw new Error("orch needs `main` free for its .orch/integration worktree — switch cwd to a working branch and rerun: git switch -c <your-branch>");
-      liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
-      git.reclaimOrphanWorktrees(repo, orchDir, liveBranches); // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers
-    }
-
-    let runs, task;
+    let task, authorPrompt, reviewBranch;
     if (mode === "task") {
       // §3a/§3b: a --file task is UNTRUSTED intake — it must be a JSON work order,
       // validated for shape, then wrapped in a neutralized fence the author treats
       // as reference, not instructions. Free-text `orch task "..."` (operator-typed,
       // trusted) is unchanged. `task` stays a short human label (drives slug/resume);
       // `authorPrompt` is what the author actually sees.
-      let authorPrompt;
       if (flags.file) {
         const wo = parseWorkOrderFile(flags.file);
         task = wo.title;
@@ -415,6 +416,25 @@ export async function main(argv, deps = {}) {
         authorPrompt = task;
       }
       if (!task) throw new Error('usage: orch task "describe the change" (or --file work-order.json)');
+    } else {
+      reviewBranch = rest[0];
+      if (!reviewBranch) throw new Error("usage: orch review <branch>");
+    }
+
+    // Integration worktree owns `main`; if cwd is on main, move it to an
+    // operator branch before reclaim/picking branches. Reclaim orphaned
+    // worktrees BEFORE picking branches so resume resolution (#24) sees
+    // post-reclaim truth — a hard-killed orphan branch is already gone by then,
+    // so resume safely degrades to a fresh start instead of attaching a dead ref.
+    let liveBranches = new Set();
+    if (!dry) {
+      switchFromMain(repo, mode === "task" ? task : `review ${reviewBranch}`);
+      liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
+      git.reclaimOrphanWorktrees(repo, orchDir, liveBranches); // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers
+    }
+
+    let runs;
+    if (mode === "task") {
       // Pin the author of a surviving committed branch from a prior killed run so the
       // rotation pool resumes it instead of authoring fresh under the next agent (#27).
       // resolveTaskBranch re-validates below; this only steers author selection.
@@ -432,8 +452,7 @@ export async function main(argv, deps = {}) {
         };
       });
     } else {
-      const branch = rest[0];
-      if (!branch) throw new Error("usage: orch review <branch>");
+      const branch = reviewBranch;
       // audit-only: reviewers default to all agents except branch author. authorName unused by engine.
       const branchAuthor = branch.split("/")[1];
       const configured = configuredReviewers(cfg);
@@ -466,7 +485,7 @@ export async function main(argv, deps = {}) {
         }
       }
       try {
-        const result = await runCycle(run, dry ? dryDeps() : realDeps());
+        const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
         results.push(result);
         // Cycle returned (any terminal status) → drop the resume record. A quota
         // throw skips this line, leaving the record for the next run to resume (#24).
@@ -518,6 +537,7 @@ Usage:
   orch review <branch> [--reviewer "claude claude-opus-4-8 high, codex"]
   orch pr <number> [--merge] [--reviewer ...]
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).
+  If launched from main, orch creates and switches to orch/<slug> first.
   (flags: --dry, --version, --help)`);
 }
 

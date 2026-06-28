@@ -157,16 +157,18 @@ orch: concurrency cap 4 reached — 5 cycles live; skipping pr/claude/<slug>-<si
 
 Reduce the cap or wait for a live cycle to finish, then rerun.
 
-**Precondition: cwd must not be `main`.** The integration worktree keeps `main`
-checked out inside `.orch/integration`; git forbids the same branch in two
-worktrees at once. Launching from `main` exits with:
+**Launching from `main`.** The integration worktree keeps `main` checked out
+inside `.orch/integration`; git forbids the same branch in two worktrees at
+once. When you launch from `main`, orch automatically creates and switches to
+an `orch/<task-slug>` branch at the current commit before the cycle starts:
 
 ```
-orch needs `main` for its .orch/integration worktree — switch cwd to a working
-branch (e.g. `git switch -c work`) and rerun.
+orch: main is reserved for the integration worktree - created and switched to orch/<task-slug> (your changes carried over)
 ```
 
-Switch to any other branch before running `orch task`.
+If that branch name already exists, orch appends `-2`, `-3`, and so on.
+Uncommitted changes stay in your cwd; orch never stashes, resets, or discards
+them.
 
 **Merge path.** When all reviewers agree and tests pass, the cycle merges into
 local `main` through `.orch/integration` under a brief `merge.lock` — no push.
