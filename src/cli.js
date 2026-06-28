@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runCycle } from "./engine.js";
@@ -19,6 +20,7 @@ import * as resume from "./resume.js";
 import { finalize } from "./finalize.js";
 import { validateWorkOrder, buildAuthorPrompt } from "./intake/workorder.js";
 import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.js";
+import { finishRun } from "./complete.js";
 
 export { slugify };
 
@@ -107,6 +109,7 @@ export function parse(argv) {
       authors: { type: "string" },
       reviewers: { type: "string" },
       file: { type: "string" },
+      "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
     },
   });
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
@@ -232,6 +235,21 @@ export function preflight(cfg, orchDir) {
 
 // F2: real collaborators, or fully stubbed ones under --dry / ORCH_DRYRUN=1.
 // Dry deps touch NO real git, agent, or test process.
+// Terminal io for finishRun (#44). confirm only ever prompts on a real TTY; with no
+// TTY (CI / piped) it answers "no" so a non-interactive run never blocks and never
+// force-deletes. finishRun also gates confirm on its own `interactive` flag.
+function realIo() {
+  return {
+    print: (m) => console.log(m),
+    confirm: (question) => {
+      if (!process.stdin.isTTY) return Promise.resolve(false);
+      return new Promise((resolve) => {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        rl.question(question, (ans) => { rl.close(); resolve(/^y(es)?$/i.test(String(ans).trim())); });
+      });
+    },
+  };
+}
 function realDeps() {
   const ghShell = (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString();
   const githubDep = { demote: (ctx) => demote(ctx, { gh: ghShell, git: git.git, notify, log: (m) => process.stderr.write(`▶ ${m}\n`) }) };
@@ -427,8 +445,9 @@ export async function main(argv, deps = {}) {
     // post-reclaim truth — a hard-killed orphan branch is already gone by then,
     // so resume safely degrades to a fresh start instead of attaching a dead ref.
     let liveBranches = new Set();
+    let operatorBranch = null; // #44: the orch/<slug> we parked the operator on, if any
     if (!dry) {
-      switchFromMain(repo, mode === "task" ? task : `review ${reviewBranch}`);
+      operatorBranch = switchFromMain(repo, mode === "task" ? task : `review ${reviewBranch}`);
       liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
       git.reclaimOrphanWorktrees(repo, orchDir, liveBranches); // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers
     }
@@ -472,6 +491,7 @@ export async function main(argv, deps = {}) {
     }
 
     const results = [];
+    const mergedBranches = []; // #44: cycle branches that actually landed on main
     for (const run of runs) {
       if (!dry) {
         const baseSha = git.git(["rev-parse", "main"], repo);
@@ -491,6 +511,7 @@ export async function main(argv, deps = {}) {
         // throw skips this line, leaving the record for the next run to resume (#24).
         if (!dry && run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
         console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
+        if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
       } finally {
         if (!dry) inflight.deregister(orchDir, run.sid);
@@ -498,7 +519,21 @@ export async function main(argv, deps = {}) {
     }
     // After the cycles: the detached docs-update runs `orch task`, so spawn it
     // outside the loop. maybeSpawnDocs only fires on a real `merged` result.
-    for (const result of results) maybeSpawnDocs(result, cfg, { dry }, orchDir);
+    let docsPending = false;
+    for (const result of results) docsPending = maybeSpawnDocs(result, cfg, { dry }, orchDir) || docsPending;
+
+    // #44: a human is at the terminal — tidy up the branches/state orch created and
+    // explain it in plain English, instead of dead-ending in an opaque git state.
+    // Default on; `--no-tidy` opts out. finishRun is idempotent, so the detached
+    // docs child (which re-runs `orch task`) safely tidies itself when it lands.
+    if (!dry && !flags["no-tidy"] && mergedBranches.length) {
+      const finishFn = deps.finishRun || finishRun;
+      const io = deps.io || realIo();
+      await finishFn(
+        { repo, task, operatorBranch, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending },
+        { git, io },
+      );
+    }
     return;
   }
 
@@ -538,7 +573,9 @@ Usage:
   orch pr <number> [--merge] [--reviewer ...]
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).
   If launched from main, orch creates and switches to orch/<slug> first.
-  (flags: --dry, --version, --help)`);
+  After a merge, orch pushes main, deletes its temp branches, and prints a summary;
+  --no-tidy leaves all branches/checkout untouched.
+  (flags: --dry, --no-tidy, --version, --help)`);
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds

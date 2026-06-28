@@ -362,9 +362,11 @@ test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
   }
 });
 
+// --no-tidy isolates the switchFromMain (#43) behavior from the post-run cleanup
+// (#44), which would otherwise detach HEAD and delete the orch branch.
 test("orch task on main auto-creates and switches to an orch slug branch", async () => {
   const repo = initGitRepo();
-  const logs = await runMainInRepo(repo, ["task", "some task"]);
+  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
   assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task");
   assert.match(logs.join("\n"), /created and switched to orch\/some-task/);
   assert.match(logs.join("\n"), /orch: pr\/claude\/some-task-\d+-[0-9a-z]+: merged \(test\)/);
@@ -374,9 +376,39 @@ test("orch task on main appends a numeric suffix when the orch slug branch exist
   const repo = initGitRepo();
   gitDep.git(["branch", "orch/some-task"], repo);
   gitDep.git(["branch", "orch/some-task-2"], repo);
-  const logs = await runMainInRepo(repo, ["task", "some task"]);
+  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
   assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task-3");
   assert.match(logs.join("\n"), /created and switched to orch\/some-task-3/);
+});
+
+test("#44: a merged task run hands the operator+cycle branches to finishRun for tidy-up", async () => {
+  const repo = initGitRepo();
+  const calls = [];
+  await runMainInRepo(repo, ["task", "some task"], { finishRun: async (ctx) => { calls.push(ctx); } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].operatorBranch, "orch/some-task");
+  assert.equal(calls[0].task, "some task");
+  assert.match(calls[0].merged[0], /^pr\/claude\/some-task-/);
+});
+
+test("#44: --no-tidy skips post-run cleanup entirely", async () => {
+  const repo = initGitRepo();
+  const calls = [];
+  await runMainInRepo(repo, ["task", "some task", "--no-tidy"], { finishRun: async (ctx) => { calls.push(ctx); } });
+  assert.equal(calls.length, 0);
+});
+
+test("#44: a non-merged (escalated) run is not handed to finishRun", async () => {
+  const savedExitCode = process.exitCode; // escalated sets exitCode 2 — restore so it doesn't fail the suite
+  const repo = initGitRepo();
+  const calls = [];
+  const escalating = { ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate", sha: "x" }) };
+  try {
+    await runMainInRepo(repo, ["task", "some task"], { cycleDeps: escalating, finishRun: async (ctx) => { calls.push(ctx); } });
+    assert.equal(calls.length, 0);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
 });
 
 test("orch task already off main leaves cwd branch unchanged", async () => {
@@ -391,7 +423,7 @@ test("orch task on main carries uncommitted cwd changes to the new branch", asyn
   const repo = initGitRepo();
   writeFileSync(join(repo, "a.txt"), "dirty\n");
   writeFileSync(join(repo, "scratch.txt"), "untracked\n");
-  await runMainInRepo(repo, ["task", "touch dirty"]);
+  await runMainInRepo(repo, ["task", "touch dirty", "--no-tidy"]); // isolate #43 carry from #44 detach
   assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/touch-dirty");
   assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "dirty\n");
   assert.equal(readFileSync(join(repo, "scratch.txt"), "utf8"), "untracked\n");

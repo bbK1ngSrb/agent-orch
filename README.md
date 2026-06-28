@@ -46,6 +46,13 @@ orch pr 42 --merge                          # ...and merge it via gh if agents a
 Add `--dry` to any `task`/`review` run to simulate a cycle without touching git,
 agents, or tests. `orch` exits non-zero (`2`) when a cycle escalates for a human.
 
+After a `task` run merges, `orch` tidies up for you: it pushes `main` to GitHub,
+deletes the temporary work branches it created, returns your checkout to the
+finished result, and prints a plain-English summary of what it did. Anything that
+could lose work (e.g. a branch with unmerged commits) is explained and only removed
+after you confirm `[y/N]`; with no terminal attached it is left untouched and noted.
+Pass `--no-tidy` to skip this and leave every branch and checkout exactly as-is.
+
 `--file` takes a JSON **work order** (untrusted intake — its free text is fenced,
 never executed as instructions). `title` and `problem` are required; the arrays
 may be empty:
