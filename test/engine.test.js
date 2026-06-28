@@ -133,6 +133,18 @@ test("DISAGREE until cap -> escalated after reviseCap rounds", async () => {
   assert.equal(r.rounds, 3);
 });
 
+test("agentError reviewer escalates on round 1 instead of revising (#33)", async () => {
+  // A crashed reviewer is not a code defect: escalate immediately, don't burn
+  // the revise loop. The reason carries the reviewer + its (#31) stderr tail.
+  const deps = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "agent exited nonzero: bad model", raw: "", agentError: true }] });
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "escalated");
+  assert.equal(r.rounds, 1);
+  assert.match(r.reason, /agent error: rev agent exited nonzero: bad model/);
+  assert.equal(deps._calls.authors, 1, "only the initial author runs — no revise on a reviewer crash");
+  assert.equal(deps._calls.audits, 1);
+});
+
 test("DISAGREE then AGREE -> merged on round 2", async () => {
   const deps = makeDeps({
     verdicts: [

@@ -111,6 +111,15 @@ export async function runCycle(opts, deps) {
         return { status: fin.status, reason: fin.reason, rounds: round, docsOnly, noop };
       }
 
+      // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
+      // revising the author would burn the whole loop for nothing. Escalate
+      // immediately — the reason carries the #31 stderr tail (bad model id, etc).
+      const agentErrors = disagree.filter((v) => v.agentError);
+      if (agentErrors.length) {
+        const reason = `agent error: ${agentErrors.map((v) => `${v.reviewer} ${v.reason}`).join("; ")}`;
+        return escalate(notify, orchDir, branch, round, reason);
+      }
+
       // DISAGREE — review mode (cap=1) escalates here on round 1, never revising.
       if (round >= cap) {
         const brief = notify.buildDecisionBrief({

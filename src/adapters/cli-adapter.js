@@ -55,11 +55,18 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
       const { out, ok } = runCapture(bin, buildArgs(render("review", { branch }), wd, opts), wd);
-      // Surface WHY it died (#31): a bad model id, missing flag, etc. lives in
-      // `out` — fold a trimmed tail into the reason so the round file / escalation
-      // is diagnosable instead of a blank "exited nonzero". Local files only.
-      if (!ok) return { decision: "DISAGREE", reason: `agent exited nonzero${detail(out)}`, raw: out };
-      return parseVerdict(out); // unparseable/empty -> DISAGREE "unparseable verdict"
+      const parsed = parseVerdict(out);
+      // A nonzero agent that still printed an explicit DISAGREE gave a real,
+      // actionable review finding — keep it (don't bury it as "agent exited").
+      // An AGREE from a crashed agent is untrusted and falls through to below.
+      if (!ok && parsed.decision === "DISAGREE" && parsed.reason !== "unparseable verdict") return parsed;
+      // Nonzero with no usable verdict (#33): flag it `agentError` so the engine
+      // escalates instead of asking the author to revise a non-code failure.
+      // Surface WHY it died (#31): a bad model id / missing flag lives in `out` —
+      // fold a trimmed tail into the reason so the escalation names the cause.
+      // Local files only.
+      if (!ok) return { decision: "DISAGREE", reason: `agent exited nonzero${detail(out)}`, raw: out, agentError: true };
+      return parsed; // unparseable/empty -> DISAGREE "unparseable verdict"
     },
   };
 }
