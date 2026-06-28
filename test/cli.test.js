@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, startupBanner } from "../src/cli.js";
 import * as inflight from "../src/inflight.js";
 import * as gitDep from "../src/git.js";
 
@@ -84,6 +84,27 @@ test("--dry completes without any agent CLI on PATH (F2)", async () => {
   }
 });
 
+test("task prints the startup banner only on a TTY and honors --no-banner", async () => {
+  const original = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+  try {
+    let logs = await runMainCapture(["task", "hello world", "--dry"]);
+    assert.match(logs.join("\n"), /agent-orch \d+\.\d+\.\d+/);
+    assert.match(logs.join("\n"), /test: auto/);
+    assert.match(logs.join("\n"), /merge: no-ff/);
+
+    logs = await runMainCapture(["task", "hello world", "--dry", "--no-banner"]);
+    assert.doesNotMatch(logs.join("\n"), /agent-orch \d+\.\d+\.\d+/);
+
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: false });
+    logs = await runMainCapture(["task", "hello world", "--dry"]);
+    assert.doesNotMatch(logs.join("\n"), /agent-orch \d+\.\d+\.\d+/);
+  } finally {
+    if (original) Object.defineProperty(process.stdout, "isTTY", original);
+    else delete process.stdout.isTTY;
+  }
+});
+
 test("parse splits command, rest, and flags", () => {
   const p = parse(["task", "do x", "--dry", "--authors", "claude,codex", "--reviewers", "codex,claude"]);
   assert.equal(p.command, "task");
@@ -97,6 +118,26 @@ test("parse captures --file flag", () => {
   const p = parse(["task", "--file", "task.md", "--dry"]);
   assert.equal(p.command, "task");
   assert.equal(p.flags.file, "task.md");
+});
+
+test("parse captures --no-banner flag", () => {
+  const p = parse(["task", "do x", "--no-banner"]);
+  assert.equal(p.flags["no-banner"], true);
+});
+
+test("startupBanner summarizes version, roles, test command, and merge mode", () => {
+  const text = startupBanner(
+    { agents: ["claude", "codex"], test: "npm test", merge: "ff-only" },
+    [{
+      author: { agent: "claude", model: "opus", effort: "high" },
+      reviewers: [{ agent: "codex", model: "gpt-5", effort: null }],
+    }],
+  );
+  assert.match(text, /agent-orch \d+\.\d+\.\d+/);
+  assert.match(text, /agents: claude, codex/);
+  assert.match(text, /roles: claude opus high -> codex gpt-5/);
+  assert.match(text, /test: npm test/);
+  assert.match(text, /merge: ff-only/);
 });
 
 const WORK_ORDER = JSON.stringify({

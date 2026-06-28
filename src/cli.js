@@ -107,6 +107,7 @@ export function parse(argv) {
       authors: { type: "string" },
       reviewers: { type: "string" },
       file: { type: "string" },
+      "no-banner": { type: "boolean" },
     },
   });
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
@@ -258,6 +259,31 @@ function dryDeps() {
 function reviewersForAuthor(authorName, reviewerSpecs) {
   const others = reviewerSpecs.filter((s) => s.agent !== authorName);
   return others.length ? others : reviewerSpecs;
+}
+
+function roleLabel(spec) {
+  return [spec.agent, spec.model, spec.effort].filter(Boolean).join(" ");
+}
+
+export function startupBanner(cfg, runs) {
+  const roles = runs.map((run) =>
+    `${roleLabel(run.author)} -> ${run.reviewers.map(roleLabel).join(", ")}`);
+  return [
+    "  ___  ____   ____ _   _",
+    " / _ \\|  _ \\ / ___| | | |",
+    "| | | | |_) | |   | |_| |",
+    "|_| |_|_| \\_\\\\____|\\___/",
+    `agent-orch ${VERSION}`,
+    `agents: ${cfg.agents.join(", ")}`,
+    `roles: ${roles.join("; ")}`,
+    `test: ${cfg.test}`,
+    `merge: ${cfg.merge}`,
+  ].join("\n");
+}
+
+function maybePrintStartupBanner(cfg, runs, flags) {
+  if (flags["no-banner"] || !process.stdout.isTTY) return;
+  console.log(startupBanner(cfg, runs));
 }
 
 function nextAvailableOrchBranch(repo, slugSource) {
@@ -471,6 +497,8 @@ export async function main(argv, deps = {}) {
       }];
     }
 
+    maybePrintStartupBanner(cfg, runs, flags);
+
     const results = [];
     for (const run of runs) {
       if (!dry) {
@@ -538,7 +566,7 @@ Usage:
   orch pr <number> [--merge] [--reviewer ...]
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).
   If launched from main, orch creates and switches to orch/<slug> first.
-  (flags: --dry, --version, --help)`);
+  (flags: --dry, --no-banner, --version, --help)`);
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds
