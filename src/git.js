@@ -60,6 +60,46 @@ export function attachExistingBranch(repo, path, branch) {
   git(["worktree", "add", "--", path, branch], repo);
 }
 
+// --- post-run completion helpers (see src/complete.js) ---
+
+// Current branch name, or "HEAD" when detached. --abbrev-ref prints "HEAD" detached.
+export function currentBranch(repo) {
+  return git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
+}
+
+// Detach the primary checkout onto main's tip. A detached checkout peels `main` to
+// its commit without claiming the branch ref, so this succeeds even while the
+// integration worktree owns `main` — freeing the operator's old branch for deletion.
+export function detachToMain(repo) {
+  git(["switch", "--detach", "--quiet", "main"], repo);
+}
+
+// Safe delete: a branch is safe to drop only when it is fully contained in `main`
+// (every commit already on main → deleting the ref loses nothing). We test that
+// against main directly via merge-base, NOT `branch -d`, because `-d` judges "merged"
+// relative to the current HEAD — which, if a detach failed, is still the operator's
+// branch and would wrongly flag a truly-merged cycle branch as unmerged. unmerged:true
+// means real commits would be lost, so the caller must gate on the operator's consent.
+export function deleteBranchSafe(repo, branch) {
+  const inMain = gitTry(["merge-base", "--is-ancestor", branch, "main"], repo).ok;
+  if (!inMain) return { ok: false, unmerged: true };
+  const r = gitTry(["branch", "-D", branch], repo); // proven contained in main → -D is loss-free
+  return r.ok ? { ok: true } : { ok: false, reason: r.out.trim() };
+}
+
+// Force delete (-D) — drops a branch regardless of merge state. Only ever reached
+// after the operator explicitly consents to losing the work.
+export function forceDeleteBranch(repo, branch) {
+  git(["branch", "-D", branch], repo);
+}
+
+// Fast-forward-only push of main to origin. Never forces; a missing remote, auth
+// failure, or non-ff rejection comes back as {ok:false, reason} for plain reporting.
+export function pushMain(repo) {
+  const r = gitTry(["push", "origin", "main"], repo);
+  return r.ok ? { ok: true } : { ok: false, reason: r.out.trim() };
+}
+
 export function pruneWorktree(repo, path) {
   let canon = path;
   try { canon = realpathSync(path); } catch { /* already gone */ }
