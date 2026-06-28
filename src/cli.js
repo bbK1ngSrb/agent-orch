@@ -110,6 +110,7 @@ export function parse(argv) {
       reviewers: { type: "string" },
       file: { type: "string" },
       "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
+      "no-banner": { type: "boolean" },
     },
   });
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
@@ -276,6 +277,39 @@ function dryDeps() {
 function reviewersForAuthor(authorName, reviewerSpecs) {
   const others = reviewerSpecs.filter((s) => s.agent !== authorName);
   return others.length ? others : reviewerSpecs;
+}
+
+function roleLabel(spec) {
+  return [spec.agent, spec.model, spec.effort].filter(Boolean).join(" ");
+}
+
+function uniqueLabels(specs) {
+  return [...new Set(specs.map(roleLabel))].join(", ");
+}
+
+export function runBanner(cfg, runs) {
+  const authors = uniqueLabels(runs.map((r) => r.author));
+  const reviewers = uniqueLabels(runs.flatMap((r) => r.reviewers || []));
+  const lines = [
+    `agent-orch ${VERSION}`,
+    `agents: ${cfg.agents.join(", ")}`,
+    `roles: ${authors || "-"} -> ${reviewers || "-"}`,
+    `test: ${cfg.test}`,
+    `merge: ${cfg.merge}`,
+  ];
+  const width = Math.max(...lines.map((l) => l.length));
+  const edge = `+--${"-".repeat(width + 2)}--+`;
+  return [
+    edge,
+    ...lines.map((line) => `|  ${line.padEnd(width)}  |`),
+    edge,
+  ].join("\n");
+}
+
+export function maybePrintRunBanner(cfg, runs, flags, stdout = process.stdout) {
+  if (flags["no-banner"] || !stdout.isTTY) return false;
+  stdout.write(`${runBanner(cfg, runs)}\n`);
+  return true;
 }
 
 function nextAvailableOrchBranch(repo, slugSource) {
@@ -490,6 +524,8 @@ export async function main(argv, deps = {}) {
       }];
     }
 
+    maybePrintRunBanner(cfg, runs, flags, deps.stdout);
+
     const results = [];
     const mergedBranches = []; // #44: cycle branches that actually landed on main
     for (const run of runs) {
@@ -575,7 +611,7 @@ Usage:
   If launched from main, orch creates and switches to orch/<slug> first.
   After a merge, orch pushes main, deletes its temp branches, and prints a summary;
   --no-tidy leaves all branches/checkout untouched.
-  (flags: --dry, --no-tidy, --version, --help)`);
+  (flags: --dry, --no-tidy, --no-banner, --version, --help)`);
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds
