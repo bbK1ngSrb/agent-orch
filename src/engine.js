@@ -15,6 +15,17 @@ export async function runCycle(opts, deps) {
   const reviewers = reviewerSpecs.map((s) => ({
     name: s.agent, adapter: adapters.get(s.agent), opts: { model: s.model, effort: s.effort },
   }));
+  const runStats = [];
+  const done = (result) => ({ ...result, runStats });
+  const recordUsage = (role, agent, result, fallbackModel = null) => {
+    const usage = result?.usage || {};
+    runStats.push({
+      role,
+      agent,
+      model: usage.model || fallbackModel || "default",
+      tokens: Number(usage.tokens) || 0,
+    });
+  };
 
   // F5: task mode owns a fresh branch; review mode requires an existing one.
   // A resumed task (#24) re-attaches the quota-aborted branch — its authored
@@ -35,15 +46,16 @@ export async function runCycle(opts, deps) {
         notify.phase(`${author.name} authoring`);
         // §3b: for untrusted intake (work order), the author runs against a
         // fenced prompt; free-text tasks pass through unchanged.
-        await author.author(opts.authorPrompt || task, worktree, authorOpts);
+        const authored = await author.author(opts.authorPrompt || task, worktree, authorOpts);
+        recordUsage("author", author.name, authored, authorOpts.model);
       }
 
       // Scope gate (optional).
       if (cfg.scope.maxLines > 0) {
         const n = scope.count(branch, worktree, cfg.scope.ignore);
         if (n > cfg.scope.maxLines) {
-          return escalate(notify, orchDir, branch, 1,
-            `scope: ${n} changed lines exceed cap ${cfg.scope.maxLines} — split the PR`);
+          return done(escalate(notify, orchDir, branch, 1,
+            `scope: ${n} changed lines exceed cap ${cfg.scope.maxLines} — split the PR`));
         }
       }
     }
@@ -62,8 +74,10 @@ export async function runCycle(opts, deps) {
       notify.phase(`${reviewers.map((r) => r.name).join(", ")} auditing (round ${round})`);
       const verdicts = await Promise.all(reviewers.map(async (reviewer) => ({
         reviewer: reviewer.name,
+        model: reviewer.opts.model,
         ...(await reviewer.adapter.audit(branch, worktree, reviewer.opts)),
       })));
+      for (const v of verdicts) recordUsage("reviewer", v.reviewer, v, v.model);
       const disagree = verdicts.filter((v) => v.decision !== "AGREE");
       const verdict = {
         decision: disagree.length ? "DISAGREE" : "AGREE",
@@ -74,19 +88,19 @@ export async function runCycle(opts, deps) {
 
       if (verdict.decision === "AGREE") {
         if (!testCmd) {
-          return escalate(notify, orchDir, branch, round,
-            "no test gate detected — set `test:` in orch.yml or merge manually");
+          return done(escalate(notify, orchDir, branch, round,
+            "no test gate detected — set `test:` in orch.yml or merge manually"));
         }
         notify.phase(`running gate: ${testCmd}`);
         const { pass } = gate.run(testCmd, worktree);
         if (!pass) {
-          return escalate(notify, orchDir, branch, round,
-            "AGREE but tests are red — not merging");
+          return done(escalate(notify, orchDir, branch, round,
+            "AGREE but tests are red — not merging"));
         }
         // PR-bridge audit: report the verdict, let GitHub own the merge. Reviews
         // are kept (not cleaned) so the caller can quote them in a PR comment.
         if (noMerge) {
-          return { status: "approved", reason: "agreed + green (no merge)", rounds: round };
+          return done({ status: "approved", reason: "agreed + green (no merge)", rounds: round });
         }
         // Compute the loop-guard signals BEFORE finalize: a ff merge makes
         // main...branch empty, so reading it post-merge always yields [].
@@ -98,8 +112,8 @@ export async function runCycle(opts, deps) {
         // gate, not the prompt, is what keeps guardrail files out of main.
         const prot = checkPaths(changed);
         if (!prot.ok) {
-          return escalate(notify, orchDir, branch, round,
-            `protected paths touched: ${prot.violations.join(", ")} — orch will not merge guardrail files`);
+          return done(escalate(notify, orchDir, branch, round,
+            `protected paths touched: ${prot.violations.join(", ")} — orch will not merge guardrail files`));
         }
         const docsOnly = isDocsOnly(changed, cfg.docs.paths);
         const noop = changed.length === 0;
@@ -108,7 +122,7 @@ export async function runCycle(opts, deps) {
           testCmd, cfg, rounds: round,
         }, deps);
         notify.phase(fin.status === "merged" ? `merged ${branch}` : `demoted ${branch} (${fin.reason})`);
-        return { status: fin.status, reason: fin.reason, rounds: round, docsOnly, noop };
+        return done({ status: fin.status, reason: fin.reason, rounds: round, docsOnly, noop });
       }
 
       // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
@@ -117,7 +131,7 @@ export async function runCycle(opts, deps) {
       const agentErrors = disagree.filter((v) => v.agentError);
       if (agentErrors.length) {
         const reason = `agent error: ${agentErrors.map((v) => `${v.reviewer} ${v.reason}`).join("; ")}`;
-        return escalate(notify, orchDir, branch, round, reason);
+        return done(escalate(notify, orchDir, branch, round, reason));
       }
 
       // DISAGREE — review mode (cap=1) escalates here on round 1, never revising.
@@ -131,11 +145,12 @@ export async function runCycle(opts, deps) {
         });
         notify.escalate(orchDir, branch, brief);
         const why = mode === "review" ? "review verdict: DISAGREE" : "stalemate after cap";
-        return { status: "escalated", reason: why, rounds: round };
+        return done({ status: "escalated", reason: why, rounds: round });
       }
 
       notify.phase(`${author.name} revising (round ${round + 1})`);
-      await author.author(`Revise per review findings:\n${verdict.reason}`, worktree, authorOpts);
+      const revised = await author.author(`Revise per review findings:\n${verdict.reason}`, worktree, authorOpts);
+      recordUsage("author", author.name, revised, authorOpts.model);
       round += 1;
     }
   } finally {

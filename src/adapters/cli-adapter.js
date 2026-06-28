@@ -26,6 +26,71 @@ function runCapture(bin, args, cwd) {
   }
 }
 
+function num(value) {
+  const n = Number(String(value || "").replace(/[,\s]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function firstJsonObject(line) {
+  try {
+    const obj = JSON.parse(line);
+    return obj && typeof obj === "object" ? obj : null;
+  } catch {
+    return null;
+  }
+}
+
+function jsonUsage(obj) {
+  const usage = obj.usage || obj.token_usage || obj.tokenUsage || obj.response?.usage || {};
+  const input = num(usage.input_tokens ?? usage.inputTokens ?? usage.prompt_tokens ?? usage.promptTokens);
+  const output = num(usage.output_tokens ?? usage.outputTokens ?? usage.completion_tokens ?? usage.completionTokens);
+  const cached = num(usage.cache_creation_input_tokens) + num(usage.cache_read_input_tokens) + num(usage.cached_tokens);
+  const total = num(usage.total_tokens ?? usage.totalTokens) || input + output + cached;
+  const model = obj.model || obj.response?.model || obj.message?.model;
+  return { model, tokens: total };
+}
+
+export function parseRunUsage(text, fallbackModel = null) {
+  const raw = String(text ?? "");
+  let model = fallbackModel;
+  let tokens = 0;
+
+  const whole = firstJsonObject(raw.trim());
+  if (whole) {
+    const parsed = jsonUsage(whole);
+    if (parsed.model) model = parsed.model;
+    if (parsed.tokens) tokens += parsed.tokens;
+  }
+  if (!whole) {
+    for (const line of raw.split("\n")) {
+      const obj = firstJsonObject(line.trim());
+      if (!obj) continue;
+      const parsed = jsonUsage(obj);
+      if (parsed.model) model = parsed.model;
+      if (parsed.tokens) tokens += parsed.tokens;
+    }
+  }
+
+  const modelMatch = raw.match(/\bmodel\b\s*[:=]\s*([^\s,;]+)/i);
+  if (modelMatch) model = modelMatch[1];
+
+  const totalMatch = raw.match(/\b(?:total\s+tokens|tokens\s+(?:used|spent)|token\s+usage)\b\s*[:=]?\s*([\d,\s]+)/i);
+  if (totalMatch) tokens += num(totalMatch[1]);
+  if (!tokens) {
+    const input = raw.match(/\b(?:input|prompt)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
+    const output = raw.match(/\b(?:output|completion)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
+    tokens = num(input?.[1]) + num(output?.[1]);
+  }
+
+  return { model, tokens };
+}
+
+function modelFromArgs(args, opts = {}) {
+  if (opts.model) return opts.model;
+  const i = args.indexOf("--model");
+  return i >= 0 ? args[i + 1] : null;
+}
+
 // Last few non-blank lines of an agent's failure output, trimmed for a verdict
 // reason. Empty string when there's nothing useful, so the reason stays clean.
 function detail(out) {
@@ -39,7 +104,9 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
     bin, // the actual executable (may differ from name, e.g. local models run via `ccr`)
     async author(task, wd, opts = {}) {
       // Author must succeed; a failure here is a hard error (no commits made).
-      execFileSync(bin, buildArgs(render("author", { task }), wd, opts), { cwd: wd, ...OPTS });
+      const args = buildArgs(render("author", { task }), wd, opts);
+      const out = execFileSync(bin, args, { cwd: wd, ...OPTS });
+      const usage = parseRunUsage(out, modelFromArgs(args, opts));
       // The agent edits files in the worktree but cannot be trusted to commit
       // them — a `-p` run often leaves the work uncommitted, so the branch stays
       // at base and the auditor reviews an empty diff. Capture the work
@@ -50,23 +117,26 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
       if (staged) {
         execFileSync("git", ["commit", "-m", `orch: ${name} authored task`], { cwd: wd, ...OPTS });
       }
+      return { usage };
     },
     async audit(branch, wd, opts = {}) {
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
-      const { out, ok } = runCapture(bin, buildArgs(render("review", { branch }), wd, opts), wd);
+      const args = buildArgs(render("review", { branch }), wd, opts);
+      const { out, ok } = runCapture(bin, args, wd);
+      const usage = parseRunUsage(out, modelFromArgs(args, opts));
       const parsed = parseVerdict(out);
       // A nonzero agent that still printed an explicit DISAGREE gave a real,
       // actionable review finding — keep it (don't bury it as "agent exited").
       // An AGREE from a crashed agent is untrusted and falls through to below.
-      if (!ok && parsed.decision === "DISAGREE" && parsed.reason !== "unparseable verdict") return parsed;
+      if (!ok && parsed.decision === "DISAGREE" && parsed.reason !== "unparseable verdict") return { ...parsed, usage };
       // Nonzero with no usable verdict (#33): flag it `agentError` so the engine
       // escalates instead of asking the author to revise a non-code failure.
       // Surface WHY it died (#31): a bad model id / missing flag lives in `out` —
       // fold a trimmed tail into the reason so the escalation names the cause.
       // Local files only.
-      if (!ok) return { decision: "DISAGREE", reason: `agent exited nonzero${detail(out)}`, raw: out, agentError: true };
-      return parsed; // unparseable/empty -> DISAGREE "unparseable verdict"
+      if (!ok) return { decision: "DISAGREE", reason: `agent exited nonzero${detail(out)}`, raw: out, agentError: true, usage };
+      return { ...parsed, usage }; // unparseable/empty -> DISAGREE "unparseable verdict"
     },
   };
 }

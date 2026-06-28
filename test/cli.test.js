@@ -349,9 +349,9 @@ function initGitRepo(prefix = "orch-main-") {
 }
 
 function fakeCycleDeps() {
-  const verdict = { decision: "AGREE", reason: "ok", raw: "" };
+  const verdict = { decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-test-review", tokens: 20 } };
   return {
-    adapters: { get: (name) => ({ name, async author() {}, async audit() { return verdict; } }) },
+    adapters: { get: (name) => ({ name, async author() { return { usage: { model: "gpt-test-author", tokens: 40 } }; }, async audit() { return verdict; } }) },
     git: gitDep,
     gate: { detect: () => "true", run: () => ({ pass: true, log: "" }) },
     scope: { count: () => 0 },
@@ -441,6 +441,10 @@ test("#44: a merged task run hands the operator+cycle branches to finishRun for 
   assert.equal(calls[0].operatorBranch, "orch/some-task");
   assert.equal(calls[0].task, "some task");
   assert.match(calls[0].merged[0], /^pr\/claude\/some-task-/);
+  assert.deepEqual(calls[0].runStats, [
+    { role: "author", agent: "claude", model: "gpt-test-author", tokens: 40 },
+    { role: "reviewer", agent: "codex", model: "gpt-test-review", tokens: 20 },
+  ]);
 });
 
 test("#44: --no-tidy skips post-run cleanup entirely", async () => {
