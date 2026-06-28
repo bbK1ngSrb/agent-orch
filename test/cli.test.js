@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, maybePrintRunBanner, runBanner } from "../src/cli.js";
 import * as inflight from "../src/inflight.js";
 import * as gitDep from "../src/git.js";
 
@@ -84,6 +84,23 @@ test("--dry completes without any agent CLI on PATH (F2)", async () => {
   }
 });
 
+test("main prints startup banner for task runs on TTY", async () => {
+  let out = "";
+  await runMainCapture(["task", "hello world", "--dry"], {
+    stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
+  });
+  assert.match(out, /agent-orch 0\.1\.0/);
+  assert.match(out, /roles: claude -> codex/);
+  assert.match(out, /test: auto/);
+  assert.match(out, /merge: no-ff/);
+
+  out = "";
+  await runMainCapture(["task", "hello world", "--dry", "--no-banner"], {
+    stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
+  });
+  assert.equal(out, "");
+});
+
 test("parse splits command, rest, and flags", () => {
   const p = parse(["task", "do x", "--dry", "--authors", "claude,codex", "--reviewers", "codex,claude"]);
   assert.equal(p.command, "task");
@@ -97,6 +114,41 @@ test("parse captures --file flag", () => {
   const p = parse(["task", "--file", "task.md", "--dry"]);
   assert.equal(p.command, "task");
   assert.equal(p.flags.file, "task.md");
+});
+
+test("parse captures --no-banner flag", () => {
+  const p = parse(["task", "do x", "--no-banner"]);
+  assert.equal(p.flags["no-banner"], true);
+});
+
+test("runBanner includes version, roles, test command, and merge mode", () => {
+  const cfg = { agents: ["claude", "codex"], test: "npm test", merge: "ff-only" };
+  const banner = runBanner(cfg, [{
+    author: { agent: "claude", model: "opus", effort: "high" },
+    reviewers: [{ agent: "codex", model: "gpt-5", effort: null }],
+  }]);
+  assert.match(banner, /agent-orch 0\.1\.0/);
+  assert.match(banner, /agents: claude, codex/);
+  assert.match(banner, /roles: claude opus high -> codex gpt-5/);
+  assert.match(banner, /test: npm test/);
+  assert.match(banner, /merge: ff-only/);
+});
+
+test("run banner prints only on TTY and respects --no-banner", () => {
+  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
+  const runs = [{ author: { agent: "claude" }, reviewers: [{ agent: "codex" }] }];
+  let out = "";
+  const tty = { isTTY: true, write: (chunk) => { out += chunk; } };
+  assert.equal(maybePrintRunBanner(cfg, runs, {}, tty), true);
+  assert.match(out, /agent-orch 0\.1\.0/);
+
+  out = "";
+  assert.equal(maybePrintRunBanner(cfg, runs, { "no-banner": true }, tty), false);
+  assert.equal(out, "");
+
+  const notTty = { isTTY: false, write: (chunk) => { out += chunk; } };
+  assert.equal(maybePrintRunBanner(cfg, runs, {}, notTty), false);
+  assert.equal(out, "");
 });
 
 const WORK_ORDER = JSON.stringify({
