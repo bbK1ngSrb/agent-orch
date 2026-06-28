@@ -565,8 +565,9 @@ export async function main(argv, deps = {}) {
     if (!dry && !flags["no-tidy"] && mergedBranches.length) {
       const finishFn = deps.finishRun || finishRun;
       const io = deps.io || realIo();
+      const runStats = results.flatMap((r) => r.runStats || []);
       await finishFn(
-        { repo, task, operatorBranch, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending },
+        { repo, task, operatorBranch, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats },
         { git, io },
       );
     }

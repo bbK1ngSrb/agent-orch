@@ -9,7 +9,7 @@
 // synced/detached/deleted), so the optional docs-update child can run it too.
 
 export async function finishRun(ctx, deps) {
-  const { repo, task, operatorBranch, merged = [], interactive, docsPending = false } = ctx;
+  const { repo, task, operatorBranch, merged = [], interactive, docsPending = false, runStats = [] } = ctx;
   const { git, io } = deps;
 
   const sha = git.git(["rev-parse", "--short", "main"], repo);
@@ -56,11 +56,38 @@ export async function finishRun(ctx, deps) {
     leftover.push(br);
   }
 
-  io.print(summarize({ task, sha, push, deleted, leftover, operatorBranch, parked, docsPending }));
+  io.print(summarize({ task, sha, push, deleted, leftover, operatorBranch, parked, docsPending, runStats }));
   return { pushed: push.ok, pushReason: push.reason, deleted, leftover, parked };
 }
 
-function summarize({ task, sha, push, deleted, leftover, operatorBranch, parked, docsPending }) {
+function formatInt(n) {
+  return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function summarizeStats(runStats) {
+  const measuredStats = runStats.filter((stat) => (Number(stat.tokens) || 0) > 0);
+  if (!measuredStats.length) return [];
+  const rows = new Map();
+  for (const stat of measuredStats) {
+    const role = stat.role || "agent";
+    const agent = stat.agent || "unknown";
+    const model = stat.model || "default";
+    const key = `${role}\0${agent}\0${model}`;
+    const prev = rows.get(key) || { role, agent, model, tokens: 0 };
+    prev.tokens += Number(stat.tokens) || 0;
+    rows.set(key, prev);
+  }
+  const total = [...rows.values()].reduce((sum, row) => sum + row.tokens, 0);
+  const lines = ["Run statistics:"];
+  for (const row of rows.values()) {
+    const pct = total ? Math.round((row.tokens / total) * 100) : 0;
+    lines.push(`  • ${row.role} ${row.agent} used ${row.model}: ${formatInt(row.tokens)} tokens (${pct}%)`);
+  }
+  lines.push(`  • Total: ${formatInt(total)} tokens`);
+  return lines;
+}
+
+function summarize({ task, sha, push, deleted, leftover, operatorBranch, parked, docsPending, runStats }) {
   const L = [];
   L.push(`✅ All done — "${task}"`);
   L.push("");
@@ -78,6 +105,9 @@ function summarize({ task, sha, push, deleted, leftover, operatorBranch, parked,
     L.push(`  • Tidied up ${n} temporary work ${n === 1 ? "branch" : "branches"} and orch's scratch files.`);
   }
   L.push("");
+  const statsLines = summarizeStats(runStats);
+  L.push(...statsLines);
+  if (statsLines.length) L.push("");
   if (docsPending) {
     L.push("📝 A documentation update is still running in the background — it will be saved");
     L.push("   and tidied up the same way when it finishes.");

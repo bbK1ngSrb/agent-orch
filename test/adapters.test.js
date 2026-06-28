@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { buildArgs as claudeArgs } from "../src/adapters/claude.js";
 import { buildArgs as codexArgs } from "../src/adapters/codex.js";
 import { get } from "../src/adapters/index.js";
-import { makeCliAdapter, isUsageLimit } from "../src/adapters/cli-adapter.js";
+import { makeCliAdapter, isUsageLimit, parseRunUsage } from "../src/adapters/cli-adapter.js";
 
 test("claude buildArgs uses -p with headless write permission", () => {
   assert.deepEqual(claudeArgs("PROMPT", "/wd"),
@@ -41,6 +41,24 @@ test("adapter forwards model/effort opts to buildArgs", async () => {
   });
   await adapter.audit("pr/x/y", tmpdir(), { model: "m1", effort: "low" });
   assert.deepEqual(seen, { model: "m1", effort: "low" });
+});
+
+test("parseRunUsage reads JSON and text token summaries", () => {
+  assert.deepEqual(parseRunUsage('{"model":"claude-opus-4.8","usage":{"input_tokens":1000,"output_tokens":250}}\n'),
+    { model: "claude-opus-4.8", tokens: 1250 });
+  assert.deepEqual(parseRunUsage("AGREE\nmodel: gpt-5.1\ninput tokens: 100\noutput tokens: 25\n"),
+    { model: "gpt-5.1", tokens: 125 });
+});
+
+test("audit returns parsed model and token usage from agent output", async () => {
+  const adapter = makeCliAdapter({
+    name: "metered",
+    bin: "sh",
+    buildArgs: () => ["-c", "printf 'AGREE ok\\nmodel: gpt-5.1\\ninput tokens: 100\\noutput tokens: 25\\n'"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.deepEqual(v.usage, { model: "gpt-5.1", tokens: 125 });
 });
 
 test("author commits worktree changes the agent left uncommitted", async () => {

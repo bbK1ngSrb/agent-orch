@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCycle } from "../src/engine.js";
 
-function makeDeps({ verdicts, reviewerVerdicts = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
+function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
   const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [] };
   const reviewerCache = new Map();
   const reviewerFor = (name) => {
@@ -22,7 +22,7 @@ function makeDeps({ verdicts, reviewerVerdicts = null, gatePass = true, mergeOk 
   };
   const author = {
     name: "auth",
-    async author(prompt) { calls.authors++; calls.prompts.push(prompt); },
+    async author(prompt) { calls.authors++; calls.prompts.push(prompt); return authorUsage; },
     async audit() { return { decision: "AGREE", reason: "", raw: "" }; },
   };
   // revise reuses author.author via engine; count via wrapper
@@ -63,6 +63,37 @@ test("AGREE + green gate -> merged", async () => {
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "merged");
   assert.equal(deps._calls.authors, 1);
+});
+
+test("merged result carries author and reviewer run statistics", async () => {
+  const deps = makeDeps({
+    authorUsage: { usage: { model: "claude-opus-4.8", tokens: 1200 } },
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-5.1", tokens: 800 } }],
+  });
+  const r = await runCycle({
+    ...opts,
+    author: { agent: "auth", model: "claude-opus-4.8" },
+    reviewers: [{ agent: "rev", model: "gpt-5.1" }],
+  }, deps);
+  assert.equal(r.status, "merged");
+  assert.deepEqual(r.runStats, [
+    { role: "author", agent: "auth", model: "claude-opus-4.8", tokens: 1200 },
+    { role: "reviewer", agent: "rev", model: "gpt-5.1", tokens: 800 },
+  ]);
+});
+
+test("merged result omits run statistics when adapters report no measured tokens", async () => {
+  const deps = makeDeps({
+    authorUsage: { usage: { model: "claude-opus-4.8", tokens: 0 } },
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-5.1", tokens: 0 } }],
+  });
+  const r = await runCycle({
+    ...opts,
+    author: { agent: "auth", model: "claude-opus-4.8" },
+    reviewers: [{ agent: "rev", model: "gpt-5.1" }],
+  }, deps);
+  assert.equal(r.status, "merged");
+  assert.deepEqual(r.runStats, []);
 });
 
 test("merged result stamps docsOnly=false for a code change", async () => {
