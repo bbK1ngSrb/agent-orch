@@ -73,6 +73,19 @@ test("audit is fail-safe DISAGREE when the agent exits nonzero (F4)", async () =
   assert.equal(v.decision, "DISAGREE");
 });
 
+test("audit surfaces the agent's actual error in the DISAGREE reason (#31)", async () => {
+  // A nonzero exit must carry WHY it failed (e.g. a bad model id) into the
+  // reason, not just a generic sentinel — otherwise the escalation is undiagnosable.
+  const adapter = makeCliAdapter({
+    name: "badmodel",
+    bin: "sh",
+    buildArgs: () => ["-c", "echo \"There's an issue with the selected model (opus-4.8)\" >&2; exit 1"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+  assert.match(v.reason, /opus-4\.8/, "reason must include the agent's error output");
+});
+
 test("audit ignores AGREE printed by a crashed agent (F4 fail-safe)", async () => {
   // A nonzero exit must override any verdict the agent printed before dying.
   const adapter = makeCliAdapter({
