@@ -4,7 +4,7 @@
 // branch to a PR / local escalation. The engine calls this via deps.finalize so
 // it stays a pure state machine.
 export async function finalize(ctx, deps) {
-  const { repo, orchDir, branch, sid, baseSha, paths, testCmd, cfg, rounds } = ctx;
+  const { repo, orchDir, branch, sid, baseSha, paths, testCmd, cfg, rounds, closes } = ctx;
   const { git, gate, lock, inflight, github, notify } = deps;
 
   if (!lock.acquireBlocking(orchDir, "merge.lock")) {
@@ -20,7 +20,12 @@ export async function finalize(ctx, deps) {
     if (overlaps(paths, others)) return demote(ctx, deps, "overlap");
 
     const preSha = git.git(["rev-parse", "HEAD"], integration); // main tip pre-merge
-    const m = git.mergeInWorktree(integration, branch, cfg.merge);
+    // `orch issue <n>`: stamp `Closes #n` in the no-ff merge commit so the issue
+    // auto-closes once main reaches origin. ponytail: ff-only has no merge commit
+    // to carry it, so it won't auto-close — default is no-ff; demote PR covers the
+    // fallback. The number is our own int, not attacker text — safe to interpolate.
+    const message = closes ? `Merge ${branch}\n\nCloses #${closes}` : null;
+    const m = git.mergeInWorktree(integration, branch, cfg.merge, message);
     if (!m.ok) return demote(ctx, deps, "conflict");
 
     // Guard 2: re-run the test gate against integrated main.

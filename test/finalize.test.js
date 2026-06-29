@@ -84,6 +84,35 @@ test("demote reason is forwarded to github.demote (final-review I2)", async () =
   assert.equal(capturedCtx.reason, "conflict"); // reason threaded via { ...ctx, reason }
 });
 
+test("issue bridge: closes #N is stamped into the no-ff merge commit message", async () => {
+  let mergeArgs;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, mergeInWorktree: (path, branch, mode, message) => { mergeArgs = { mode, message }; return { ok: true, reason: "merged" }; } },
+  });
+  const r = await finalize({ ...ctx(), closes: 53 }, deps);
+  assert.equal(r.status, "merged");
+  assert.match(mergeArgs.message, /Closes #53/);
+});
+
+test("no closes → merge message stays null (plain task path unchanged)", async () => {
+  let mergeArgs;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, mergeInWorktree: (path, branch, mode, message) => { mergeArgs = { message }; return { ok: true, reason: "merged" }; } },
+  });
+  await finalize(ctx(), deps);
+  assert.equal(mergeArgs.message, null);
+});
+
+test("issue bridge: closes #N reaches github.demote when a merge is blocked", async () => {
+  let capturedCtx;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, mergeInWorktree: () => ({ ok: false, reason: "CONFLICT" }) },
+    github: { demote: async (c) => { capturedCtx = c; return { prUrl: "https://x/pr/1" }; } },
+  });
+  await finalize({ ...ctx(), closes: 52 }, deps);
+  assert.equal(capturedCtx.closes, 52);
+});
+
 test("merge-lock timeout → pr-fallback without touching the worktree", async () => {
   let ensured = false;
   let releaseCalls = 0;

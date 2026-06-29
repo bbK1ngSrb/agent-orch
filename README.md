@@ -40,6 +40,7 @@ orch init --link                           # also wire .orch/ORCH.md into CLAUDE
 orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
 orch task "fix x" --authors claude,codex --reviewers claude,codex
 orch task --file wo.json                    # untrusted JSON work order (validated + fenced)
+orch issue 42                               # fetch issue #42 as a work order, run the cycle, Closes #42
 orch review pr/claude/some-branch          # audit an existing branch (no authoring)
 orch pr 42                                  # audit a GitHub PR, post verdict as a comment
 orch pr 42 --merge                          # ...and merge it via gh if agents approve
@@ -108,6 +109,7 @@ orch task "fix the flaky login test"
 - `orch init [--link]` — scaffold `.orch/orch.yml` + agent-agnostic `.orch/ORCH.md` usage doc, verify agent CLIs. `--link` appends an idempotent pointer to `.orch/ORCH.md` in the repo's `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` (created for the configured agent if none exist). The `@.orch/ORCH.md` line auto-loads the doc in Claude Code; other agents read the prose pointer to it.
 - `orch agent add <name>` — append a registered agent to `.orch/orch.yml`.
 - `orch task "..."` — author + cross-audit + test-gate + merge.
+- `orch issue <n>` — fetch GitHub issue #n (title+body, treated as an untrusted work order), run the full cycle, and stamp `Closes #n` on the no-ff merge so it auto-closes once main reaches origin. Needs the [`gh`] CLI authenticated.
 - `orch review <branch>` — audit an existing branch.
 - `orch pr <n> [--merge]` — audit a GitHub PR, comment the verdict, optionally merge via `gh`.
 Add `--reviewer name` or `--reviewers a,b` to override review agents for

@@ -234,6 +234,46 @@ test("--file rejects a JSON object that fails work-order shape", async () => {
   await assert.rejects(() => main(["task", "--file", f, "--dry"]), /work order/i);
 });
 
+import { fetchIssueWorkOrder } from "../src/cli.js";
+
+test("fetchIssueWorkOrder maps an open issue to a validated work order", () => {
+  const gh = (args) => args[0] === "--version" ? "gh 2"
+    : JSON.stringify({ number: 9, title: "Bug", body: "it crashes", state: "OPEN" });
+  const wo = fetchIssueWorkOrder(9, gh);
+  assert.equal(wo.title, "Bug");
+  assert.equal(wo.problem, "it crashes");
+  assert.deepEqual(wo.repro_steps, []);
+});
+
+test("fetchIssueWorkOrder refuses a non-open issue", () => {
+  const gh = (args) => args[0] === "--version" ? "gh 2"
+    : JSON.stringify({ number: 9, title: "Bug", body: "x", state: "CLOSED" });
+  assert.throws(() => fetchIssueWorkOrder(9, gh), /not open/);
+});
+
+test("orch issue <n> routes a fetched issue through the task cycle (dry)", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-issue-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    process.exitCode = 0;
+    const gh = (args) => args[0] === "--version" ? "gh 2"
+      : JSON.stringify({ number: 52, title: "stale base", body: "orch bases cycles on local main", state: "OPEN" });
+    await main(["issue", "52", "--dry"], { githubDeps: () => ({ gh }) });
+    assert.notEqual(process.exitCode, 2);
+  } finally {
+    chdir(prev);
+    process.exitCode = 0;
+  }
+});
+
+test("orch issue rejects a non-numeric argument", async () => {
+  await assert.rejects(
+    () => main(["issue", "abc", "--dry"], { githubDeps: () => ({ gh: () => "gh 2" }) }),
+    /usage: orch issue/,
+  );
+});
+
 test("nextAuthor alternates and persists last-author", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
   const cfg = { agents: ["claude", "codex"] };

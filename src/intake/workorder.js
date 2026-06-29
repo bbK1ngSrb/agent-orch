@@ -13,6 +13,25 @@ export const WORK_ORDER_SHAPE = {
 
 const NONEMPTY = new Set(["title", "problem"]);
 
+// Map a GitHub issue (title + UNTRUSTED body) to the work-order shape. The body
+// is attacker-controlled, so we copy it verbatim into `problem` and let
+// validateWorkOrder + buildAuthorPrompt fence it downstream — no parsing of the
+// attacker text into "fields" beyond title/problem. Empty body falls back to the
+// title so `problem` is never empty (validateWorkOrder requires it).
+// ponytail: arrays left empty — the full body in `problem` is enough for the
+// author to locate the bug; add heuristic section parsing only if a real issue
+// proves it's needed.
+export function issueToWorkOrder({ title, body }) {
+  const problem = String(body || "").trim() || String(title || "").trim();
+  return {
+    title: String(title || ""),
+    problem,
+    repro_steps: [],
+    suspected_paths: [],
+    acceptance_criteria: [],
+  };
+}
+
 export function validateWorkOrder(obj) {
   const errors = [];
   if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {

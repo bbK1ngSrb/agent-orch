@@ -124,7 +124,7 @@ export async function runCycle(opts, deps) {
         const noop = changed.length === 0;
         const fin = await finalize({
           repo, orchDir, branch, sid, baseSha, paths: changed,
-          testCmd, cfg, rounds: round,
+          testCmd, cfg, rounds: round, closes: opts.closes || null,
         }, deps);
         notify.phase(fin.status === "merged" ? `merged ${branch}` : `demoted ${branch} (${fin.reason})`);
         return done({ status: fin.status, reason: fin.reason, rounds: round, docsOnly, noop });

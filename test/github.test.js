@@ -100,6 +100,27 @@ test("demote opens a PR when a remote and gh are present", async () => {
   assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
 });
 
+test("issue bridge: demote appends Closes #N to the PR body so the issue auto-closes", async () => {
+  const calls = [];
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/1\n"; };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+  await demote({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reason: "overlap", closes: 53 },
+    { gh, git, notify: { escalate() {} } });
+  const args = calls.find((c) => c[0] === "gh" && c[2] === "create");
+  const body = args[args.indexOf("--body") + 1];
+  assert.match(body, /Closes #53/);
+});
+
+test("no closes → PR body carries no Closes line (plain demote unchanged)", async () => {
+  const calls = [];
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/1\n"; };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+  await demote({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reason: "overlap" },
+    { gh, git, notify: { escalate() {} } });
+  const args = calls.find((c) => c[0] === "gh" && c[2] === "create");
+  assert.equal(/Closes #/.test(args[args.indexOf("--body") + 1]), false);
+});
+
 test("demote escalates locally when there is no remote", async () => {
   let escalated = null;
   const gh = () => "gh 2";

@@ -18,7 +18,7 @@ import { newSid } from "./sid.js";
 import * as inflight from "./inflight.js";
 import * as resume from "./resume.js";
 import { finalize } from "./finalize.js";
-import { validateWorkOrder, buildAuthorPrompt } from "./intake/workorder.js";
+import { validateWorkOrder, buildAuthorPrompt, issueToWorkOrder } from "./intake/workorder.js";
 import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.js";
 import { finishRun } from "./complete.js";
 
@@ -108,6 +108,7 @@ cross-audits it with a second, gates on tests, then merges.
 
 ## Commands
 - \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
+- \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\`
 - \`orch review <branch>\`           audit an existing branch (no author)
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
 - \`orch agent add <name>\`          add an agent to the rotation pool
@@ -489,6 +490,20 @@ export function parseWorkOrderFile(path) {
   return v.workOrder;
 }
 
+// §3a: fetch a GitHub issue and shape-validate it as an UNTRUSTED work order —
+// same path as parseWorkOrderFile, but the source is the issue title+body. `gh`
+// is injected so tests stub the fetch with no network/auth. Returns the
+// validated work order or throws.
+export function fetchIssueWorkOrder(n, gh) {
+  try { gh(["--version"]); }
+  catch { throw new Error("gh CLI not found — install https://cli.github.com/ and run `gh auth login`"); }
+  const issue = JSON.parse(gh(["issue", "view", String(n), "--json", "number,title,body,state"]));
+  if (issue.state && issue.state !== "OPEN") throw new Error(`issue #${issue.number} is ${issue.state}, not open`);
+  const v = validateWorkOrder(issueToWorkOrder(issue));
+  if (!v.ok) throw new Error(`issue #${n} did not map to a valid work order:\n- ${v.errors.join("\n- ")}`);
+  return v.workOrder;
+}
+
 export function resolveTaskBranch(ctx, deps = { git, resume }) {
   const { repo, orchDir, task, authorName, dry = false, liveBranches = new Set() } = ctx;
   const { git: g, resume: r } = deps;
@@ -575,7 +590,7 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "task" || command === "review") {
+  if (command === "task" || command === "review" || command === "issue") {
     const cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: command === "review" });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     if (!dry) preflightFn(cfg, orchDir); // dry-run never shells out, so don't require CLIs
@@ -583,9 +598,18 @@ export async function main(argv, deps = {}) {
     // F3: operator kill switch + one-cycle-at-a-time lock.
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
 
-    const mode = command; // "task" | "review"
-    let task, authorPrompt, reviewBranch;
-    if (mode === "task") {
+    // `issue` is a task whose work order is fetched from a GitHub issue; it runs
+    // the identical author→audit→test→merge cycle, plus `Closes #N` on the merge.
+    const mode = command === "issue" ? "task" : command; // "task" | "review"
+    let task, authorPrompt, reviewBranch, closes = null;
+    if (command === "issue") {
+      const n = rest[0];
+      if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch issue <number> [--author ... --reviewer ...]");
+      const wo = fetchIssueWorkOrder(n, (deps.githubDeps || githubDeps)().gh);
+      task = wo.title;
+      authorPrompt = buildAuthorPrompt(wo);
+      closes = Number(n);
+    } else if (mode === "task") {
       // §3a/§3b: a --file task is UNTRUSTED intake — it must be a JSON work order,
       // validated for shape, then wrapped in a neutralized fence the author treats
       // as reference, not instructions. Free-text `orch task "..."` (operator-typed,
@@ -635,7 +659,7 @@ export async function main(argv, deps = {}) {
         const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches });
         const reviewerList = reviewersForAuthor(authorName, reviewers);
         return {
-          mode, task, authorPrompt, branch, sid, resume, authorName, author: authorSpec,
+          mode, task, authorPrompt, closes, branch, sid, resume, authorName, author: authorSpec,
           reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
           reviewers: reviewerList,
           cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
@@ -743,6 +767,9 @@ Usage:
   orch task "change" [--author "<agent> [model] [effort]" --reviewer "<agent> [model] [effort]"]
     (or: orch task --file work-order.json — an UNTRUSTED JSON work order:
      {title, problem, repro_steps[], suspected_paths[], acceptance_criteria[]}; title/problem required)
+  orch issue <number> [--author ... --reviewer ...]
+    (fetch a GitHub issue as an UNTRUSTED work order, run the full cycle, and
+     stamp "Closes #<number>" on the merge so it auto-closes)
   orch review <branch> [--reviewer "claude claude-opus-4-8 high, codex"]
   orch pr <number> [--merge] [--reviewer ...]
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).

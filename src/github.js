@@ -87,7 +87,7 @@ function ghAvailable(gh) {
 // Demote an approved-but-unmergeable branch: open a PR if we can, else escalate
 // locally (keep the branch + write DECISION.md). Never pushes to main.
 export async function demote(ctx, deps) {
-  const { repo, orchDir, branch, reason } = ctx;
+  const { repo, orchDir, branch, reason, closes } = ctx;
   const { gh, git, notify, log = () => {} } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate(orchDir, branch,
@@ -97,11 +97,15 @@ export async function demote(ctx, deps) {
   git(["push", "-u", "origin", branch], repo);
   // §3f: --head must carry the real ref so gh finds the branch; the
   // human-readable title/body are scrubbed (a secret-shaped branch name leaks
-  // through publicSummary's \w sanitizer otherwise).
+  // through publicSummary's \w sanitizer otherwise). A `Closes #N` line (issue
+  // bridge) is appended AFTER redact — it's our own int, and redact would not
+  // touch it anyway, but keeping it outside the scrub guarantees gh sees it intact.
+  const body = redact(`Auto-demoted by agent-orch (reason: ${reason}). Agents agreed and the branch was green in isolation, but it could not be safely auto-merged into main.`)
+    + (closes ? `\n\nCloses #${closes}` : "");
   const url = gh([
     "pr", "create", "--head", branch, "--base", "main",
     "--title", redact(`orch: ${branch}`),
-    "--body", redact(`Auto-demoted by agent-orch (reason: ${reason}). Agents agreed and the branch was green in isolation, but it could not be safely auto-merged into main.`),
+    "--body", body,
   ]).trim();
   log(`opened PR for ${branch}: ${url}`);
   return { prUrl: url };
