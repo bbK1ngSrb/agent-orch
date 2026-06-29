@@ -348,6 +348,19 @@ function initGitRepo(prefix = "orch-main-") {
   return d;
 }
 
+function addOriginWithPeer(repo) {
+  const remote = mkdtempSync(join(tmpdir(), "orch-cli-remote-"));
+  gitDep.git(["init", "--bare"], remote);
+  gitDep.git(["remote", "add", "origin", remote], repo);
+  gitDep.git(["push", "-u", "origin", "main"], repo);
+  const parent = mkdtempSync(join(tmpdir(), "orch-cli-peer-"));
+  const peer = join(parent, "repo");
+  gitDep.git(["clone", remote, peer], parent);
+  gitDep.git(["config", "user.email", "t@t"], peer);
+  gitDep.git(["config", "user.name", "t"], peer);
+  return { remote, peer };
+}
+
 function fakeCycleDeps() {
   const verdict = { decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-test-review", tokens: 20 } };
   return {
@@ -422,6 +435,22 @@ test("orch task on main auto-creates and switches to an orch slug branch", async
   assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task");
   assert.match(logs.join("\n"), /created and switched to orch\/some-task/);
   assert.match(logs.join("\n"), /orch: pr\/claude\/some-task-\d+-[0-9a-z]+: merged \(test\)/);
+});
+
+test("orch task fast-forwards stale local main from origin before branching", async () => {
+  const repo = initGitRepo();
+  const { peer } = addOriginWithPeer(repo);
+  writeFileSync(join(peer, "remote.txt"), "remote\n");
+  gitDep.git(["add", "."], peer);
+  gitDep.git(["commit", "-m", "advance remote"], peer);
+  gitDep.git(["push", "origin", "main"], peer);
+
+  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
+
+  assert.equal(gitDep.git(["rev-parse", "main"], repo), gitDep.git(["rev-parse", "origin/main"], repo));
+  assert.equal(readFileSync(join(repo, "remote.txt"), "utf8"), "remote\n");
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task");
+  assert.match(logs.join("\n"), /fast-forwarded local main from origin\/main/);
 });
 
 test("orch task on main appends a numeric suffix when the orch slug branch exists", async () => {

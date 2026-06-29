@@ -14,8 +14,21 @@ export async function finishRun(ctx, deps) {
 
   const sha = git.git(["rev-parse", "--short", "main"], repo);
 
-  // 1. Sync — fast-forward push only. Never force; a failure is reported, not fatal.
+  // 1. Sync - fast-forward push only. Never force. If origin/main advanced
+  //    meanwhile, roll local main back to origin/main and stop loudly so later
+  //    cycles do not base on an unpushable local merge.
   const push = git.pushMain(repo);
+  if (!push.ok && git.resetMainToOriginIfDiverged) {
+    const rollback = git.resetMainToOriginIfDiverged(repo);
+    if (rollback.rolledBack) {
+      throw new Error(
+        `orch: push to origin/main failed after merging, and origin/main has advanced. ` +
+        `Reset local main back to origin/main to avoid poisoning later cycles. ` +
+        `Merged branch(es) kept for recovery: ${merged.join(", ")}. ` +
+        `Push output: ${push.reason || "push failed"}`,
+      );
+    }
+  }
 
   // 2. Free the operator's checkout. orch parks them on a fresh `orch/<slug>` branch
   //    at start (operatorBranch); detach onto the merged main tip so that branch can

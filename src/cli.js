@@ -481,6 +481,11 @@ export async function main(argv, deps = {}) {
     let liveBranches = new Set();
     let operatorBranch = null; // #44: the orch/<slug> we parked the operator on, if any
     if (!dry) {
+      if (mode === "task") {
+        const sync = git.syncMainFromOrigin(repo);
+        if (!sync.ok) throw new Error(`orch: cannot start from stale main: ${sync.reason}`);
+        if (sync.updated) console.log("orch: fast-forwarded local main from origin/main");
+      }
       operatorBranch = switchFromMain(repo, mode === "task" ? task : `review ${reviewBranch}`);
       liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
       git.reclaimOrphanWorktrees(repo, orchDir, liveBranches); // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers

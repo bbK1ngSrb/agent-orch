@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince } from "../src/git.js";
+import { git, branchExists, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince, syncMainFromOrigin, resetMainToOriginIfDiverged } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -15,6 +15,29 @@ function newRepo() {
   git(["add", "."], d);
   git(["commit", "-m", "init"], d);
   return d;
+}
+
+function addOrigin(repo) {
+  const remote = mkdtempSync(join(tmpdir(), "orch-remote-"));
+  git(["init", "--bare"], remote);
+  git(["remote", "add", "origin", remote], repo);
+  git(["push", "-u", "origin", "main"], repo);
+  return remote;
+}
+
+function cloneRemote(remote) {
+  const parent = mkdtempSync(join(tmpdir(), "orch-peer-"));
+  const peer = join(parent, "repo");
+  git(["clone", remote, peer], parent);
+  git(["config", "user.email", "t@t"], peer);
+  git(["config", "user.name", "t"], peer);
+  return peer;
+}
+
+function commitFile(repo, file, text, msg) {
+  writeFileSync(join(repo, file), text);
+  git(["add", "."], repo);
+  git(["commit", "-m", msg], repo);
 }
 
 test("createTaskBranch lifecycle + ff-only merge in the integration worktree", () => {
@@ -192,6 +215,51 @@ test("changedSince lists files merged into main after a base sha", () => {
   writeFileSync(join(repo, "new.txt"), "x\n");
   git(["add", "."], repo); git(["commit", "-m", "land new"], repo);
   assert.deepEqual(changedSince(repo, base), ["new.txt"]);
+});
+
+test("syncMainFromOrigin fast-forwards local main before new task bases", () => {
+  const repo = newRepo();
+  const remote = addOrigin(repo);
+  const peer = cloneRemote(remote);
+  commitFile(peer, "remote.txt", "remote\n", "advance remote");
+  git(["push", "origin", "main"], peer);
+
+  const r = syncMainFromOrigin(repo);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.updated, true);
+  assert.equal(git(["rev-parse", "main"], repo), git(["rev-parse", "origin/main"], repo));
+  assert.equal(readFileSync(join(repo, "remote.txt"), "utf8"), "remote\n");
+});
+
+test("syncMainFromOrigin refuses a local main diverged from origin/main", () => {
+  const repo = newRepo();
+  const remote = addOrigin(repo);
+  const peer = cloneRemote(remote);
+  commitFile(peer, "remote.txt", "remote\n", "advance remote");
+  git(["push", "origin", "main"], peer);
+  commitFile(repo, "local.txt", "local\n", "advance local");
+
+  const r = syncMainFromOrigin(repo);
+
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /diverged/);
+  assert.notEqual(git(["rev-parse", "main"], repo), git(["rev-parse", "origin/main"], repo));
+});
+
+test("resetMainToOriginIfDiverged rolls local main back when origin advanced", () => {
+  const repo = newRepo();
+  const remote = addOrigin(repo);
+  const peer = cloneRemote(remote);
+  commitFile(peer, "remote.txt", "remote\n", "advance remote");
+  git(["push", "origin", "main"], peer);
+  commitFile(repo, "local.txt", "local\n", "advance local");
+
+  const r = resetMainToOriginIfDiverged(repo);
+
+  assert.equal(r.rolledBack, true);
+  assert.equal(git(["rev-parse", "main"], repo), git(["rev-parse", "origin/main"], repo));
+  assert.equal(readFileSync(join(repo, "remote.txt"), "utf8"), "remote\n");
 });
 
 test("reclaim PRESERVES a worktree whose branch is in liveBranches even when marker has dead pid (final-review I3)", () => {
