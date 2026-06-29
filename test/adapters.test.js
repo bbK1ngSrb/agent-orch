@@ -158,6 +158,21 @@ test("a stage that finishes within stageTimeout is not killed (no false positive
   assert.equal(v.decision, "AGREE");
 });
 
+test("runAgent closes the child's stdin so codex's exec stdin read sees EOF (#58)", { timeout: 5000 }, async () => {
+  // Repro of the codex hang: `codex exec <prompt>` reads stdin and blocks on
+  // 'Reading additional input from stdin...' until EOF. The adapter spawned with
+  // a default (open) stdin pipe never sends EOF, so the stage hangs until the #56
+  // watchdog SIGKILLs it. `cat` stands in for that read — it only exits at EOF.
+  // With stdin closed the child completes in ms; without, this test times out.
+  const adapter = makeCliAdapter({
+    name: "stdin-reader",
+    bin: "sh",
+    buildArgs: () => ["-c", "cat; echo AGREE"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+});
+
 test("author commits worktree changes the agent left uncommitted", async () => {
   const wd = mkdtempSync(join(tmpdir(), "orch-author-"));
   const g = (...a) => execFileSync("git", a, { cwd: wd, encoding: "utf8" });
