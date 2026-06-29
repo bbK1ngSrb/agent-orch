@@ -95,6 +95,69 @@ docs:
   paths: ["*.md", "docs/**", "**/*.md"]   # docs-only globs (loop guard)
 `;
 
+// Agent-agnostic usage doc written to .orch/ORCH.md on init. Committed and
+// shared, so any agent driving the repo (Claude/Codex/Gemini/…) has the same
+// "how to use orch here" reference. Generic — no per-repo specifics. Overwritten
+// on every init so it tracks the installed orch version (it is orch's own file,
+// not meant for hand-edits; user customisations belong in their agent file).
+const ORCH_DOC = `# Using orch in this repo
+
+This repo is set up for **agent-orch**: it authors a change with one agent,
+cross-audits it with a second, gates on tests, then merges.
+
+## Commands
+- \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
+- \`orch review <branch>\`           audit an existing branch (no author)
+- \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
+- \`orch agent add <name>\`          add an agent to the rotation pool
+
+A role is a spec \`"<agent> [model] [effort]"\`, e.g.
+\`--author "claude claude-opus-4-8 high" --reviewer "codex"\`.
+Config and every option live in \`.orch/orch.yml\`.
+
+Run \`orch --help\` for the full flag list.
+`;
+
+// --link block: an idempotent, fenced pointer to .orch/ORCH.md. Only the text
+// between the markers is managed; surrounding content is never touched. The
+// @import line resolves in Claude Code; other agents read the prose pointer.
+const LINK_BEGIN = "<!-- orch:begin (managed by `orch init --link`; edits here are overwritten) -->";
+const LINK_END = "<!-- orch:end -->";
+const LINK_BLOCK = `${LINK_BEGIN}
+## orch
+This repo uses agent-orch. See \`.orch/ORCH.md\` for usage; config in \`.orch/orch.yml\`.
+@.orch/ORCH.md
+${LINK_END}`;
+const LINK_FENCE = /<!-- orch:begin[\s\S]*?<!-- orch:end -->/;
+
+// Per-agent instruction-file conventions. Local-llm agents (qwen/deepseek/glm)
+// have no standard file, so they fall through to the CLAUDE.md default.
+const AGENT_DOC_FILE = { claude: "CLAUDE.md", codex: "AGENTS.md", gemini: "GEMINI.md" };
+
+// Append (or refresh) the fenced pointer in the repo's agent-instruction files.
+// Targets every known file present; if none exist, creates the file for the
+// configured primary agent (e.g. codex → AGENTS.md), not a blind CLAUDE.md, so
+// a non-Claude driver's pointer lands where that agent actually reads. Re-running
+// replaces the fence in place — never duplicates, never clobbers other content.
+// Returns the files touched.
+export function linkOrchDoc(repo, agents = [], deps = {}) {
+  const { read = readFileSync, write = writeFileSync, exists = existsSync } = deps;
+  let targets = ["CLAUDE.md", "AGENTS.md", "GEMINI.md"].filter((n) => exists(join(repo, n)));
+  if (targets.length === 0) {
+    const primary = agents.find((a) => AGENT_DOC_FILE[a]);
+    targets = [primary ? AGENT_DOC_FILE[primary] : "CLAUDE.md"];
+  }
+  for (const name of targets) {
+    const f = join(repo, name);
+    const prev = exists(f) ? read(f, "utf8") : "";
+    const next = LINK_FENCE.test(prev)
+      ? prev.replace(LINK_FENCE, LINK_BLOCK)
+      : prev.trimEnd() + (prev.trim() ? "\n\n" : "") + LINK_BLOCK + "\n";
+    write(f, next);
+  }
+  return targets;
+}
+
 export function parse(argv) {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -111,6 +174,8 @@ export function parse(argv) {
       file: { type: "string" },
       "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
       "no-banner": { type: "boolean" },
+      link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
+
     },
   });
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
@@ -477,7 +542,16 @@ export async function main(argv, deps = {}) {
     if (!existsSync(ex) && !existsSync(join(repo, "orch.yml"))) {
       writeFileSync(ex, SCAFFOLD);
     }
-    console.log("orch: initialized (.orch/orch.yml). Agent CLIs found.");
+    writeFileSync(join(orchDir, "ORCH.md"), ORCH_DOC);
+    console.log("orch: initialized (.orch/orch.yml, .orch/ORCH.md). Agent CLIs found.");
+    if (flags.link) {
+      const touched = linkOrchDoc(repo, cfg.agents);
+      console.log(`orch: linked .orch/ORCH.md into ${touched.join(", ")}`);
+    } else {
+      console.log("orch: tip — to auto-load orch usage each session, point your agent");
+      console.log("  file (CLAUDE.md / AGENTS.md / GEMINI.md) at it, e.g. add `@.orch/ORCH.md`,");
+      console.log("  or re-run `orch init --link` to wire it in for you.");
+    }
     return;
   }
 
@@ -663,7 +737,7 @@ export async function main(argv, deps = {}) {
 function printUsage() {
   console.log(`agent-orch ${VERSION}
 Usage:
-  orch init
+  orch init [--link]   (--link: wire .orch/ORCH.md into CLAUDE.md/AGENTS.md/GEMINI.md)
   orch agent add <name>
   orch task "change" [--author "<agent> [model] [effort]" --reviewer "<agent> [model] [effort]"]
     (or: orch task --file work-order.json — an UNTRUSTED JSON work order:
@@ -674,7 +748,7 @@ Usage:
   If launched from main, orch creates and switches to orch/<slug> first.
   After a merge, orch pushes main, deletes its temp branches, and prints a summary;
   --no-tidy leaves all branches/checkout untouched.
-  (flags: --dry, --no-tidy, --no-banner, --version, --help)`);
+  (flags: --dry, --link, --no-tidy, --no-banner, --version, --help)`);
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds
