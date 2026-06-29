@@ -51,7 +51,11 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     // detached: the child leads its own process group, so a stalled agent that
     // spawns grandchildren (e.g. `node codex exec` → the codex musl binary) can
     // be reaped as a whole group, not orphaned. #56 observed exactly that pair.
-    const child = spawn(bin, args, { cwd, detached: true });
+    // stdin "ignore": the child gets /dev/null (immediate EOF). `codex exec`
+    // reads stdin to append to its prompt and blocks forever on an open pipe
+    // ('Reading additional input from stdin...') — #58. We never write stdin, and
+    // claude takes its prompt from argv, so EOF is safe for every adapter.
+    const child = spawn(bin, args, { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const timer = setInterval(() => {
       process.stderr.write(`… ${label} still running (${formatElapsed(Date.now() - started)} elapsed)\n`);
     }, progressIntervalMs());
