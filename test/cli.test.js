@@ -497,7 +497,7 @@ function initGitRepo(prefix = "orch-main-") {
 
 function addOriginWithPeer(repo) {
   const remote = mkdtempSync(join(tmpdir(), "orch-cli-remote-"));
-  gitDep.git(["init", "--bare"], remote);
+  gitDep.git(["init", "--bare", "-b", "main"], remote);
   gitDep.git(["remote", "add", "origin", remote], repo);
   gitDep.git(["push", "-u", "origin", "main"], repo);
   const parent = mkdtempSync(join(tmpdir(), "orch-cli-peer-"));

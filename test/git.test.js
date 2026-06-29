@@ -19,7 +19,7 @@ function newRepo() {
 
 function addOrigin(repo) {
   const remote = mkdtempSync(join(tmpdir(), "orch-remote-"));
-  git(["init", "--bare"], remote);
+  git(["init", "--bare", "-b", "main"], remote);
   git(["remote", "add", "origin", remote], repo);
   git(["push", "-u", "origin", "main"], repo);
   return remote;
