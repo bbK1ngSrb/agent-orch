@@ -45,6 +45,28 @@ export function branchExists(repo, branch) {
   return gitTry(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repo).ok;
 }
 
+export function branchSyncStatus(repo, branch, base = "main") {
+  const branchRef = gitTry(["rev-parse", "--verify", "--quiet", `${branch}^{commit}`], repo);
+  if (!branchRef.ok) return { ok: false, reason: `branch not found: ${branch}` };
+  const baseRef = gitTry(["rev-parse", "--verify", "--quiet", `${base}^{commit}`], repo);
+  if (!baseRef.ok) return { ok: false, reason: `base not found: ${base}` };
+
+  const branchSha = branchRef.out.trim();
+  const baseSha = baseRef.out.trim();
+  if (branchSha === baseSha) return { ok: true, synced: true, status: "synced", branchSha, baseSha };
+
+  const branchTree = git(["rev-parse", `${branch}^{tree}`], repo);
+  const baseTree = git(["rev-parse", `${base}^{tree}`], repo);
+  if (branchTree === baseTree) {
+    return { ok: true, synced: true, status: "same-tree", branchSha, baseSha };
+  }
+
+  const branchBehind = gitTry(["merge-base", "--is-ancestor", branch, base], repo).ok;
+  const baseBehind = gitTry(["merge-base", "--is-ancestor", base, branch], repo).ok;
+  const status = branchBehind ? "behind" : baseBehind ? "ahead" : "diverged";
+  return { ok: true, synced: false, status, branchSha, baseSha };
+}
+
 // task mode: branch must NOT exist (orch owns it). Fail otherwise.
 export function createTaskBranch(repo, path, branch, base, markerContent = "") {
   if (branchExists(repo, branch)) throw new Error(`branch already exists: ${branch}`);
