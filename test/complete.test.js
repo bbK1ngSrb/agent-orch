@@ -57,6 +57,21 @@ test("push fails (no remote): reports not-synced with a git push hint, still del
   assert.match(s, /no 'origin' remote/);
 });
 
+test("push rejected after origin advances: resets main and stops before cleanup", async () => {
+  const { deps, calls } = mk({
+    git: {
+      pushMain: () => ({ ok: false, reason: "non-fast-forward" }),
+      resetMainToOriginIfDiverged: () => ({ rolledBack: true }),
+    },
+  });
+  await assert.rejects(
+    () => finishRun(ctx(), deps),
+    /origin\/main has advanced/,
+  );
+  assert.equal(calls.detach, 0);
+  assert.equal(calls.deleted.length, 0);
+});
+
 test("unmerged branch + interactive YES: warns with ❗, force-deletes after consent", async () => {
   const { deps, calls } = mk({
     confirmAnswer: true,

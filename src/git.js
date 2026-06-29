@@ -100,6 +100,92 @@ export function pushMain(repo) {
   return r.ok ? { ok: true } : { ok: false, reason: r.out.trim() };
 }
 
+function fetchOriginMain(repo) {
+  if (!gitTry(["remote", "get-url", "origin"], repo).ok)
+    return { ok: false, missingOrigin: true, reason: "no origin remote configured" };
+  const r = gitTry(["fetch", "origin", "main:refs/remotes/origin/main"], repo);
+  return r.ok ? { ok: true } : { ok: false, reason: r.out.trim() };
+}
+
+function mainWorktreePath(repo) {
+  const list = gitTry(["worktree", "list", "--porcelain"], repo);
+  if (!list.ok) return null;
+  let path = null;
+  let onMain = false;
+  const flush = () => {
+    const hit = onMain ? path : null;
+    path = null;
+    onMain = false;
+    return hit;
+  };
+  for (const line of list.out.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      const hit = flush();
+      if (hit) return hit;
+      path = line.slice("worktree ".length);
+    } else if (line === "branch refs/heads/main") {
+      onMain = true;
+    }
+  }
+  return flush();
+}
+
+function moveMainToOrigin(repo, mode) {
+  const path = mainWorktreePath(repo);
+  if (path) {
+    if (mode === "reset") {
+      git(["reset", "--hard", "origin/main"], path);
+      git(["clean", "-fd"], path);
+    } else {
+      git(["merge", "--ff-only", "origin/main"], path);
+    }
+    return;
+  }
+  git(["branch", "-f", "main", "origin/main"], repo);
+}
+
+export function syncMainFromOrigin(repo) {
+  const fetched = fetchOriginMain(repo);
+  if (!fetched.ok) {
+    if (fetched.missingOrigin) return { ok: true, skipped: true, reason: fetched.reason };
+    return { ok: false, reason: `could not fetch origin/main: ${fetched.reason}` };
+  }
+
+  const local = git(["rev-parse", "main"], repo);
+  const remote = git(["rev-parse", "origin/main"], repo);
+  if (local === remote) return { ok: true, updated: false };
+
+  const localBehind = gitTry(["merge-base", "--is-ancestor", "main", "origin/main"], repo).ok;
+  if (localBehind) {
+    try {
+      moveMainToOrigin(repo, "merge");
+    } catch (e) {
+      const reason = (e.stderr || e.stdout || e.message || "").toString().trim();
+      return { ok: false, reason: `could not fast-forward local main to origin/main: ${reason}` };
+    }
+    return { ok: true, updated: true, from: local, to: remote };
+  }
+
+  const remoteBehind = gitTry(["merge-base", "--is-ancestor", "origin/main", "main"], repo).ok;
+  return {
+    ok: false,
+    reason: remoteBehind
+      ? "local main is ahead of origin/main; push or reset main before running orch"
+      : "local main has diverged from origin/main; sync or reset main before running orch",
+  };
+}
+
+export function resetMainToOriginIfDiverged(repo) {
+  const fetched = fetchOriginMain(repo);
+  if (!fetched.ok) return { rolledBack: false, reason: fetched.reason };
+  if (gitTry(["merge-base", "--is-ancestor", "origin/main", "main"], repo).ok)
+    return { rolledBack: false, reason: "origin/main is already an ancestor of local main" };
+  const from = git(["rev-parse", "main"], repo);
+  const to = git(["rev-parse", "origin/main"], repo);
+  moveMainToOrigin(repo, "reset");
+  return { rolledBack: true, from, to };
+}
+
 export function pruneWorktree(repo, path) {
   let canon = path;
   try { canon = realpathSync(path); } catch { /* already gone */ }
