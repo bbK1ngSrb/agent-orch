@@ -280,35 +280,92 @@ function reviewersForAuthor(authorName, reviewerSpecs) {
 }
 
 function roleLabel(spec) {
-  return [spec.agent, spec.model, spec.effort].filter(Boolean).join(" ");
+  return [spec.agent, spec.model, spec.effort].filter(Boolean).join(" · ");
 }
 
 function uniqueLabels(specs) {
   return [...new Set(specs.map(roleLabel))].join(", ");
 }
 
-export function runBanner(cfg, runs) {
-  const authors = uniqueLabels(runs.map((r) => r.author));
-  const reviewers = uniqueLabels(runs.flatMap((r) => r.reviewers || []));
-  const lines = [
-    `agent-orch ${VERSION}`,
-    `agents: ${cfg.agents.join(", ")}`,
-    `roles: ${authors || "-"} -> ${reviewers || "-"}`,
-    `test: ${cfg.test}`,
-    `merge: ${cfg.merge}`,
+// Display width in terminal columns: U+23F3 (⏳) and other emoji render 2 cols
+// while `.length` counts them as 1, which would misalign the box borders.
+// ANSI color codes are zero-width and stripped first.
+const WIDE_GLYPH = /[⌚-⏿☀-➿\u{1f000}-\u{1faff}]/u;
+export function visWidth(s) {
+  const plain = s.replace(/\x1b\[[0-9;]*m/g, "");
+  let w = 0;
+  for (const ch of plain) w += WIDE_GLYPH.test(ch) ? 2 : 1;
+  return w;
+}
+
+// ANSI palette. paint() no-ops when color is off and always resets the span so
+// color never bleeds into the box border.
+// orch brand orange (256-color): 208 ≈ #ff8700. Banner leans on the orange
+// family, varying brightness per field; 8-color terminals degrade to the
+// nearest base via the 256→16 map, so it stays legible without truecolor.
+const C = { border: "38;5;130", title: "1;38;5;208", label: "2", agents: "38;5;214", author: "1;38;5;208", review: "38;5;179", flag: "38;5;220" };
+const paint = (on, code, s) => (on && code && s ? `\x1b[${code}m${s}\x1b[0m` : s);
+
+// Render one inner row from colored segments [{code,text}], padded to `inner`
+// display columns by visWidth (not .length). Overflow is truncated on the plain
+// text with an ellipsis; that rare case drops color rather than miscount widths.
+function bannerRow(segs, inner, color) {
+  const plain = segs.map((s) => s.text).join("");
+  if (visWidth(plain) > inner) {
+    let out = "", w = 0;
+    for (const ch of plain) {
+      const cw = WIDE_GLYPH.test(ch) ? 2 : 1;
+      if (w + cw > inner - 1) break;
+      out += ch; w += cw;
+    }
+    out += "…";
+    return `${paint(color, C.border, "│")} ${out}${" ".repeat(inner - visWidth(out))} ${paint(color, C.border, "│")}`;
+  }
+  const body = segs.map((s) => paint(color, s.code, s.text)).join("");
+  const pad = " ".repeat(inner - visWidth(plain));
+  return `${paint(color, C.border, "│")} ${body}${pad} ${paint(color, C.border, "│")}`;
+}
+
+export function runBanner(cfg, runs, opts = {}) {
+  const { color = false, columns } = opts;
+  const lbl = (t) => ({ code: C.label, text: t.padEnd(8) });
+  const rows = [
+    [lbl("agents"), { code: C.agents, text: cfg.agents.join(", ") }],
   ];
-  const width = Math.max(...lines.map((l) => l.length));
-  const edge = `+--${"-".repeat(width + 2)}--+`;
-  return [
-    edge,
-    ...lines.map((line) => `|  ${line.padEnd(width)}  |`),
-    edge,
-  ].join("\n");
+  // One author row per run so concurrent authors and their resume state are
+  // each visible; a single review row aggregates the distinct reviewers.
+  for (const r of runs) {
+    const seg = [lbl("author"), { code: C.author, text: roleLabel(r.author) }];
+    if (r.resume) seg.push({ code: C.flag, text: "  ⏳ resume pending" });
+    rows.push(seg);
+  }
+  const reviewers = uniqueLabels(runs.flatMap((r) => r.reviewers || []));
+  rows.push([lbl("review"), { code: C.review, text: reviewers || "-" }]);
+  rows.push([
+    lbl("test"), { code: 0, text: cfg.test },
+    { code: C.label, text: "   merge  " }, { code: 0, text: cfg.merge },
+  ]);
+
+  // Responsive: fill the terminal up to a cap, but never narrower than content
+  // and never wider than 96 inner cols; clamp tiny/undefined widths safely.
+  const longest = Math.max(...rows.map((segs) => visWidth(segs.map((s) => s.text).join(""))));
+  const avail = Number.isFinite(columns) ? columns : 76;
+  const inner = Math.max(Math.min(longest, 96), Math.min(96, Math.max(40, avail - 4)));
+
+  const title = ` agent-orch ${VERSION} `;
+  const dashes = inner + 2 - visWidth(title);
+  const left = Math.max(0, Math.floor(dashes / 2)), right = Math.max(0, dashes - left);
+  const top = paint(color, C.border, `╭${"─".repeat(left)}`) +
+    paint(color, C.title, title) +
+    paint(color, C.border, `${"─".repeat(right)}╮`);
+  const bottom = paint(color, C.border, `╰${"─".repeat(inner + 2)}╯`);
+  return [top, ...rows.map((segs) => bannerRow(segs, inner, color)), bottom].join("\n");
 }
 
 export function maybePrintRunBanner(cfg, runs, flags, stdout = process.stdout) {
   if (flags["no-banner"] || !stdout.isTTY) return false;
-  stdout.write(`${runBanner(cfg, runs)}\n`);
+  const color = stdout.isTTY && process.env.NO_COLOR == null;
+  stdout.write(`${runBanner(cfg, runs, { color, columns: stdout.columns })}\n`);
   return true;
 }
 
