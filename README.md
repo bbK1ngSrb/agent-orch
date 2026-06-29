@@ -35,7 +35,8 @@ from the cloned checkout.
 ## Usage
 Run from inside the git repo you want orchestrated:
 ```bash
-orch init                                  # scaffold .orch/orch.yml, verify agent CLIs
+orch init                                  # scaffold .orch/orch.yml + .orch/ORCH.md, verify agent CLIs
+orch init --link                           # also wire .orch/ORCH.md into CLAUDE.md/AGENTS.md/GEMINI.md
 orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
 orch task "fix x" --authors claude,codex --reviewers claude,codex
 orch task --file wo.json                    # untrusted JSON work order (validated + fenced)
@@ -104,7 +105,7 @@ orch task "fix the flaky login test"
 ```
 
 ## Commands
-- `orch init` — scaffold `.orch/orch.yml`, verify agent CLIs.
+- `orch init [--link]` — scaffold `.orch/orch.yml` + agent-agnostic `.orch/ORCH.md` usage doc, verify agent CLIs. `--link` appends an idempotent pointer to `.orch/ORCH.md` in the repo's `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` (created for the configured agent if none exist). The `@.orch/ORCH.md` line auto-loads the doc in Claude Code; other agents read the prose pointer to it.
 - `orch agent add <name>` — append a registered agent to `.orch/orch.yml`.
 - `orch task "..."` — author + cross-audit + test-gate + merge.
 - `orch review <branch>` — audit an existing branch.

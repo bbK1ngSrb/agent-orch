@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, maybePrintRunBanner, runBanner, visWidth } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc } from "../src/cli.js";
+import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as gitDep from "../src/git.js";
 
@@ -348,6 +349,68 @@ test("agent add rejects an unknown agent", async () => {
   } finally {
     chdir(prev);
   }
+});
+
+test("init writes .orch/ORCH.md and prints a link tip (no --link)", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-doc-"));
+  const prev = cwd();
+  chdir(d);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.map(String).join(" "));
+  try {
+    await main(["init"], { preflight() {} });
+    const doc = readFileSync(join(d, ".orch", "ORCH.md"), "utf8");
+    assert.match(doc, /Using orch in this repo/);
+    assert.match(doc, /orch task/);
+    assert.equal(existsSync(join(d, "CLAUDE.md")), false); // no --link = no file touched
+    assert.ok(logs.some((l) => /orch init --link/.test(l)), "prints the link tip");
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+});
+
+test("init --link appends a fenced pointer to CLAUDE.md, idempotently", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-link-"));
+  const prev = cwd();
+  chdir(d);
+  writeFileSync(join(d, "CLAUDE.md"), "# My repo\n\nExisting notes.\n");
+  try {
+    await main(["init", "--link"], { preflight() {} });
+    const md = readFileSync(join(d, "CLAUDE.md"), "utf8");
+    assert.match(md, /# My repo/);            // original content preserved
+    assert.match(md, /@\.orch\/ORCH\.md/);    // pointer added
+    assert.equal((md.match(/orch:begin/g) || []).length, 1);
+    // re-run: replaces in place, never duplicates
+    await main(["init", "--link"], { preflight() {} });
+    const again = readFileSync(join(d, "CLAUDE.md"), "utf8");
+    assert.equal((again.match(/orch:begin/g) || []).length, 1);
+    assert.equal((again.match(/# My repo/g) || []).length, 1);
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("linkOrchDoc targets every present agent file; fallback follows the primary agent", () => {
+  // none present, no agents → default CLAUDE.md
+  const d1 = mkdtempSync(join(tmpdir(), "orch-link1-"));
+  assert.deepEqual(linkOrchDoc(d1), ["CLAUDE.md"]);
+  assert.match(readFileSync(join(d1, "CLAUDE.md"), "utf8"), /orch:begin/);
+  // none present, codex primary → AGENTS.md (not a blind CLAUDE.md the agent never reads)
+  const d1b = mkdtempSync(join(tmpdir(), "orch-link1b-"));
+  assert.deepEqual(linkOrchDoc(d1b, ["codex", "claude"]), ["AGENTS.md"]);
+  assert.equal(existsSync(join(d1b, "CLAUDE.md")), false);
+  // local-llm primary (no convention) falls through to CLAUDE.md
+  const d1c = mkdtempSync(join(tmpdir(), "orch-link1c-"));
+  assert.deepEqual(linkOrchDoc(d1c, ["qwen3-coder-30b"]), ["CLAUDE.md"]);
+  // AGENTS.md + GEMINI.md present → both targeted regardless of agents, CLAUDE.md left alone
+  const d2 = mkdtempSync(join(tmpdir(), "orch-link2-"));
+  writeFileSync(join(d2, "AGENTS.md"), "agents\n");
+  writeFileSync(join(d2, "GEMINI.md"), "gemini\n");
+  assert.deepEqual(linkOrchDoc(d2, ["claude"]), ["AGENTS.md", "GEMINI.md"]);
+  assert.equal(existsSync(join(d2, "CLAUDE.md")), false);
+  assert.match(readFileSync(join(d2, "AGENTS.md"), "utf8"), /@\.orch\/ORCH\.md/);
 });
 
 test("CLI role overrides replace orch.yml fixed roles", () => {
