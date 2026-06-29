@@ -61,6 +61,31 @@ test("audit returns parsed model and token usage from agent output", async () =>
   assert.deepEqual(v.usage, { model: "gpt-5.1", tokens: 125 });
 });
 
+test("audit emits elapsed progress while the agent is still running", async () => {
+  const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
+  const priorWrite = process.stderr.write;
+  const writes = [];
+  process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  try {
+    const adapter = makeCliAdapter({
+      name: "slow",
+      bin: "sh",
+      buildArgs: () => ["-c", "sleep 0.06; printf 'AGREE ok\\n'"],
+    });
+    const v = await adapter.audit("pr/x/y", tmpdir());
+    assert.equal(v.decision, "AGREE");
+    assert.match(writes.join(""), /slow auditing still running .* elapsed/);
+  } finally {
+    if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
+    else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
+    process.stderr.write = priorWrite;
+  }
+});
+
 test("author commits worktree changes the agent left uncommitted", async () => {
   const wd = mkdtempSync(join(tmpdir(), "orch-author-"));
   const g = (...a) => execFileSync("git", a, { cwd: wd, encoding: "utf8" });

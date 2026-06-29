@@ -1,8 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { render } from "../prompts.js";
 import { parseVerdict } from "../verdict.js";
 
 const OPTS = { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 };
+const DEFAULT_PROGRESS_INTERVAL_MS = 30_000;
 
 // True if CLI output looks like a Claude usage/rate-limit message. Keep this in
 // sync with the regex in harness/orch-loop.sh (is_limit) — that wrapper waits
@@ -12,18 +13,57 @@ export function isUsageLimit(text) {
   return LIMIT_RE.test(text || "");
 }
 
+function progressIntervalMs() {
+  const ms = Number(process.env.ORCH_PROGRESS_INTERVAL_MS);
+  return Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_PROGRESS_INTERVAL_MS;
+}
+
+function formatElapsed(ms) {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return minutes ? `${minutes}m ${String(rest).padStart(2, "0")}s` : `${seconds}s`;
+}
+
+function runAgent(bin, args, cwd, label) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const child = spawn(bin, args, { cwd });
+    const timer = setInterval(() => {
+      process.stderr.write(`… ${label} still running (${formatElapsed(Date.now() - started)} elapsed)\n`);
+    }, progressIntervalMs());
+    timer.unref?.();
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      resolve(result);
+    };
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (e) => finish({ out: e.message || "", ok: false }));
+    child.on("close", (code, signal) => {
+      const failed = code !== 0 || Boolean(signal);
+      const out = failed ? `${stdout}${stderr}` || `Command failed: ${bin}` : stdout;
+      finish({ out, ok: !failed });
+    });
+  });
+}
+
 // Returns { out, ok }. On nonzero exit / crash, still captures whatever the
 // agent printed so audit() can fail safely instead of throwing — EXCEPT a usage
 // limit, which we rethrow so the run aborts (rather than logging a bogus
 // DISAGREE) and the harness can wait for reset and resume.
-function runCapture(bin, args, cwd) {
-  try {
-    return { out: execFileSync(bin, args, { cwd, ...OPTS }), ok: true };
-  } catch (e) {
-    const out = `${e.stdout || ""}${e.stderr || ""}` || (e.message || "");
-    if (isUsageLimit(out)) throw new Error(`usage limit hit: ${out.trim().slice(0, 200)}`);
-    return { out, ok: false };
-  }
+async function runCapture(bin, args, cwd, label) {
+  const result = await runAgent(bin, args, cwd, label);
+  if (isUsageLimit(result.out)) throw new Error(`usage limit hit: ${result.out.trim().slice(0, 200)}`);
+  return result;
 }
 
 function num(value) {
@@ -105,7 +145,9 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
     async author(task, wd, opts = {}) {
       // Author must succeed; a failure here is a hard error (no commits made).
       const args = buildArgs(render("author", { task }), wd, opts);
-      const out = execFileSync(bin, args, { cwd: wd, ...OPTS });
+      const result = await runAgent(bin, args, wd, `${name} authoring`);
+      if (!result.ok) throw new Error(result.out || `Command failed: ${bin}`);
+      const out = result.out;
       const usage = parseRunUsage(out, modelFromArgs(args, opts));
       // The agent edits files in the worktree but cannot be trusted to commit
       // them — a `-p` run often leaves the work uncommitted, so the branch stays
@@ -123,7 +165,7 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
       const args = buildArgs(render("review", { branch }), wd, opts);
-      const { out, ok } = runCapture(bin, args, wd);
+      const { out, ok } = await runCapture(bin, args, wd, `${name} auditing`);
       const usage = parseRunUsage(out, modelFromArgs(args, opts));
       const parsed = parseVerdict(out);
       // A nonzero agent that still printed an explicit DISAGREE gave a real,
