@@ -76,6 +76,7 @@ agents: [claude, codex]   # default: [claude, codex]
 # === Cycle ===
 test: auto                # "auto" detects the test command, or set one, e.g. "pytest -q"
 reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
+stageTimeout: 25          # per-stage wall-clock cap in MINUTES; 0 disables; default: 25. A stalled author/review (e.g. a wedged codex exec) is killed and the cycle fails (nonzero exit) instead of hanging forever. Env override: ORCH_STAGE_TIMEOUT_MS (milliseconds)
 merge: no-ff              # merge into main: ff-only | no-ff; default: no-ff (concurrent disjoint cycles both land; ff-only = linear but extra cycles fall back to PR)
 concurrency: 4            # max concurrent orch cycles in this repo dir; over this a cycle exits; default: 4
 

@@ -86,6 +86,78 @@ test("audit emits elapsed progress while the agent is still running", async () =
   }
 });
 
+test("author fails fast when a stage exceeds stageTimeout, even if the child ignores SIGTERM (#56)", async () => {
+  // The real failure: codex exec wedges on the backend and never exits. The
+  // watchdog must kill by stage WALL-CLOCK and force a failure. A child that
+  // traps SIGTERM (as the codex wrapper effectively did — it advanced orch to
+  // audit on an empty branch) must still be reaped, so we SIGKILL the group and
+  // resolve ok:false explicitly rather than trusting the child's exit.
+  const adapter = makeCliAdapter({
+    name: "staller",
+    bin: "sh",
+    buildArgs: () => ["-c", 'trap "" TERM; sleep 30'],
+  });
+  const t0 = Date.now();
+  await assert.rejects(
+    () => adapter.author("do work", tmpdir(), { stageTimeoutMs: 120 }),
+    /timed out/i,
+    "author must throw on a stalled stage so the cycle exits nonzero",
+  );
+  assert.ok(Date.now() - t0 < 5000, "must abort promptly, not wait out the sleep");
+});
+
+test("audit fails safe (DISAGREE + agentError) when a reviewer stage stalls (#56)", async () => {
+  // #56 stalls hit both author and reviewer stages. A stalled audit must not
+  // hang the loop — it returns a fail-safe DISAGREE flagged for escalation.
+  const adapter = makeCliAdapter({
+    name: "staller",
+    bin: "sh",
+    buildArgs: () => ["-c", 'trap "" TERM; sleep 30'],
+  });
+  const t0 = Date.now();
+  const v = await adapter.audit("pr/x/y", tmpdir(), { stageTimeoutMs: 120 });
+  assert.equal(v.decision, "DISAGREE");
+  assert.equal(v.agentError, true, "a stalled+killed stage escalates, not revise-loops");
+  assert.ok(Date.now() - t0 < 5000, "must abort promptly, not wait out the sleep");
+});
+
+test("ORCH_STAGE_TIMEOUT_MS overrides the engine-threaded cfg stageTimeout (#56)", async () => {
+  // The engine always threads cfg.stageTimeout (default 25m) as an explicit
+  // value, so the env var is only a real ops override if it WINS over explicit.
+  // Otherwise an operator can never shorten/disable a stalled stage without
+  // editing orch.yml — exactly the gap seen live (a 15m env cap was ignored
+  // because cfg's 25m explicit shadowed it).
+  const prior = process.env.ORCH_STAGE_TIMEOUT_MS;
+  process.env.ORCH_STAGE_TIMEOUT_MS = "120";
+  try {
+    const adapter = makeCliAdapter({
+      name: "staller",
+      bin: "sh",
+      buildArgs: () => ["-c", 'trap "" TERM; sleep 30'],
+    });
+    const t0 = Date.now();
+    const v = await adapter.audit("pr/x/y", tmpdir(), { stageTimeoutMs: 30_000 });
+    assert.equal(v.decision, "DISAGREE");
+    assert.equal(v.agentError, true);
+    assert.ok(Date.now() - t0 < 5000, "env override must win over explicit and kill fast");
+  } finally {
+    if (prior === undefined) delete process.env.ORCH_STAGE_TIMEOUT_MS;
+    else process.env.ORCH_STAGE_TIMEOUT_MS = prior;
+  }
+});
+
+test("a stage that finishes within stageTimeout is not killed (no false positive)", async () => {
+  // A healthy stage well under the timeout must complete normally — the
+  // watchdog must not fire on legitimate work.
+  const adapter = makeCliAdapter({
+    name: "healthy",
+    bin: "sh",
+    buildArgs: () => ["-c", "printf 'AGREE ok\\n'"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir(), { stageTimeoutMs: 10_000 });
+  assert.equal(v.decision, "AGREE");
+});
+
 test("author commits worktree changes the agent left uncommitted", async () => {
   const wd = mkdtempSync(join(tmpdir(), "orch-author-"));
   const g = (...a) => execFileSync("git", a, { cwd: wd, encoding: "utf8" });

@@ -174,6 +174,7 @@ agents: [claude, codex]   # order; author alternates per cycle. ≥1 required to
 # reviewers: [claude, codex]  # each audits every branch except its own author's
 test: auto                # auto-detect, or an explicit command string
 reviseCap: 3              # max revise rounds before escalation
+stageTimeout: 25          # per-stage wall-clock cap (minutes); 0 = off. Kills a stalled author/review and fails the cycle (#56)
 merge: ff-only            # or "no-ff"
 scope:                    # small-PR discipline — OFF by default
   maxLines: 0             # 0 = disabled; >0 = reject author commits exceeding it

@@ -70,6 +70,22 @@ test("empty dir yields defaults", () => {
   assert.equal(c.scope.maxLines, 0);
 });
 
+test("stageTimeout defaults to 25 minutes and accepts an override (#56)", () => {
+  assert.equal(load(tmp()).stageTimeout, 25);
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "stageTimeout: 40\n");
+  assert.equal(load(d).stageTimeout, 40);
+});
+
+test("stageTimeout of 0 disables the watchdog; negative/non-integer throws (#56)", () => {
+  const off = tmp();
+  writeFileSync(join(off, "orch.yml"), "stageTimeout: 0\n");
+  assert.equal(load(off).stageTimeout, 0);
+  const bad = tmp();
+  writeFileSync(join(bad, "orch.yml"), "stageTimeout: -5\n");
+  assert.throws(() => load(bad), /stageTimeout must be a non-negative integer/);
+});
+
 test("user orch.yml overrides and deep-merges scope", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "merge: no-ff\nscope:\n  maxLines: 100\n");
