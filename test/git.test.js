@@ -281,6 +281,24 @@ test("syncMainFromOrigin fast-forwards local main before new task bases", () => 
   assert.equal(readFileSync(join(repo, "remote.txt"), "utf8"), "remote\n");
 });
 
+test("syncMainFromOrigin uses the remote-tracking main when a local origin/main branch exists", () => {
+  const repo = newRepo();
+  const remote = addOrigin(repo);
+  git(["branch", "origin/main", "main"], repo);
+  const staleLocalOriginMain = git(["rev-parse", "refs/heads/origin/main"], repo);
+  const peer = cloneRemote(remote);
+  commitFile(peer, "remote.txt", "remote\n", "advance remote");
+  git(["push", "origin", "main"], peer);
+
+  const r = syncMainFromOrigin(repo);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.updated, true);
+  assert.equal(git(["rev-parse", "main"], repo), git(["rev-parse", "refs/remotes/origin/main"], repo));
+  assert.equal(git(["rev-parse", "refs/heads/origin/main"], repo), staleLocalOriginMain);
+  assert.equal(readFileSync(join(repo, "remote.txt"), "utf8"), "remote\n");
+});
+
 test("syncMainFromOrigin refuses a local main diverged from origin/main", () => {
   const repo = newRepo();
   const remote = addOrigin(repo);

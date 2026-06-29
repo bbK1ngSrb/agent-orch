@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+const ORIGIN_MAIN_REF = "refs/remotes/origin/main";
+
 // Ownership marker: a sibling file next to an orch-created task worktree. Its
 // presence is the ONLY signal that lets the orphan sweep delete a branch — so
 // review-attached user branches (no marker) are never auto-deleted. Sited next
@@ -125,7 +127,7 @@ export function pushMain(repo) {
 function fetchOriginMain(repo) {
   if (!gitTry(["remote", "get-url", "origin"], repo).ok)
     return { ok: false, missingOrigin: true, reason: "no origin remote configured" };
-  const r = gitTry(["fetch", "origin", "main:refs/remotes/origin/main"], repo);
+  const r = gitTry(["fetch", "origin", `main:${ORIGIN_MAIN_REF}`], repo);
   return r.ok ? { ok: true } : { ok: false, reason: r.out.trim() };
 }
 
@@ -156,14 +158,14 @@ function moveMainToOrigin(repo, mode) {
   const path = mainWorktreePath(repo);
   if (path) {
     if (mode === "reset") {
-      git(["reset", "--hard", "origin/main"], path);
+      git(["reset", "--hard", ORIGIN_MAIN_REF], path);
       git(["clean", "-fd"], path);
     } else {
-      git(["merge", "--ff-only", "origin/main"], path);
+      git(["merge", "--ff-only", ORIGIN_MAIN_REF], path);
     }
     return;
   }
-  git(["branch", "-f", "main", "origin/main"], repo);
+  git(["branch", "-f", "main", ORIGIN_MAIN_REF], repo);
 }
 
 export function syncMainFromOrigin(repo) {
@@ -174,10 +176,10 @@ export function syncMainFromOrigin(repo) {
   }
 
   const local = git(["rev-parse", "main"], repo);
-  const remote = git(["rev-parse", "origin/main"], repo);
+  const remote = git(["rev-parse", ORIGIN_MAIN_REF], repo);
   if (local === remote) return { ok: true, updated: false };
 
-  const localBehind = gitTry(["merge-base", "--is-ancestor", "main", "origin/main"], repo).ok;
+  const localBehind = gitTry(["merge-base", "--is-ancestor", "main", ORIGIN_MAIN_REF], repo).ok;
   if (localBehind) {
     try {
       moveMainToOrigin(repo, "merge");
@@ -188,7 +190,7 @@ export function syncMainFromOrigin(repo) {
     return { ok: true, updated: true, from: local, to: remote };
   }
 
-  const remoteBehind = gitTry(["merge-base", "--is-ancestor", "origin/main", "main"], repo).ok;
+  const remoteBehind = gitTry(["merge-base", "--is-ancestor", ORIGIN_MAIN_REF, "main"], repo).ok;
   return {
     ok: false,
     reason: remoteBehind
@@ -200,10 +202,10 @@ export function syncMainFromOrigin(repo) {
 export function resetMainToOriginIfDiverged(repo) {
   const fetched = fetchOriginMain(repo);
   if (!fetched.ok) return { rolledBack: false, reason: fetched.reason };
-  if (gitTry(["merge-base", "--is-ancestor", "origin/main", "main"], repo).ok)
+  if (gitTry(["merge-base", "--is-ancestor", ORIGIN_MAIN_REF, "main"], repo).ok)
     return { rolledBack: false, reason: "origin/main is already an ancestor of local main" };
   const from = git(["rev-parse", "main"], repo);
-  const to = git(["rev-parse", "origin/main"], repo);
+  const to = git(["rev-parse", ORIGIN_MAIN_REF], repo);
   moveMainToOrigin(repo, "reset");
   return { rolledBack: true, from, to };
 }
