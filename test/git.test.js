@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince, syncMainFromOrigin, resetMainToOriginIfDiverged } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince, syncMainFromOrigin, resetMainToOriginIfDiverged } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -67,6 +67,55 @@ test("attachExistingBranch refuses a missing branch (F5: no silent create)", () 
   const repo = newRepo();
   assert.equal(branchExists(repo, "pr/claude/nope"), false);
   assert.throws(() => attachExistingBranch(repo, join(repo, ".orch/wt/n"), "pr/claude/nope"), /does not exist/);
+});
+
+test("branchSyncStatus reports a branch at main as synced", () => {
+  const repo = newRepo();
+  git(["branch", "development"], repo);
+  assert.deepEqual(
+    branchSyncStatus(repo, "development", "main"),
+    {
+      ok: true,
+      synced: true,
+      status: "synced",
+      branchSha: git(["rev-parse", "development"], repo),
+      baseSha: git(["rev-parse", "main"], repo),
+    },
+  );
+});
+
+test("branchSyncStatus reports development behind main", () => {
+  const repo = newRepo();
+  git(["branch", "development"], repo);
+  commitFile(repo, "main.txt", "main\n", "advance main");
+  const r = branchSyncStatus(repo, "development", "main");
+  assert.equal(r.ok, true);
+  assert.equal(r.synced, false);
+  assert.equal(r.status, "behind");
+});
+
+test("branchSyncStatus treats same-tree branches as code-synced", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "development"], repo);
+  commitFile(repo, "marker.txt", "same\n", "add marker");
+  git(["checkout", "main"], repo);
+  commitFile(repo, "marker.txt", "same\n", "add marker another way");
+  const r = branchSyncStatus(repo, "development", "main");
+  assert.equal(r.ok, true);
+  assert.equal(r.synced, true);
+  assert.equal(r.status, "same-tree");
+});
+
+test("branchSyncStatus reports diverged branches with different trees", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "development"], repo);
+  commitFile(repo, "dev.txt", "dev\n", "advance development");
+  git(["checkout", "main"], repo);
+  commitFile(repo, "main.txt", "main\n", "advance main");
+  const r = branchSyncStatus(repo, "development", "main");
+  assert.equal(r.ok, true);
+  assert.equal(r.synced, false);
+  assert.equal(r.status, "diverged");
 });
 
 test("merge conflict in the integration worktree returns ok:false and aborts cleanly", () => {
