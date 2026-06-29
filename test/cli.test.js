@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, maybePrintRunBanner, runBanner } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, maybePrintRunBanner, runBanner, visWidth } from "../src/cli.js";
 import * as inflight from "../src/inflight.js";
 import * as gitDep from "../src/git.js";
 
@@ -89,10 +89,12 @@ test("main prints startup banner for task runs on TTY", async () => {
   await runMainCapture(["task", "hello world", "--dry"], {
     stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
   });
-  assert.match(out, /agent-orch 0\.1\.0/);
-  assert.match(out, /roles: claude -> codex/);
-  assert.match(out, /test: auto/);
-  assert.match(out, /merge: no-ff/);
+  const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(plain, /agent-orch 0\.1\.0/);
+  assert.match(plain, /author\s+claude/);
+  assert.match(plain, /review\s+codex/);
+  assert.match(plain, /test\s+auto/);
+  assert.match(plain, /merge\s+no-ff/);
 
   out = "";
   await runMainCapture(["task", "hello world", "--dry", "--no-banner"], {
@@ -121,17 +123,59 @@ test("parse captures --no-banner flag", () => {
   assert.equal(p.flags["no-banner"], true);
 });
 
-test("runBanner includes version, roles, test command, and merge mode", () => {
+const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+test("runBanner shows version, agents, per-agent model+effort, test, merge", () => {
   const cfg = { agents: ["claude", "codex"], test: "npm test", merge: "ff-only" };
-  const banner = runBanner(cfg, [{
+  const banner = stripAnsi(runBanner(cfg, [{
     author: { agent: "claude", model: "opus", effort: "high" },
     reviewers: [{ agent: "codex", model: "gpt-5", effort: null }],
-  }]);
+  }]));
   assert.match(banner, /agent-orch 0\.1\.0/);
-  assert.match(banner, /agents: claude, codex/);
-  assert.match(banner, /roles: claude opus high -> codex gpt-5/);
-  assert.match(banner, /test: npm test/);
-  assert.match(banner, /merge: ff-only/);
+  assert.match(banner, /claude, codex/);            // agents row
+  assert.match(banner, /claude.*opus.*high/);       // author with model + effort
+  assert.match(banner, /codex.*gpt-5/);             // reviewer with model
+  assert.match(banner, /npm test/);
+  assert.match(banner, /ff-only/);
+});
+
+test("runBanner shows the resume marker only when a run resumes", () => {
+  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
+  const author = { agent: "claude", model: "opus", effort: "high" };
+  const reviewers = [{ agent: "codex" }];
+  const resuming = stripAnsi(runBanner(cfg, [{ author, reviewers, resume: true }]));
+  const fresh = stripAnsi(runBanner(cfg, [{ author, reviewers, resume: false }]));
+  assert.match(resuming, /resume/);
+  assert.doesNotMatch(fresh, /resume/);
+});
+
+test("runBanner emits ANSI color only when color is on", () => {
+  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
+  const runs = [{ author: { agent: "claude" }, reviewers: [{ agent: "codex" }] }];
+  assert.match(runBanner(cfg, runs, { color: true }), /\x1b\[/);
+  assert.doesNotMatch(runBanner(cfg, runs, { color: false }), /\x1b\[/);
+});
+
+test("runBanner rows stay display-width aligned even with wide glyphs", () => {
+  // U+23F3 (⏳) renders 2 columns; .length-based padding would misalign the
+  // resume row's right border. visWidth must keep every line the same width.
+  const cfg = { agents: ["claude", "codex"], test: "auto", merge: "no-ff" };
+  const lines = runBanner(cfg, [{
+    author: { agent: "claude", model: "opus", effort: "high" },
+    reviewers: [{ agent: "codex", model: "gpt-5" }],
+    resume: true,
+  }]).split("\n");
+  const widths = new Set(lines.map((l) => visWidth(l)));
+  assert.equal(widths.size, 1, `lines misaligned: ${[...widths].join(",")}`);
+});
+
+test("runBanner clamps responsive width and never throws on tiny terminals", () => {
+  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
+  const runs = [{ author: { agent: "claude", model: "opus" }, reviewers: [{ agent: "codex" }] }];
+  const wide = runBanner(cfg, runs, { columns: 400 }).split("\n");
+  assert.ok(visWidth(wide[0]) <= 100, `width not capped: ${visWidth(wide[0])}`);
+  const tiny = runBanner(cfg, runs, { columns: 10 }).split("\n");
+  assert.equal(new Set(tiny.map(visWidth)).size, 1); // still aligned
 });
 
 test("run banner prints only on TTY and respects --no-banner", () => {
@@ -140,7 +184,7 @@ test("run banner prints only on TTY and respects --no-banner", () => {
   let out = "";
   const tty = { isTTY: true, write: (chunk) => { out += chunk; } };
   assert.equal(maybePrintRunBanner(cfg, runs, {}, tty), true);
-  assert.match(out, /agent-orch 0\.1\.0/);
+  assert.match(stripAnsi(out), /agent-orch 0\.1\.0/);
 
   out = "";
   assert.equal(maybePrintRunBanner(cfg, runs, { "no-banner": true }, tty), false);
