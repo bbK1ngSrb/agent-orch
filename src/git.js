@@ -302,9 +302,14 @@ export function syncWorktreeToMain(integrationPath) {
 
 // Merge `branch` into the worktree's checked-out main. On any failure, abort so
 // the worktree is left clean for the next finalize.
-export function mergeInWorktree(integrationPath, branch, mode) {
+export function mergeInWorktree(integrationPath, branch, mode, message = null) {
   const flag = mode === "no-ff" ? "--no-ff" : "--ff-only";
-  const m = gitTry(["merge", flag, branch], integrationPath);
+  // A custom message only applies to a real merge commit (no-ff); ff-only fast-
+  // forwards with no commit to carry it, so the flag is dropped there.
+  const args = message && flag === "--no-ff"
+    ? ["merge", flag, "-m", message, branch]
+    : ["merge", flag, branch];
+  const m = gitTry(args, integrationPath);
   if (m.ok) return { ok: true, reason: "merged" };
   const reason = m.out.trim();
   gitTry(["merge", "--abort"], integrationPath); // ff-only failures are no-ops here; harmless
