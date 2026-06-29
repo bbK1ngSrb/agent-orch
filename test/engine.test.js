@@ -403,3 +403,32 @@ test("§3b: initial author receives opts.authorPrompt verbatim (fenced work orde
   assert.equal(r.status, "merged");
   assert.equal(deps._calls.prompts[0], fenced, "the fenced prompt drives the author, not the bare task");
 });
+
+test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as ms (#56)", async () => {
+  let authorOpts = null;
+  let reviewerOpts = null;
+  const author = {
+    name: "auth",
+    async author(_p, _wd, o) { authorOpts = o; return null; },
+    async audit() { return { decision: "AGREE", reason: "" }; },
+  };
+  const reviewer = {
+    name: "rev",
+    async audit(_b, _wd, o) { reviewerOpts = o; return { decision: "AGREE", reason: "ok", raw: "" }; },
+  };
+  const deps = {
+    adapters: { get: (n) => (n === "auth" ? author : reviewer) },
+    git: {
+      createTaskBranch() {}, attachExistingBranch() {}, pruneWorktree() {},
+      changedFiles() { return ["src/a.js"]; }, git() { return "d"; },
+    },
+    gate: { detect: () => "echo", run: () => ({ pass: true, log: "" }) },
+    scope: { count: () => 0 },
+    notify: { phase() {}, writeRound() { return "p"; }, buildDecisionBrief: () => "b", escalate() { return "d"; } },
+    inflight: { setPaths() {} },
+    finalize: async () => ({ status: "merged", reason: "merged", sha: "x" }),
+  };
+  await runCycle({ ...opts, cfg: { ...opts.cfg, stageTimeout: 30 } }, deps);
+  assert.equal(authorOpts.stageTimeoutMs, 30 * 60_000, "author stage gets the configured timeout in ms");
+  assert.equal(reviewerOpts.stageTimeoutMs, 30 * 60_000, "reviewer stage gets the configured timeout in ms");
+});

@@ -10,10 +10,13 @@ export async function runCycle(opts, deps) {
   // that pass only authorName/reviewerNames (e.g. the PR bridge) keep working.
   const authorSpec = opts.author || { agent: authorName };
   const author = adapters.get(authorSpec.agent);
-  const authorOpts = { model: authorSpec.model, effort: authorSpec.effort };
+  // #56: per-stage watchdog. cfg.stageTimeout is in minutes (0 = off); pass it to
+  // every stage in ms so a stalled author/reviewer is killed instead of hanging.
+  const stageTimeoutMs = cfg?.stageTimeout > 0 ? cfg.stageTimeout * 60_000 : 0;
+  const authorOpts = { model: authorSpec.model, effort: authorSpec.effort, stageTimeoutMs };
   const reviewerSpecs = opts.reviewers || (opts.reviewerNames || [reviewerName]).map((name) => ({ agent: name }));
   const reviewers = reviewerSpecs.map((s) => ({
-    name: s.agent, adapter: adapters.get(s.agent), opts: { model: s.model, effort: s.effort },
+    name: s.agent, adapter: adapters.get(s.agent), opts: { model: s.model, effort: s.effort, stageTimeoutMs },
   }));
   const runStats = [];
   const done = (result) => ({ ...result, runStats });

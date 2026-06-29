@@ -4,6 +4,7 @@ import { parseVerdict } from "../verdict.js";
 
 const OPTS = { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 };
 const DEFAULT_PROGRESS_INTERVAL_MS = 30_000;
+const DEFAULT_STAGE_TIMEOUT_MS = 25 * 60_000; // #56: per-stage wall-clock cap; 0 disables.
 
 // True if CLI output looks like a Claude usage/rate-limit message. Keep this in
 // sync with the regex in harness/orch-loop.sh (is_limit) — that wrapper waits
@@ -18,6 +19,21 @@ function progressIntervalMs() {
   return Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_PROGRESS_INTERVAL_MS;
 }
 
+// #56: how long a single author/review stage may run before it is force-killed.
+// Precedence: ORCH_STAGE_TIMEOUT_MS env override > explicit per-call value (from
+// cfg.stageTimeout, threaded by the engine) > module default. The env var is the
+// ops escape hatch, so it MUST win over the cfg value — the engine always threads
+// an explicit cfg.stageTimeout (default 25m), so an env-loses ordering would make
+// the "override" impossible to use without editing orch.yml. 0 disables the
+// watchdog. Detection is by stage WALL-CLOCK, never CPU — `codex exec` is
+// network-bound and shows TIME=0 even when healthy, so CPU is not a liveness signal.
+function stageTimeoutMs(explicit) {
+  const env = Number(process.env.ORCH_STAGE_TIMEOUT_MS);
+  if (Number.isFinite(env) && env >= 0) return env;
+  if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+  return DEFAULT_STAGE_TIMEOUT_MS;
+}
+
 function formatElapsed(ms) {
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
@@ -25,21 +41,42 @@ function formatElapsed(ms) {
   return minutes ? `${minutes}m ${String(rest).padStart(2, "0")}s` : `${seconds}s`;
 }
 
-function runAgent(bin, args, cwd, label) {
+function runAgent(bin, args, cwd, label, runOpts = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
+    const timeoutMs = stageTimeoutMs(runOpts.stageTimeoutMs);
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const child = spawn(bin, args, { cwd });
+    // detached: the child leads its own process group, so a stalled agent that
+    // spawns grandchildren (e.g. `node codex exec` → the codex musl binary) can
+    // be reaped as a whole group, not orphaned. #56 observed exactly that pair.
+    const child = spawn(bin, args, { cwd, detached: true });
     const timer = setInterval(() => {
       process.stderr.write(`… ${label} still running (${formatElapsed(Date.now() - started)} elapsed)\n`);
     }, progressIntervalMs());
     timer.unref?.();
+    // #56 watchdog: a hard wall-clock cap. On expiry, SIGKILL the whole group
+    // (untrappable — a child that ignores SIGTERM still dies) AND resolve ok:false
+    // explicitly. We must NOT wait for `close`: the stalled child may exit 0 on a
+    // catchable signal (which would let an empty branch advance to audit) or sit
+    // in uninterruptible-sleep on NFS where even SIGKILL doesn't reap promptly.
+    const watchdog = timeoutMs > 0 ? setTimeout(() => {
+      const elapsed = Date.now() - started;
+      process.stderr.write(`… ${label} TIMED OUT after ${formatElapsed(elapsed)} — killing stalled stage\n`);
+      // Liveness-gated: only signal a still-running child's group. Once settled or
+      // exited the pid may be recycled, and killing a stranger's group is unsafe.
+      if (!settled && child.exitCode === null && child.pid != null) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+      }
+      finish({ out: `${stdout}${stderr}\n${label} timed out after ${formatElapsed(elapsed)}`, ok: false });
+    }, timeoutMs) : null;
+    watchdog?.unref?.();
     const finish = (result) => {
       if (settled) return;
       settled = true;
       clearInterval(timer);
+      if (watchdog) clearTimeout(watchdog);
       resolve(result);
     };
 
@@ -60,8 +97,8 @@ function runAgent(bin, args, cwd, label) {
 // agent printed so audit() can fail safely instead of throwing — EXCEPT a usage
 // limit, which we rethrow so the run aborts (rather than logging a bogus
 // DISAGREE) and the harness can wait for reset and resume.
-async function runCapture(bin, args, cwd, label) {
-  const result = await runAgent(bin, args, cwd, label);
+async function runCapture(bin, args, cwd, label, runOpts = {}) {
+  const result = await runAgent(bin, args, cwd, label, runOpts);
   if (isUsageLimit(result.out)) throw new Error(`usage limit hit: ${result.out.trim().slice(0, 200)}`);
   return result;
 }
@@ -145,7 +182,7 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
     async author(task, wd, opts = {}) {
       // Author must succeed; a failure here is a hard error (no commits made).
       const args = buildArgs(render("author", { task }), wd, opts);
-      const result = await runAgent(bin, args, wd, `${name} authoring`);
+      const result = await runAgent(bin, args, wd, `${name} authoring`, { stageTimeoutMs: opts.stageTimeoutMs });
       if (!result.ok) throw new Error(result.out || `Command failed: ${bin}`);
       const out = result.out;
       const usage = parseRunUsage(out, modelFromArgs(args, opts));
@@ -165,7 +202,7 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
       const args = buildArgs(render("review", { branch }), wd, opts);
-      const { out, ok } = await runCapture(bin, args, wd, `${name} auditing`);
+      const { out, ok } = await runCapture(bin, args, wd, `${name} auditing`, { stageTimeoutMs: opts.stageTimeoutMs });
       const usage = parseRunUsage(out, modelFromArgs(args, opts));
       const parsed = parseVerdict(out);
       // A nonzero agent that still printed an explicit DISAGREE gave a real,

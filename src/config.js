@@ -10,6 +10,9 @@ const DEFAULTS = {
   reviewers: null, // plural fixed reviewers; pairs with `authors`
   test: "auto",
   reviseCap: 3,
+  stageTimeout: 25, // #56: per-stage wall-clock cap in MINUTES; 0 disables. A stalled
+                    // codex/claude stage is killed and the cycle fails (nonzero exit)
+                    // instead of hanging forever on an infinite "still running" heartbeat.
   merge: "no-ff", // default no-ff so concurrent disjoint cycles both land (ff-only can't fast-forward once a peer merges)
   concurrency: 4, // max concurrent cycles per repo dir; over this, a cycle exits rather than blocks
   scope: { maxLines: 0, ignore: ["*.lock", "dist/**", "*.snap"] },
@@ -36,6 +39,8 @@ function validate(cfg) {
     throw new Error("orch.yml: merge must be ff-only or no-ff");
   if (!Number.isInteger(cfg.reviseCap) || cfg.reviseCap < 1)
     throw new Error("orch.yml: reviseCap must be a positive integer");
+  if (!Number.isInteger(cfg.stageTimeout) || cfg.stageTimeout < 0)
+    throw new Error("orch.yml: stageTimeout must be a non-negative integer (minutes; 0 disables)");
   if (!Number.isInteger(cfg.concurrency) || cfg.concurrency < 1)
     throw new Error("orch.yml: concurrency must be a positive integer");
   if (!Number.isInteger(cfg.scope.maxLines) || cfg.scope.maxLines < 0)
