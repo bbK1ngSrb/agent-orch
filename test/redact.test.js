@@ -29,6 +29,17 @@ test("publicSummary is a fixed template with only machine fields", () => {
   assert.match(s, /rounds: 2/);
 });
 
+test("publicSummary constrains fallback field values", () => {
+  const s = publicSummary({ decision: "MAYBE", green: 0, branch: "pr/x", rounds: "bad" });
+  assert.equal(s, [
+    "orch verdict: DISAGREE",
+    "tests: red",
+    "branch: pr/x",
+    "rounds: 0",
+    "Full reviewer notes were sent to the maintainer's private channel.",
+  ].join("\n"));
+});
+
 test("publicSummary ignores any free-form prose passed in", () => {
   const s = publicSummary({
     decision: "DISAGREE",

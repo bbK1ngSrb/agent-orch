@@ -140,6 +140,30 @@ test("runBanner shows version, agents, per-agent model+effort, test, merge", () 
   assert.match(banner, /ff-only/);
 });
 
+test("runBanner lists each author run and deduplicates reviewers", () => {
+  const cfg = { agents: ["claude", "codex"], test: "auto", merge: "no-ff" };
+  const banner = stripAnsi(runBanner(cfg, [
+    {
+      author: { agent: "claude", model: "opus" },
+      reviewers: [{ agent: "codex", model: "gpt-5" }],
+    },
+    {
+      author: { agent: "codex", model: "gpt-5", effort: "medium" },
+      reviewers: [{ agent: "codex", model: "gpt-5" }, { agent: "claude", model: "opus" }],
+    },
+  ]));
+  const lines = banner.split("\n");
+  const authorLines = lines.filter((l) => /\bauthor\b/.test(l));
+  assert.equal(authorLines.length, 2);
+  assert.match(authorLines[0], /claude.*opus/);
+  assert.match(authorLines[1], /codex.*gpt-5.*medium/);
+
+  const reviewLine = lines.find((l) => /\breview\b/.test(l));
+  assert.ok(reviewLine);
+  assert.equal((reviewLine.match(/codex/g) || []).length, 1);
+  assert.equal((reviewLine.match(/claude/g) || []).length, 1);
+});
+
 test("runBanner shows the resume marker only when a run resumes", () => {
   const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
   const author = { agent: "claude", model: "opus", effort: "high" };
