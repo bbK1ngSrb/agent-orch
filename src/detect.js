@@ -11,9 +11,13 @@ const REGISTERED_LOCAL_MODELS = new Set(Object.keys(localAdapters));
 // agents: pool isn't hand-edited blind. CLI agents are checked with `which`;
 // local-llm models are read from claude-code-router's own config, since ccr
 // being on PATH says nothing about which models it's configured to route to.
-// ccr's current storage is a `config.sqlite` DB; `config.json` is only its
-// legacy/migration format, so a JSON parse failure doesn't mean "no config"
-// — check for the sqlite file before reporting local as unconfigured.
+// ccr's current storage is a `config.sqlite` DB; `config.json` is only read
+// once as a migration source when no sqlite config exists. There's no ccr
+// CLI/API to dump the sqlite-backed config as JSON, and the DB's schema is
+// undocumented and unstable across ccr versions, so this only reads the
+// legacy config.json path — a sqlite config is reported as present-but-
+// unreadable (not "missing") so the user gets pointed at the real fix
+// instead of a wrong "not found" claim.
 export function detectAgents(deps = {}) {
   const {
     which = (exe) => execFileSync("which", [exe], { stdio: "ignore" }),
@@ -50,7 +54,7 @@ export function detectAgents(deps = {}) {
       if (!models.length) missing.push("local (no models configured for provider \"local\")");
     } catch {
       if (exists(join(home, ".claude-code-router", "config.sqlite"))) {
-        missing.push("local (configured via ~/.claude-code-router/config.sqlite — run `ccr ui` to see models, `orch agent add <model>` to register one)");
+        missing.push("local (configured via ~/.claude-code-router/config.sqlite, not readable here — run `ccr start` to open the web UI and see models, `orch agent add <model>` to register one)");
       } else {
         missing.push("local (no ~/.claude-code-router/config.json)");
       }

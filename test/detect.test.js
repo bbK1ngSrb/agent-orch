@@ -61,6 +61,7 @@ test("detectAgents: ccr on PATH with sqlite config reports it's configured but u
     exists: (path) => path.endsWith("config.sqlite"),
   });
   assert.ok(missing.some((m) => m.startsWith("local (configured via ~/.claude-code-router/config.sqlite")));
+  assert.ok(missing.some((m) => m.includes("ccr start")));
 });
 
 test("formatDetection: joins found and missing into a summary line", () => {
