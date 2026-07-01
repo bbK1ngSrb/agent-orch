@@ -21,6 +21,7 @@ import { finalize } from "./finalize.js";
 import { validateWorkOrder, buildAuthorPrompt, issueToWorkOrder } from "./intake/workorder.js";
 import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.js";
 import { finishRun } from "./complete.js";
+import { detectAgents, formatDetection } from "./detect.js";
 
 export { slugify };
 
@@ -559,7 +560,9 @@ export async function main(argv, deps = {}) {
       writeFileSync(ex, SCAFFOLD);
     }
     writeFileSync(join(orchDir, "ORCH.md"), ORCH_DOC);
-    console.log("orch: initialized (.orch/orch.yml, .orch/ORCH.md). Agent CLIs found.");
+    console.log("orch: initialized (.orch/orch.yml, .orch/ORCH.md).");
+    const detectFn = deps.detectAgents || detectAgents;
+    console.log(`orch: ${formatDetection(detectFn())}`);
     if (flags.link) {
       const touched = linkOrchDoc(repo, cfg.agents);
       console.log(`orch: linked .orch/ORCH.md into ${touched.join(", ")}`);

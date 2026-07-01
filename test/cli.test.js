@@ -415,6 +415,26 @@ test("agent add rejects an unknown agent", async () => {
   }
 });
 
+test("init prints an agent-detection summary using the injected detectAgents", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-detect-"));
+  const prev = cwd();
+  chdir(d);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.map(String).join(" "));
+  try {
+    await main(["init"], {
+      preflight() {},
+      detectAgents: () => ({ found: ["claude", "local:glm-4.5-air"], missing: ["codex (no CLI on PATH)"] }),
+    });
+    assert.ok(logs.some((l) => l.includes("detected: claude, local:glm-4.5-air")));
+    assert.ok(logs.some((l) => l.includes("not found: codex (no CLI on PATH)")));
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+});
+
 test("init writes .orch/ORCH.md and prints a link tip (no --link)", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-doc-"));
   const prev = cwd();
