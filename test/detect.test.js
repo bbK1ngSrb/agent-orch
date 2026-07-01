@@ -27,6 +27,16 @@ test("detectAgents: reads local models from ccr's router config when ccr is on P
   assert.ok(missing.includes("claude (no CLI on PATH)"));
 });
 
+test("detectAgents: filters configured models to those registered as local adapters", () => {
+  const { found, missing } = detectAgents({
+    which: which(["ccr"]),
+    readFile: () => JSON.stringify({ Providers: [{ name: "local", models: ["glm-4.5-air", "unsupported-model"] }] }),
+  });
+  assert.ok(found.includes("glm-4.5-air"));
+  assert.ok(!found.includes("unsupported-model"));
+  assert.ok(missing.some((m) => m.startsWith("unsupported-model (configured in ccr but not a registered local model)")));
+});
+
 test("detectAgents: ccr on PATH but no local provider configured reports missing", () => {
   const { missing } = detectAgents({
     which: which(["ccr"]),

@@ -2,6 +2,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import localAdapters from "./adapters/local.js";
+
+const REGISTERED_LOCAL_MODELS = new Set(Object.keys(localAdapters));
 
 // Non-fatal detection pass for `orch init` (unlike preflight(), which throws
 // on a missing CLI). Reports what's actually usable on this machine so the
@@ -35,8 +38,16 @@ export function detectAgents(deps = {}) {
       const models = provider?.models || [];
       // Report the bare model name — that's what `orch agent add <name>` accepts
       // (agents: registry keys local models by name, not a "local:" prefix).
-      if (models.length) models.forEach((m) => found.push(m));
-      else missing.push("local (no models configured for provider \"local\")");
+      // Only registered models (src/adapters/local.js) are actually usable by
+      // orch; a configured-but-unregistered model would make `orch agent add`
+      // fail with "unknown agent", so surface it as missing instead.
+      const registered = models.filter((m) => REGISTERED_LOCAL_MODELS.has(m));
+      const unregistered = models.filter((m) => !REGISTERED_LOCAL_MODELS.has(m));
+      if (registered.length) registered.forEach((m) => found.push(m));
+      if (unregistered.length) {
+        unregistered.forEach((m) => missing.push(`${m} (configured in ccr but not a registered local model)`));
+      }
+      if (!models.length) missing.push("local (no models configured for provider \"local\")");
     } catch {
       if (exists(join(home, ".claude-code-router", "config.sqlite"))) {
         missing.push("local (configured via ~/.claude-code-router/config.sqlite — run `ccr ui` to see models, `orch agent add <model>` to register one)");
