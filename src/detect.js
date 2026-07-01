@@ -62,7 +62,7 @@ export function detectAgents(deps = {}) {
   return { found, missing };
 }
 
-// "detected: claude, codex, glm-4.5-air — not found: codex (no CLI on PATH)"
+// "detected: claude, glm-4.5-air — not found: codex (no CLI on PATH)"
 export function formatDetection({ found, missing }) {
   const parts = [`detected: ${found.length ? found.join(", ") : "none"}`];
   if (missing.length) parts.push(`not found: ${missing.join(", ")}`);
