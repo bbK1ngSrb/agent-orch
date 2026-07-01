@@ -389,7 +389,7 @@ test("agent add appends a known agent to the pool, preserving comments", async (
   const prev = cwd();
   chdir(d);
   try {
-    await main(["init"], { preflight() {} }); // stub: no real agent CLIs needed in tests
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) }); // stub: no real agent CLIs needed in tests
     await main(["agent", "add", "qwen3-coder-30b"]);
     const text = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
     assert.match(text, /agents: \[claude, codex, qwen3-coder-30b\]/);
@@ -408,7 +408,7 @@ test("agent add rejects an unknown agent", async () => {
   const prev = cwd();
   chdir(d);
   try {
-    await main(["init"], { preflight() {} }); // stub: no real agent CLIs needed in tests
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) }); // stub: no real agent CLIs needed in tests
     await assert.rejects(() => main(["agent", "add", "nope"]), /unknown agent/);
   } finally {
     chdir(prev);
@@ -444,7 +444,11 @@ test("init succeeds via the real (unstubbed) preflight regardless of installed a
     // check .orch/ writability for init, not require claude/codex on PATH,
     // otherwise a clean machine would throw before ever seeing the
     // detectAgents() "not found" summary this command exists to print.
-    await main(["init"]);
+    // detectAgents IS stubbed: the real one shells out to `which`/reads
+    // ~/.claude-code-router, which is environment-dependent (breaks on
+    // machines without `which`, e.g. Windows) and irrelevant to what this
+    // test checks.
+    await main(["init"], { detectAgents: () => ({ found: [], missing: [] }) });
     assert.ok(existsSync(join(d, ".orch", "orch.yml")));
   } finally {
     chdir(prev);
@@ -459,7 +463,7 @@ test("init writes .orch/ORCH.md and prints a link tip (no --link)", async () => 
   const origLog = console.log;
   console.log = (...a) => logs.push(a.map(String).join(" "));
   try {
-    await main(["init"], { preflight() {} });
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
     const doc = readFileSync(join(d, ".orch", "ORCH.md"), "utf8");
     assert.match(doc, /Using orch in this repo/);
     assert.match(doc, /orch task/);
@@ -477,13 +481,14 @@ test("init --link appends a fenced pointer to CLAUDE.md, idempotently", async ()
   chdir(d);
   writeFileSync(join(d, "CLAUDE.md"), "# My repo\n\nExisting notes.\n");
   try {
-    await main(["init", "--link"], { preflight() {} });
+    const detectAgents = () => ({ found: [], missing: [] });
+    await main(["init", "--link"], { preflight() {}, detectAgents });
     const md = readFileSync(join(d, "CLAUDE.md"), "utf8");
     assert.match(md, /# My repo/);            // original content preserved
     assert.match(md, /@\.orch\/ORCH\.md/);    // pointer added
     assert.equal((md.match(/orch:begin/g) || []).length, 1);
     // re-run: replaces in place, never duplicates
-    await main(["init", "--link"], { preflight() {} });
+    await main(["init", "--link"], { preflight() {}, detectAgents });
     const again = readFileSync(join(d, "CLAUDE.md"), "utf8");
     assert.equal((again.match(/orch:begin/g) || []).length, 1);
     assert.equal((again.match(/# My repo/g) || []).length, 1);
