@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -8,10 +8,14 @@ import { join } from "node:path";
 // agents: pool isn't hand-edited blind. CLI agents are checked with `which`;
 // local-llm models are read from claude-code-router's own config, since ccr
 // being on PATH says nothing about which models it's configured to route to.
+// ccr's current storage is a `config.sqlite` DB; `config.json` is only its
+// legacy/migration format, so a JSON parse failure doesn't mean "no config"
+// — check for the sqlite file before reporting local as unconfigured.
 export function detectAgents(deps = {}) {
   const {
     which = (exe) => execFileSync("which", [exe], { stdio: "ignore" }),
     readFile = readFileSync,
+    exists = existsSync,
     home = homedir(),
   } = deps;
 
@@ -34,7 +38,11 @@ export function detectAgents(deps = {}) {
       if (models.length) models.forEach((m) => found.push(m));
       else missing.push("local (no models configured for provider \"local\")");
     } catch {
-      missing.push("local (no ~/.claude-code-router/config.json)");
+      if (exists(join(home, ".claude-code-router", "config.sqlite"))) {
+        missing.push("local (configured via ~/.claude-code-router/config.sqlite — run `ccr ui` to see models, `orch agent add <model>` to register one)");
+      } else {
+        missing.push("local (no ~/.claude-code-router/config.json)");
+      }
     }
   } catch {
     missing.push("local (ccr not on PATH)");

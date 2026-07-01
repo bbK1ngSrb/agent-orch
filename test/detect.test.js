@@ -39,8 +39,18 @@ test("detectAgents: ccr on PATH but config unreadable reports missing", () => {
   const { missing } = detectAgents({
     which: which(["ccr"]),
     readFile: () => { throw new Error("ENOENT"); },
+    exists: () => false,
   });
   assert.ok(missing.some((m) => m.startsWith("local (no ~/.claude-code-router/config.json)")));
+});
+
+test("detectAgents: ccr on PATH with sqlite config reports it's configured but unreadable", () => {
+  const { missing } = detectAgents({
+    which: which(["ccr"]),
+    readFile: () => { throw new Error("ENOENT"); },
+    exists: (path) => path.endsWith("config.sqlite"),
+  });
+  assert.ok(missing.some((m) => m.startsWith("local (configured via ~/.claude-code-router/config.sqlite")));
 });
 
 test("formatDetection: joins found and missing into a summary line", () => {
