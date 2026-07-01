@@ -29,7 +29,9 @@ export function detectAgents(deps = {}) {
       const raw = JSON.parse(readFile(join(home, ".claude-code-router", "config.json"), "utf8"));
       const provider = (raw.Providers || []).find((p) => p.name === "local");
       const models = provider?.models || [];
-      if (models.length) models.forEach((m) => found.push(`local:${m}`));
+      // Report the bare model name — that's what `orch agent add <name>` accepts
+      // (agents: registry keys local models by name, not a "local:" prefix).
+      if (models.length) models.forEach((m) => found.push(m));
       else missing.push("local (no models configured for provider \"local\")");
     } catch {
       missing.push("local (no ~/.claude-code-router/config.json)");
@@ -41,7 +43,7 @@ export function detectAgents(deps = {}) {
   return { found, missing };
 }
 
-// "detected: claude, codex, local:glm-4.5-air — not found: codex (no CLI on PATH)"
+// "detected: claude, codex, glm-4.5-air — not found: codex (no CLI on PATH)"
 export function formatDetection({ found, missing }) {
   const parts = [`detected: ${found.length ? found.join(", ") : "none"}`];
   if (missing.length) parts.push(`not found: ${missing.join(", ")}`);

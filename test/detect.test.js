@@ -23,7 +23,7 @@ test("detectAgents: reads local models from ccr's router config when ccr is on P
     which: which(["ccr"]),
     readFile: () => JSON.stringify({ Providers: [{ name: "local", models: ["glm-4.5-air"] }] }),
   });
-  assert.ok(found.includes("local:glm-4.5-air"));
+  assert.ok(found.includes("glm-4.5-air")); // bare name — what `orch agent add` accepts
   assert.ok(missing.includes("claude (no CLI on PATH)"));
 });
 
@@ -44,8 +44,8 @@ test("detectAgents: ccr on PATH but config unreadable reports missing", () => {
 });
 
 test("formatDetection: joins found and missing into a summary line", () => {
-  const line = formatDetection({ found: ["claude", "local:glm-4.5-air"], missing: ["codex (no CLI on PATH)"] });
-  assert.equal(line, "detected: claude, local:glm-4.5-air — not found: codex (no CLI on PATH)");
+  const line = formatDetection({ found: ["claude", "glm-4.5-air"], missing: ["codex (no CLI on PATH)"] });
+  assert.equal(line, "detected: claude, glm-4.5-air — not found: codex (no CLI on PATH)");
 });
 
 test("formatDetection: no agents found still prints a valid summary", () => {

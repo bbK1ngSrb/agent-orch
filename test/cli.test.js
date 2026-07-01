@@ -425,12 +425,28 @@ test("init prints an agent-detection summary using the injected detectAgents", a
   try {
     await main(["init"], {
       preflight() {},
-      detectAgents: () => ({ found: ["claude", "local:glm-4.5-air"], missing: ["codex (no CLI on PATH)"] }),
+      detectAgents: () => ({ found: ["claude", "glm-4.5-air"], missing: ["codex (no CLI on PATH)"] }),
     });
-    assert.ok(logs.some((l) => l.includes("detected: claude, local:glm-4.5-air")));
+    assert.ok(logs.some((l) => l.includes("detected: claude, glm-4.5-air")));
     assert.ok(logs.some((l) => l.includes("not found: codex (no CLI on PATH)")));
   } finally {
     console.log = origLog;
+    chdir(prev);
+  }
+});
+
+test("init succeeds via the real (unstubbed) preflight regardless of installed agent CLIs", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-init-real-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    // No preflight stub here — exercises the real preflight(). It must only
+    // check .orch/ writability for init, not require claude/codex on PATH,
+    // otherwise a clean machine would throw before ever seeing the
+    // detectAgents() "not found" summary this command exists to print.
+    await main(["init"]);
+    assert.ok(existsSync(join(d, ".orch", "orch.yml")));
+  } finally {
     chdir(prev);
   }
 });

@@ -549,11 +549,14 @@ export async function main(argv, deps = {}) {
   const preflightFn = deps.preflight || preflight;
 
   if (command === "init") {
-    // Preflight first: it probes .orch/ writability and fails with a clear
-    // message before any real write, so a read-only repo never surfaces a raw
-    // EACCES from the mkdir/writeFile below. load() tolerates a missing config.
+    // Preflight first, writability-only: it probes .orch/ and fails with a
+    // clear message before any real write, so a read-only repo never surfaces
+    // a raw EACCES from the mkdir/writeFile below. `agents: []` skips the
+    // fatal agent-CLI check — init's whole point is to report installed CLIs
+    // non-fatally via detectAgents() below, not require them up front.
+    // load() tolerates a missing config.
     const cfg = load(repo);
-    preflightFn(cfg, orchDir);
+    preflightFn({ agents: [] }, orchDir);
     mkdirSync(orchDir, { recursive: true });
     const ex = join(orchDir, "orch.yml");
     if (!existsSync(ex) && !existsSync(join(repo, "orch.yml"))) {
