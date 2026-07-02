@@ -24,6 +24,7 @@ import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.
 import { finishRun } from "./complete.js";
 import { detectAgents, formatDetection } from "./detect.js";
 import { redact } from "./redact.js";
+import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dashboard.js";
 
 export { slugify };
 
@@ -181,6 +182,8 @@ export function parse(argv) {
       "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
       "no-banner": { type: "boolean" },
       link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
+      json: { type: "boolean" }, // dashboard: machine-readable output
+      limit: { type: "string" }, // dashboard: run-history entries to show
 
     },
   });
@@ -782,6 +785,13 @@ export async function main(argv, deps = {}) {
     return;
   }
 
+  if (command === "dashboard") {
+    const historyLimit = flags.limit ? Number(flags.limit) : 10;
+    if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit }), null, 2));
+    else console.log(renderDashboard(orchDir, { historyLimit }));
+    return;
+  }
+
   printUsage();
 }
 
@@ -798,6 +808,8 @@ Usage:
      stamp "Closes #<number>" on the merge so it auto-closes)
   orch review <branch> [--reviewer "claude claude-opus-4-8 high, codex"]
   orch pr <number> [--merge] [--reviewer ...]
+  orch dashboard [--json] [--limit N]
+    (read-only: live cycle status/stage, streaming log tail, run history, success-rate metrics)
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).
   If launched from main, orch creates and switches to orch/<slug> first.
   After a merge, orch pushes main, deletes its temp branches, and prints a summary;
