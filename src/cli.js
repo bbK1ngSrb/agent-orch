@@ -19,6 +19,7 @@ import { newSid } from "./sid.js";
 import * as inflight from "./inflight.js";
 import * as resume from "./resume.js";
 import * as checkpoint from "./checkpoint.js";
+import * as reviewLog from "./review-log.js";
 import { finalize } from "./finalize.js";
 import { validateWorkOrder, buildAuthorPrompt, issueToWorkOrder } from "./intake/workorder.js";
 import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.js";
@@ -366,7 +367,7 @@ export function realDeps() {
   const ghDeps = { gh: ghShell, git: git.git, notify, log: (m) => process.stderr.write(`▶ ${m}\n`) };
   const githubDep = { demote: (ctx) => demote(ctx, ghDeps), openPr: (ctx) => openPr(ctx, ghDeps) };
   const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify });
-  return { adapters, git, gate, scope, notify, inflight, finalize: finalizeDep, checkpoint };
+  return { adapters, git, gate, scope, notify, inflight, finalize: finalizeDep, checkpoint, reviewLog };
 }
 function dryDeps() {
   const verdict = { decision: "AGREE", reason: "(dry-run: assumed agree)", raw: "" };
@@ -709,7 +710,7 @@ export async function main(argv, deps = {}) {
       const buildFn = deps.buildAgent || buildAgent;
       const result = await buildFn(name, { repo, orchDir, flags, deps });
       if (result.status === "already-registered") { console.log(`orch: ${name} already registered`); return; }
-      console.log(`orch agent build ${name}: ${result.status} (${result.reason}) on ${result.branch}`);
+      console.log(`orch agent build ${name}: ${result.status} (${result.reason}) on ${result.branch}${costSuffix(result)}`);
       if (result.status === "approved") {
         console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
       }
@@ -731,7 +732,7 @@ export async function main(argv, deps = {}) {
       if (!answer) throw e;
       const buildFn = deps.buildAgent || buildAgent;
       const result = await buildFn(name, { repo, orchDir, flags: {}, deps });
-      console.log(`orch agent build ${name}: ${result.status}${result.branch ? ` on ${result.branch}` : ""}`);
+        console.log(`orch agent build ${name}: ${result.status}${result.branch ? ` on ${result.branch}` : ""}${costSuffix(result)}`);
       if (result.status === "approved") {
         console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
       }
@@ -877,7 +878,7 @@ export async function main(argv, deps = {}) {
           resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
         }
-        console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
+        console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s); cost ${result.usageSummary}`);
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.status === "escalated" || result.status === "pr-fallback") {
           process.exitCode = 2;
@@ -931,7 +932,7 @@ export async function main(argv, deps = {}) {
         { n, repo, orchDir, cfg, merge: Boolean(flags.merge) },
         githubDeps(),
       );
-      console.log(`orch pr #${n}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
+      console.log(`orch pr #${n}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${costSuffix(result)}`);
       if (result.status !== "approved") process.exitCode = 2;
     } finally {
       releaseLock(orchDir);
@@ -975,6 +976,10 @@ Usage:
   After a merge, orch pushes main, deletes its temp branches, and prints a summary;
   --no-tidy leaves all branches/checkout untouched.
   (flags: --dry, --cheap, --link, --no-tidy, --no-banner, --version, --help)`);
+}
+
+function costSuffix(result) {
+  return result?.usageSummary ? `; cost ${result.usageSummary}` : "";
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds
