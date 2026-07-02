@@ -351,7 +351,9 @@ export function bumpVersion(integrationPath, entry) {
   const prior = existsSync(changelogPath) ? readFileSync(changelogPath, "utf8").replace(/^# Changelog\n+/, "") : "";
   writeFileSync(changelogPath, `# Changelog\n\n${section}${prior}`);
 
-  git(["add", "package.json", "src/version.js", "CHANGELOG.md"], integrationPath);
+  const addFiles = ["package.json", "CHANGELOG.md"];
+  if (existsSync(versionPath)) addFiles.splice(1, 0, "src/version.js");
+  git(["add", ...addFiles], integrationPath);
   git(["commit", "-m", `chore(release): v${version}`], integrationPath);
   return version;
 }

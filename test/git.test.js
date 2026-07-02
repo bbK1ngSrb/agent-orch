@@ -392,3 +392,17 @@ test("bumpVersion is a no-op when package.json is missing", () => {
   assert.equal(result, null);
   assert.equal(git(["rev-parse", "HEAD"], repo), before); // no commit made
 });
+
+test("bumpVersion commits fine when package.json exists but src/version.js does not", () => {
+  const repo = newRepo();
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.1.0" }, null, 2) + "\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "seed package.json only"], repo);
+
+  const version = bumpVersion(repo, "pr/claude/x-1");
+
+  assert.equal(version, "0.1.1");
+  assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "0.1.1");
+  assert.equal(existsSync(join(repo, "src", "version.js")), false);
+  assert.match(git(["log", "-1", "--format=%s"], repo), /chore\(release\): v0\.1\.1/);
+});
