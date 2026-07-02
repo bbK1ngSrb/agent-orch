@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.4 — 2026-07-02
+- pr/claude/dashboard-live-status-logs-metrics-view-107565-0 (closes #64)
+
 ## 0.1.3 — 2026-07-02
 - pr/claude/cost-tracking-per-cycle-token-accounting-4187998-0 (closes #66)
 
