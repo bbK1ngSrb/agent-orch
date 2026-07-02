@@ -23,6 +23,23 @@ export function buildComment(result, body) {
   ].join("\n");
 }
 
+// §3f: issue-bridge escalation comment. Same machine-summary-only discipline
+// as buildComment's PR path — result.reason is our own diagnostic text (scope
+// caps, stalemate, protected paths, adapter stderr tail), never attacker prose,
+// but the caller still redacts it before posting.
+export function buildIssueComment(result, branch) {
+  const head = result.status === "pr-fallback"
+    ? "⚠️ **agent-orch: PR FALLBACK** — could not auto-merge, opened a PR for manual review"
+    : "🛑 **agent-orch: ESCALATED** — orch gave up, no merge";
+  return [
+    head,
+    "",
+    `branch: ${String(branch).replace(/[^\w./-]/g, "")}`,
+    `reason: ${result.reason}`,
+    `rounds: ${Number(result.rounds) || 0}`,
+  ].join("\n");
+}
+
 export async function runPr(opts, deps) {
   const { n, repo, orchDir, cfg, merge = false } = opts;
   const { gh, git, cycle, log = () => {} } = deps;
