@@ -16,6 +16,10 @@ const DEFAULTS = {
   merge: "no-ff", // ff-only | no-ff | pr — "pr" opts out of direct-to-main: an AGREE+green
                   // cycle opens a PR (github.openPr) instead of git.mergeInWorktree
   concurrency: 4, // max concurrent cycles per repo dir; over this, a cycle exits rather than blocks
+  cheap: {
+    role: null, // role spec ("<agent> [model] [effort]") used for author+reviewer when cheap routing triggers
+    paths: [], // globs; a --file/issue work order whose suspected_paths all match auto-routes to `role`
+  },
   scope: { maxLines: 0, ignore: ["*.lock", "dist/**", "*.snap"] },
   github: {
     mergeMethod: "squash", // gh pr merge strategy for `orch pr <n> --merge` and merge: pr's auto-merge
@@ -47,6 +51,10 @@ function validate(cfg) {
     throw new Error("orch.yml: stageTimeout must be a non-negative integer (minutes; 0 disables)");
   if (!Number.isInteger(cfg.concurrency) || cfg.concurrency < 1)
     throw new Error("orch.yml: concurrency must be a positive integer");
+  if (cfg.cheap.role != null && (typeof cfg.cheap.role !== "string" || !cfg.cheap.role.trim()))
+    throw new Error("orch.yml: cheap.role must be a non-empty string");
+  if (!Array.isArray(cfg.cheap.paths) || !cfg.cheap.paths.every((p) => typeof p === "string"))
+    throw new Error("orch.yml: cheap.paths must be an array of strings");
   if (!Number.isInteger(cfg.scope.maxLines) || cfg.scope.maxLines < 0)
     throw new Error("orch.yml: scope.maxLines must be a non-negative integer");
   if (!["squash", "merge", "rebase"].includes(cfg.github.mergeMethod))
@@ -106,6 +114,7 @@ export function load(dir) {
   const cfg = {
     ...DEFAULTS,
     ...user,
+    cheap: { ...DEFAULTS.cheap, ...(user.cheap || {}) },
     scope: { ...DEFAULTS.scope, ...(user.scope || {}) },
     github: { ...DEFAULTS.github, ...(user.github || {}) },
     docs: { ...DEFAULTS.docs, ...(user.docs || {}) },

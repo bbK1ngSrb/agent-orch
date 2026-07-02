@@ -124,6 +124,15 @@ export function pushMain(repo) {
   return r.ok ? { ok: true } : { ok: false, reason: r.out.trim() };
 }
 
+export function verifyOriginContains(repo, commit) {
+  const fetched = fetchOriginMain(repo);
+  if (!fetched.ok) return { ok: false, reason: fetched.reason };
+  const r = gitTry(["merge-base", "--is-ancestor", commit, ORIGIN_MAIN_REF], repo);
+  return r.ok
+    ? { ok: true }
+    : { ok: false, reason: `${commit} is not contained in origin/main` };
+}
+
 function fetchOriginMain(repo) {
   if (!gitTry(["remote", "get-url", "origin"], repo).ok)
     return { ok: false, missingOrigin: true, reason: "no origin remote configured" };
@@ -168,7 +177,12 @@ function moveMainToOrigin(repo, mode) {
   git(["branch", "-f", "main", ORIGIN_MAIN_REF], repo);
 }
 
-export function syncMainFromOrigin(repo) {
+// allowAhead: local main containing commits origin doesn't have yet is expected
+// mid-invocation (main is only pushed once, at the end — see complete.js) and
+// isn't a divergence; callers mid-run pass allowAhead so that normal state
+// isn't treated as a failure. The CLI's start-of-invocation call leaves it
+// false, since being ahead there means unpushed work from a previous run.
+export function syncMainFromOrigin(repo, { allowAhead = false } = {}) {
   const fetched = fetchOriginMain(repo);
   if (!fetched.ok) {
     if (fetched.missingOrigin) return { ok: true, skipped: true, reason: fetched.reason };
@@ -191,12 +205,11 @@ export function syncMainFromOrigin(repo) {
   }
 
   const remoteBehind = gitTry(["merge-base", "--is-ancestor", ORIGIN_MAIN_REF, "main"], repo).ok;
-  return {
-    ok: false,
-    reason: remoteBehind
-      ? "local main is ahead of origin/main; push or reset main before running orch"
-      : "local main has diverged from origin/main; sync or reset main before running orch",
-  };
+  if (remoteBehind) {
+    if (allowAhead) return { ok: true, updated: false, ahead: true };
+    return { ok: false, reason: "local main is ahead of origin/main; push or reset main before running orch" };
+  }
+  return { ok: false, reason: "local main has diverged from origin/main; sync or reset main before running orch" };
 }
 
 export function resetMainToOriginIfDiverged(repo) {
@@ -228,6 +241,7 @@ export function pruneWorktree(repo, path) {
 // `orch task` can reattach and resume it instead of re-authoring (#27) — losing
 // committed work is the real defect; a stray empty-worktree branch is recoverable.
 export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) {
+  let recovered = false;
   // Canonicalize: git stores worktree paths as realpaths, but orchDir may arrive
   // via a symlink (this repo is reachable through /mnt/... and a ~/...-symlink).
   // Without this the prefix match silently skips every orphan on the alt path.
@@ -236,7 +250,7 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
     wtRoot = join(realpathSync(orchDir), "wt") + "/";
   } catch {
     gitTry(["worktree", "prune"], repo); // no orchDir yet = no orphans to sweep
-    return;
+    return { recovered };
   }
   const list = gitTry(["worktree", "list", "--porcelain"], repo);
   if (list.ok) {
@@ -260,7 +274,8 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
           branch = null;
           return;
         }
-        gitTry(["worktree", "remove", "--force", path], repo);
+        const removed = gitTry(["worktree", "remove", "--force", path], repo);
+        if (removed.ok) recovered = true;
         // Delete only a throwaway with no committed work; keep committed branches
         // so a resume can reattach (#27). changedFiles is `diff main...branch`.
         if (branch && owned && changedFiles(repo, branch).length === 0)
@@ -281,6 +296,7 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
     flush(); // last record has no trailing "worktree " to trigger it
   }
   gitTry(["worktree", "prune"], repo);
+  return { recovered };
 }
 
 // One reused worktree, checked out on the `main` branch, where all merges land.
@@ -291,7 +307,16 @@ export function ensureIntegrationWorktree(repo, orchDir) {
   const path = join(orchDir, "integration");
   mkdirSync(orchDir, { recursive: true });
   gitTry(["worktree", "prune"], repo); // clear a stale registration if the dir was removed
-  if (!existsSync(path)) git(["worktree", "add", path, "main"], repo);
+  if (!existsSync(path)) {
+    git(["worktree", "add", path, "main"], repo);
+  } else if (git(["rev-parse", "--abbrev-ref", "HEAD"], path) !== "main") {
+    // A reused worktree that drifted off branch `main` (crash mid-op, manual
+    // recovery poking around in it) merges/commits onto a detached HEAD instead
+    // of refs/heads/main: the commit builds fine but main silently never moves.
+    // Nothing else can hold `main` here — it's this worktree's sole reason to
+    // exist — so reattaching is always safe.
+    git(["switch", "main"], path);
+  }
   return path;
 }
 

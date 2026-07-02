@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as gitDep from "../src/git.js";
+import * as notify from "../src/notify.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
 function mockSpawn() {
@@ -91,7 +92,7 @@ test("main prints startup banner for task runs on TTY", async () => {
     stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
   });
   const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(plain, /agent-orch 0\.1\.0/);
+  assert.match(plain, /agent-orch \d+\.\d+\.\d+/);
   assert.match(plain, /author\s+claude/);
   assert.match(plain, /review\s+codex/);
   assert.match(plain, /test\s+auto/);
@@ -132,7 +133,7 @@ test("runBanner shows version, agents, per-agent model+effort, test, merge", () 
     author: { agent: "claude", model: "opus", effort: "high" },
     reviewers: [{ agent: "codex", model: "gpt-5", effort: null }],
   }]));
-  assert.match(banner, /agent-orch 0\.1\.0/);
+  assert.match(banner, /agent-orch \d+\.\d+\.\d+/);
   assert.match(banner, /claude, codex/);            // agents row
   assert.match(banner, /claude.*opus.*high/);       // author with model + effort
   assert.match(banner, /codex.*gpt-5/);             // reviewer with model
@@ -209,7 +210,7 @@ test("run banner prints only on TTY and respects --no-banner", () => {
   let out = "";
   const tty = { isTTY: true, write: (chunk) => { out += chunk; } };
   assert.equal(maybePrintRunBanner(cfg, runs, {}, tty), true);
-  assert.match(stripAnsi(out), /agent-orch 0\.1\.0/);
+  assert.match(stripAnsi(out), /agent-orch \d+\.\d+\.\d+/);
 
   out = "";
   assert.equal(maybePrintRunBanner(cfg, runs, { "no-banner": true }, tty), false);
@@ -425,6 +426,52 @@ test("--author flag accepts an agent/model/effort spec", () => {
   assert.deepEqual(overridden.reviewers, ["codex"]);
 });
 
+test("--cheap forces author+reviewer to cfg.cheap.role", () => {
+  const cfg = { author: null, reviewer: null, authors: null, reviewers: null, cheap: { role: "qwen3-coder-30b", paths: [] } };
+  const overridden = applyCheapOverride(cfg, { cheap: true });
+  assert.deepEqual(overridden.authors, ["qwen3-coder-30b"]);
+  assert.deepEqual(overridden.reviewers, ["qwen3-coder-30b"]);
+});
+
+test("--cheap without cheap.role configured throws", () => {
+  const cfg = { author: null, reviewer: null, authors: null, reviewers: null, cheap: { role: null, paths: [] } };
+  assert.throws(() => applyCheapOverride(cfg, { cheap: true }), /cheap.role must be set/);
+});
+
+test("--cheap combined with --author throws", () => {
+  const cfg = { cheap: { role: "qwen3-coder-30b", paths: [] } };
+  assert.throws(() => applyCheapOverride(cfg, { cheap: true, author: "claude", reviewer: "codex" }),
+    /cannot be combined/);
+});
+
+test("cheap auto-routes when a work order's suspected_paths all match cheap.paths", () => {
+  const cfg = { author: null, reviewer: null, authors: null, reviewers: null, cheap: { role: "qwen3-coder-30b", paths: ["docs/**", "*.md"] } };
+  const wo = { suspected_paths: ["docs/guide.md", "README.md"] };
+  const overridden = applyCheapOverride(cfg, {}, wo);
+  assert.deepEqual(overridden.authors, ["qwen3-coder-30b"]);
+  assert.deepEqual(overridden.reviewers, ["qwen3-coder-30b"]);
+});
+
+test("cheap auto-route skipped when any suspected_path misses cheap.paths", () => {
+  const cfg = { author: null, reviewer: null, authors: null, reviewers: null, cheap: { role: "qwen3-coder-30b", paths: ["docs/**"] } };
+  const wo = { suspected_paths: ["docs/guide.md", "src/engine.js"] };
+  const overridden = applyCheapOverride(cfg, {}, wo);
+  assert.equal(overridden, cfg);
+});
+
+test("cheap auto-route skipped when --author/--reviewer already given explicitly", () => {
+  const cfg = { cheap: { role: "qwen3-coder-30b", paths: ["docs/**"] } };
+  const wo = { suspected_paths: ["docs/guide.md"] };
+  const overridden = applyCheapOverride(cfg, { author: "codex", reviewer: "claude" }, wo);
+  assert.equal(overridden, cfg);
+});
+
+test("cheap auto-route no-ops without cheap.role/paths configured", () => {
+  const cfg = { cheap: { role: null, paths: [] } };
+  const overridden = applyCheapOverride(cfg, {}, { suspected_paths: ["docs/guide.md"] });
+  assert.equal(overridden, cfg);
+});
+
 test("agent add appends a known agent to the pool, preserving comments", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-"));
   const prev = cwd();
@@ -451,6 +498,73 @@ test("agent add rejects an unknown agent", async () => {
   try {
     await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) }); // stub: no real agent CLIs needed in tests
     await assert.rejects(() => main(["agent", "add", "nope"]), /unknown agent/);
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("agent build feeds an adapter work order through the task pipeline (noMerge by default)", async () => {
+  const d = initGitRepo("orch-agentbuild-");
+  const logs = await runMainInRepo(d, ["agent", "build", "widget"]);
+  assert.match(
+    logs.join("\n"),
+    /agent build widget: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/,
+  );
+});
+
+test("agent build --pr routes the cycle through merge: pr instead of a local-only branch", async () => {
+  const d = initGitRepo("orch-agentbuild-pr-");
+  let seenMerge = null;
+  const deps = {
+    preflight() {},
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async (ctx) => { seenMerge = ctx.cfg.merge; return { status: "pr", reason: "test", prUrl: "https://example/pr/1" }; },
+    },
+  };
+  const logs = await runMainInRepo(d, ["agent", "build", "widget", "--pr"], deps);
+  assert.equal(seenMerge, "pr");
+  assert.match(logs.join("\n"), /agent build widget: pr /);
+});
+
+test("agent build no-ops when the agent is already registered", async () => {
+  const d = initGitRepo("orch-agentbuild-known-");
+  const logs = await runMainInRepo(d, ["agent", "build", "claude"]);
+  assert.match(logs.join("\n"), /already registered/);
+});
+
+test("agent add offers to build an unregistered agent; accepting delegates to buildAgent", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-"));
+  const prev = cwd();
+  chdir(d);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.map(String).join(" "));
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    let calledWith = null;
+    await main(["agent", "add", "widget"], {
+      io: { confirm: async () => true },
+      buildAgent: async (name) => { calledWith = name; return { status: "approved", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }; },
+    });
+    assert.equal(calledWith, "widget");
+    assert.match(logs.join("\n"), /agent build widget: approved/);
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+});
+
+test("agent add declines the build offer and still throws unknown agent", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-decline-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    await assert.rejects(
+      () => main(["agent", "add", "widget"], { io: { confirm: async () => false } }),
+      /unknown agent/,
+    );
   } finally {
     chdir(prev);
   }
@@ -647,6 +761,53 @@ test("task branch includes a sid suffix", async () => {
   assert.match(logs.join("\n"), /pr\/[a-z]+\/do-a-thing-\d+-[0-9a-z]+:/);
 });
 
+test("--cheap flag routes the task branch through cheap.role's agent", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cheap-"));
+  writeFileSync(join(d, "orch.yml"), "cheap:\n  role: qwen3-coder-30b\n");
+  const prev = cwd();
+  chdir(d);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    await main(["task", "do a thing", "--cheap", "--dry"]);
+    assert.match(logs.join("\n"), /pr\/qwen3-coder-30b\//);
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+});
+
+test("--cheap without cheap.role in orch.yml surfaces a clear error", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cheap-noconf-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await assert.rejects(main(["task", "do a thing", "--cheap", "--dry"]), /cheap.role must be set/);
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("a --file work order whose suspected_paths match cheap.paths auto-routes", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cheap-auto-"));
+  writeFileSync(join(d, "orch.yml"), "cheap:\n  role: qwen3-coder-30b\n  paths: [\"docs/**\"]\n");
+  const wo = { title: "fix typo", problem: "docs typo", repro_steps: [], suspected_paths: ["docs/guide.md"], acceptance_criteria: [] };
+  writeFileSync(join(d, "wo.json"), JSON.stringify(wo));
+  const prev = cwd();
+  chdir(d);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    await main(["task", "--file", "wo.json", "--dry"]);
+    assert.match(logs.join("\n"), /pr\/qwen3-coder-30b\//);
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+});
+
 test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
   const savedExitCode = process.exitCode; // save before test body so finally can restore, not force 0
   const d = mkdtempSync(join(tmpdir(), "orch-cap-"));
@@ -688,6 +849,7 @@ test("orch task on main auto-creates and switches to an orch slug branch", async
   assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task");
   assert.match(logs.join("\n"), /created and switched to orch\/some-task/);
   assert.match(logs.join("\n"), /orch: pr\/claude\/some-task-\d+-[0-9a-z]+: merged \(test\)/);
+  assert.match(logs.join("\n"), /after 1 round\(s\).*; cost 60 tokens/);
 });
 
 test("orch task fast-forwards stale local main from origin before branching", async () => {
@@ -727,6 +889,13 @@ test("#44: a merged task run hands the operator+cycle branches to finishRun for 
     { role: "author", agent: "claude", model: "gpt-test-author", tokens: 40 },
     { role: "reviewer", agent: "codex", model: "gpt-test-review", tokens: 20 },
   ]);
+});
+
+test("task status line surfaces the clean unattended cycle streak", async () => {
+  const repo = initGitRepo();
+  notify.recordRun(join(repo, ".orch"), { ts: "1", branch: "seed", verdict: "merged", rounds: 1 });
+  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
+  assert.match(logs.join("\n"), /clean unattended cycles: 1/);
 });
 
 test("#44: --no-tidy skips post-run cleanup entirely", async () => {

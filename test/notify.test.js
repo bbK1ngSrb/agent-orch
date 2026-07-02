@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeRound, buildDecisionBrief, reviewsDir } from "../src/notify.js";
+import { writeRound, buildDecisionBrief, reviewsDir, recordRun, kpi, escalate } from "../src/notify.js";
 
 test("writeRound creates nested round file", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-notify-"));
@@ -35,4 +35,21 @@ test("decision brief contains both cases and the branch", () => {
   assert.match(md, /missing tests/);
   assert.match(md, /tests exist elsewhere/);
   assert.match(md, /3 rounds/);
+});
+
+test("recordRun persists the clean unattended cycle streak", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-notify-"));
+  recordRun(d, { ts: "1", branch: "b1", verdict: "merged", rounds: 1 });
+  recordRun(d, { ts: "2", branch: "b2", verdict: "pr", rounds: 1 });
+  assert.equal(kpi(d).cleanUnattendedCycles, 2);
+
+  recordRun(d, { ts: "3", branch: "b3", verdict: "pr-fallback", rounds: 1 });
+  assert.equal(kpi(d).cleanUnattendedCycles, 0);
+});
+
+test("escalate resets the clean unattended cycle streak", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-notify-"));
+  recordRun(d, { ts: "1", branch: "b1", verdict: "merged", rounds: 1 });
+  escalate(d, "pr/claude/x", "# Escalation\n");
+  assert.equal(kpi(d).cleanUnattendedCycles, 0);
 });

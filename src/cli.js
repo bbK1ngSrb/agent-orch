@@ -10,6 +10,7 @@ import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
 import * as scope from "./scope.js";
+import { globToRegExp } from "./scope.js";
 import * as notify from "./notify.js";
 import { acquireLock, releaseLock, acquireBlocking, isPaused } from "./lock.js";
 import { slugify } from "./slug.js";
@@ -17,12 +18,15 @@ import { VERSION } from "./version.js";
 import { newSid } from "./sid.js";
 import * as inflight from "./inflight.js";
 import * as resume from "./resume.js";
+import * as checkpoint from "./checkpoint.js";
+import * as reviewLog from "./review-log.js";
 import { finalize } from "./finalize.js";
 import { validateWorkOrder, buildAuthorPrompt, issueToWorkOrder } from "./intake/workorder.js";
 import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.js";
 import { finishRun } from "./complete.js";
 import { detectAgents, formatDetection } from "./detect.js";
 import { redact } from "./redact.js";
+import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dashboard.js";
 
 export { slugify };
 
@@ -54,6 +58,15 @@ export function maybeSpawnDocs(res, cfg, deps = {}, orchDir) {
   return true;
 }
 
+function cleanStreakSuffix(orchDir, dry) {
+  if (dry) return "";
+  return `; clean unattended cycles: ${notify.kpi(orchDir).cleanUnattendedCycles}`;
+}
+
+function resetKpiOnRecovery(orchDir, recovery) {
+  if (recovery?.recovered) notify.resetKpi(orchDir);
+}
+
 // init scaffold — mirrors orch.example.yml. Every key is listed with its
 // possible values and default; commented keys use the shown default.
 const SCAFFOLD = `# agent-orch config — all keys optional. Commented keys show the default.
@@ -81,6 +94,15 @@ reviseCap: 3              # max revise rounds before escalation (positive intege
 stageTimeout: 25          # per-stage wall-clock cap in MINUTES; 0 disables; default: 25. A stalled author/review (e.g. a wedged codex exec) is killed and the cycle fails (nonzero exit) instead of hanging forever. Env override: ORCH_STAGE_TIMEOUT_MS (milliseconds)
 merge: no-ff              # merge into main: ff-only | no-ff | pr; default: no-ff (concurrent disjoint cycles both land; ff-only = linear but extra cycles fall back to PR; pr = never touch local main, always open a GitHub PR)
 concurrency: 4            # max concurrent orch cycles in this repo dir; over this a cycle exits; default: 4
+
+# === Cheap-agent dispatch (optional) ===
+# Route mechanical/low-stakes tasks to a cheaper agent (e.g. a local llm via ccr)
+# instead of always paying for Claude/Codex. \`orch task --cheap\` forces \`role\`
+# ad hoc; without the flag, a \`--file\`/\`orch issue\` work order whose
+# suspected_paths all match \`paths\` routes to \`role\` automatically.
+# cheap:
+#   role: qwen3-coder-30b  # role spec used for both author and reviewer
+#   paths: ["*.md", "docs/**"]
 
 # === Scope gate (optional) ===
 scope:
@@ -115,9 +137,12 @@ cross-audits it with a second, gates on tests, then merges.
 - \`orch review <branch>\`           audit an existing branch (no author)
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
 - \`orch agent add <name>\`          add an agent to the rotation pool
+- \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
 
 A role is a spec \`"<agent> [model] [effort]"\`, e.g.
 \`--author "claude claude-opus-4-8 high" --reviewer "codex"\`.
+\`--cheap\` forces \`orch.yml\`'s \`cheap.role\` (e.g. a local llm) for one run;
+set \`cheap.paths\` to auto-route matching \`--file\`/\`orch issue\` work orders.
 Config and every option live in \`.orch/orch.yml\`.
 
 Run \`orch --help\` for the full flag list.
@@ -176,10 +201,14 @@ export function parse(argv) {
       reviewer: { type: "string" },
       authors: { type: "string" },
       reviewers: { type: "string" },
+      cheap: { type: "boolean" }, // force author+reviewer to orch.yml cheap.role for this run
       file: { type: "string" },
       "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
       "no-banner": { type: "boolean" },
       link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
+      json: { type: "boolean" }, // dashboard: machine-readable output
+      limit: { type: "string" }, // dashboard: run-history entries to show
+      pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
 
     },
   });
@@ -230,6 +259,27 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
     authors: splitNames(authorValue),
     reviewers: splitNames(reviewerValue),
   };
+}
+
+// --cheap forces author+reviewer to orch.yml's cheap.role (e.g. a local llm),
+// ad hoc, for one run. Without the flag, a work order (--file / orch issue)
+// whose suspected_paths all match cheap.paths auto-routes the same way — a
+// task-group/category default set once in config instead of a per-task flag.
+// Explicit --author/--reviewer always win over the auto path; combining them
+// with --cheap itself is rejected rather than silently picking one.
+export function applyCheapOverride(cfg, flags, workOrder = null) {
+  const explicitRoles = Boolean(flags.author || flags.authors || flags.reviewer || flags.reviewers);
+  if (flags.cheap) {
+    if (explicitRoles) throw new Error("--cheap cannot be combined with --author/--authors/--reviewer/--reviewers");
+    if (!cfg.cheap.role) throw new Error("orch.yml: cheap.role must be set to use --cheap");
+    return { ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] };
+  }
+  if (explicitRoles || !cfg.cheap.role || !cfg.cheap.paths.length) return cfg;
+  const paths = Array.isArray(workOrder?.suspected_paths) ? workOrder.suspected_paths : [];
+  if (!paths.length) return cfg;
+  const regexes = cfg.cheap.paths.map(globToRegExp);
+  if (!paths.every((p) => regexes.some((re) => re.test(p)))) return cfg;
+  return { ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] };
 }
 
 export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
@@ -326,7 +376,7 @@ export function realDeps() {
   const ghDeps = { gh: ghShell, git: git.git, notify, log: (m) => process.stderr.write(`▶ ${m}\n`) };
   const githubDep = { demote: (ctx) => demote(ctx, ghDeps), openPr: (ctx) => openPr(ctx, ghDeps) };
   const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify });
-  return { adapters, git, gate, scope, notify, inflight, finalize: finalizeDep };
+  return { adapters, git, gate, scope, notify, inflight, finalize: finalizeDep, checkpoint, reviewLog };
 }
 function dryDeps() {
   const verdict = { decision: "AGREE", reason: "(dry-run: assumed agree)", raw: "" };
@@ -524,6 +574,88 @@ export function resolveTaskBranch(ctx, deps = { git, resume }) {
   return { sid, branch, resume: false };
 }
 
+// `orch agent build <name>` self-bootstraps a missing adapter: a work order
+// describing the gap is fed through orch's own author→audit→test pipeline,
+// following the src/adapters/claude.js / codex.js pattern.
+function buildAdapterWorkOrder(name) {
+  const wo = {
+    title: `Add ${name} adapter for orch`,
+    problem: `orch has no adapter for the "${name}" CLI: \`orch agent add ${name}\` fails with ` +
+      `"unknown agent: ${name}". Add src/adapters/${name}.js following the ` +
+      `src/adapters/claude.js / src/adapters/codex.js pattern (export an object with a \`name\`, ` +
+      `a \`bin\`, an async \`author(prompt, worktree, opts)\`, and an async \`audit(branch, worktree, opts)\`), ` +
+      `and register it in the REGISTRY in src/adapters/index.js.`,
+    repro_steps: [`orch agent add ${name}`, `→ throws "unknown agent: ${name}"`],
+    suspected_paths: [`src/adapters/${name}.js`, "src/adapters/index.js", "test/adapters.test.js"],
+    acceptance_criteria: [
+      `src/adapters/${name}.js exports an adapter matching the claude.js/codex.js shape`,
+      `src/adapters/index.js REGISTRY registers "${name}"`,
+      `adapters.get("${name}") no longer throws`,
+      "tests cover the new adapter",
+    ],
+  };
+  const v = validateWorkOrder(wo);
+  if (!v.ok) throw new Error(`internal: generated adapter work order invalid: ${v.errors.join(", ")}`);
+  return v.workOrder;
+}
+
+// Runs the build as a normal task-mode cycle, isolated in its own worktree/branch
+// (the same mechanism every `orch task` uses) since orch would be modifying its
+// own source while running. Default: `noMerge` — the result sits on its local
+// branch only (no PR, main untouched) so it can be reviewed before it's trusted.
+// `--pr` instead forces `cfg.merge: "pr"` for this run only (never persisted to
+// orch.yml), so an AGREE+green result opens a PR through the full gate instead.
+export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} }) {
+  try { adapters.get(name); return { status: "already-registered" }; } catch { /* proceed to build */ }
+
+  const wo = buildAdapterWorkOrder(name);
+  const task = wo.title;
+  const authorPrompt = buildAuthorPrompt(wo);
+  let cfg = load(repo);
+  if (flags.pr) cfg = { ...cfg, merge: "pr" };
+  const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
+  const preflightFn = deps.preflight || preflight;
+  if (!dry) preflightFn(cfg, orchDir);
+
+  let liveBranches = new Set();
+  if (!dry) {
+    const sync = git.syncMainFromOrigin(repo);
+    if (!sync.ok) throw new Error(`orch: cannot start from stale main: ${sync.reason}`);
+    liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
+    resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
+  }
+
+  const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches });
+  const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned);
+  const authorSpec = authors[0];
+  const authorName = authorSpec.agent;
+  const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches });
+  const reviewerList = reviewersForAuthor(authorName, reviewers);
+  const run = {
+    mode: "task", task, authorPrompt, branch, sid, resume: isResume, authorName, author: authorSpec,
+    reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
+    reviewers: reviewerList, noMerge: !flags.pr,
+    cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
+  };
+
+  if (!dry) {
+    const baseSha = git.git(["rev-parse", "main"], repo);
+    inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha });
+    const live = inflight.countLive(orchDir);
+    if (live > cfg.concurrency) {
+      inflight.deregister(orchDir, sid);
+      throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`);
+    }
+  }
+  try {
+    const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
+    if (!dry) { resume.clear(orchDir, task, authorName); checkpoint.clear(orchDir, sid); }
+    return { ...result, branch };
+  } finally {
+    if (!dry) inflight.deregister(orchDir, sid);
+  }
+}
+
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
   if (flags.version || command === "version") { console.log(VERSION); return; }
@@ -581,12 +713,40 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "agent") {
+    if (rest[0] === "build") {
+      const name = rest[1];
+      if (!name) throw new Error("usage: orch agent build <name> [--pr]");
+      const buildFn = deps.buildAgent || buildAgent;
+      const result = await buildFn(name, { repo, orchDir, flags, deps });
+      if (result.status === "already-registered") { console.log(`orch: ${name} already registered`); return; }
+      console.log(`orch agent build ${name}: ${result.status} (${result.reason}) on ${result.branch}${costSuffix(result)}`);
+      if (result.status === "approved") {
+        console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
+      }
+      if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
+      return;
+    }
+
     // `orch agent add <name>` appends a known agent to the `agents:` rotation
     // pool in orch.yml, preserving the file's comments. Only registered agents
-    // are accepted so the next run's preflight stays valid.
-    if (rest[0] !== "add" || !rest[1]) throw new Error("usage: orch agent add <name>");
+    // are accepted so the next run's preflight stays valid; an unregistered
+    // name offers to build it (interactive only — see `buildAgent`).
+    if (rest[0] !== "add" || !rest[1]) throw new Error("usage: orch agent add <name> | orch agent build <name> [--pr]");
     const name = rest[1];
-    adapters.get(name); // throws "unknown agent: <name>" for unregistered names
+    try {
+      adapters.get(name); // throws "unknown agent: <name>" for unregistered names
+    } catch (e) {
+      const io = deps.io || realIo();
+      const answer = await io.confirm(`orch: '${name}' is not a registered agent — build it now? (y/N) `);
+      if (!answer) throw e;
+      const buildFn = deps.buildAgent || buildAgent;
+      const result = await buildFn(name, { repo, orchDir, flags: {}, deps });
+        console.log(`orch agent build ${name}: ${result.status}${result.branch ? ` on ${result.branch}` : ""}${costSuffix(result)}`);
+      if (result.status === "approved") {
+        console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
+      }
+      return;
+    }
     const file = configPath(repo);
     if (!existsSync(file)) throw new Error("no orch.yml — run `orch init` first");
     if (load(repo).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
@@ -600,9 +760,8 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "task" || command === "review" || command === "issue") {
-    const cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: command === "review" });
+    let cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: command === "review" });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
-    if (!dry) preflightFn(cfg, orchDir); // dry-run never shells out, so don't require CLIs
 
     // F3: operator kill switch + one-cycle-at-a-time lock.
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -610,7 +769,7 @@ export async function main(argv, deps = {}) {
     // `issue` is a task whose work order is fetched from a GitHub issue; it runs
     // the identical author→audit→test→merge cycle, plus `Closes #N` on the merge.
     const mode = command === "issue" ? "task" : command; // "task" | "review"
-    let task, authorPrompt, reviewBranch, closes = null;
+    let task, authorPrompt, reviewBranch, closes = null, workOrder = null;
     if (command === "issue") {
       const n = rest[0];
       if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch issue <number> [--author ... --reviewer ...]");
@@ -618,6 +777,7 @@ export async function main(argv, deps = {}) {
       task = wo.title;
       authorPrompt = buildAuthorPrompt(wo);
       closes = Number(n);
+      workOrder = wo;
     } else if (mode === "task") {
       // §3a/§3b: a --file task is UNTRUSTED intake — it must be a JSON work order,
       // validated for shape, then wrapped in a neutralized fence the author treats
@@ -628,6 +788,7 @@ export async function main(argv, deps = {}) {
         const wo = parseWorkOrderFile(flags.file);
         task = wo.title;
         authorPrompt = buildAuthorPrompt(wo);
+        workOrder = wo;
       } else {
         task = rest.join(" ");
         authorPrompt = task;
@@ -637,6 +798,13 @@ export async function main(argv, deps = {}) {
       reviewBranch = rest[0];
       if (!reviewBranch) throw new Error("usage: orch review <branch>");
     }
+
+    // Cheap-agent dispatch: --cheap forces cfg.cheap.role ad hoc; without the
+    // flag, a work order whose suspected_paths all match cfg.cheap.paths routes
+    // the same way automatically. Resolved here (after the work order, before
+    // preflight) so the agent CLI it picks is the one preflight actually checks.
+    cfg = applyCheapOverride(cfg, flags, workOrder);
+    if (!dry) preflightFn(cfg, orchDir); // dry-run never shells out, so don't require CLIs
 
     // Integration worktree owns `main`; if cwd is on main, move it to an
     // operator branch before reclaim/picking branches. Reclaim orphaned
@@ -653,7 +821,8 @@ export async function main(argv, deps = {}) {
       }
       operatorBranch = switchFromMain(repo, mode === "task" ? task : `review ${reviewBranch}`);
       liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
-      git.reclaimOrphanWorktrees(repo, orchDir, liveBranches); // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers
+      // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers.
+      resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
     }
 
     let runs;
@@ -695,6 +864,7 @@ export async function main(argv, deps = {}) {
     }
 
     maybePrintRunBanner(cfg, runs, flags, deps.stdout);
+    if (!dry && runs.some((run) => run.resume)) notify.resetKpi(orchDir);
 
     const results = [];
     const mergedBranches = []; // #44: cycle branches that actually landed on main
@@ -713,10 +883,13 @@ export async function main(argv, deps = {}) {
       try {
         const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
         results.push(result);
-        // Cycle returned (any terminal status) → drop the resume record. A quota
-        // throw skips this line, leaving the record for the next run to resume (#24).
-        if (!dry && run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
-        console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
+        // Cycle returned (any terminal status) → drop the resume + checkpoint records.
+        // A quota throw skips this line, leaving both for the next run to resume (#24).
+        if (!dry && run.mode === "task") {
+          resume.clear(orchDir, run.task, run.authorName);
+          checkpoint.clear(orchDir, run.sid);
+        }
+        console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${cleanStreakSuffix(orchDir, dry)}; cost ${result.usageSummary}`);
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.status === "escalated" || result.status === "pr-fallback") {
           process.exitCode = 2;
@@ -750,8 +923,8 @@ export async function main(argv, deps = {}) {
       const io = deps.io || realIo();
       const runStats = results.flatMap((r) => r.runStats || []);
       await finishFn(
-        { repo, task, operatorBranch, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats },
-        { git, io },
+        { repo, orchDir, task, operatorBranch, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats },
+        { git, io, notify },
       );
     }
     return;
@@ -764,17 +937,24 @@ export async function main(argv, deps = {}) {
     preflightFn(cfg, orchDir);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
     if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
-    git.reclaimOrphanWorktrees(repo, orchDir); // clear orphans from a crashed prior cycle
+    resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir)); // clear orphans from a crashed prior cycle
     try {
       const result = await runPr(
         { n, repo, orchDir, cfg, merge: Boolean(flags.merge) },
         githubDeps(),
       );
-      console.log(`orch pr #${n}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
+      console.log(`orch pr #${n}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${costSuffix(result)}`);
       if (result.status !== "approved") process.exitCode = 2;
     } finally {
       releaseLock(orchDir);
     }
+    return;
+  }
+
+  if (command === "dashboard") {
+    const historyLimit = flags.limit ? Number(flags.limit) : 10;
+    if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit }), null, 2));
+    else console.log(renderDashboard(orchDir, { historyLimit }));
     return;
   }
 
@@ -786,6 +966,10 @@ function printUsage() {
 Usage:
   orch init [--link]   (--link: wire .orch/ORCH.md into CLAUDE.md/AGENTS.md/GEMINI.md)
   orch agent add <name>
+  orch agent build <name> [--pr]
+    (unregistered agent → scaffolds src/adapters/<name>.js through orch's own
+     author→audit→test pipeline, isolated in its own worktree/branch; default
+     lands on that local branch only, --pr opens a PR instead)
   orch task "change" [--author "<agent> [model] [effort]" --reviewer "<agent> [model] [effort]"]
     (or: orch task --file work-order.json — an UNTRUSTED JSON work order:
      {title, problem, repro_steps[], suspected_paths[], acceptance_criteria[]}; title/problem required)
@@ -794,11 +978,19 @@ Usage:
      stamp "Closes #<number>" on the merge so it auto-closes)
   orch review <branch> [--reviewer "claude claude-opus-4-8 high, codex"]
   orch pr <number> [--merge] [--reviewer ...]
+  orch dashboard [--json] [--limit N]
+    (read-only: live cycle status/stage, streaming log tail, run history, success-rate metrics)
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).
+  --cheap forces orch.yml's cheap.role (e.g. a local llm) for one run (task/issue);
+  set cheap.paths to auto-route matching --file/orch issue work orders without the flag.
   If launched from main, orch creates and switches to orch/<slug> first.
   After a merge, orch pushes main, deletes its temp branches, and prints a summary;
   --no-tidy leaves all branches/checkout untouched.
-  (flags: --dry, --link, --no-tidy, --no-banner, --version, --help)`);
+  (flags: --dry, --cheap, --link, --no-tidy, --no-banner, --version, --help)`);
+}
+
+function costSuffix(result) {
+  return result?.usageSummary ? `; cost ${result.usageSummary}` : "";
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds

@@ -5,7 +5,7 @@ import { checkPaths } from "./intake/allowlist.js";
 // so tests stub them and dry-run is just another set of stubs.
 export async function runCycle(opts, deps) {
   const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false, sid, resume = false } = opts;
-  const { adapters, git, gate, scope, notify, finalize, inflight } = deps;
+  const { adapters, git, gate, scope, notify, finalize, inflight, checkpoint } = deps;
   // Role specs carry optional model/effort. Fall back to bare names so callers
   // that pass only authorName/reviewerNames (e.g. the PR bridge) keep working.
   const authorSpec = opts.author || { agent: authorName };
@@ -19,17 +19,23 @@ export async function runCycle(opts, deps) {
     name: s.agent, adapter: adapters.get(s.agent), opts: { model: s.model, effort: s.effort, stageTimeoutMs },
   }));
   const runStats = [];
-  const done = (result) => ({ ...result, runStats });
+  const reviewOutcomes = [];
+  const done = (result) => {
+    const usage = totalUsage(runStats);
+    const final = { ...result, runStats, usage, usageSummary: formatUsage(usage) };
+    recordReviewOutcomes(deps.reviewLog, orchDir, reviewOutcomes, final);
+    return final;
+  };
   const recordUsage = (role, agent, result, fallbackModel = null) => {
     const usage = result?.usage || {};
     const tokens = Number(usage.tokens) || 0;
     if (tokens <= 0) return;
-    runStats.push({
-      role,
-      agent,
-      model: usage.model || fallbackModel || "default",
-      tokens,
-    });
+    const entry = { role, agent, model: usage.model || fallbackModel || "default", tokens };
+    if (usage.inputTokens) entry.inputTokens = usage.inputTokens;
+    if (usage.outputTokens) entry.outputTokens = usage.outputTokens;
+    if (usage.cachedTokens) entry.cachedTokens = usage.cachedTokens;
+    if (typeof usage.costUsd === "number") entry.costUsd = usage.costUsd;
+    runStats.push(entry);
   };
 
   // F5: task mode owns a fresh branch; review mode requires an existing one.
@@ -74,30 +80,80 @@ export async function runCycle(opts, deps) {
     // Resolve the test command once.
     const testCmd = cfg.test === "auto" ? gate.detect(worktree) : cfg.test;
 
+    // Crash recovery: on a resumed cycle, pick up the last checkpoint instead of
+    // re-auditing rounds already decided. `stage: "tested"` means AGREE + gate
+    // already passed — skip straight past both; `stage: "reviewed"` means the
+    // round's verdict is known — skip that round's audit call only.
     let round = 1;
+    let pendingVerdict = null;
+    let skipTest = false;
+    if (resume) {
+      const ck = checkpoint?.lookup(orchDir, sid);
+      if (ck && ck.branch === branch) {
+        round = ck.round;
+        if (ck.stage === "tested") {
+          pendingVerdict = { decision: "AGREE", reason: ck.reason || "" };
+          skipTest = true;
+        } else if (ck.stage === "reviewed") {
+          pendingVerdict = { decision: ck.decision, reason: ck.reason || "" };
+        }
+      }
+    }
+
     for (;;) {
-      notify.phase(`${reviewers.map((r) => r.name).join(", ")} auditing (round ${round})`);
-      const verdicts = await Promise.all(reviewers.map(async (reviewer) => ({
-        reviewer: reviewer.name,
-        model: reviewer.opts.model,
-        ...(await reviewer.adapter.audit(branch, worktree, reviewer.opts)),
-      })));
-      for (const v of verdicts) recordUsage("reviewer", v.reviewer, v, v.model);
-      const disagree = verdicts.filter((v) => v.decision !== "AGREE");
-      const verdict = {
-        decision: disagree.length ? "DISAGREE" : "AGREE",
-        reason: verdicts.map((v) => `## ${v.reviewer}\n\n${v.decision}: ${v.reason}`).join("\n\n"),
-      };
-      notify.writeRound(orchDir, branch, round,
-        `# Round ${round}\n\nVerdict: ${verdict.decision}\n\n${verdict.reason}\n`);
+      let verdict;
+      if (pendingVerdict) {
+        verdict = pendingVerdict;
+        pendingVerdict = null;
+      } else {
+        notify.phase(`${reviewers.map((r) => r.name).join(", ")} auditing (round ${round})`);
+        const verdicts = await Promise.all(reviewers.map(async (reviewer) => ({
+          reviewer: reviewer.name,
+          model: reviewer.opts.model,
+          ...(await reviewer.adapter.audit(branch, worktree, reviewer.opts)),
+        })));
+        for (const v of verdicts) recordUsage("reviewer", v.reviewer, v, v.model);
+        const disagree = verdicts.filter((v) => v.decision !== "AGREE");
+        reviewOutcomes.push(...verdicts.map((v) => ({
+          branch,
+          round,
+          reviewer: v.reviewer,
+          model: v.model || null,
+          decision: v.decision === "AGREE" ? "AGREE" : "DISAGREE",
+          agentError: Boolean(v.agentError),
+        })));
+        verdict = {
+          decision: disagree.length ? "DISAGREE" : "AGREE",
+          reason: verdicts.map((v) => `## ${v.reviewer}\n\n${v.decision}: ${v.reason}`).join("\n\n"),
+        };
+        notify.writeRound(orchDir, branch, round,
+          `# Round ${round}\n\nVerdict: ${verdict.decision}\n\nCost: ${formatUsage(totalUsage(runStats))}\n\n${verdict.reason}\n`);
+        checkpoint?.record(orchDir, sid, { branch, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason });
+
+        // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
+        // revising the author would burn the whole loop for nothing. Escalate
+        // immediately — the reason carries the #31 stderr tail (bad model id, etc).
+        const agentErrors = disagree.filter((v) => v.agentError);
+        if (agentErrors.length) {
+          const reason = `agent error: ${agentErrors.map((v) => `${v.reviewer} ${v.reason}`).join("; ")}`;
+          return done(escalate(notify, orchDir, branch, round, reason));
+        }
+      }
 
       if (verdict.decision === "AGREE") {
         if (!testCmd) {
           return done(escalate(notify, orchDir, branch, round,
             "no test gate detected — set `test:` in orch.yml or merge manually"));
         }
-        notify.phase(`running gate: ${testCmd}`);
-        const { pass } = gate.run(testCmd, worktree);
+        let pass;
+        if (skipTest) {
+          pass = true;
+          skipTest = false;
+        } else {
+          notify.phase(`running gate: ${testCmd}`);
+          ({ pass } = gate.run(testCmd, worktree));
+          if (pass) checkpoint?.record(orchDir, sid, { branch, round, stage: "tested", reason: verdict.reason });
+        }
         if (!pass) {
           return done(escalate(notify, orchDir, branch, round,
             "AGREE but tests are red — not merging"));
@@ -124,22 +180,13 @@ export async function runCycle(opts, deps) {
         const noop = changed.length === 0;
         const fin = await finalize({
           repo, orchDir, branch, sid, baseSha, paths: changed,
-          testCmd, cfg, rounds: round, closes: opts.closes || null,
+          testCmd, cfg, rounds: round, closes: opts.closes || null, runStats,
         }, deps);
         const label = fin.status === "merged" ? `merged ${branch}`
           : fin.status === "pr" ? `opened PR for ${branch}`
           : `demoted ${branch} (${fin.reason})`;
         notify.phase(label);
         return done({ status: fin.status, reason: fin.reason, rounds: round, docsOnly, noop });
-      }
-
-      // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
-      // revising the author would burn the whole loop for nothing. Escalate
-      // immediately — the reason carries the #31 stderr tail (bad model id, etc).
-      const agentErrors = disagree.filter((v) => v.agentError);
-      if (agentErrors.length) {
-        const reason = `agent error: ${agentErrors.map((v) => `${v.reviewer} ${v.reason}`).join("; ")}`;
-        return done(escalate(notify, orchDir, branch, round, reason));
       }
 
       // DISAGREE — review mode (cap=1) escalates here on round 1, never revising.
@@ -174,4 +221,45 @@ function escalate(notify, orchDir, branch, round, reason) {
 function safeDiff(git, repo, branch) {
   try { return git.git(["diff", "--stat", `main...${branch}`], repo); }
   catch { return "(diff unavailable)"; }
+}
+
+function totalUsage(runStats = []) {
+  let tokens = 0;
+  let costUsd = 0;
+  let hasCost = false;
+  for (const s of runStats) {
+    tokens += Number(s.tokens) || 0;
+    if (typeof s.costUsd === "number") { costUsd += s.costUsd; hasCost = true; }
+  }
+  return { tokens, costUsd: hasCost ? costUsd : null };
+}
+
+function formatInt(n) {
+  return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function formatUsd(n) {
+  const v = Number(n) || 0;
+  return `$${v > 0 && v < 0.01 ? v.toFixed(4) : v.toFixed(2)}`;
+}
+
+function formatUsage(usage) {
+  const cost = usage.costUsd != null ? `, ~${formatUsd(usage.costUsd)}` : "";
+  return `${formatInt(usage.tokens)} tokens${cost}`;
+}
+
+function recordReviewOutcomes(reviewLog, orchDir, reviewOutcomes, result) {
+  if (!reviewLog?.record || !reviewOutcomes.length) return;
+  const ts = new Date().toISOString();
+  const defectLaterSurfaced = !["merged", "approved", "pr"].includes(result.status)
+    && !/^agent error:/.test(result.reason || "")
+    && !/^no test gate detected/.test(result.reason || "");
+  reviewLog.record(orchDir, reviewOutcomes.map((entry) => ({
+    ts,
+    ...entry,
+    terminalStatus: result.status,
+    terminalReason: result.reason,
+    terminalRounds: result.rounds,
+    defectLaterSurfaced,
+  })));
 }

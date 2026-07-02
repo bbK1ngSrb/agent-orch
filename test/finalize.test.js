@@ -6,11 +6,14 @@ function baseDeps(over = {}) {
   const recorded = [];
   const deps = {
     git: {
+      syncMainFromOrigin: () => ({ ok: true }),
       ensureIntegrationWorktree: () => "/integ",
       syncWorktreeToMain: () => {},
       changedSince: () => [],
       mergeInWorktree: () => ({ ok: true, reason: "merged" }),
       bumpVersion: () => "0.1.1",
+      pushMain: () => ({ ok: true }),
+      verifyOriginContains: () => ({ ok: true }),
       git: (args) => (args[0] === "rev-parse" ? "deadbee" : ""),
     },
     gate: { run: () => ({ pass: true, log: "" }) },
@@ -32,6 +35,36 @@ test("clean path → merged + recorded", async () => {
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merged");
   assert.equal(recorded[0].verdict, "merged");
+});
+
+test("merge commit built but local main didn't advance → throws instead of reporting merged", async () => {
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: {
+      ...g,
+      // integration's HEAD (merge commit) vs repo's "main" disagree — this must
+      // never be reported as a successful merge.
+      git: (args, cwd) => {
+        if (args[0] !== "rev-parse") return "";
+        return cwd === "/integ" ? "newsha" : "stalesha";
+      },
+    },
+  });
+  await assert.rejects(() => finalize(ctx(), deps), /local main/);
+});
+
+test("local merge success → leaves push handling to completion", async () => {
+  let pushed = false;
+  const { deps, recorded } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      pushMain: () => { pushed = true; return { ok: false, reason: "non-fast-forward" }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(recorded[0].verdict, "merged");
+  assert.equal(pushed, false);
 });
 
 test("path overlap with a peer → pr-fallback (no merge attempted)", async () => {
@@ -145,6 +178,37 @@ test("post-merge test failure → version bump never runs (rolled back first)", 
   assert.equal(bumped, false);
 });
 
+test("clean merge → recorded run history includes total tokens and estimated cost", async () => {
+  const { deps, recorded } = baseDeps();
+  const runStats = [
+    { role: "author", agent: "claude", model: "claude-opus-4.8", tokens: 1200, costUsd: 0.03 },
+    { role: "reviewer", agent: "codex", model: "gpt-5.1", tokens: 800, costUsd: 0.01 },
+  ];
+  const r = await finalize({ ...ctx(), runStats }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(recorded[0].tokens, 2000);
+  assert.equal(recorded[0].costUsd, 0.04);
+});
+
+test("clean merge → recorded run history omits tokens/cost when nothing was measured", async () => {
+  const { deps, recorded } = baseDeps();
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal("tokens" in recorded[0], false);
+  assert.equal("costUsd" in recorded[0], false);
+});
+
+test("pr-fallback (demote) → recorded run history includes total tokens and estimated cost", async () => {
+  const { deps, recorded } = baseDeps({
+    git: { ...baseDeps().deps.git, mergeInWorktree: () => ({ ok: false, reason: "CONFLICT" }) },
+  });
+  const runStats = [{ role: "author", agent: "claude", model: "claude-opus-4.8", tokens: 500, costUsd: 0.02 }];
+  const r = await finalize({ ...ctx(), runStats }, deps);
+  assert.equal(r.status, "pr-fallback");
+  assert.equal(recorded[0].tokens, 500);
+  assert.equal(recorded[0].costUsd, 0.02);
+});
+
 test("merge: pr → opens a PR instead of merging locally, no lock taken", async () => {
   let locked = false;
   let mergedInWorktree = false;
@@ -166,6 +230,50 @@ test("merge: pr with no remote/gh → escalated, no crash", async () => {
   const r = await finalize({ ...ctx(), cfg: { merge: "pr" } }, deps);
   assert.equal(r.status, "escalated");
   assert.equal(recorded[0].verdict, "escalated");
+});
+
+test("re-syncs local main from origin before touching the integration worktree", async () => {
+  const calls = [];
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: {
+      ...g,
+      syncMainFromOrigin: () => { calls.push("sync"); return { ok: true }; },
+      ensureIntegrationWorktree: () => { calls.push("ensure"); return "/integ"; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.deepEqual(calls, ["sync", "ensure"]);
+});
+
+test("local main ahead of origin at merge time (normal mid-invocation state) → merge proceeds", async () => {
+  let opts;
+  const { deps } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      syncMainFromOrigin: (_repo, o) => { opts = o; return { ok: true, ahead: true }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(opts.allowAhead, true);
+});
+
+test("main diverged from origin at merge time → pr-fallback (no merge attempted, sibling's push preserved)", async () => {
+  let merged = false;
+  const { deps, recorded } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      syncMainFromOrigin: () => ({ ok: false, reason: "local main has diverged from origin/main" }),
+      mergeInWorktree: () => { merged = true; return { ok: true }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "pr-fallback");
+  assert.match(r.reason, /diverged from origin/);
+  assert.equal(merged, false);
+  assert.equal(recorded[0].verdict, "pr-fallback");
 });
 
 test("merge-lock timeout → pr-fallback without touching the worktree", async () => {

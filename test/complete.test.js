@@ -20,7 +20,7 @@ function mk(over = {}) {
     confirm: async (q) => { calls.confirms.push(q); return over.confirmAnswer ?? false; },
     ...over.io,
   };
-  return { deps: { git, io }, calls, printed, summary: () => printed.join("\n") };
+  return { deps: { git, io, notify: over.notify }, calls, printed, summary: () => printed.join("\n") };
 }
 
 const ctx = (over = {}) => ({
@@ -58,18 +58,36 @@ test("push fails (no remote): reports not-synced with a git push hint, still del
 });
 
 test("push rejected after origin advances: resets main and stops before cleanup", async () => {
+  let resets = 0;
   const { deps, calls } = mk({
     git: {
       pushMain: () => ({ ok: false, reason: "non-fast-forward" }),
       resetMainToOriginIfDiverged: () => ({ rolledBack: true }),
     },
+    notify: { resetKpi: () => { resets++; } },
   });
   await assert.rejects(
-    () => finishRun(ctx(), deps),
+    () => finishRun(ctx({ orchDir: "/r/.orch" }), deps),
     /origin\/main has advanced/,
   );
+  assert.equal(resets, 1);
   assert.equal(calls.detach, 0);
   assert.equal(calls.deleted.length, 0);
+});
+
+test("push reports ok but origin/main never moved: not treated as saved", async () => {
+  const { deps, summary } = mk({
+    git: {
+      pushMain: () => ({ ok: true }),
+      // main is at abc123; origin/main disagrees even though push claimed success.
+      git: (args) => (args.includes("origin/main") ? "stalesha" : "abc123"),
+    },
+  });
+  const r = await finishRun(ctx(), deps);
+  assert.equal(r.pushed, false);
+  assert.match(r.pushReason, /origin\/main is stalesha, not abc123/);
+  const s = summary();
+  assert.match(s, /Not saved to GitHub/i);
 });
 
 test("unmerged branch + interactive YES: warns with ❗, force-deletes after consent", async () => {
@@ -159,6 +177,20 @@ test("summary includes aggregated run statistics", async () => {
   assert.match(s, /author claude used claude-opus-4\.8: 1,000 tokens \(50%\)/);
   assert.match(s, /reviewer codex used gpt-5\.1: 1,000 tokens \(50%\)/);
   assert.match(s, /Total: 2,000 tokens/);
+});
+
+test("summary shows estimated $ cost per row and total when adapters report it", async () => {
+  const { deps, summary } = mk();
+  await finishRun(ctx({
+    runStats: [
+      { role: "author", agent: "claude", model: "claude-opus-4.8", tokens: 1000, costUsd: 0.03 },
+      { role: "reviewer", agent: "codex", model: "gpt-5.1", tokens: 1000, costUsd: 0.01 },
+    ],
+  }), deps);
+  const s = summary();
+  assert.match(s, /author claude used claude-opus-4\.8: 1,000 tokens \(~\$0\.03\) \(50%\)/);
+  assert.match(s, /reviewer codex used gpt-5\.1: 1,000 tokens \(~\$0\.01\) \(50%\)/);
+  assert.match(s, /Total: 2,000 tokens \(~\$0\.04\)/);
 });
 
 test("summary omits run statistics when token usage is unmeasured", async () => {

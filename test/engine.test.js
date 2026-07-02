@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { runCycle } from "../src/engine.js";
 
 function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
-  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [] };
+  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], rounds: [], reviewLog: [] };
   const reviewerCache = new Map();
   const reviewerFor = (name) => {
     if (!reviewerCache.has(name)) {
@@ -40,11 +40,12 @@ function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gateP
     gate: { detect: () => testCmd, run: () => ({ pass: gatePass, log: "" }) },
     scope: { count: () => 0 },
     notify: {
-      phase() {}, writeRound() { return "p"; },
+      phase() {}, writeRound(_orchDir, _branch, round, content) { calls.rounds.push({ round, content }); return "p"; },
       buildDecisionBrief: () => "brief", escalate() { return "d"; },
       recordRun(_dir, entry) { calls.recorded = entry; },
       cleanupReviews(_dir, branch) { calls.cleaned = branch; },
     },
+    reviewLog: { record(_orchDir, entries) { calls.reviewLog.push(...entries); } },
     inflight: { setPaths() {} },
     finalize: async () => { calls.finalized = true; return { status: "merged", reason: "merged", sha: "x" }; },
     _calls: calls,
@@ -68,7 +69,7 @@ test("AGREE + green gate -> merged", async () => {
 test("merged result carries author and reviewer run statistics", async () => {
   const deps = makeDeps({
     authorUsage: { usage: { model: "claude-opus-4.8", tokens: 1200 } },
-    verdicts: [{ decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-5.1", tokens: 800 } }],
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-5.1", tokens: 800, costUsd: 0.04 } }],
   });
   const r = await runCycle({
     ...opts,
@@ -78,8 +79,51 @@ test("merged result carries author and reviewer run statistics", async () => {
   assert.equal(r.status, "merged");
   assert.deepEqual(r.runStats, [
     { role: "author", agent: "auth", model: "claude-opus-4.8", tokens: 1200 },
-    { role: "reviewer", agent: "rev", model: "gpt-5.1", tokens: 800 },
+    { role: "reviewer", agent: "rev", model: "gpt-5.1", tokens: 800, costUsd: 0.04 },
   ]);
+  assert.deepEqual(r.usage, { tokens: 2000, costUsd: 0.04 });
+  assert.equal(r.usageSummary, "2,000 tokens, ~$0.04");
+  assert.match(deps._calls.rounds[0].content, /Verdict: AGREE\n\nCost: 2,000 tokens, ~\$0\.04/);
+});
+
+test("review outcomes are logged with terminal status and defect flag", async () => {
+  const deps = makeDeps({
+    reviewerVerdicts: {
+      rev: [{ decision: "AGREE", reason: "ok", raw: "" }],
+      rev2: [{ decision: "DISAGREE", reason: "bug", raw: "" }],
+    },
+  });
+  const r = await runCycle({ ...opts, reviewerNames: ["rev", "rev2"], cfg: { ...opts.cfg, reviseCap: 1 } }, deps);
+  assert.equal(r.status, "escalated");
+  assert.deepEqual(deps._calls.reviewLog.map((entry) => ({
+    branch: entry.branch,
+    round: entry.round,
+    reviewer: entry.reviewer,
+    decision: entry.decision,
+    terminalStatus: entry.terminalStatus,
+    terminalRounds: entry.terminalRounds,
+    defectLaterSurfaced: entry.defectLaterSurfaced,
+  })), [
+    {
+      branch: opts.branch,
+      round: 1,
+      reviewer: "rev",
+      decision: "AGREE",
+      terminalStatus: "escalated",
+      terminalRounds: 1,
+      defectLaterSurfaced: true,
+    },
+    {
+      branch: opts.branch,
+      round: 1,
+      reviewer: "rev2",
+      decision: "DISAGREE",
+      terminalStatus: "escalated",
+      terminalRounds: 1,
+      defectLaterSurfaced: true,
+    },
+  ]);
+  assert.match(deps._calls.reviewLog[0].ts, /^\d{4}-\d{2}-\d{2}T/);
 });
 
 test("merged result omits run statistics when adapters report no measured tokens", async () => {
@@ -402,6 +446,48 @@ test("§3b: initial author receives opts.authorPrompt verbatim (fenced work orde
   const r = await runCycle({ ...opts, authorPrompt: fenced }, deps);
   assert.equal(r.status, "merged");
   assert.equal(deps._calls.prompts[0], fenced, "the fenced prompt drives the author, not the bare task");
+});
+
+test("crash recovery: a 'tested' checkpoint skips both audit and gate on resume", async () => {
+  // Simulates a crash after AGREE + green tests but before merge: the resumed
+  // cycle must land the merge without re-auditing or re-running the test gate.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.attachExistingBranch = () => {};
+  let gateRuns = 0;
+  deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
+  const stored = { branch: opts.branch, round: 1, stage: "tested", reason: "ok" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(deps._calls.audits, 0, "resume from a tested checkpoint must not re-audit");
+  assert.equal(gateRuns, 0, "resume from a tested checkpoint must not re-run the test gate");
+});
+
+test("crash recovery: a 'reviewed' DISAGREE checkpoint skips that round's audit and revises directly", async () => {
+  const deps = makeDeps({
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], // only used for round 2's fresh audit
+  });
+  deps.git.attachExistingBranch = () => {};
+  const stored = { branch: opts.branch, round: 1, stage: "reviewed", decision: "DISAGREE", reason: "needs work" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.rounds, 2);
+  assert.equal(deps._calls.audits, 1, "round 1's audit is skipped; only round 2 audits fresh");
+  assert.equal(deps._calls.authors, 1, "resume skips initial authoring; only the checkpoint-driven revise call runs");
+  assert.match(deps._calls.prompts[0], /needs work/, "revise prompt uses the checkpointed reason");
+});
+
+test("checkpoint.record is called with the round's verdict after each fresh audit", async () => {
+  const recorded = [];
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.checkpoint = { lookup: () => null, record: (_dir, sid, data) => recorded.push({ sid, ...data }), clear() {} };
+  const r = await runCycle({ ...opts, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(recorded.length, 2, "one 'reviewed' checkpoint + one 'tested' checkpoint");
+  assert.equal(recorded[0].stage, "reviewed");
+  assert.equal(recorded[0].decision, "AGREE");
+  assert.equal(recorded[1].stage, "tested");
 });
 
 test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as ms (#56)", async () => {

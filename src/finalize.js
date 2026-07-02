@@ -3,9 +3,25 @@
 // post-merge re-test), and either lands the merge into local main or demotes the
 // branch to a PR / local escalation. The engine calls this via deps.finalize so
 // it stays a pure state machine.
+
+// Sums a cycle's per-role runStats into a single { tokens, costUsd } pair for
+// run-history persistence. costUsd is null (omitted) unless at least one
+// entry had a known price — never fabricate a total from partial data.
+function totalUsage(runStats = []) {
+  let tokens = 0;
+  let costUsd = 0;
+  let hasCost = false;
+  for (const s of runStats) {
+    tokens += Number(s.tokens) || 0;
+    if (typeof s.costUsd === "number") { costUsd += s.costUsd; hasCost = true; }
+  }
+  return { tokens, costUsd: hasCost ? costUsd : null };
+}
+
 export async function finalize(ctx, deps) {
-  const { repo, orchDir, branch, sid, baseSha, paths, testCmd, cfg, rounds, closes } = ctx;
+  const { repo, orchDir, branch, sid, baseSha, paths, testCmd, cfg, rounds, closes, runStats } = ctx;
   const { git, gate, lock, inflight, github, notify } = deps;
+  const usage = totalUsage(runStats);
 
   // cfg.merge === "pr": opt out of direct-to-main. No local merge, no merge.lock —
   // GitHub owns the merge (branch protection / CI-gated checks apply).
@@ -13,6 +29,8 @@ export async function finalize(ctx, deps) {
     const r = await github.openPr(ctx, deps);
     notify.recordRun(orchDir, {
       ts: new Date().toISOString(), branch, verdict: r.prUrl ? "pr" : "escalated", rounds,
+      ...(usage.tokens ? { tokens: usage.tokens } : {}),
+      ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
       ...(r.prUrl ? { prUrl: r.prUrl } : {}),
     });
     return r.prUrl
@@ -24,6 +42,18 @@ export async function finalize(ctx, deps) {
     return demote(ctx, deps, "merge-lock timeout"); // never acquired → don't touch the worktree
   }
   try {
+    // Catch local `main` up to origin BEFORE building on it: `orch task`/`orch issue`
+    // only does this once, at the start of the whole invocation. If some other
+    // checkout of this origin pushed a merge since then, our local main is stale;
+    // basing this cycle's merge on it wouldn't corrupt anything (a plain push is
+    // fast-forward-only and already fails loudly, with rollback, if rejected —
+    // see complete.js), but it would waste the whole cycle by getting rejected at
+    // push time. Catching up here avoids that. Local main being AHEAD of origin is
+    // normal mid-invocation (main is only pushed once, at the very end) so it's not
+    // treated as a failure — only a genuine two-way divergence demotes.
+    const sync = git.syncMainFromOrigin(repo, { allowAhead: true });
+    if (!sync.ok) return demote(ctx, deps, `main diverged from origin: ${sync.reason}`);
+
     const integration = git.ensureIntegrationWorktree(repo, orchDir);
     git.syncWorktreeToMain(integration);
 
@@ -52,10 +82,28 @@ export async function finalize(ctx, deps) {
     // maps to a bumped `orch --version`. Best-effort: never blocks the merge.
     git.bumpVersion(integration, closes ? `${branch} (closes #${closes})` : branch);
 
-    const sha = git.git(["rev-parse", "--short", "HEAD"], integration);
-    notify.recordRun(orchDir, { ts: new Date().toISOString(), branch, verdict: "merged", sha, rounds });
+    const sha = git.git(["rev-parse", "HEAD"], integration);
+    // The integration worktree is checked out on branch `main`, so this commit
+    // should already be visible as `repo`'s local main (same .git, shared refs) —
+    // but don't just assume it: verify before reporting success, so a broken/stale
+    // integration worktree fails loudly instead of "merged" going out while local
+    // main never actually moved.
+    const localMain = git.git(["rev-parse", "main"], repo);
+    if (localMain !== sha) {
+      notify.resetKpi?.(orchDir);
+      throw new Error(
+        `orch: merge commit ${sha} was built in the integration worktree but local main ` +
+        `is still at ${localMain} — refusing to report a false "merged"`,
+      );
+    }
+    const shortSha = git.git(["rev-parse", "--short", "HEAD"], integration);
+    notify.recordRun(orchDir, {
+      ts: new Date().toISOString(), branch, verdict: "merged", sha: shortSha, rounds,
+      ...(usage.tokens ? { tokens: usage.tokens } : {}),
+      ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
+    });
     notify.cleanupReviews(orchDir, branch);
-    return { status: "merged", reason: "agreed + green + merged", sha };
+    return { status: "merged", reason: "agreed + green + merged", sha: shortSha };
   } finally {
     lock.releaseLock(orchDir, "merge.lock");
   }
@@ -67,11 +115,14 @@ function overlaps(mine, others) {
 }
 
 async function demote(ctx, deps, reason) {
-  const { orchDir, branch, rounds } = ctx;
+  const { orchDir, branch, rounds, runStats } = ctx;
   const { github, notify } = deps;
+  const usage = totalUsage(runStats);
   const r = await github.demote({ ...ctx, reason });
   notify.recordRun(orchDir, {
     ts: new Date().toISOString(), branch, verdict: "pr-fallback", reason, rounds,
+    ...(usage.tokens ? { tokens: usage.tokens } : {}),
+    ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
     ...(r.prUrl ? { prUrl: r.prUrl } : {}),
   });
   return {
