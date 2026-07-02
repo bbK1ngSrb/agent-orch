@@ -109,7 +109,7 @@ orch task "fix the flaky login test"
 - `orch init [--link]` — scaffold `.orch/orch.yml` + agent-agnostic `.orch/ORCH.md` usage doc, verify agent CLIs, and print a detection summary of what's actually usable on this machine (`claude`/`codex` on PATH, local-llm models configured for `ccr`'s `local` provider), e.g. `orch: detected: claude, glm-4.5-air — not found: codex (no CLI on PATH)`. `--link` appends an idempotent pointer to `.orch/ORCH.md` in the repo's `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` (created for the configured agent if none exist). The `@.orch/ORCH.md` line auto-loads the doc in Claude Code; other agents read the prose pointer to it.
 - `orch agent add <name>` — append a registered agent to `.orch/orch.yml`.
 - `orch task "..."` — author + cross-audit + test-gate + merge.
-- `orch issue <n>` — fetch GitHub issue #n (title+body, treated as an untrusted work order), run the full cycle, and stamp `Closes #n` on the no-ff merge so it auto-closes once main reaches origin. Needs the [`gh`] CLI authenticated.
+- `orch issue <n>` — fetch GitHub issue #n (title+body, treated as an untrusted work order), run the full cycle, and stamp `Closes #n` on the no-ff merge so it auto-closes once main reaches origin. Needs the [`gh`] CLI authenticated. If the cycle escalates or falls back to a PR instead of merging, orch posts a comment on the source issue (verdict, branch, reason, round count) — headless runs have no one watching stdout, so this is the only trace besides the local `.orch/reviews/<branch>/DECISION.md`.
 - `orch review <branch>` — audit an existing branch.
 - `orch pr <n> [--merge]` — audit a GitHub PR, comment the verdict, optionally merge via `gh`.
 Add `--reviewer name` or `--reviewers a,b` to override review agents for
@@ -213,6 +213,16 @@ cycle escalates locally the same way PR-fallback does. Set
 (merged automatically once its own checks pass) — if enabling auto-merge fails
 (e.g. branch protection isn't configured), the PR itself still stands; only the
 auto-merge step is skipped.
+
+## Version bump on merge
+Every cycle that lands via the local merge path (not `merge: pr`) patch-bumps
+`package.json` right after the post-merge test gate passes: `x.y.z` → `x.y.(z+1)`,
+mirrored into `package-lock.json`'s root version and `src/version.js` (the file
+`orch --version` reads, if the target repo has one), plus a prepended
+`CHANGELOG.md` entry naming the branch (and issue, for `orch issue <n>`), then
+commits as `chore(release): vX.Y.Z`. Best-effort: a missing/unparsable
+`package.json` or any write/commit failure is swallowed — it never blocks or
+unwinds a merge that already landed.
 
 ## Auto docs-update on merge
 Opt-in per repo. With `docs.autoUpdate: true` in `.orch/orch.yml`, a successful
