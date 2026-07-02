@@ -72,6 +72,21 @@ test("push rejected after origin advances: resets main and stops before cleanup"
   assert.equal(calls.deleted.length, 0);
 });
 
+test("push reports ok but origin/main never moved: not treated as saved", async () => {
+  const { deps, summary } = mk({
+    git: {
+      pushMain: () => ({ ok: true }),
+      // main is at abc123; origin/main disagrees even though push claimed success.
+      git: (args) => (args.includes("origin/main") ? "stalesha" : "abc123"),
+    },
+  });
+  const r = await finishRun(ctx(), deps);
+  assert.equal(r.pushed, false);
+  assert.match(r.pushReason, /origin\/main is stalesha, not abc123/);
+  const s = summary();
+  assert.match(s, /Not saved to GitHub/i);
+});
+
 test("unmerged branch + interactive YES: warns with ❗, force-deletes after consent", async () => {
   const { deps, calls } = mk({
     confirmAnswer: true,

@@ -35,6 +35,22 @@ test("clean path → merged + recorded", async () => {
   assert.equal(recorded[0].verdict, "merged");
 });
 
+test("merge commit built but local main didn't advance → throws instead of reporting merged", async () => {
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: {
+      ...g,
+      // integration's HEAD (merge commit) vs repo's "main" disagree — this must
+      // never be reported as a successful merge.
+      git: (args, cwd) => {
+        if (args[0] !== "rev-parse") return "";
+        return cwd === "/integ" ? "newsha" : "stalesha";
+      },
+    },
+  });
+  await assert.rejects(() => finalize(ctx(), deps), /local main/);
+});
+
 test("path overlap with a peer → pr-fallback (no merge attempted)", async () => {
   let merged = false;
   const { deps, recorded } = baseDeps({

@@ -18,6 +18,17 @@ export async function finishRun(ctx, deps) {
   //    meanwhile, roll local main back to origin/main and stop loudly so later
   //    cycles do not base on an unpushable local merge.
   const push = git.pushMain(repo);
+  // A zero exit from `git push` isn't proof origin actually moved — verify
+  // origin/main landed at the sha we just pushed before calling it saved, so a
+  // push that reports success without taking effect doesn't get reported as one.
+  if (push.ok) {
+    let landed = null;
+    try { landed = git.git(["rev-parse", "--short", "origin/main"], repo); } catch { /* treat as not landed */ }
+    if (landed !== sha) {
+      push.ok = false;
+      push.reason = `push reported success but origin/main is ${landed || "unknown"}, not ${sha}`;
+    }
+  }
   if (!push.ok && git.resetMainToOriginIfDiverged) {
     const rollback = git.resetMainToOriginIfDiverged(repo);
     if (rollback.rolledBack) {

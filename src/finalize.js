@@ -83,6 +83,18 @@ export async function finalize(ctx, deps) {
     git.bumpVersion(integration, closes ? `${branch} (closes #${closes})` : branch);
 
     const sha = git.git(["rev-parse", "--short", "HEAD"], integration);
+    // The integration worktree is checked out on branch `main`, so this commit
+    // should already be visible as `repo`'s local main (same .git, shared refs) —
+    // but don't just assume it: verify before reporting success, so a broken/stale
+    // integration worktree fails loudly instead of "merged" going out while local
+    // main never actually moved.
+    const localMain = git.git(["rev-parse", "--short", "main"], repo);
+    if (localMain !== sha) {
+      throw new Error(
+        `orch: merge commit ${sha} was built in the integration worktree but local main ` +
+        `is still at ${localMain} — refusing to report a false "merged"`,
+      );
+    }
     notify.recordRun(orchDir, {
       ts: new Date().toISOString(), branch, verdict: "merged", sha, rounds,
       ...(usage.tokens ? { tokens: usage.tokens } : {}),
