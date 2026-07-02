@@ -19,7 +19,13 @@ export async function runCycle(opts, deps) {
     name: s.agent, adapter: adapters.get(s.agent), opts: { model: s.model, effort: s.effort, stageTimeoutMs },
   }));
   const runStats = [];
-  const done = (result) => ({ ...result, runStats });
+  const reviewOutcomes = [];
+  const done = (result) => {
+    const usage = totalUsage(runStats);
+    const final = { ...result, runStats, usage, usageSummary: formatUsage(usage) };
+    recordReviewOutcomes(deps.reviewLog, orchDir, reviewOutcomes, final);
+    return final;
+  };
   const recordUsage = (role, agent, result, fallbackModel = null) => {
     const usage = result?.usage || {};
     const tokens = Number(usage.tokens) || 0;
@@ -108,12 +114,20 @@ export async function runCycle(opts, deps) {
         })));
         for (const v of verdicts) recordUsage("reviewer", v.reviewer, v, v.model);
         const disagree = verdicts.filter((v) => v.decision !== "AGREE");
+        reviewOutcomes.push(...verdicts.map((v) => ({
+          branch,
+          round,
+          reviewer: v.reviewer,
+          model: v.model || null,
+          decision: v.decision === "AGREE" ? "AGREE" : "DISAGREE",
+          agentError: Boolean(v.agentError),
+        })));
         verdict = {
           decision: disagree.length ? "DISAGREE" : "AGREE",
           reason: verdicts.map((v) => `## ${v.reviewer}\n\n${v.decision}: ${v.reason}`).join("\n\n"),
         };
         notify.writeRound(orchDir, branch, round,
-          `# Round ${round}\n\nVerdict: ${verdict.decision}\n\n${verdict.reason}\n`);
+          `# Round ${round}\n\nVerdict: ${verdict.decision}\n\nCost: ${formatUsage(totalUsage(runStats))}\n\n${verdict.reason}\n`);
         checkpoint?.record(orchDir, sid, { branch, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason });
 
         // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
@@ -207,4 +221,45 @@ function escalate(notify, orchDir, branch, round, reason) {
 function safeDiff(git, repo, branch) {
   try { return git.git(["diff", "--stat", `main...${branch}`], repo); }
   catch { return "(diff unavailable)"; }
+}
+
+function totalUsage(runStats = []) {
+  let tokens = 0;
+  let costUsd = 0;
+  let hasCost = false;
+  for (const s of runStats) {
+    tokens += Number(s.tokens) || 0;
+    if (typeof s.costUsd === "number") { costUsd += s.costUsd; hasCost = true; }
+  }
+  return { tokens, costUsd: hasCost ? costUsd : null };
+}
+
+function formatInt(n) {
+  return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function formatUsd(n) {
+  const v = Number(n) || 0;
+  return `$${v > 0 && v < 0.01 ? v.toFixed(4) : v.toFixed(2)}`;
+}
+
+function formatUsage(usage) {
+  const cost = usage.costUsd != null ? `, ~${formatUsd(usage.costUsd)}` : "";
+  return `${formatInt(usage.tokens)} tokens${cost}`;
+}
+
+function recordReviewOutcomes(reviewLog, orchDir, reviewOutcomes, result) {
+  if (!reviewLog?.record || !reviewOutcomes.length) return;
+  const ts = new Date().toISOString();
+  const defectLaterSurfaced = !["merged", "approved", "pr"].includes(result.status)
+    && !/^agent error:/.test(result.reason || "")
+    && !/^no test gate detected/.test(result.reason || "");
+  reviewLog.record(orchDir, reviewOutcomes.map((entry) => ({
+    ts,
+    ...entry,
+    terminalStatus: result.status,
+    terminalReason: result.reason,
+    terminalRounds: result.rounds,
+    defectLaterSurfaced,
+  })));
 }

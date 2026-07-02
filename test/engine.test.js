@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { runCycle } from "../src/engine.js";
 
 function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
-  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [] };
+  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], rounds: [], reviewLog: [] };
   const reviewerCache = new Map();
   const reviewerFor = (name) => {
     if (!reviewerCache.has(name)) {
@@ -40,11 +40,12 @@ function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gateP
     gate: { detect: () => testCmd, run: () => ({ pass: gatePass, log: "" }) },
     scope: { count: () => 0 },
     notify: {
-      phase() {}, writeRound() { return "p"; },
+      phase() {}, writeRound(_orchDir, _branch, round, content) { calls.rounds.push({ round, content }); return "p"; },
       buildDecisionBrief: () => "brief", escalate() { return "d"; },
       recordRun(_dir, entry) { calls.recorded = entry; },
       cleanupReviews(_dir, branch) { calls.cleaned = branch; },
     },
+    reviewLog: { record(_orchDir, entries) { calls.reviewLog.push(...entries); } },
     inflight: { setPaths() {} },
     finalize: async () => { calls.finalized = true; return { status: "merged", reason: "merged", sha: "x" }; },
     _calls: calls,
@@ -68,7 +69,7 @@ test("AGREE + green gate -> merged", async () => {
 test("merged result carries author and reviewer run statistics", async () => {
   const deps = makeDeps({
     authorUsage: { usage: { model: "claude-opus-4.8", tokens: 1200 } },
-    verdicts: [{ decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-5.1", tokens: 800 } }],
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-5.1", tokens: 800, costUsd: 0.04 } }],
   });
   const r = await runCycle({
     ...opts,
@@ -78,8 +79,51 @@ test("merged result carries author and reviewer run statistics", async () => {
   assert.equal(r.status, "merged");
   assert.deepEqual(r.runStats, [
     { role: "author", agent: "auth", model: "claude-opus-4.8", tokens: 1200 },
-    { role: "reviewer", agent: "rev", model: "gpt-5.1", tokens: 800 },
+    { role: "reviewer", agent: "rev", model: "gpt-5.1", tokens: 800, costUsd: 0.04 },
   ]);
+  assert.deepEqual(r.usage, { tokens: 2000, costUsd: 0.04 });
+  assert.equal(r.usageSummary, "2,000 tokens, ~$0.04");
+  assert.match(deps._calls.rounds[0].content, /Verdict: AGREE\n\nCost: 2,000 tokens, ~\$0\.04/);
+});
+
+test("review outcomes are logged with terminal status and defect flag", async () => {
+  const deps = makeDeps({
+    reviewerVerdicts: {
+      rev: [{ decision: "AGREE", reason: "ok", raw: "" }],
+      rev2: [{ decision: "DISAGREE", reason: "bug", raw: "" }],
+    },
+  });
+  const r = await runCycle({ ...opts, reviewerNames: ["rev", "rev2"], cfg: { ...opts.cfg, reviseCap: 1 } }, deps);
+  assert.equal(r.status, "escalated");
+  assert.deepEqual(deps._calls.reviewLog.map((entry) => ({
+    branch: entry.branch,
+    round: entry.round,
+    reviewer: entry.reviewer,
+    decision: entry.decision,
+    terminalStatus: entry.terminalStatus,
+    terminalRounds: entry.terminalRounds,
+    defectLaterSurfaced: entry.defectLaterSurfaced,
+  })), [
+    {
+      branch: opts.branch,
+      round: 1,
+      reviewer: "rev",
+      decision: "AGREE",
+      terminalStatus: "escalated",
+      terminalRounds: 1,
+      defectLaterSurfaced: true,
+    },
+    {
+      branch: opts.branch,
+      round: 1,
+      reviewer: "rev2",
+      decision: "DISAGREE",
+      terminalStatus: "escalated",
+      terminalRounds: 1,
+      defectLaterSurfaced: true,
+    },
+  ]);
+  assert.match(deps._calls.reviewLog[0].ts, /^\d{4}-\d{2}-\d{2}T/);
 });
 
 test("merged result omits run statistics when adapters report no measured tokens", async () => {

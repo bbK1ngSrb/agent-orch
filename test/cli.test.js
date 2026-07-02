@@ -849,6 +849,7 @@ test("orch task on main auto-creates and switches to an orch slug branch", async
   assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task");
   assert.match(logs.join("\n"), /created and switched to orch\/some-task/);
   assert.match(logs.join("\n"), /orch: pr\/claude\/some-task-\d+-[0-9a-z]+: merged \(test\)/);
+  assert.match(logs.join("\n"), /after 1 round\(s\).*; cost 60 tokens/);
 });
 
 test("orch task fast-forwards stale local main from origin before branching", async () => {
