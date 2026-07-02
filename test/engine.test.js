@@ -404,6 +404,48 @@ test("§3b: initial author receives opts.authorPrompt verbatim (fenced work orde
   assert.equal(deps._calls.prompts[0], fenced, "the fenced prompt drives the author, not the bare task");
 });
 
+test("crash recovery: a 'tested' checkpoint skips both audit and gate on resume", async () => {
+  // Simulates a crash after AGREE + green tests but before merge: the resumed
+  // cycle must land the merge without re-auditing or re-running the test gate.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.attachExistingBranch = () => {};
+  let gateRuns = 0;
+  deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
+  const stored = { branch: opts.branch, round: 1, stage: "tested", reason: "ok" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(deps._calls.audits, 0, "resume from a tested checkpoint must not re-audit");
+  assert.equal(gateRuns, 0, "resume from a tested checkpoint must not re-run the test gate");
+});
+
+test("crash recovery: a 'reviewed' DISAGREE checkpoint skips that round's audit and revises directly", async () => {
+  const deps = makeDeps({
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], // only used for round 2's fresh audit
+  });
+  deps.git.attachExistingBranch = () => {};
+  const stored = { branch: opts.branch, round: 1, stage: "reviewed", decision: "DISAGREE", reason: "needs work" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.rounds, 2);
+  assert.equal(deps._calls.audits, 1, "round 1's audit is skipped; only round 2 audits fresh");
+  assert.equal(deps._calls.authors, 1, "resume skips initial authoring; only the checkpoint-driven revise call runs");
+  assert.match(deps._calls.prompts[0], /needs work/, "revise prompt uses the checkpointed reason");
+});
+
+test("checkpoint.record is called with the round's verdict after each fresh audit", async () => {
+  const recorded = [];
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.checkpoint = { lookup: () => null, record: (_dir, sid, data) => recorded.push({ sid, ...data }), clear() {} };
+  const r = await runCycle({ ...opts, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(recorded.length, 2, "one 'reviewed' checkpoint + one 'tested' checkpoint");
+  assert.equal(recorded[0].stage, "reviewed");
+  assert.equal(recorded[0].decision, "AGREE");
+  assert.equal(recorded[1].stage, "tested");
+});
+
 test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as ms (#56)", async () => {
   let authorOpts = null;
   let reviewerOpts = null;
