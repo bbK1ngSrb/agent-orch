@@ -48,6 +48,10 @@ export async function finalize(ctx, deps) {
       return demote(ctx, deps, "post-merge-test-fail");
     }
 
+    // Patch-per-merge version bump + CHANGELOG entry, so a merged sha always
+    // maps to a bumped `orch --version`. Best-effort: never blocks the merge.
+    git.bumpVersion(integration, closes ? `${branch} (closes #${closes})` : branch);
+
     const sha = git.git(["rev-parse", "--short", "HEAD"], integration);
     notify.recordRun(orchDir, { ts: new Date().toISOString(), branch, verdict: "merged", sha, rounds });
     notify.cleanupReviews(orchDir, branch);

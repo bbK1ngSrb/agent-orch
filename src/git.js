@@ -322,6 +322,59 @@ export function mergeInWorktree(integrationPath, branch, mode, message = null) {
   return { ok: false, reason };
 }
 
+// Simple patch-per-merge version bump, run in the integration worktree right
+// after a merge lands and the post-merge test gate passes. Bumps package.json
+// (+ package-lock.json's root version, + src/version.js — the source
+// `orch --version` reads from) and prepends a CHANGELOG.md entry, then commits
+// — so every merge to main is traceable to a version. No-op (returns null) if
+// package.json is missing/unparsable, or if anything below fails (dirty
+// target-repo pre-commit hooks, missing git identity, etc.) — this must never
+// throw out of a finalize that already landed the merge (issue #44).
+export function bumpVersion(integrationPath, entry) {
+  const pkgPath = join(integrationPath, "package.json");
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  } catch {
+    return null;
+  }
+  const parts = String(pkg.version).split(".");
+  if (parts.length !== 3 || parts.some((p) => !/^\d+$/.test(p))) return null;
+  const version = `${parts[0]}.${parts[1]}.${Number(parts[2]) + 1}`;
+
+  try {
+    const versionPath = join(integrationPath, "src", "version.js");
+    pkg.version = version;
+    writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+    if (existsSync(versionPath)) writeFileSync(versionPath, `export const VERSION = "${version}";\n`);
+
+    const lockPath = join(integrationPath, "package-lock.json");
+    if (existsSync(lockPath)) {
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      lock.version = version;
+      if (lock.packages?.[""]) lock.packages[""].version = version;
+      writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+    }
+
+    const changelogPath = join(integrationPath, "CHANGELOG.md");
+    const date = new Date().toISOString().slice(0, 10);
+    const section = `## ${version} — ${date}\n- ${entry}\n\n`;
+    const prior = existsSync(changelogPath) ? readFileSync(changelogPath, "utf8").replace(/^# Changelog\n+/, "") : "";
+    writeFileSync(changelogPath, `# Changelog\n\n${section}${prior}`);
+
+    const addFiles = ["package.json", "CHANGELOG.md"];
+    if (existsSync(versionPath)) addFiles.push("src/version.js");
+    if (existsSync(lockPath)) addFiles.push("package-lock.json");
+    git(["add", ...addFiles], integrationPath);
+    git(["commit", "-m", `chore(release): v${version}`], integrationPath);
+    return version;
+  } catch {
+    gitTry(["reset", "--hard", "HEAD"], integrationPath);
+    gitTry(["clean", "-fd"], integrationPath);
+    return null;
+  }
+}
+
 // Files changed on main since a given sha (what landed after a branch's base).
 export function changedSince(repo, sha) {
   const out = gitTry(["diff", "--name-only", `${sha}..main`], repo);
