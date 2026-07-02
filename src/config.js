@@ -13,10 +13,14 @@ const DEFAULTS = {
   stageTimeout: 25, // #56: per-stage wall-clock cap in MINUTES; 0 disables. A stalled
                     // codex/claude stage is killed and the cycle fails (nonzero exit)
                     // instead of hanging forever on an infinite "still running" heartbeat.
-  merge: "no-ff", // default no-ff so concurrent disjoint cycles both land (ff-only can't fast-forward once a peer merges)
+  merge: "no-ff", // ff-only | no-ff | pr — "pr" opts out of direct-to-main: an AGREE+green
+                  // cycle opens a PR (github.openPr) instead of git.mergeInWorktree
   concurrency: 4, // max concurrent cycles per repo dir; over this, a cycle exits rather than blocks
   scope: { maxLines: 0, ignore: ["*.lock", "dist/**", "*.snap"] },
-  github: { mergeMethod: "squash" }, // gh pr merge strategy for `orch pr <n> --merge`
+  github: {
+    mergeMethod: "squash", // gh pr merge strategy for `orch pr <n> --merge` and merge: pr's auto-merge
+    autoMergePr: false, // when merge: pr, also enable GitHub auto-merge on the PR it opens
+  },
   docs: {
     autoUpdate: false, // opt-in per repo; flip true in .orch/orch.yml
     prompt: "update documentation to reflect the latest merged changes",
@@ -35,8 +39,8 @@ function validate(cfg) {
     throw new Error("orch.yml: authors must be a non-empty list of strings");
   if (cfg.reviewers != null && (!Array.isArray(cfg.reviewers) || cfg.reviewers.length < 1 || !cfg.reviewers.every((r) => typeof r === "string" && r.trim())))
     throw new Error("orch.yml: reviewers must be a non-empty list of strings");
-  if (!["ff-only", "no-ff"].includes(cfg.merge))
-    throw new Error("orch.yml: merge must be ff-only or no-ff");
+  if (!["ff-only", "no-ff", "pr"].includes(cfg.merge))
+    throw new Error("orch.yml: merge must be ff-only, no-ff, or pr");
   if (!Number.isInteger(cfg.reviseCap) || cfg.reviseCap < 1)
     throw new Error("orch.yml: reviseCap must be a positive integer");
   if (!Number.isInteger(cfg.stageTimeout) || cfg.stageTimeout < 0)
@@ -47,6 +51,8 @@ function validate(cfg) {
     throw new Error("orch.yml: scope.maxLines must be a non-negative integer");
   if (!["squash", "merge", "rebase"].includes(cfg.github.mergeMethod))
     throw new Error("orch.yml: github.mergeMethod must be squash, merge, or rebase");
+  if (typeof cfg.github.autoMergePr !== "boolean")
+    throw new Error("orch.yml: github.autoMergePr must be a boolean");
   if (typeof cfg.docs.autoUpdate !== "boolean")
     throw new Error("orch.yml: docs.autoUpdate must be a boolean");
   if (typeof cfg.docs.prompt !== "string" || !cfg.docs.prompt.trim())
