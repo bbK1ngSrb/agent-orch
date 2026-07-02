@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
@@ -405,4 +405,44 @@ test("bumpVersion commits fine when package.json exists but src/version.js does 
   assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "0.1.1");
   assert.equal(existsSync(join(repo, "src", "version.js")), false);
   assert.match(git(["log", "-1", "--format=%s"], repo), /chore\(release\): v0\.1\.1/);
+});
+
+test("bumpVersion also bumps package-lock.json's root version", () => {
+  const repo = newRepo();
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.1.0" }, null, 2) + "\n");
+  writeFileSync(
+    join(repo, "package-lock.json"),
+    JSON.stringify({ name: "x", version: "0.1.0", lockfileVersion: 3, packages: { "": { name: "x", version: "0.1.0" } } }, null, 2) + "\n",
+  );
+  git(["add", "."], repo);
+  git(["commit", "-m", "seed package.json + lockfile"], repo);
+
+  const version = bumpVersion(repo, "pr/claude/x-1");
+
+  assert.equal(version, "0.1.1");
+  const lock = JSON.parse(readFileSync(join(repo, "package-lock.json"), "utf8"));
+  assert.equal(lock.version, "0.1.1");
+  assert.equal(lock.packages[""].version, "0.1.1");
+  assert.match(git(["show", "--stat", "-1"], repo), /package-lock\.json/);
+});
+
+test("bumpVersion returns null and leaves the repo clean when the commit fails (e.g. a rejecting pre-commit hook)", () => {
+  const repo = newRepo();
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.1.0" }, null, 2) + "\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "seed package.json only"], repo);
+
+  const hooksDir = join(repo, ".git", "hooks");
+  mkdirSync(hooksDir, { recursive: true });
+  const hookPath = join(hooksDir, "pre-commit");
+  writeFileSync(hookPath, "#!/bin/sh\nexit 1\n");
+  chmodSync(hookPath, 0o755);
+
+  const before = git(["rev-parse", "HEAD"], repo);
+  const version = bumpVersion(repo, "pr/claude/x-1");
+
+  assert.equal(version, null); // best-effort: never throws, never blocks the caller
+  assert.equal(git(["rev-parse", "HEAD"], repo), before); // no half-bumped commit
+  assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "0.1.0"); // rolled back
+  assert.equal(git(["status", "--porcelain"], repo), ""); // no dirty leftovers for the next finalize
 });
