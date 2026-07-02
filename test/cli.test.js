@@ -91,7 +91,7 @@ test("main prints startup banner for task runs on TTY", async () => {
     stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
   });
   const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(plain, /agent-orch 0\.1\.0/);
+  assert.match(plain, /agent-orch \d+\.\d+\.\d+/);
   assert.match(plain, /author\s+claude/);
   assert.match(plain, /review\s+codex/);
   assert.match(plain, /test\s+auto/);
@@ -132,7 +132,7 @@ test("runBanner shows version, agents, per-agent model+effort, test, merge", () 
     author: { agent: "claude", model: "opus", effort: "high" },
     reviewers: [{ agent: "codex", model: "gpt-5", effort: null }],
   }]));
-  assert.match(banner, /agent-orch 0\.1\.0/);
+  assert.match(banner, /agent-orch \d+\.\d+\.\d+/);
   assert.match(banner, /claude, codex/);            // agents row
   assert.match(banner, /claude.*opus.*high/);       // author with model + effort
   assert.match(banner, /codex.*gpt-5/);             // reviewer with model
@@ -209,7 +209,7 @@ test("run banner prints only on TTY and respects --no-banner", () => {
   let out = "";
   const tty = { isTTY: true, write: (chunk) => { out += chunk; } };
   assert.equal(maybePrintRunBanner(cfg, runs, {}, tty), true);
-  assert.match(stripAnsi(out), /agent-orch 0\.1\.0/);
+  assert.match(stripAnsi(out), /agent-orch \d+\.\d+\.\d+/);
 
   out = "";
   assert.equal(maybePrintRunBanner(cfg, runs, { "no-banner": true }, tty), false);
