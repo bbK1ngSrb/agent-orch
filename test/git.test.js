@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince, syncMainFromOrigin, resetMainToOriginIfDiverged } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince, syncMainFromOrigin, resetMainToOriginIfDiverged, bumpVersion } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -359,4 +359,36 @@ test("reclaim never sweeps the .orch/integration worktree", () => {
   ensureIntegrationWorktree(repo, orchDir);
   reclaimOrphanWorktrees(repo, orchDir);
   assert.match(git(["worktree", "list"], repo), /integration/); // outside wt/ → untouched
+});
+
+test("bumpVersion bumps patch, updates version.js, prepends CHANGELOG, and commits", () => {
+  const repo = newRepo();
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.1.0" }, null, 2) + "\n");
+  const srcDir = join(repo, "src");
+  mkdirSync(srcDir, { recursive: true });
+  writeFileSync(join(srcDir, "version.js"), 'export const VERSION = "0.1.0";\n');
+  git(["add", "."], repo);
+  git(["commit", "-m", "seed versioned files"], repo);
+  const before = git(["rev-parse", "HEAD"], repo);
+
+  const version = bumpVersion(repo, "pr/claude/x-1");
+
+  assert.equal(version, "0.1.1");
+  assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "0.1.1");
+  assert.equal(readFileSync(join(srcDir, "version.js"), "utf8"), 'export const VERSION = "0.1.1";\n');
+  const changelog = readFileSync(join(repo, "CHANGELOG.md"), "utf8");
+  assert.match(changelog, /^# Changelog/);
+  assert.match(changelog, /## 0\.1\.1 —/);
+  assert.match(changelog, /- pr\/claude\/x-1/);
+  const after = git(["rev-parse", "HEAD"], repo);
+  assert.notEqual(after, before); // bump landed as its own commit
+  assert.match(git(["log", "-1", "--format=%s"], repo), /chore\(release\): v0\.1\.1/);
+});
+
+test("bumpVersion is a no-op when package.json is missing", () => {
+  const repo = newRepo(); // no package.json seeded
+  const before = git(["rev-parse", "HEAD"], repo);
+  const result = bumpVersion(repo, "pr/claude/x-1");
+  assert.equal(result, null);
+  assert.equal(git(["rev-parse", "HEAD"], repo), before); // no commit made
 });

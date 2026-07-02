@@ -10,6 +10,7 @@ function baseDeps(over = {}) {
       syncWorktreeToMain: () => {},
       changedSince: () => [],
       mergeInWorktree: () => ({ ok: true, reason: "merged" }),
+      bumpVersion: () => "0.1.1",
       git: (args) => (args[0] === "rev-parse" ? "deadbee" : ""),
     },
     gate: { run: () => ({ pass: true, log: "" }) },
@@ -111,6 +112,37 @@ test("issue bridge: closes #N reaches github.demote when a merge is blocked", as
   });
   await finalize({ ...ctx(), closes: 52 }, deps);
   assert.equal(capturedCtx.closes, 52);
+});
+
+test("clean merge → version bump runs against the integration worktree", async () => {
+  let bumpArgs;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(bumpArgs.path, "/integ");
+  assert.equal(bumpArgs.entry, "pr/claude/x-1");
+});
+
+test("clean merge with closes: version bump entry includes the issue number", async () => {
+  let bumpArgs;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
+  });
+  await finalize({ ...ctx(), closes: 53 }, deps);
+  assert.match(bumpArgs.entry, /closes #53/);
+});
+
+test("post-merge test failure → version bump never runs (rolled back first)", async () => {
+  let bumped = false;
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    gate: { run: () => ({ pass: false, log: "boom" }) },
+    git: { ...g, bumpVersion: () => { bumped = true; }, git: (args) => (args[0] === "rev-parse" ? "pre" : "") },
+  });
+  await finalize(ctx(), deps);
+  assert.equal(bumped, false);
 });
 
 test("merge: pr → opens a PR instead of merging locally, no lock taken", async () => {

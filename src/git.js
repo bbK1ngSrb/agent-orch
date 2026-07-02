@@ -322,6 +322,40 @@ export function mergeInWorktree(integrationPath, branch, mode, message = null) {
   return { ok: false, reason };
 }
 
+// Simple patch-per-merge version bump, run in the integration worktree right
+// after a merge lands and the post-merge test gate passes. Bumps package.json
+// + src/version.js (the source `orch --version` reads from) and prepends a
+// CHANGELOG.md entry, then commits — so every merge to main is traceable to a
+// version. No-op (returns null) if package.json is missing or unparsable, so
+// this never blocks a merge that would otherwise succeed.
+export function bumpVersion(integrationPath, entry) {
+  const pkgPath = join(integrationPath, "package.json");
+  const versionPath = join(integrationPath, "src", "version.js");
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  } catch {
+    return null;
+  }
+  const parts = String(pkg.version).split(".");
+  if (parts.length !== 3 || parts.some((p) => !/^\d+$/.test(p))) return null;
+  const version = `${parts[0]}.${parts[1]}.${Number(parts[2]) + 1}`;
+
+  pkg.version = version;
+  writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+  if (existsSync(versionPath)) writeFileSync(versionPath, `export const VERSION = "${version}";\n`);
+
+  const changelogPath = join(integrationPath, "CHANGELOG.md");
+  const date = new Date().toISOString().slice(0, 10);
+  const section = `## ${version} — ${date}\n- ${entry}\n\n`;
+  const prior = existsSync(changelogPath) ? readFileSync(changelogPath, "utf8").replace(/^# Changelog\n+/, "") : "";
+  writeFileSync(changelogPath, `# Changelog\n\n${section}${prior}`);
+
+  git(["add", "package.json", "src/version.js", "CHANGELOG.md"], integrationPath);
+  git(["commit", "-m", `chore(release): v${version}`], integrationPath);
+  return version;
+}
+
 // Files changed on main since a given sha (what landed after a branch's base).
 export function changedSince(repo, sha) {
   const out = gitTry(["diff", "--name-only", `${sha}..main`], repo);
