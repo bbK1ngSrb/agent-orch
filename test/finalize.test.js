@@ -53,26 +53,18 @@ test("merge commit built but local main didn't advance → throws instead of rep
   await assert.rejects(() => finalize(ctx(), deps), /local main/);
 });
 
-test("push failure after local merge → throws instead of reporting merged", async () => {
+test("local merge success → leaves push handling to completion", async () => {
+  let pushed = false;
   const { deps, recorded } = baseDeps({
     git: {
       ...baseDeps().deps.git,
-      pushMain: () => ({ ok: false, reason: "non-fast-forward" }),
+      pushMain: () => { pushed = true; return { ok: false, reason: "non-fast-forward" }; },
     },
   });
-  await assert.rejects(() => finalize(ctx(), deps), /push to origin\/main failed/);
-  assert.equal(recorded.length, 0);
-});
-
-test("origin/main ancestry verification failure → throws instead of reporting merged", async () => {
-  const { deps, recorded } = baseDeps({
-    git: {
-      ...baseDeps().deps.git,
-      verifyOriginContains: (_repo, commit) => ({ ok: false, reason: `${commit} not present` }),
-    },
-  });
-  await assert.rejects(() => finalize(ctx(), deps), /origin\/main does not contain/);
-  assert.equal(recorded.length, 0);
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(recorded[0].verdict, "merged");
+  assert.equal(pushed, false);
 });
 
 test("path overlap with a peer → pr-fallback (no merge attempted)", async () => {

@@ -27,10 +27,6 @@ function newRepo() {
   git(["config", "user.name", "t"], d);
   writeFileSync(join(d, "base.txt"), "0\n");
   git(["add", "."], d); git(["commit", "-m", "init"], d);
-  const remote = mkdtempSync(join(tmpdir(), "orch-cc-remote-"));
-  git(["init", "--bare", "-b", "main"], remote);
-  git(["remote", "add", "origin", remote], d);
-  git(["push", "-u", "origin", "main"], d);
   git(["checkout", "-b", "work"], d); // cwd off main
   return d;
 }

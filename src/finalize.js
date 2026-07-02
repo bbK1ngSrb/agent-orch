@@ -96,19 +96,6 @@ export async function finalize(ctx, deps) {
         `is still at ${localMain} — refusing to report a false "merged"`,
       );
     }
-    const push = git.pushMain(repo);
-    if (!push.ok) {
-      notify.resetKpi?.(orchDir);
-      throw new Error(`orch: merged local main at ${sha}, but push to origin/main failed: ${push.reason || "push failed"}`);
-    }
-    const verified = git.verifyOriginContains(repo, sha);
-    if (!verified.ok) {
-      notify.resetKpi?.(orchDir);
-      throw new Error(
-        `orch: pushed main but origin/main does not contain ${sha}: ${verified.reason || "verification failed"} — ` +
-        `refusing to report a false "merged"`,
-      );
-    }
     const shortSha = git.git(["rev-parse", "--short", "HEAD"], integration);
     notify.recordRun(orchDir, {
       ts: new Date().toISOString(), branch, verdict: "merged", sha: shortSha, rounds,
