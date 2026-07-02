@@ -314,6 +314,31 @@ test("syncMainFromOrigin refuses a local main diverged from origin/main", () => 
   assert.notEqual(git(["rev-parse", "main"], repo), git(["rev-parse", "origin/main"], repo));
 });
 
+test("syncMainFromOrigin refuses local main ahead of origin/main by default", () => {
+  const repo = newRepo();
+  addOrigin(repo);
+  commitFile(repo, "local.txt", "local\n", "advance local");
+
+  const r = syncMainFromOrigin(repo);
+
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /ahead/);
+});
+
+test("syncMainFromOrigin with allowAhead accepts local main ahead of origin/main", () => {
+  const repo = newRepo();
+  addOrigin(repo);
+  const local = git(["rev-parse", "main"], repo);
+  commitFile(repo, "local.txt", "local\n", "advance local");
+
+  const r = syncMainFromOrigin(repo, { allowAhead: true });
+
+  assert.equal(r.ok, true);
+  assert.equal(r.ahead, true);
+  assert.notEqual(git(["rev-parse", "main"], repo), local);
+  assert.notEqual(git(["rev-parse", "main"], repo), git(["rev-parse", "origin/main"], repo));
+});
+
 test("resetMainToOriginIfDiverged rolls local main back when origin advanced", () => {
   const repo = newRepo();
   const remote = addOrigin(repo);

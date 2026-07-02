@@ -42,6 +42,18 @@ export async function finalize(ctx, deps) {
     return demote(ctx, deps, "merge-lock timeout"); // never acquired → don't touch the worktree
   }
   try {
+    // Catch local `main` up to origin BEFORE building on it: `orch task`/`orch issue`
+    // only does this once, at the start of the whole invocation. If some other
+    // checkout of this origin pushed a merge since then, our local main is stale;
+    // basing this cycle's merge on it wouldn't corrupt anything (a plain push is
+    // fast-forward-only and already fails loudly, with rollback, if rejected —
+    // see complete.js), but it would waste the whole cycle by getting rejected at
+    // push time. Catching up here avoids that. Local main being AHEAD of origin is
+    // normal mid-invocation (main is only pushed once, at the very end) so it's not
+    // treated as a failure — only a genuine two-way divergence demotes.
+    const sync = git.syncMainFromOrigin(repo, { allowAhead: true });
+    if (!sync.ok) return demote(ctx, deps, `main diverged from origin: ${sync.reason}`);
+
     const integration = git.ensureIntegrationWorktree(repo, orchDir);
     git.syncWorktreeToMain(integration);
 

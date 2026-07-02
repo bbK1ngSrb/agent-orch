@@ -6,6 +6,7 @@ function baseDeps(over = {}) {
   const recorded = [];
   const deps = {
     git: {
+      syncMainFromOrigin: () => ({ ok: true }),
       ensureIntegrationWorktree: () => "/integ",
       syncWorktreeToMain: () => {},
       changedSince: () => [],
@@ -197,6 +198,50 @@ test("merge: pr with no remote/gh → escalated, no crash", async () => {
   const r = await finalize({ ...ctx(), cfg: { merge: "pr" } }, deps);
   assert.equal(r.status, "escalated");
   assert.equal(recorded[0].verdict, "escalated");
+});
+
+test("re-syncs local main from origin before touching the integration worktree", async () => {
+  const calls = [];
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: {
+      ...g,
+      syncMainFromOrigin: () => { calls.push("sync"); return { ok: true }; },
+      ensureIntegrationWorktree: () => { calls.push("ensure"); return "/integ"; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.deepEqual(calls, ["sync", "ensure"]);
+});
+
+test("local main ahead of origin at merge time (normal mid-invocation state) → merge proceeds", async () => {
+  let opts;
+  const { deps } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      syncMainFromOrigin: (_repo, o) => { opts = o; return { ok: true, ahead: true }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(opts.allowAhead, true);
+});
+
+test("main diverged from origin at merge time → pr-fallback (no merge attempted, sibling's push preserved)", async () => {
+  let merged = false;
+  const { deps, recorded } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      syncMainFromOrigin: () => ({ ok: false, reason: "local main has diverged from origin/main" }),
+      mergeInWorktree: () => { merged = true; return { ok: true }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "pr-fallback");
+  assert.match(r.reason, /diverged from origin/);
+  assert.equal(merged, false);
+  assert.equal(recorded[0].verdict, "pr-fallback");
 });
 
 test("merge-lock timeout → pr-fallback without touching the worktree", async () => {
