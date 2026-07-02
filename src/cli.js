@@ -127,6 +127,7 @@ cross-audits it with a second, gates on tests, then merges.
 - \`orch review <branch>\`           audit an existing branch (no author)
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
 - \`orch agent add <name>\`          add an agent to the rotation pool
+- \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
 
 A role is a spec \`"<agent> [model] [effort]"\`, e.g.
 \`--author "claude claude-opus-4-8 high" --reviewer "codex"\`.
@@ -197,6 +198,7 @@ export function parse(argv) {
       link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
       json: { type: "boolean" }, // dashboard: machine-readable output
       limit: { type: "string" }, // dashboard: run-history entries to show
+      pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
 
     },
   });
@@ -562,6 +564,88 @@ export function resolveTaskBranch(ctx, deps = { git, resume }) {
   return { sid, branch, resume: false };
 }
 
+// `orch agent build <name>` self-bootstraps a missing adapter: a work order
+// describing the gap is fed through orch's own author→audit→test pipeline,
+// following the src/adapters/claude.js / codex.js pattern.
+function buildAdapterWorkOrder(name) {
+  const wo = {
+    title: `Add ${name} adapter for orch`,
+    problem: `orch has no adapter for the "${name}" CLI: \`orch agent add ${name}\` fails with ` +
+      `"unknown agent: ${name}". Add src/adapters/${name}.js following the ` +
+      `src/adapters/claude.js / src/adapters/codex.js pattern (export an object with a \`name\`, ` +
+      `a \`bin\`, an async \`author(prompt, worktree, opts)\`, and an async \`audit(branch, worktree, opts)\`), ` +
+      `and register it in the REGISTRY in src/adapters/index.js.`,
+    repro_steps: [`orch agent add ${name}`, `→ throws "unknown agent: ${name}"`],
+    suspected_paths: [`src/adapters/${name}.js`, "src/adapters/index.js", "test/adapters.test.js"],
+    acceptance_criteria: [
+      `src/adapters/${name}.js exports an adapter matching the claude.js/codex.js shape`,
+      `src/adapters/index.js REGISTRY registers "${name}"`,
+      `adapters.get("${name}") no longer throws`,
+      "tests cover the new adapter",
+    ],
+  };
+  const v = validateWorkOrder(wo);
+  if (!v.ok) throw new Error(`internal: generated adapter work order invalid: ${v.errors.join(", ")}`);
+  return v.workOrder;
+}
+
+// Runs the build as a normal task-mode cycle, isolated in its own worktree/branch
+// (the same mechanism every `orch task` uses) since orch would be modifying its
+// own source while running. Default: `noMerge` — the result sits on its local
+// branch only (no PR, main untouched) so it can be reviewed before it's trusted.
+// `--pr` instead forces `cfg.merge: "pr"` for this run only (never persisted to
+// orch.yml), so an AGREE+green result opens a PR through the full gate instead.
+export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} }) {
+  try { adapters.get(name); return { status: "already-registered" }; } catch { /* proceed to build */ }
+
+  const wo = buildAdapterWorkOrder(name);
+  const task = wo.title;
+  const authorPrompt = buildAuthorPrompt(wo);
+  let cfg = load(repo);
+  if (flags.pr) cfg = { ...cfg, merge: "pr" };
+  const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
+  const preflightFn = deps.preflight || preflight;
+  if (!dry) preflightFn(cfg, orchDir);
+
+  let liveBranches = new Set();
+  if (!dry) {
+    const sync = git.syncMainFromOrigin(repo);
+    if (!sync.ok) throw new Error(`orch: cannot start from stale main: ${sync.reason}`);
+    liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
+    git.reclaimOrphanWorktrees(repo, orchDir, liveBranches);
+  }
+
+  const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches });
+  const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned);
+  const authorSpec = authors[0];
+  const authorName = authorSpec.agent;
+  const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches });
+  const reviewerList = reviewersForAuthor(authorName, reviewers);
+  const run = {
+    mode: "task", task, authorPrompt, branch, sid, resume: isResume, authorName, author: authorSpec,
+    reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
+    reviewers: reviewerList, noMerge: !flags.pr,
+    cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
+  };
+
+  if (!dry) {
+    const baseSha = git.git(["rev-parse", "main"], repo);
+    inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha });
+    const live = inflight.countLive(orchDir);
+    if (live > cfg.concurrency) {
+      inflight.deregister(orchDir, sid);
+      throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`);
+    }
+  }
+  try {
+    const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
+    if (!dry) { resume.clear(orchDir, task, authorName); checkpoint.clear(orchDir, sid); }
+    return { ...result, branch };
+  } finally {
+    if (!dry) inflight.deregister(orchDir, sid);
+  }
+}
+
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
   if (flags.version || command === "version") { console.log(VERSION); return; }
@@ -619,12 +703,40 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "agent") {
+    if (rest[0] === "build") {
+      const name = rest[1];
+      if (!name) throw new Error("usage: orch agent build <name> [--pr]");
+      const buildFn = deps.buildAgent || buildAgent;
+      const result = await buildFn(name, { repo, orchDir, flags, deps });
+      if (result.status === "already-registered") { console.log(`orch: ${name} already registered`); return; }
+      console.log(`orch agent build ${name}: ${result.status} (${result.reason}) on ${result.branch}`);
+      if (result.status === "approved") {
+        console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
+      }
+      if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
+      return;
+    }
+
     // `orch agent add <name>` appends a known agent to the `agents:` rotation
     // pool in orch.yml, preserving the file's comments. Only registered agents
-    // are accepted so the next run's preflight stays valid.
-    if (rest[0] !== "add" || !rest[1]) throw new Error("usage: orch agent add <name>");
+    // are accepted so the next run's preflight stays valid; an unregistered
+    // name offers to build it (interactive only — see `buildAgent`).
+    if (rest[0] !== "add" || !rest[1]) throw new Error("usage: orch agent add <name> | orch agent build <name> [--pr]");
     const name = rest[1];
-    adapters.get(name); // throws "unknown agent: <name>" for unregistered names
+    try {
+      adapters.get(name); // throws "unknown agent: <name>" for unregistered names
+    } catch (e) {
+      const io = deps.io || realIo();
+      const answer = await io.confirm(`orch: '${name}' is not a registered agent — build it now? (y/N) `);
+      if (!answer) throw e;
+      const buildFn = deps.buildAgent || buildAgent;
+      const result = await buildFn(name, { repo, orchDir, flags: {}, deps });
+      console.log(`orch agent build ${name}: ${result.status}${result.branch ? ` on ${result.branch}` : ""}`);
+      if (result.status === "approved") {
+        console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
+      }
+      return;
+    }
     const file = configPath(repo);
     if (!existsSync(file)) throw new Error("no orch.yml — run `orch init` first");
     if (load(repo).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
@@ -842,6 +954,10 @@ function printUsage() {
 Usage:
   orch init [--link]   (--link: wire .orch/ORCH.md into CLAUDE.md/AGENTS.md/GEMINI.md)
   orch agent add <name>
+  orch agent build <name> [--pr]
+    (unregistered agent → scaffolds src/adapters/<name>.js through orch's own
+     author→audit→test pipeline, isolated in its own worktree/branch; default
+     lands on that local branch only, --pr opens a PR instead)
   orch task "change" [--author "<agent> [model] [effort]" --reviewer "<agent> [model] [effort]"]
     (or: orch task --file work-order.json — an UNTRUSTED JSON work order:
      {title, problem, repro_steps[], suspected_paths[], acceptance_criteria[]}; title/problem required)

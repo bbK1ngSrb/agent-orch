@@ -502,6 +502,73 @@ test("agent add rejects an unknown agent", async () => {
   }
 });
 
+test("agent build feeds an adapter work order through the task pipeline (noMerge by default)", async () => {
+  const d = initGitRepo("orch-agentbuild-");
+  const logs = await runMainInRepo(d, ["agent", "build", "widget"]);
+  assert.match(
+    logs.join("\n"),
+    /agent build widget: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/,
+  );
+});
+
+test("agent build --pr routes the cycle through merge: pr instead of a local-only branch", async () => {
+  const d = initGitRepo("orch-agentbuild-pr-");
+  let seenMerge = null;
+  const deps = {
+    preflight() {},
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async (ctx) => { seenMerge = ctx.cfg.merge; return { status: "pr", reason: "test", prUrl: "https://example/pr/1" }; },
+    },
+  };
+  const logs = await runMainInRepo(d, ["agent", "build", "widget", "--pr"], deps);
+  assert.equal(seenMerge, "pr");
+  assert.match(logs.join("\n"), /agent build widget: pr /);
+});
+
+test("agent build no-ops when the agent is already registered", async () => {
+  const d = initGitRepo("orch-agentbuild-known-");
+  const logs = await runMainInRepo(d, ["agent", "build", "claude"]);
+  assert.match(logs.join("\n"), /already registered/);
+});
+
+test("agent add offers to build an unregistered agent; accepting delegates to buildAgent", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-"));
+  const prev = cwd();
+  chdir(d);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.map(String).join(" "));
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    let calledWith = null;
+    await main(["agent", "add", "widget"], {
+      io: { confirm: async () => true },
+      buildAgent: async (name) => { calledWith = name; return { status: "approved", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }; },
+    });
+    assert.equal(calledWith, "widget");
+    assert.match(logs.join("\n"), /agent build widget: approved/);
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+});
+
+test("agent add declines the build offer and still throws unknown agent", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-decline-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    await assert.rejects(
+      () => main(["agent", "add", "widget"], { io: { confirm: async () => false } }),
+      /unknown agent/,
+    );
+  } finally {
+    chdir(prev);
+  }
+});
+
 test("init prints an agent-detection summary using the injected detectAgents", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-detect-"));
   const prev = cwd();
