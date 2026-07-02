@@ -182,6 +182,35 @@ test("reclaimOrphanWorktrees leaves the main worktree and other branches alone",
   assert.equal(branchExists(repo, "main"), true);
 });
 
+test("ensureIntegrationWorktree reattaches a reused worktree that drifted onto detached HEAD (#advance-main-ref)", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "work"], repo); // cwd off main so integration can own main
+
+  // first-ever call: creates the worktree attached to main, as normal
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], integ), "main");
+
+  // simulate the worktree drifting off branch main (crash mid-op, manual
+  // recovery) — the merge commit would then land on a detached HEAD and
+  // refs/heads/main would silently never advance
+  git(["switch", "--detach", "main"], integ);
+
+  const wt = join(repo, ".orch", "wt", "b");
+  createTaskBranch(repo, wt, "pr/claude/x", "main", "");
+  writeFileSync(join(wt, "b.txt"), "2\n");
+  git(["add", "."], wt);
+  git(["commit", "-m", "add b"], wt);
+  pruneWorktree(repo, wt);
+
+  // reused on a later cycle: must reattach to main before anything merges into it
+  const integ2 = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], integ2), "main");
+
+  const r = mergeInWorktree(integ2, "pr/claude/x", "ff-only");
+  assert.equal(r.ok, true);
+  assert.match(git(["log", "--oneline", "main"], repo), /add b/); // refs/heads/main actually advanced
+});
+
 test("ff-only merge fails when main moved past the branch base", () => {
   const repo = newRepo();
   git(["checkout", "-b", "work"], repo);

@@ -295,7 +295,16 @@ export function ensureIntegrationWorktree(repo, orchDir) {
   const path = join(orchDir, "integration");
   mkdirSync(orchDir, { recursive: true });
   gitTry(["worktree", "prune"], repo); // clear a stale registration if the dir was removed
-  if (!existsSync(path)) git(["worktree", "add", path, "main"], repo);
+  if (!existsSync(path)) {
+    git(["worktree", "add", path, "main"], repo);
+  } else if (git(["rev-parse", "--abbrev-ref", "HEAD"], path) !== "main") {
+    // A reused worktree that drifted off branch `main` (crash mid-op, manual
+    // recovery poking around in it) merges/commits onto a detached HEAD instead
+    // of refs/heads/main: the commit builds fine but main silently never moves.
+    // Nothing else can hold `main` here — it's this worktree's sole reason to
+    // exist — so reattaching is always safe.
+    git(["switch", "main"], path);
+  }
   return path;
 }
 
