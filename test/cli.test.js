@@ -298,6 +298,47 @@ test("orch issue rejects a non-numeric argument", async () => {
   );
 });
 
+test("orch issue posts a gh issue comment on escalation", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  const calls = [];
+  const gh = (args, input) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "issue" && args[1] === "view") {
+      return JSON.stringify({ number: 52, title: "stale base", body: "orch bases cycles on local main", state: "OPEN" });
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      calls.push({ args, input });
+      return "";
+    }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const escalating = { ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate after cap", sha: "x" }) };
+  try {
+    await runMainInRepo(repo, ["issue", "52"], { cycleDeps: escalating, githubDeps: () => ({ gh }) });
+    assert.equal(process.exitCode, 2);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].args[2], "52");
+    assert.match(calls[0].input, /ESCALATED/);
+    assert.match(calls[0].input, /stalemate after cap/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch task escalation does not touch GitHub (no closes)", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  const gh = () => { throw new Error("gh should not be called for a plain task"); };
+  const escalating = { ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate after cap", sha: "x" }) };
+  try {
+    await runMainInRepo(repo, ["task", "some task"], { cycleDeps: escalating, githubDeps: () => ({ gh }) });
+    assert.equal(process.exitCode, 2);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 test("nextAuthor alternates and persists last-author", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
   const cfg = { agents: ["claude", "codex"] };

@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runCycle } from "./engine.js";
-import { runPr, demote } from "./github.js";
+import { runPr, demote, buildIssueComment } from "./github.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -22,6 +22,7 @@ import { validateWorkOrder, buildAuthorPrompt, issueToWorkOrder } from "./intake
 import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.js";
 import { finishRun } from "./complete.js";
 import { detectAgents, formatDetection } from "./detect.js";
+import { redact } from "./redact.js";
 
 export { slugify };
 
@@ -715,7 +716,20 @@ export async function main(argv, deps = {}) {
         if (!dry && run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
         console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
-        if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
+        if (result.status === "escalated" || result.status === "pr-fallback") {
+          process.exitCode = 2;
+          // Issue bridge: leave a trace on the source issue — headless runs have
+          // no one watching stdout, and the DECISION.md file is local-only.
+          if (!dry && run.closes) {
+            try {
+              const gh = (deps.githubDeps || githubDeps)().gh;
+              const body = redact(buildIssueComment(result, run.branch));
+              gh(["issue", "comment", String(run.closes), "--body-file", "-"], body);
+            } catch (e) {
+              console.error(`orch: could not comment on issue #${run.closes}: ${e.message}`);
+            }
+          }
+        }
       } finally {
         if (!dry) inflight.deregister(orchDir, run.sid);
       }
