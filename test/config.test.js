@@ -207,6 +207,40 @@ test("plural authors/reviewers must be set together", () => {
   assert.throws(() => load(d), /both authors and reviewers/);
 });
 
+test("cheap defaults to disabled (role null, no paths)", () => {
+  const c = load(tmp());
+  assert.equal(c.cheap.role, null);
+  assert.deepEqual(c.cheap.paths, []);
+});
+
+test("cheap.role and cheap.paths round-trip", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "cheap:\n  role: qwen3-coder-30b\n  paths: [\"*.md\", \"docs/**\"]\n");
+  const c = load(d);
+  assert.equal(c.cheap.role, "qwen3-coder-30b");
+  assert.deepEqual(c.cheap.paths, ["*.md", "docs/**"]);
+});
+
+test("cheap user override shallow-merges (keeps default paths)", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "cheap:\n  role: qwen3-coder-30b\n");
+  const c = load(d);
+  assert.equal(c.cheap.role, "qwen3-coder-30b");
+  assert.deepEqual(c.cheap.paths, []);
+});
+
+test("empty cheap.role throws", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), 'cheap:\n  role: ""\n');
+  assert.throws(() => load(d), /cheap.role must be a non-empty string/);
+});
+
+test("non-array cheap.paths throws", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "cheap:\n  paths: nope\n");
+  assert.throws(() => load(d), /cheap.paths must be an array of strings/);
+});
+
 test("concurrency defaults to 4 and must be a positive integer", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cfg-"));
   assert.equal(load(d).concurrency, 4);

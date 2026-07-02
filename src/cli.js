@@ -10,6 +10,7 @@ import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
 import * as scope from "./scope.js";
+import { globToRegExp } from "./scope.js";
 import * as notify from "./notify.js";
 import { acquireLock, releaseLock, acquireBlocking, isPaused } from "./lock.js";
 import { slugify } from "./slug.js";
@@ -84,6 +85,15 @@ stageTimeout: 25          # per-stage wall-clock cap in MINUTES; 0 disables; def
 merge: no-ff              # merge into main: ff-only | no-ff | pr; default: no-ff (concurrent disjoint cycles both land; ff-only = linear but extra cycles fall back to PR; pr = never touch local main, always open a GitHub PR)
 concurrency: 4            # max concurrent orch cycles in this repo dir; over this a cycle exits; default: 4
 
+# === Cheap-agent dispatch (optional) ===
+# Route mechanical/low-stakes tasks to a cheaper agent (e.g. a local llm via ccr)
+# instead of always paying for Claude/Codex. \`orch task --cheap\` forces \`role\`
+# ad hoc; without the flag, a \`--file\`/\`orch issue\` work order whose
+# suspected_paths all match \`paths\` routes to \`role\` automatically.
+# cheap:
+#   role: qwen3-coder-30b  # role spec used for both author and reviewer
+#   paths: ["*.md", "docs/**"]
+
 # === Scope gate (optional) ===
 scope:
   maxLines: 0             # 0 = disabled; >0 escalates author commits over this many changed lines
@@ -120,6 +130,8 @@ cross-audits it with a second, gates on tests, then merges.
 
 A role is a spec \`"<agent> [model] [effort]"\`, e.g.
 \`--author "claude claude-opus-4-8 high" --reviewer "codex"\`.
+\`--cheap\` forces \`orch.yml\`'s \`cheap.role\` (e.g. a local llm) for one run;
+set \`cheap.paths\` to auto-route matching \`--file\`/\`orch issue\` work orders.
 Config and every option live in \`.orch/orch.yml\`.
 
 Run \`orch --help\` for the full flag list.
@@ -178,6 +190,7 @@ export function parse(argv) {
       reviewer: { type: "string" },
       authors: { type: "string" },
       reviewers: { type: "string" },
+      cheap: { type: "boolean" }, // force author+reviewer to orch.yml cheap.role for this run
       file: { type: "string" },
       "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
       "no-banner": { type: "boolean" },
@@ -234,6 +247,27 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
     authors: splitNames(authorValue),
     reviewers: splitNames(reviewerValue),
   };
+}
+
+// --cheap forces author+reviewer to orch.yml's cheap.role (e.g. a local llm),
+// ad hoc, for one run. Without the flag, a work order (--file / orch issue)
+// whose suspected_paths all match cheap.paths auto-routes the same way — a
+// task-group/category default set once in config instead of a per-task flag.
+// Explicit --author/--reviewer always win over the auto path; combining them
+// with --cheap itself is rejected rather than silently picking one.
+export function applyCheapOverride(cfg, flags, workOrder = null) {
+  const explicitRoles = Boolean(flags.author || flags.authors || flags.reviewer || flags.reviewers);
+  if (flags.cheap) {
+    if (explicitRoles) throw new Error("--cheap cannot be combined with --author/--authors/--reviewer/--reviewers");
+    if (!cfg.cheap.role) throw new Error("orch.yml: cheap.role must be set to use --cheap");
+    return { ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] };
+  }
+  if (explicitRoles || !cfg.cheap.role || !cfg.cheap.paths.length) return cfg;
+  const paths = Array.isArray(workOrder?.suspected_paths) ? workOrder.suspected_paths : [];
+  if (!paths.length) return cfg;
+  const regexes = cfg.cheap.paths.map(globToRegExp);
+  if (!paths.every((p) => regexes.some((re) => re.test(p)))) return cfg;
+  return { ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] };
 }
 
 export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
@@ -604,9 +638,8 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "task" || command === "review" || command === "issue") {
-    const cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: command === "review" });
+    let cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: command === "review" });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
-    if (!dry) preflightFn(cfg, orchDir); // dry-run never shells out, so don't require CLIs
 
     // F3: operator kill switch + one-cycle-at-a-time lock.
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -614,7 +647,7 @@ export async function main(argv, deps = {}) {
     // `issue` is a task whose work order is fetched from a GitHub issue; it runs
     // the identical author→audit→test→merge cycle, plus `Closes #N` on the merge.
     const mode = command === "issue" ? "task" : command; // "task" | "review"
-    let task, authorPrompt, reviewBranch, closes = null;
+    let task, authorPrompt, reviewBranch, closes = null, workOrder = null;
     if (command === "issue") {
       const n = rest[0];
       if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch issue <number> [--author ... --reviewer ...]");
@@ -622,6 +655,7 @@ export async function main(argv, deps = {}) {
       task = wo.title;
       authorPrompt = buildAuthorPrompt(wo);
       closes = Number(n);
+      workOrder = wo;
     } else if (mode === "task") {
       // §3a/§3b: a --file task is UNTRUSTED intake — it must be a JSON work order,
       // validated for shape, then wrapped in a neutralized fence the author treats
@@ -632,6 +666,7 @@ export async function main(argv, deps = {}) {
         const wo = parseWorkOrderFile(flags.file);
         task = wo.title;
         authorPrompt = buildAuthorPrompt(wo);
+        workOrder = wo;
       } else {
         task = rest.join(" ");
         authorPrompt = task;
@@ -641,6 +676,13 @@ export async function main(argv, deps = {}) {
       reviewBranch = rest[0];
       if (!reviewBranch) throw new Error("usage: orch review <branch>");
     }
+
+    // Cheap-agent dispatch: --cheap forces cfg.cheap.role ad hoc; without the
+    // flag, a work order whose suspected_paths all match cfg.cheap.paths routes
+    // the same way automatically. Resolved here (after the work order, before
+    // preflight) so the agent CLI it picks is the one preflight actually checks.
+    cfg = applyCheapOverride(cfg, flags, workOrder);
+    if (!dry) preflightFn(cfg, orchDir); // dry-run never shells out, so don't require CLIs
 
     // Integration worktree owns `main`; if cwd is on main, move it to an
     // operator branch before reclaim/picking branches. Reclaim orphaned
@@ -811,10 +853,12 @@ Usage:
   orch dashboard [--json] [--limit N]
     (read-only: live cycle status/stage, streaming log tail, run history, success-rate metrics)
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).
+  --cheap forces orch.yml's cheap.role (e.g. a local llm) for one run (task/issue);
+  set cheap.paths to auto-route matching --file/orch issue work orders without the flag.
   If launched from main, orch creates and switches to orch/<slug> first.
   After a merge, orch pushes main, deletes its temp branches, and prints a summary;
   --no-tidy leaves all branches/checkout untouched.
-  (flags: --dry, --link, --no-tidy, --no-banner, --version, --help)`);
+  (flags: --dry, --cheap, --link, --no-tidy, --no-banner, --version, --help)`);
 }
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds

@@ -22,6 +22,14 @@ test: auto                # "auto" detects the test command, or set one, e.g. "p
 reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
 merge: no-ff              # merge into main: ff-only | no-ff | pr; default: no-ff (concurrent disjoint cycles both land; ff-only = linear but extra cycles fall back to PR; pr = never touch local main, always open a GitHub PR)
 
+# === Cheap-agent dispatch (optional) ===
+# `orch task --cheap` forces `role` (e.g. a local llm via ccr) ad hoc; without
+# the flag, a `--file`/`orch issue` work order whose suspected_paths all match
+# `paths` routes to `role` automatically.
+# cheap:
+#   role: qwen3-coder-30b
+#   paths: ["*.md", "docs/**"]
+
 # === Scope gate (optional) ===
 scope:
   maxLines: 0             # 0 = disabled; >0 rejects oversized author commits

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as gitDep from "../src/git.js";
@@ -425,6 +425,52 @@ test("--author flag accepts an agent/model/effort spec", () => {
   assert.deepEqual(overridden.reviewers, ["codex"]);
 });
 
+test("--cheap forces author+reviewer to cfg.cheap.role", () => {
+  const cfg = { author: null, reviewer: null, authors: null, reviewers: null, cheap: { role: "qwen3-coder-30b", paths: [] } };
+  const overridden = applyCheapOverride(cfg, { cheap: true });
+  assert.deepEqual(overridden.authors, ["qwen3-coder-30b"]);
+  assert.deepEqual(overridden.reviewers, ["qwen3-coder-30b"]);
+});
+
+test("--cheap without cheap.role configured throws", () => {
+  const cfg = { author: null, reviewer: null, authors: null, reviewers: null, cheap: { role: null, paths: [] } };
+  assert.throws(() => applyCheapOverride(cfg, { cheap: true }), /cheap.role must be set/);
+});
+
+test("--cheap combined with --author throws", () => {
+  const cfg = { cheap: { role: "qwen3-coder-30b", paths: [] } };
+  assert.throws(() => applyCheapOverride(cfg, { cheap: true, author: "claude", reviewer: "codex" }),
+    /cannot be combined/);
+});
+
+test("cheap auto-routes when a work order's suspected_paths all match cheap.paths", () => {
+  const cfg = { author: null, reviewer: null, authors: null, reviewers: null, cheap: { role: "qwen3-coder-30b", paths: ["docs/**", "*.md"] } };
+  const wo = { suspected_paths: ["docs/guide.md", "README.md"] };
+  const overridden = applyCheapOverride(cfg, {}, wo);
+  assert.deepEqual(overridden.authors, ["qwen3-coder-30b"]);
+  assert.deepEqual(overridden.reviewers, ["qwen3-coder-30b"]);
+});
+
+test("cheap auto-route skipped when any suspected_path misses cheap.paths", () => {
+  const cfg = { author: null, reviewer: null, authors: null, reviewers: null, cheap: { role: "qwen3-coder-30b", paths: ["docs/**"] } };
+  const wo = { suspected_paths: ["docs/guide.md", "src/engine.js"] };
+  const overridden = applyCheapOverride(cfg, {}, wo);
+  assert.equal(overridden, cfg);
+});
+
+test("cheap auto-route skipped when --author/--reviewer already given explicitly", () => {
+  const cfg = { cheap: { role: "qwen3-coder-30b", paths: ["docs/**"] } };
+  const wo = { suspected_paths: ["docs/guide.md"] };
+  const overridden = applyCheapOverride(cfg, { author: "codex", reviewer: "claude" }, wo);
+  assert.equal(overridden, cfg);
+});
+
+test("cheap auto-route no-ops without cheap.role/paths configured", () => {
+  const cfg = { cheap: { role: null, paths: [] } };
+  const overridden = applyCheapOverride(cfg, {}, { suspected_paths: ["docs/guide.md"] });
+  assert.equal(overridden, cfg);
+});
+
 test("agent add appends a known agent to the pool, preserving comments", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-"));
   const prev = cwd();
@@ -645,6 +691,53 @@ async function runMainInRepo(repo, argv, deps = {}) {
 test("task branch includes a sid suffix", async () => {
   const logs = await runMainCapture(["task", "do a thing", "--dry"]);
   assert.match(logs.join("\n"), /pr\/[a-z]+\/do-a-thing-\d+-[0-9a-z]+:/);
+});
+
+test("--cheap flag routes the task branch through cheap.role's agent", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cheap-"));
+  writeFileSync(join(d, "orch.yml"), "cheap:\n  role: qwen3-coder-30b\n");
+  const prev = cwd();
+  chdir(d);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    await main(["task", "do a thing", "--cheap", "--dry"]);
+    assert.match(logs.join("\n"), /pr\/qwen3-coder-30b\//);
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+});
+
+test("--cheap without cheap.role in orch.yml surfaces a clear error", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cheap-noconf-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await assert.rejects(main(["task", "do a thing", "--cheap", "--dry"]), /cheap.role must be set/);
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("a --file work order whose suspected_paths match cheap.paths auto-routes", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cheap-auto-"));
+  writeFileSync(join(d, "orch.yml"), "cheap:\n  role: qwen3-coder-30b\n  paths: [\"docs/**\"]\n");
+  const wo = { title: "fix typo", problem: "docs typo", repro_steps: [], suspected_paths: ["docs/guide.md"], acceptance_criteria: [] };
+  writeFileSync(join(d, "wo.json"), JSON.stringify(wo));
+  const prev = cwd();
+  chdir(d);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    await main(["task", "--file", "wo.json", "--dry"]);
+    assert.match(logs.join("\n"), /pr\/qwen3-coder-30b\//);
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
 });
 
 test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
