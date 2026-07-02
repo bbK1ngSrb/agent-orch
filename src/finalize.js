@@ -42,6 +42,15 @@ export async function finalize(ctx, deps) {
     return demote(ctx, deps, "merge-lock timeout"); // never acquired → don't touch the worktree
   }
   try {
+    // Catch local `main` up to origin BEFORE building on it: `orch task`/`orch issue`
+    // only does this once, at the start of the whole invocation. A sibling cycle
+    // running from a separate local checkout of the same origin can push a merge
+    // in between — without re-syncing here, our merge would land on that stale
+    // parent and our own push would fast-forward cleanly, silently dropping the
+    // sibling's already-merged commit from origin's history.
+    const sync = git.syncMainFromOrigin(repo);
+    if (!sync.ok) return demote(ctx, deps, `main diverged from origin: ${sync.reason}`);
+
     const integration = git.ensureIntegrationWorktree(repo, orchDir);
     git.syncWorktreeToMain(integration);
 
