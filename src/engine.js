@@ -126,7 +126,10 @@ export async function runCycle(opts, deps) {
           repo, orchDir, branch, sid, baseSha, paths: changed,
           testCmd, cfg, rounds: round, closes: opts.closes || null,
         }, deps);
-        notify.phase(fin.status === "merged" ? `merged ${branch}` : `demoted ${branch} (${fin.reason})`);
+        const label = fin.status === "merged" ? `merged ${branch}`
+          : fin.status === "pr" ? `opened PR for ${branch}`
+          : `demoted ${branch} (${fin.reason})`;
+        notify.phase(label);
         return done({ status: fin.status, reason: fin.reason, rounds: round, docsOnly, noop });
       }
 

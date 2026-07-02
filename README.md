@@ -197,6 +197,16 @@ With a git remote and `gh` CLI available, the branch is pushed and a PR is
 opened. Without them, `.orch/reviews/<branch>/DECISION.md` is written and the
 branch is kept for manual review.
 
+**`merge: pr` — opt out of direct-to-main.** Set `merge: pr` in `.orch/orch.yml`
+and an agreed + green cycle never touches local `main` or `merge.lock` — it
+always pushes the branch and opens a PR instead, so branch protection / CI-gated
+merge checks still apply. Needs a git remote and the `gh` CLI; without them the
+cycle escalates locally the same way PR-fallback does. Set
+`github.autoMergePr: true` to also enable GitHub's native auto-merge on that PR
+(merged automatically once its own checks pass) — if enabling auto-merge fails
+(e.g. branch protection isn't configured), the PR itself still stands; only the
+auto-merge step is skipped.
+
 ## Auto docs-update on merge
 Opt-in per repo. With `docs.autoUpdate: true` in `.orch/orch.yml`, a successful
 merge auto-spawns a detached `orch task` that refreshes documentation:

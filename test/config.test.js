@@ -116,11 +116,27 @@ test("invalid merge value throws", () => {
   assert.throws(() => load(d), /merge must be/);
 });
 
+test("merge: pr is a valid opt-in for PR-gated merges", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "merge: pr\n");
+  assert.equal(load(d).merge, "pr");
+});
+
 test("github.mergeMethod defaults to squash; invalid value throws", () => {
   assert.equal(load(tmp()).github.mergeMethod, "squash");
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "github:\n  mergeMethod: fast-forward\n");
   assert.throws(() => load(d), /github.mergeMethod must be/);
+});
+
+test("github.autoMergePr defaults to false; non-boolean throws", () => {
+  assert.equal(load(tmp()).github.autoMergePr, false);
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "github:\n  autoMergePr: true\n");
+  assert.equal(load(d).github.autoMergePr, true);
+  const bad = tmp();
+  writeFileSync(join(bad, "orch.yml"), "github:\n  autoMergePr: yes\n");
+  assert.throws(() => load(bad), /github.autoMergePr must be a boolean/);
 });
 
 test("docs defaults present; off by default", () => {

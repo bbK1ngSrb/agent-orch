@@ -101,29 +101,66 @@ function ghAvailable(gh) {
   try { gh(["--version"]); return true; } catch { return false; }
 }
 
+// Shared push+create step for demote() and openPr(). §3f: --head must carry the
+// real ref so gh finds the branch; the human-readable title is scrubbed (a
+// secret-shaped branch name leaks through publicSummary's \w sanitizer otherwise).
+async function pushAndCreatePr(ctx, deps, title, body) {
+  const { repo, branch } = ctx;
+  const { gh, git, log = () => {} } = deps;
+  git(["push", "-u", "origin", branch], repo);
+  const url = gh([
+    "pr", "create", "--head", branch, "--base", "main",
+    "--title", redact(title),
+    "--body", body,
+  ]).trim();
+  log(`opened PR for ${branch}: ${url}`);
+  return url;
+}
+
 // Demote an approved-but-unmergeable branch: open a PR if we can, else escalate
 // locally (keep the branch + write DECISION.md). Never pushes to main.
 export async function demote(ctx, deps) {
   const { repo, orchDir, branch, reason, closes } = ctx;
-  const { gh, git, notify, log = () => {} } = deps;
+  const { git, gh, notify } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate(orchDir, branch,
       `# Escalation — ${branch}\n\nAuto-merge demoted (reason: ${reason}). No git remote or gh CLI available to open a PR. The branch is kept for manual review.\n`);
     return { prUrl: null };
   }
-  git(["push", "-u", "origin", branch], repo);
-  // §3f: --head must carry the real ref so gh finds the branch; the
-  // human-readable title/body are scrubbed (a secret-shaped branch name leaks
-  // through publicSummary's \w sanitizer otherwise). A `Closes #N` line (issue
-  // bridge) is appended AFTER redact — it's our own int, and redact would not
-  // touch it anyway, but keeping it outside the scrub guarantees gh sees it intact.
+  // A `Closes #N` line (issue bridge) is appended AFTER redact — it's our own
+  // int, and redact would not touch it anyway, but keeping it outside the
+  // scrub guarantees gh sees it intact.
   const body = redact(`Auto-demoted by agent-orch (reason: ${reason}). Agents agreed and the branch was green in isolation, but it could not be safely auto-merged into main.`)
     + (closes ? `\n\nCloses #${closes}` : "");
-  const url = gh([
-    "pr", "create", "--head", branch, "--base", "main",
-    "--title", redact(`orch: ${branch}`),
-    "--body", body,
-  ]).trim();
-  log(`opened PR for ${branch}: ${url}`);
+  const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, body);
+  return { prUrl: url };
+}
+
+// Success-path PR: cfg.merge === "pr" routes an AGREE+green cycle through a PR
+// instead of git.mergeInWorktree, so branch protection / CI-gated merge checks
+// still apply. cfg.github.autoMergePr additionally enables GitHub's native
+// auto-merge on that PR, so solo/local runs can stay zero-friction while still
+// leaving the audit trail a PR provides. Never pushes straight to main.
+export async function openPr(ctx, deps) {
+  const { repo, orchDir, branch, cfg, closes } = ctx;
+  const { git, gh, notify, log = () => {} } = deps;
+  if (!hasRemote(repo, git) || !ghAvailable(gh)) {
+    notify.escalate(orchDir, branch,
+      `# Escalation — ${branch}\n\nmerge: pr requires a git remote and the gh CLI to open a PR; neither is available. The branch is kept for manual review.\n`);
+    return { prUrl: null };
+  }
+  const body = redact("agent-orch: agents agreed and tests are green. Opened as a PR (merge: pr) instead of merging directly to main.")
+    + (closes ? `\n\nCloses #${closes}` : "");
+  const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, body);
+  // The PR is already open at this point — a failure enabling GitHub's native
+  // auto-merge (branch protection off, no merge queue, etc.) must not be
+  // reported as a cycle failure; log it and hand back the PR we did open.
+  if (cfg?.github?.autoMergePr) {
+    try {
+      gh(["pr", "merge", branch, "--auto", `--${cfg.github.mergeMethod}`]);
+    } catch (e) {
+      log(`could not enable auto-merge for ${branch}: ${e.message}`);
+    }
+  }
   return { prUrl: url };
 }

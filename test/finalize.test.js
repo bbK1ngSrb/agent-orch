@@ -113,6 +113,29 @@ test("issue bridge: closes #N reaches github.demote when a merge is blocked", as
   assert.equal(capturedCtx.closes, 52);
 });
 
+test("merge: pr → opens a PR instead of merging locally, no lock taken", async () => {
+  let locked = false;
+  let mergedInWorktree = false;
+  const { deps, recorded } = baseDeps({
+    lock: { acquireBlocking: () => { locked = true; return true; }, releaseLock: () => {} },
+    git: { ...baseDeps().deps.git, mergeInWorktree: () => { mergedInWorktree = true; return { ok: true }; } },
+    github: { openPr: async () => ({ prUrl: "https://x/pr/9" }) },
+  });
+  const r = await finalize({ ...ctx(), cfg: { merge: "pr" } }, deps);
+  assert.equal(r.status, "pr");
+  assert.equal(r.prUrl, "https://x/pr/9");
+  assert.equal(locked, false);
+  assert.equal(mergedInWorktree, false);
+  assert.equal(recorded[0].verdict, "pr");
+});
+
+test("merge: pr with no remote/gh → escalated, no crash", async () => {
+  const { deps, recorded } = baseDeps({ github: { openPr: async () => ({ prUrl: null }) } });
+  const r = await finalize({ ...ctx(), cfg: { merge: "pr" } }, deps);
+  assert.equal(r.status, "escalated");
+  assert.equal(recorded[0].verdict, "escalated");
+});
+
 test("merge-lock timeout → pr-fallback without touching the worktree", async () => {
   let ensured = false;
   let releaseCalls = 0;

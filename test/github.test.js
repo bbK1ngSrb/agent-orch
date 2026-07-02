@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runPr, buildComment, demote } from "../src/github.js";
+import { runPr, buildComment, demote, openPr } from "../src/github.js";
 
 function makeDeps({ status = "approved", state = "OPEN" } = {}) {
   const calls = { gh: [], git: [] };
@@ -147,6 +147,64 @@ test("§3f: demote redacts a secret-shaped branch in the PR title/body it posts"
   // ...but the human-readable title/body must be scrubbed.
   assert.ok(!valOf("--title").includes(token) && valOf("--title").includes("«redacted»"));
   assert.ok(!valOf("--body").includes(token));
+});
+
+test("openPr opens a PR for an agreed+green branch when a remote and gh are present", async () => {
+  const calls = [];
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/9\n"; };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+  const notify = { escalate: () => { throw new Error("should not escalate when PR opens"); } };
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: false } };
+
+  const r = await openPr({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", cfg }, { gh, git, notify });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/9");
+  assert.ok(calls.some((c) => c[0] === "git" && c[1] === "push"));
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge"), "no auto-merge unless opted in");
+});
+
+test("openPr with github.autoMergePr enables GitHub auto-merge on the PR it opens", async () => {
+  const calls = [];
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/9\n"; };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
+
+  await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", cfg }, { gh, git, notify: { escalate() {} } });
+  const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
+  assert.ok(mergeCall, "gh pr merge --auto must be called");
+  assert.ok(mergeCall.includes("--auto"));
+  assert.ok(mergeCall.includes("--squash"));
+});
+
+// The PR is already open by the time autoMergePr runs — a failure enabling GitHub's
+// native auto-merge (e.g. no branch protection configured) must not be reported as a
+// cycle failure; the PR that was already opened should still come back.
+test("openPr still returns the opened PR when enabling auto-merge fails", async () => {
+  const logs = [];
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "merge") throw new Error("auto-merge not allowed: branch protection is not configured");
+    return "https://github.com/o/r/pull/9\n";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
+
+  const r = await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", cfg },
+    { gh, git, notify: { escalate() {} }, log: (m) => logs.push(m) });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/9");
+  assert.match(logs.join("\n"), /could not enable auto-merge/);
+});
+
+test("openPr escalates locally when there is no remote", async () => {
+  let escalated = null;
+  const gh = () => "gh 2";
+  const git = (args) => (args[0] === "remote" ? "" : "");
+  const notify = { escalate: (orchDir, branch, brief) => { escalated = { branch, brief }; } };
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: false } };
+
+  const r = await openPr({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", cfg }, { gh, git, notify });
+  assert.equal(r.prUrl, null);
+  assert.equal(escalated.branch, "pr/claude/x-1");
 });
 
 test("§3f: runPr comment passes through redact (no raw secret in the body)", async () => {

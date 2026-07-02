@@ -7,6 +7,19 @@ export async function finalize(ctx, deps) {
   const { repo, orchDir, branch, sid, baseSha, paths, testCmd, cfg, rounds, closes } = ctx;
   const { git, gate, lock, inflight, github, notify } = deps;
 
+  // cfg.merge === "pr": opt out of direct-to-main. No local merge, no merge.lock —
+  // GitHub owns the merge (branch protection / CI-gated checks apply).
+  if (cfg.merge === "pr") {
+    const r = await github.openPr(ctx, deps);
+    notify.recordRun(orchDir, {
+      ts: new Date().toISOString(), branch, verdict: r.prUrl ? "pr" : "escalated", rounds,
+      ...(r.prUrl ? { prUrl: r.prUrl } : {}),
+    });
+    return r.prUrl
+      ? { status: "pr", reason: `agreed + green → PR ${r.prUrl}`, prUrl: r.prUrl }
+      : { status: "escalated", reason: "agreed + green → escalated locally (merge: pr needs a remote + gh CLI)" };
+  }
+
   if (!lock.acquireBlocking(orchDir, "merge.lock")) {
     return demote(ctx, deps, "merge-lock timeout"); // never acquired → don't touch the worktree
   }
