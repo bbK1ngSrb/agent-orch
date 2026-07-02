@@ -17,6 +17,7 @@ import { VERSION } from "./version.js";
 import { newSid } from "./sid.js";
 import * as inflight from "./inflight.js";
 import * as resume from "./resume.js";
+import * as checkpoint from "./checkpoint.js";
 import { finalize } from "./finalize.js";
 import { validateWorkOrder, buildAuthorPrompt, issueToWorkOrder } from "./intake/workorder.js";
 import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.js";
@@ -326,7 +327,7 @@ export function realDeps() {
   const ghDeps = { gh: ghShell, git: git.git, notify, log: (m) => process.stderr.write(`▶ ${m}\n`) };
   const githubDep = { demote: (ctx) => demote(ctx, ghDeps), openPr: (ctx) => openPr(ctx, ghDeps) };
   const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify });
-  return { adapters, git, gate, scope, notify, inflight, finalize: finalizeDep };
+  return { adapters, git, gate, scope, notify, inflight, finalize: finalizeDep, checkpoint };
 }
 function dryDeps() {
   const verdict = { decision: "AGREE", reason: "(dry-run: assumed agree)", raw: "" };
@@ -713,9 +714,12 @@ export async function main(argv, deps = {}) {
       try {
         const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
         results.push(result);
-        // Cycle returned (any terminal status) → drop the resume record. A quota
-        // throw skips this line, leaving the record for the next run to resume (#24).
-        if (!dry && run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
+        // Cycle returned (any terminal status) → drop the resume + checkpoint records.
+        // A quota throw skips this line, leaving both for the next run to resume (#24).
+        if (!dry && run.mode === "task") {
+          resume.clear(orchDir, run.task, run.authorName);
+          checkpoint.clear(orchDir, run.sid);
+        }
         console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.status === "escalated" || result.status === "pr-fallback") {
