@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7 — 2026-07-03
+- pr/codex/fix-trust-gap-from-docs-red-team-report--1361829-0: verify merged commits reach origin; keep finalize local-only on merge failure (red-team report docs/red-team-report-2026-07-02.md, trust gap)
+- pr/codex/cost-tracking-and-reviewer-catch-rate-lo-11197-0: report per-cycle token/$ cost and log every review outcome (AGREE/DISAGREE) for catch-rate measurement (red-team report, A1/A5)
+
 ## 0.1.6 — 2026-07-02
 - pr/claude/finalize-s-advance-main-ref-step-still-s-1150585-0 (closes #80)
 

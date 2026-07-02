@@ -1,6 +1,6 @@
 {
   "name": "agent-orch",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Run local coding agents in a cross-audit loop on any git repo",
   "type": "module",
   "bin": {
