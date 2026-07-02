@@ -179,7 +179,12 @@ export function parseRunUsage(text, fallbackModel = null) {
     outputTokens += outputN;
   }
 
-  const costUsd = reportedCostUsd != null ? reportedCostUsd : estimateCostUsd(model, { inputTokens, outputTokens });
+  const costUsd =
+    reportedCostUsd != null
+      ? reportedCostUsd
+      : inputTokens || outputTokens
+        ? estimateCostUsd(model, { inputTokens, outputTokens })
+        : null;
   const result = { model, tokens };
   if (inputTokens) result.inputTokens = inputTokens;
   if (outputTokens) result.outputTokens = outputTokens;

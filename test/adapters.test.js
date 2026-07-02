@@ -62,6 +62,13 @@ test("parseRunUsage omits costUsd for a model with no known price", () => {
     { model: "mystery-model", tokens: 150, inputTokens: 100, outputTokens: 50 });
 });
 
+test("parseRunUsage omits costUsd when only a total token count is known, even for a priced model", () => {
+  assert.deepEqual(parseRunUsage('{"model":"claude-opus-4.8","usage":{"total_tokens":1250}}\n'),
+    { model: "claude-opus-4.8", tokens: 1250 });
+  assert.deepEqual(parseRunUsage("model: claude-opus-4.8\ntotal tokens: 1250\n"),
+    { model: "claude-opus-4.8", tokens: 1250 });
+});
+
 test("audit returns parsed model, token usage, and estimated cost from agent output", async () => {
   const adapter = makeCliAdapter({
     name: "metered",
