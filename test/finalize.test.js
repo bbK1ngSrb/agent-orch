@@ -145,6 +145,37 @@ test("post-merge test failure → version bump never runs (rolled back first)", 
   assert.equal(bumped, false);
 });
 
+test("clean merge → recorded run history includes total tokens and estimated cost", async () => {
+  const { deps, recorded } = baseDeps();
+  const runStats = [
+    { role: "author", agent: "claude", model: "claude-opus-4.8", tokens: 1200, costUsd: 0.03 },
+    { role: "reviewer", agent: "codex", model: "gpt-5.1", tokens: 800, costUsd: 0.01 },
+  ];
+  const r = await finalize({ ...ctx(), runStats }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(recorded[0].tokens, 2000);
+  assert.equal(recorded[0].costUsd, 0.04);
+});
+
+test("clean merge → recorded run history omits tokens/cost when nothing was measured", async () => {
+  const { deps, recorded } = baseDeps();
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal("tokens" in recorded[0], false);
+  assert.equal("costUsd" in recorded[0], false);
+});
+
+test("pr-fallback (demote) → recorded run history includes total tokens and estimated cost", async () => {
+  const { deps, recorded } = baseDeps({
+    git: { ...baseDeps().deps.git, mergeInWorktree: () => ({ ok: false, reason: "CONFLICT" }) },
+  });
+  const runStats = [{ role: "author", agent: "claude", model: "claude-opus-4.8", tokens: 500, costUsd: 0.02 }];
+  const r = await finalize({ ...ctx(), runStats }, deps);
+  assert.equal(r.status, "pr-fallback");
+  assert.equal(recorded[0].tokens, 500);
+  assert.equal(recorded[0].costUsd, 0.02);
+});
+
 test("merge: pr → opens a PR instead of merging locally, no lock taken", async () => {
   let locked = false;
   let mergedInWorktree = false;

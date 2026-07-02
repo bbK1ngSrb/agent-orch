@@ -161,6 +161,20 @@ test("summary includes aggregated run statistics", async () => {
   assert.match(s, /Total: 2,000 tokens/);
 });
 
+test("summary shows estimated $ cost per row and total when adapters report it", async () => {
+  const { deps, summary } = mk();
+  await finishRun(ctx({
+    runStats: [
+      { role: "author", agent: "claude", model: "claude-opus-4.8", tokens: 1000, costUsd: 0.03 },
+      { role: "reviewer", agent: "codex", model: "gpt-5.1", tokens: 1000, costUsd: 0.01 },
+    ],
+  }), deps);
+  const s = summary();
+  assert.match(s, /author claude used claude-opus-4\.8: 1,000 tokens \(~\$0\.03\) \(50%\)/);
+  assert.match(s, /reviewer codex used gpt-5\.1: 1,000 tokens \(~\$0\.01\) \(50%\)/);
+  assert.match(s, /Total: 2,000 tokens \(~\$0\.04\)/);
+});
+
 test("summary omits run statistics when token usage is unmeasured", async () => {
   const { deps, summary } = mk();
   await finishRun(ctx({
