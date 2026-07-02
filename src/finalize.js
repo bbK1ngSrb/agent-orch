@@ -3,9 +3,25 @@
 // post-merge re-test), and either lands the merge into local main or demotes the
 // branch to a PR / local escalation. The engine calls this via deps.finalize so
 // it stays a pure state machine.
+
+// Sums a cycle's per-role runStats into a single { tokens, costUsd } pair for
+// run-history persistence. costUsd is null (omitted) unless at least one
+// entry had a known price — never fabricate a total from partial data.
+function totalUsage(runStats = []) {
+  let tokens = 0;
+  let costUsd = 0;
+  let hasCost = false;
+  for (const s of runStats) {
+    tokens += Number(s.tokens) || 0;
+    if (typeof s.costUsd === "number") { costUsd += s.costUsd; hasCost = true; }
+  }
+  return { tokens, costUsd: hasCost ? costUsd : null };
+}
+
 export async function finalize(ctx, deps) {
-  const { repo, orchDir, branch, sid, baseSha, paths, testCmd, cfg, rounds, closes } = ctx;
+  const { repo, orchDir, branch, sid, baseSha, paths, testCmd, cfg, rounds, closes, runStats } = ctx;
   const { git, gate, lock, inflight, github, notify } = deps;
+  const usage = totalUsage(runStats);
 
   // cfg.merge === "pr": opt out of direct-to-main. No local merge, no merge.lock —
   // GitHub owns the merge (branch protection / CI-gated checks apply).
@@ -13,6 +29,8 @@ export async function finalize(ctx, deps) {
     const r = await github.openPr(ctx, deps);
     notify.recordRun(orchDir, {
       ts: new Date().toISOString(), branch, verdict: r.prUrl ? "pr" : "escalated", rounds,
+      ...(usage.tokens ? { tokens: usage.tokens } : {}),
+      ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
       ...(r.prUrl ? { prUrl: r.prUrl } : {}),
     });
     return r.prUrl
@@ -53,7 +71,11 @@ export async function finalize(ctx, deps) {
     git.bumpVersion(integration, closes ? `${branch} (closes #${closes})` : branch);
 
     const sha = git.git(["rev-parse", "--short", "HEAD"], integration);
-    notify.recordRun(orchDir, { ts: new Date().toISOString(), branch, verdict: "merged", sha, rounds });
+    notify.recordRun(orchDir, {
+      ts: new Date().toISOString(), branch, verdict: "merged", sha, rounds,
+      ...(usage.tokens ? { tokens: usage.tokens } : {}),
+      ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
+    });
     notify.cleanupReviews(orchDir, branch);
     return { status: "merged", reason: "agreed + green + merged", sha };
   } finally {
@@ -67,11 +89,14 @@ function overlaps(mine, others) {
 }
 
 async function demote(ctx, deps, reason) {
-  const { orchDir, branch, rounds } = ctx;
+  const { orchDir, branch, rounds, runStats } = ctx;
   const { github, notify } = deps;
+  const usage = totalUsage(runStats);
   const r = await github.demote({ ...ctx, reason });
   notify.recordRun(orchDir, {
     ts: new Date().toISOString(), branch, verdict: "pr-fallback", reason, rounds,
+    ...(usage.tokens ? { tokens: usage.tokens } : {}),
+    ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
     ...(r.prUrl ? { prUrl: r.prUrl } : {}),
   });
   return {

@@ -43,14 +43,26 @@ test("adapter forwards model/effort opts to buildArgs", async () => {
   assert.deepEqual(seen, { model: "m1", effort: "low" });
 });
 
-test("parseRunUsage reads JSON and text token summaries", () => {
+test("parseRunUsage reads JSON and text token summaries, estimating $ cost from known model prices", () => {
   assert.deepEqual(parseRunUsage('{"model":"claude-opus-4.8","usage":{"input_tokens":1000,"output_tokens":250}}\n'),
-    { model: "claude-opus-4.8", tokens: 1250 });
+    { model: "claude-opus-4.8", tokens: 1250, inputTokens: 1000, outputTokens: 250, costUsd: 0.03375 });
   assert.deepEqual(parseRunUsage("AGREE\nmodel: gpt-5.1\ninput tokens: 100\noutput tokens: 25\n"),
-    { model: "gpt-5.1", tokens: 125 });
+    { model: "gpt-5.1", tokens: 125, inputTokens: 100, outputTokens: 25, costUsd: 0.000875 });
 });
 
-test("audit returns parsed model and token usage from agent output", async () => {
+test("parseRunUsage prefers the CLI's reported total_cost_usd over its own price-table estimate", () => {
+  assert.deepEqual(
+    parseRunUsage('{"model":"claude-opus-4.8","total_cost_usd":1.5,"usage":{"input_tokens":1000,"output_tokens":250}}\n'),
+    { model: "claude-opus-4.8", tokens: 1250, inputTokens: 1000, outputTokens: 250, costUsd: 1.5 },
+  );
+});
+
+test("parseRunUsage omits costUsd for a model with no known price", () => {
+  assert.deepEqual(parseRunUsage('{"model":"mystery-model","usage":{"input_tokens":100,"output_tokens":50}}\n'),
+    { model: "mystery-model", tokens: 150, inputTokens: 100, outputTokens: 50 });
+});
+
+test("audit returns parsed model, token usage, and estimated cost from agent output", async () => {
   const adapter = makeCliAdapter({
     name: "metered",
     bin: "sh",
@@ -58,7 +70,7 @@ test("audit returns parsed model and token usage from agent output", async () =>
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
-  assert.deepEqual(v.usage, { model: "gpt-5.1", tokens: 125 });
+  assert.deepEqual(v.usage, { model: "gpt-5.1", tokens: 125, inputTokens: 100, outputTokens: 25, costUsd: 0.000875 });
 });
 
 test("audit emits elapsed progress while the agent is still running", async () => {

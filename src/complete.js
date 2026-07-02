@@ -77,6 +77,11 @@ function formatInt(n) {
   return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+function formatUsd(n) {
+  const v = Number(n) || 0;
+  return `$${v > 0 && v < 0.01 ? v.toFixed(4) : v.toFixed(2)}`;
+}
+
 function summarizeStats(runStats) {
   const measuredStats = runStats.filter((stat) => (Number(stat.tokens) || 0) > 0);
   if (!measuredStats.length) return [];
@@ -86,17 +91,24 @@ function summarizeStats(runStats) {
     const agent = stat.agent || "unknown";
     const model = stat.model || "default";
     const key = `${role}\0${agent}\0${model}`;
-    const prev = rows.get(key) || { role, agent, model, tokens: 0 };
+    const prev = rows.get(key) || { role, agent, model, tokens: 0, costUsd: 0, hasCost: false };
     prev.tokens += Number(stat.tokens) || 0;
+    if (typeof stat.costUsd === "number") {
+      prev.costUsd += stat.costUsd;
+      prev.hasCost = true;
+    }
     rows.set(key, prev);
   }
   const total = [...rows.values()].reduce((sum, row) => sum + row.tokens, 0);
+  const totalCost = [...rows.values()].reduce((sum, row) => sum + (row.hasCost ? row.costUsd : 0), 0);
+  const anyCost = [...rows.values()].some((row) => row.hasCost);
   const lines = ["Run statistics:"];
   for (const row of rows.values()) {
     const pct = total ? Math.round((row.tokens / total) * 100) : 0;
-    lines.push(`  • ${row.role} ${row.agent} used ${row.model}: ${formatInt(row.tokens)} tokens (${pct}%)`);
+    const cost = row.hasCost ? ` (~${formatUsd(row.costUsd)})` : "";
+    lines.push(`  • ${row.role} ${row.agent} used ${row.model}: ${formatInt(row.tokens)} tokens${cost} (${pct}%)`);
   }
-  lines.push(`  • Total: ${formatInt(total)} tokens`);
+  lines.push(`  • Total: ${formatInt(total)} tokens${anyCost ? ` (~${formatUsd(totalCost)})` : ""}`);
   return lines;
 }
 

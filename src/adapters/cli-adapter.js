@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { render } from "../prompts.js";
 import { parseVerdict } from "../verdict.js";
+import { estimateCostUsd } from "../pricing.js";
 
 const OPTS = { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 };
 const DEFAULT_PROGRESS_INTERVAL_MS = 30_000;
@@ -128,27 +129,38 @@ function jsonUsage(obj) {
   const cached = num(usage.cache_creation_input_tokens) + num(usage.cache_read_input_tokens) + num(usage.cached_tokens);
   const total = num(usage.total_tokens ?? usage.totalTokens) || input + output + cached;
   const model = obj.model || obj.response?.model || obj.message?.model;
-  return { model, tokens: total };
+  // Claude CLI's `--output-format json` reports actual spend as a top-level
+  // `total_cost_usd` — prefer it over our own per-model estimate when present.
+  const reportedCostUsd = num(obj.total_cost_usd ?? obj.totalCostUsd) || null;
+  return { model, tokens: total, input, output, cached, costUsd: reportedCostUsd };
 }
 
 export function parseRunUsage(text, fallbackModel = null) {
   const raw = String(text ?? "");
   let model = fallbackModel;
   let tokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedTokens = 0;
+  let reportedCostUsd = null;
+
+  const apply = (parsed) => {
+    if (parsed.model) model = parsed.model;
+    if (parsed.tokens) tokens += parsed.tokens;
+    inputTokens += parsed.input || 0;
+    outputTokens += parsed.output || 0;
+    cachedTokens += parsed.cached || 0;
+    if (parsed.costUsd != null) reportedCostUsd = (reportedCostUsd || 0) + parsed.costUsd;
+  };
 
   const whole = firstJsonObject(raw.trim());
   if (whole) {
-    const parsed = jsonUsage(whole);
-    if (parsed.model) model = parsed.model;
-    if (parsed.tokens) tokens += parsed.tokens;
-  }
-  if (!whole) {
+    apply(jsonUsage(whole));
+  } else {
     for (const line of raw.split("\n")) {
       const obj = firstJsonObject(line.trim());
       if (!obj) continue;
-      const parsed = jsonUsage(obj);
-      if (parsed.model) model = parsed.model;
-      if (parsed.tokens) tokens += parsed.tokens;
+      apply(jsonUsage(obj));
     }
   }
 
@@ -158,12 +170,22 @@ export function parseRunUsage(text, fallbackModel = null) {
   const totalMatch = raw.match(/\b(?:total\s+tokens|tokens\s+(?:used|spent)|token\s+usage)\b\s*[:=]?\s*([\d,\s]+)/i);
   if (totalMatch) tokens += num(totalMatch[1]);
   if (!tokens) {
-    const input = raw.match(/\b(?:input|prompt)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
-    const output = raw.match(/\b(?:output|completion)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
-    tokens = num(input?.[1]) + num(output?.[1]);
+    const inputMatch = raw.match(/\b(?:input|prompt)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
+    const outputMatch = raw.match(/\b(?:output|completion)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
+    const inputN = num(inputMatch?.[1]);
+    const outputN = num(outputMatch?.[1]);
+    tokens = inputN + outputN;
+    inputTokens += inputN;
+    outputTokens += outputN;
   }
 
-  return { model, tokens };
+  const costUsd = reportedCostUsd != null ? reportedCostUsd : estimateCostUsd(model, { inputTokens, outputTokens });
+  const result = { model, tokens };
+  if (inputTokens) result.inputTokens = inputTokens;
+  if (outputTokens) result.outputTokens = outputTokens;
+  if (cachedTokens) result.cachedTokens = cachedTokens;
+  if (costUsd != null) result.costUsd = costUsd;
+  return result;
 }
 
 function modelFromArgs(args, opts = {}) {

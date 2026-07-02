@@ -24,12 +24,12 @@ export async function runCycle(opts, deps) {
     const usage = result?.usage || {};
     const tokens = Number(usage.tokens) || 0;
     if (tokens <= 0) return;
-    runStats.push({
-      role,
-      agent,
-      model: usage.model || fallbackModel || "default",
-      tokens,
-    });
+    const entry = { role, agent, model: usage.model || fallbackModel || "default", tokens };
+    if (usage.inputTokens) entry.inputTokens = usage.inputTokens;
+    if (usage.outputTokens) entry.outputTokens = usage.outputTokens;
+    if (usage.cachedTokens) entry.cachedTokens = usage.cachedTokens;
+    if (typeof usage.costUsd === "number") entry.costUsd = usage.costUsd;
+    runStats.push(entry);
   };
 
   // F5: task mode owns a fresh branch; review mode requires an existing one.
@@ -166,7 +166,7 @@ export async function runCycle(opts, deps) {
         const noop = changed.length === 0;
         const fin = await finalize({
           repo, orchDir, branch, sid, baseSha, paths: changed,
-          testCmd, cfg, rounds: round, closes: opts.closes || null,
+          testCmd, cfg, rounds: round, closes: opts.closes || null, runStats,
         }, deps);
         const label = fin.status === "merged" ? `merged ${branch}`
           : fin.status === "pr" ? `opened PR for ${branch}`
