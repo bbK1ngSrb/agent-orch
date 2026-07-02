@@ -168,7 +168,12 @@ function moveMainToOrigin(repo, mode) {
   git(["branch", "-f", "main", ORIGIN_MAIN_REF], repo);
 }
 
-export function syncMainFromOrigin(repo) {
+// allowAhead: local main containing commits origin doesn't have yet is expected
+// mid-invocation (main is only pushed once, at the end — see complete.js) and
+// isn't a divergence; callers mid-run pass allowAhead so that normal state
+// isn't treated as a failure. The CLI's start-of-invocation call leaves it
+// false, since being ahead there means unpushed work from a previous run.
+export function syncMainFromOrigin(repo, { allowAhead = false } = {}) {
   const fetched = fetchOriginMain(repo);
   if (!fetched.ok) {
     if (fetched.missingOrigin) return { ok: true, skipped: true, reason: fetched.reason };
@@ -191,12 +196,11 @@ export function syncMainFromOrigin(repo) {
   }
 
   const remoteBehind = gitTry(["merge-base", "--is-ancestor", ORIGIN_MAIN_REF, "main"], repo).ok;
-  return {
-    ok: false,
-    reason: remoteBehind
-      ? "local main is ahead of origin/main; push or reset main before running orch"
-      : "local main has diverged from origin/main; sync or reset main before running orch",
-  };
+  if (remoteBehind) {
+    if (allowAhead) return { ok: true, updated: false, ahead: true };
+    return { ok: false, reason: "local main is ahead of origin/main; push or reset main before running orch" };
+  }
+  return { ok: false, reason: "local main has diverged from origin/main; sync or reset main before running orch" };
 }
 
 export function resetMainToOriginIfDiverged(repo) {

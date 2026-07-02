@@ -215,6 +215,19 @@ test("re-syncs local main from origin before touching the integration worktree",
   assert.deepEqual(calls, ["sync", "ensure"]);
 });
 
+test("local main ahead of origin at merge time (normal mid-invocation state) → merge proceeds", async () => {
+  let opts;
+  const { deps } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      syncMainFromOrigin: (_repo, o) => { opts = o; return { ok: true, ahead: true }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(opts.allowAhead, true);
+});
+
 test("main diverged from origin at merge time → pr-fallback (no merge attempted, sibling's push preserved)", async () => {
   let merged = false;
   const { deps, recorded } = baseDeps({
