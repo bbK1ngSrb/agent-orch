@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.6 — 2026-07-02
+- pr/claude/finalize-s-advance-main-ref-step-still-s-1150585-0 (closes #80)
+
 ## 0.1.5 — 2026-07-02
 - pr/claude/self-bootstrap-agent-adapters-orch-agent-1076225-0 (closes #69)
 
