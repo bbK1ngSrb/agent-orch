@@ -148,6 +148,13 @@ different agent, the resuming run pins the surviving branch's original author ra
 than authoring fresh under the next one. It restarts cleanly only if the run died
 before any commit (nothing to resume), and never hijacks a live peer's branch.
 
+Within a resumed cycle, a per-round checkpoint in `.orch/checkpoints/` (keyed on the
+run's sid) goes further: it records each review round's verdict, and whether the test
+gate has already passed. A crash mid-review or between a green gate and merge doesn't
+re-audit rounds already decided or re-run tests that already passed — the resumed
+cycle picks up at the next undone step. The checkpoint is cleared once the cycle
+reaches a terminal status.
+
 ## Concurrent cycles
 
 Multiple `orch task` runs can drive the same repo directory in parallel. Launch
