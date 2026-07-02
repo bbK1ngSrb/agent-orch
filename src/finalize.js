@@ -82,26 +82,41 @@ export async function finalize(ctx, deps) {
     // maps to a bumped `orch --version`. Best-effort: never blocks the merge.
     git.bumpVersion(integration, closes ? `${branch} (closes #${closes})` : branch);
 
-    const sha = git.git(["rev-parse", "--short", "HEAD"], integration);
+    const sha = git.git(["rev-parse", "HEAD"], integration);
     // The integration worktree is checked out on branch `main`, so this commit
     // should already be visible as `repo`'s local main (same .git, shared refs) —
     // but don't just assume it: verify before reporting success, so a broken/stale
     // integration worktree fails loudly instead of "merged" going out while local
     // main never actually moved.
-    const localMain = git.git(["rev-parse", "--short", "main"], repo);
+    const localMain = git.git(["rev-parse", "main"], repo);
     if (localMain !== sha) {
+      notify.resetKpi?.(orchDir);
       throw new Error(
         `orch: merge commit ${sha} was built in the integration worktree but local main ` +
         `is still at ${localMain} — refusing to report a false "merged"`,
       );
     }
+    const push = git.pushMain(repo);
+    if (!push.ok) {
+      notify.resetKpi?.(orchDir);
+      throw new Error(`orch: merged local main at ${sha}, but push to origin/main failed: ${push.reason || "push failed"}`);
+    }
+    const verified = git.verifyOriginContains(repo, sha);
+    if (!verified.ok) {
+      notify.resetKpi?.(orchDir);
+      throw new Error(
+        `orch: pushed main but origin/main does not contain ${sha}: ${verified.reason || "verification failed"} — ` +
+        `refusing to report a false "merged"`,
+      );
+    }
+    const shortSha = git.git(["rev-parse", "--short", "HEAD"], integration);
     notify.recordRun(orchDir, {
-      ts: new Date().toISOString(), branch, verdict: "merged", sha, rounds,
+      ts: new Date().toISOString(), branch, verdict: "merged", sha: shortSha, rounds,
       ...(usage.tokens ? { tokens: usage.tokens } : {}),
       ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
     });
     notify.cleanupReviews(orchDir, branch);
-    return { status: "merged", reason: "agreed + green + merged", sha };
+    return { status: "merged", reason: "agreed + green + merged", sha: shortSha };
   } finally {
     lock.releaseLock(orchDir, "merge.lock");
   }

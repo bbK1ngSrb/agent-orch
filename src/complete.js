@@ -9,8 +9,8 @@
 // synced/detached/deleted), so the optional docs-update child can run it too.
 
 export async function finishRun(ctx, deps) {
-  const { repo, task, operatorBranch, merged = [], interactive, docsPending = false, runStats = [] } = ctx;
-  const { git, io } = deps;
+  const { repo, orchDir, task, operatorBranch, merged = [], interactive, docsPending = false, runStats = [] } = ctx;
+  const { git, io, notify } = deps;
 
   const sha = git.git(["rev-parse", "--short", "main"], repo);
 
@@ -32,6 +32,7 @@ export async function finishRun(ctx, deps) {
   if (!push.ok && git.resetMainToOriginIfDiverged) {
     const rollback = git.resetMainToOriginIfDiverged(repo);
     if (rollback.rolledBack) {
+      if (orchDir) notify?.resetKpi?.(orchDir);
       throw new Error(
         `orch: push to origin/main failed after merging, and origin/main has advanced. ` +
         `Reset local main back to origin/main to avoid poisoning later cycles. ` +

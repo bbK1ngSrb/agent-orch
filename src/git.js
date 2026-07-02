@@ -124,6 +124,15 @@ export function pushMain(repo) {
   return r.ok ? { ok: true } : { ok: false, reason: r.out.trim() };
 }
 
+export function verifyOriginContains(repo, commit) {
+  const fetched = fetchOriginMain(repo);
+  if (!fetched.ok) return { ok: false, reason: fetched.reason };
+  const r = gitTry(["merge-base", "--is-ancestor", commit, ORIGIN_MAIN_REF], repo);
+  return r.ok
+    ? { ok: true }
+    : { ok: false, reason: `${commit} is not contained in origin/main` };
+}
+
 function fetchOriginMain(repo) {
   if (!gitTry(["remote", "get-url", "origin"], repo).ok)
     return { ok: false, missingOrigin: true, reason: "no origin remote configured" };
@@ -232,6 +241,7 @@ export function pruneWorktree(repo, path) {
 // `orch task` can reattach and resume it instead of re-authoring (#27) — losing
 // committed work is the real defect; a stray empty-worktree branch is recoverable.
 export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) {
+  let recovered = false;
   // Canonicalize: git stores worktree paths as realpaths, but orchDir may arrive
   // via a symlink (this repo is reachable through /mnt/... and a ~/...-symlink).
   // Without this the prefix match silently skips every orphan on the alt path.
@@ -240,7 +250,7 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
     wtRoot = join(realpathSync(orchDir), "wt") + "/";
   } catch {
     gitTry(["worktree", "prune"], repo); // no orchDir yet = no orphans to sweep
-    return;
+    return { recovered };
   }
   const list = gitTry(["worktree", "list", "--porcelain"], repo);
   if (list.ok) {
@@ -264,7 +274,8 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
           branch = null;
           return;
         }
-        gitTry(["worktree", "remove", "--force", path], repo);
+        const removed = gitTry(["worktree", "remove", "--force", path], repo);
+        if (removed.ok) recovered = true;
         // Delete only a throwaway with no committed work; keep committed branches
         // so a resume can reattach (#27). changedFiles is `diff main...branch`.
         if (branch && owned && changedFiles(repo, branch).length === 0)
@@ -285,6 +296,7 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
     flush(); // last record has no trailing "worktree " to trigger it
   }
   gitTry(["worktree", "prune"], repo);
+  return { recovered };
 }
 
 // One reused worktree, checked out on the `main` branch, where all merges land.

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, rmSync, appendFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, rmSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export function phase(msg) {
@@ -46,7 +46,38 @@ export function buildDecisionBrief({ branch, reviewerCase, authorCase, diffSumma
 // review folder so there is still a greppable trail (branch, verdict, sha, ts).
 export function recordRun(orchDir, entry) {
   mkdirSync(orchDir, { recursive: true });
+  updateKpi(orchDir, entry);
   appendFileSync(join(orchDir, "runs.jsonl"), JSON.stringify(entry) + "\n");
+}
+
+export function kpi(orchDir) {
+  return readKpi(orchDir);
+}
+
+export function resetKpi(orchDir) {
+  mkdirSync(orchDir, { recursive: true });
+  const state = { cleanUnattendedCycles: 0 };
+  writeFileSync(join(orchDir, "kpi.json"), `${JSON.stringify(state, null, 2)}\n`);
+  return state;
+}
+
+function readKpi(orchDir) {
+  try {
+    const state = JSON.parse(readFileSync(join(orchDir, "kpi.json"), "utf8"));
+    return { cleanUnattendedCycles: Number(state.cleanUnattendedCycles) || 0 };
+  } catch {
+    return { cleanUnattendedCycles: 0 };
+  }
+}
+
+function updateKpi(orchDir, entry) {
+  const clean = (entry.verdict === "merged" || entry.verdict === "pr") &&
+    !entry.recovery && !entry.manualGitRecovery;
+  const next = clean
+    ? { cleanUnattendedCycles: readKpi(orchDir).cleanUnattendedCycles + 1 }
+    : { cleanUnattendedCycles: 0 };
+  writeFileSync(join(orchDir, "kpi.json"), `${JSON.stringify(next, null, 2)}\n`);
+  return next;
 }
 
 // Post-merge cleanup: per-branch review artifacts are throwaway once merged.
@@ -55,6 +86,8 @@ export function cleanupReviews(orchDir, branch) {
 }
 
 export function escalate(orchDir, branch, brief) {
+  mkdirSync(orchDir, { recursive: true });
+  resetKpi(orchDir);
   const p = join(reviewsDir(orchDir, branch), "DECISION.md");
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, brief);

@@ -9,6 +9,7 @@ import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleO
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as gitDep from "../src/git.js";
+import * as notify from "../src/notify.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
 function mockSpawn() {
@@ -887,6 +888,13 @@ test("#44: a merged task run hands the operator+cycle branches to finishRun for 
     { role: "author", agent: "claude", model: "gpt-test-author", tokens: 40 },
     { role: "reviewer", agent: "codex", model: "gpt-test-review", tokens: 20 },
   ]);
+});
+
+test("task status line surfaces the clean unattended cycle streak", async () => {
+  const repo = initGitRepo();
+  notify.recordRun(join(repo, ".orch"), { ts: "1", branch: "seed", verdict: "merged", rounds: 1 });
+  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
+  assert.match(logs.join("\n"), /clean unattended cycles: 1/);
 });
 
 test("#44: --no-tidy skips post-run cleanup entirely", async () => {

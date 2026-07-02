@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince, syncMainFromOrigin, resetMainToOriginIfDiverged, bumpVersion } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince, syncMainFromOrigin, resetMainToOriginIfDiverged, bumpVersion, verifyOriginContains } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -146,8 +146,9 @@ test("reclaimOrphanWorktrees removes a crashed cycle's worktree AND its branch",
   createTaskBranch(repo, wt, "pr/claude/orphan", "main");
   assert.equal(branchExists(repo, "pr/claude/orphan"), true);
 
-  reclaimOrphanWorktrees(repo, orchDir);
+  const r = reclaimOrphanWorktrees(repo, orchDir);
 
+  assert.equal(r.recovered, true);
   assert.equal(branchExists(repo, "pr/claude/orphan"), false); // same-slug retry can now re-create it
   assert.doesNotMatch(git(["worktree", "list"], repo), /pr_claude_orphan/);
 });
@@ -177,7 +178,8 @@ test("createTaskBranch leaves no marker behind after a normal prune", () => {
 test("reclaimOrphanWorktrees leaves the main worktree and other branches alone", () => {
   const repo = newRepo();
   git(["branch", "keep/me"], repo); // a branch with no orphan worktree
-  reclaimOrphanWorktrees(repo, join(repo, ".orch"));
+  const r = reclaimOrphanWorktrees(repo, join(repo, ".orch"));
+  assert.equal(r.recovered, false);
   assert.equal(branchExists(repo, "keep/me"), true);
   assert.equal(branchExists(repo, "main"), true);
 });
@@ -366,6 +368,20 @@ test("syncMainFromOrigin with allowAhead accepts local main ahead of origin/main
   assert.equal(r.ahead, true);
   assert.notEqual(git(["rev-parse", "main"], repo), local);
   assert.notEqual(git(["rev-parse", "main"], repo), git(["rev-parse", "origin/main"], repo));
+});
+
+test("verifyOriginContains checks ancestry against refs/remotes/origin/main", () => {
+  const repo = newRepo();
+  addOrigin(repo);
+  commitFile(repo, "local.txt", "local\n", "advance local");
+  const local = git(["rev-parse", "main"], repo);
+
+  const beforePush = verifyOriginContains(repo, local);
+  assert.equal(beforePush.ok, false);
+  assert.match(beforePush.reason, /not contained in origin\/main/);
+
+  git(["push", "origin", "main"], repo);
+  assert.deepEqual(verifyOriginContains(repo, local), { ok: true });
 });
 
 test("resetMainToOriginIfDiverged rolls local main back when origin advanced", () => {

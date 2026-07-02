@@ -20,7 +20,7 @@ function mk(over = {}) {
     confirm: async (q) => { calls.confirms.push(q); return over.confirmAnswer ?? false; },
     ...over.io,
   };
-  return { deps: { git, io }, calls, printed, summary: () => printed.join("\n") };
+  return { deps: { git, io, notify: over.notify }, calls, printed, summary: () => printed.join("\n") };
 }
 
 const ctx = (over = {}) => ({
@@ -58,16 +58,19 @@ test("push fails (no remote): reports not-synced with a git push hint, still del
 });
 
 test("push rejected after origin advances: resets main and stops before cleanup", async () => {
+  let resets = 0;
   const { deps, calls } = mk({
     git: {
       pushMain: () => ({ ok: false, reason: "non-fast-forward" }),
       resetMainToOriginIfDiverged: () => ({ rolledBack: true }),
     },
+    notify: { resetKpi: () => { resets++; } },
   });
   await assert.rejects(
-    () => finishRun(ctx(), deps),
+    () => finishRun(ctx({ orchDir: "/r/.orch" }), deps),
     /origin\/main has advanced/,
   );
+  assert.equal(resets, 1);
   assert.equal(calls.detach, 0);
   assert.equal(calls.deleted.length, 0);
 });

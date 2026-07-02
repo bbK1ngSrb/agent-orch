@@ -6,7 +6,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import * as inflight from "./inflight.js";
 import * as checkpoint from "./checkpoint.js";
-import { reviewsDir } from "./notify.js";
+import { kpi, reviewsDir } from "./notify.js";
 
 const STAGE_LABELS = { reviewed: "review", tested: "test" };
 
@@ -58,6 +58,7 @@ export function metrics(orchDir) {
     successRate: entries.length ? merged / entries.length : null,
     totalTokens: tokens,
     totalCostUsd: hasCost ? costUsd : null,
+    cleanUnattendedCycles: kpi(orchDir).cleanUnattendedCycles,
   };
 }
 
@@ -116,6 +117,7 @@ export function render(orchDir, opts = {}) {
   lines.push("");
   lines.push("Metrics");
   lines.push(`  runs: ${m.total}  merged: ${m.merged}  success rate: ${pct(m.successRate)}`);
+  lines.push(`  clean unattended cycles: ${m.cleanUnattendedCycles}`);
   lines.push(`  tokens: ${m.totalTokens}  cost: ${usd(m.totalCostUsd)}`);
   return lines.join("\n");
 }

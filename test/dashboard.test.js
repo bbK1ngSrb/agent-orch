@@ -62,6 +62,7 @@ test("metrics computes success rate and usage totals", () => {
   assert.equal(m.successRate, 0.5);
   assert.equal(m.totalTokens, 150);
   assert.equal(m.totalCostUsd, 0.01);
+  assert.equal(m.cleanUnattendedCycles, 0);
 });
 
 test("metrics on an empty history reports nulls, not NaN", () => {
@@ -70,6 +71,7 @@ test("metrics on an empty history reports nulls, not NaN", () => {
   assert.equal(m.total, 0);
   assert.equal(m.successRate, null);
   assert.equal(m.totalCostUsd, null);
+  assert.equal(m.cleanUnattendedCycles, 0);
 });
 
 test("latestLog returns the tail of the highest-numbered round file", () => {
@@ -98,6 +100,7 @@ test("render produces a readable text summary with live cycles, history, and met
   assert.match(text, /Run history/);
   assert.match(text, /Metrics/);
   assert.match(text, /success rate: 100%/);
+  assert.match(text, /clean unattended cycles: 1/);
 });
 
 test("render handles a fully empty .orch/ without throwing", () => {

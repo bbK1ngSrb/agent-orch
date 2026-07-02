@@ -57,6 +57,15 @@ export function maybeSpawnDocs(res, cfg, deps = {}, orchDir) {
   return true;
 }
 
+function cleanStreakSuffix(orchDir, dry) {
+  if (dry) return "";
+  return `; clean unattended cycles: ${notify.kpi(orchDir).cleanUnattendedCycles}`;
+}
+
+function resetKpiOnRecovery(orchDir, recovery) {
+  if (recovery?.recovered) notify.resetKpi(orchDir);
+}
+
 // init scaffold — mirrors orch.example.yml. Every key is listed with its
 // possible values and default; commented keys use the shown default.
 const SCAFFOLD = `# agent-orch config — all keys optional. Commented keys show the default.
@@ -612,7 +621,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     const sync = git.syncMainFromOrigin(repo);
     if (!sync.ok) throw new Error(`orch: cannot start from stale main: ${sync.reason}`);
     liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
-    git.reclaimOrphanWorktrees(repo, orchDir, liveBranches);
+    resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
   }
 
   const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches });
@@ -811,7 +820,8 @@ export async function main(argv, deps = {}) {
       }
       operatorBranch = switchFromMain(repo, mode === "task" ? task : `review ${reviewBranch}`);
       liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
-      git.reclaimOrphanWorktrees(repo, orchDir, liveBranches); // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers
+      // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers.
+      resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
     }
 
     let runs;
@@ -853,6 +863,7 @@ export async function main(argv, deps = {}) {
     }
 
     maybePrintRunBanner(cfg, runs, flags, deps.stdout);
+    if (!dry && runs.some((run) => run.resume)) notify.resetKpi(orchDir);
 
     const results = [];
     const mergedBranches = []; // #44: cycle branches that actually landed on main
@@ -877,7 +888,7 @@ export async function main(argv, deps = {}) {
           resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
         }
-        console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)`);
+        console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${cleanStreakSuffix(orchDir, dry)}`);
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.status === "escalated" || result.status === "pr-fallback") {
           process.exitCode = 2;
@@ -911,8 +922,8 @@ export async function main(argv, deps = {}) {
       const io = deps.io || realIo();
       const runStats = results.flatMap((r) => r.runStats || []);
       await finishFn(
-        { repo, task, operatorBranch, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats },
-        { git, io },
+        { repo, orchDir, task, operatorBranch, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats },
+        { git, io, notify },
       );
     }
     return;
@@ -925,7 +936,7 @@ export async function main(argv, deps = {}) {
     preflightFn(cfg, orchDir);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
     if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
-    git.reclaimOrphanWorktrees(repo, orchDir); // clear orphans from a crashed prior cycle
+    resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir)); // clear orphans from a crashed prior cycle
     try {
       const result = await runPr(
         { n, repo, orchDir, cfg, merge: Boolean(flags.merge) },
