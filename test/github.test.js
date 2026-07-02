@@ -176,6 +176,25 @@ test("openPr with github.autoMergePr enables GitHub auto-merge on the PR it open
   assert.ok(mergeCall.includes("--squash"));
 });
 
+// The PR is already open by the time autoMergePr runs — a failure enabling GitHub's
+// native auto-merge (e.g. no branch protection configured) must not be reported as a
+// cycle failure; the PR that was already opened should still come back.
+test("openPr still returns the opened PR when enabling auto-merge fails", async () => {
+  const logs = [];
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "merge") throw new Error("auto-merge not allowed: branch protection is not configured");
+    return "https://github.com/o/r/pull/9\n";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
+
+  const r = await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", cfg },
+    { gh, git, notify: { escalate() {} }, log: (m) => logs.push(m) });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/9");
+  assert.match(logs.join("\n"), /could not enable auto-merge/);
+});
+
 test("openPr escalates locally when there is no remote", async () => {
   let escalated = null;
   const gh = () => "gh 2";

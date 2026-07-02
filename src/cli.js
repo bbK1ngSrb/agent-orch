@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runCycle } from "./engine.js";
-import { runPr, demote, buildIssueComment } from "./github.js";
+import { runPr, demote, openPr, buildIssueComment } from "./github.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -79,7 +79,7 @@ agents: [claude, codex]   # default: [claude, codex]
 test: auto                # "auto" detects the test command, or set one, e.g. "pytest -q"
 reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
 stageTimeout: 25          # per-stage wall-clock cap in MINUTES; 0 disables; default: 25. A stalled author/review (e.g. a wedged codex exec) is killed and the cycle fails (nonzero exit) instead of hanging forever. Env override: ORCH_STAGE_TIMEOUT_MS (milliseconds)
-merge: no-ff              # merge into main: ff-only | no-ff; default: no-ff (concurrent disjoint cycles both land; ff-only = linear but extra cycles fall back to PR)
+merge: no-ff              # merge into main: ff-only | no-ff | pr; default: no-ff (concurrent disjoint cycles both land; ff-only = linear but extra cycles fall back to PR; pr = never touch local main, always open a GitHub PR)
 concurrency: 4            # max concurrent orch cycles in this repo dir; over this a cycle exits; default: 4
 
 # === Scope gate (optional) ===
@@ -87,9 +87,10 @@ scope:
   maxLines: 0             # 0 = disabled; >0 escalates author commits over this many changed lines
   ignore: ["*.lock", "dist/**", "*.snap"]   # globs excluded from the line count
 
-# === GitHub PR bridge (orch pr <n>) ===
+# === GitHub PR bridge (orch pr <n>; also used by merge: pr above) ===
 github:
   mergeMethod: squash     # gh pr merge strategy: squash | merge | rebase; default: squash
+  autoMergePr: false      # with merge: pr, also enable GitHub's native auto-merge on the PR it opens; default: false
 
 # === Auto docs-update after a real merge (optional) ===
 docs:
@@ -320,9 +321,10 @@ function realIo() {
     },
   };
 }
-function realDeps() {
+export function realDeps() {
   const ghShell = (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString();
-  const githubDep = { demote: (ctx) => demote(ctx, { gh: ghShell, git: git.git, notify, log: (m) => process.stderr.write(`▶ ${m}\n`) }) };
+  const ghDeps = { gh: ghShell, git: git.git, notify, log: (m) => process.stderr.write(`▶ ${m}\n`) };
+  const githubDep = { demote: (ctx) => demote(ctx, ghDeps), openPr: (ctx) => openPr(ctx, ghDeps) };
   const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify });
   return { adapters, git, gate, scope, notify, inflight, finalize: finalizeDep };
 }

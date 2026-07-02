@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as gitDep from "../src/git.js";
@@ -910,4 +910,26 @@ test("pinnedResumeAuthor resolves through real inflight.listLive on a dead-pid S
   assert.equal(liveBranches.has(branch), false); // dead pid filtered → not "live"
   // real git + real resume deps: the committed branch is pinnable
   assert.equal(pinnedResumeAuthor({ repo, orchDir, task: "do x", liveBranches }), "claude");
+});
+
+// Regression: realDeps() wired github.demote but not github.openPr, so any real
+// `merge: pr` cycle crashed with "github.openPr is not a function" on its success
+// path — never caught because every other test drives finalize() through hand-rolled
+// stub deps. Go through the real dependency construction cli.js's cycle path uses.
+test("realDeps() wires github.openPr — a merge:pr cycle escalates cleanly instead of throwing", async () => {
+  const repo = initGitRepo("orch-mergepr-"); // no remote configured
+  const orchDir = join(repo, ".orch");
+  const branch = "pr/claude/do-x-1";
+  const cfg = { merge: "pr", github: { mergeMethod: "squash", autoMergePr: false } };
+
+  const result = await realDeps().finalize({
+    repo, orchDir, branch, sid: "s1", baseSha: gitDep.git(["rev-parse", "main"], repo),
+    paths: [], testCmd: "true", cfg, rounds: 1, closes: null,
+  });
+
+  // No remote → openPr can't open a PR, so it escalates locally instead of merging.
+  // The bug threw a TypeError before reaching this point at all.
+  assert.equal(result.status, "escalated");
+  assert.match(result.reason, /merge: pr needs a remote/);
+  assert.ok(existsSync(join(orchDir, "reviews", branch, "DECISION.md")));
 });

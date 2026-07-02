@@ -143,7 +143,7 @@ export async function demote(ctx, deps) {
 // leaving the audit trail a PR provides. Never pushes straight to main.
 export async function openPr(ctx, deps) {
   const { repo, orchDir, branch, cfg, closes } = ctx;
-  const { git, gh, notify } = deps;
+  const { git, gh, notify, log = () => {} } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate(orchDir, branch,
       `# Escalation — ${branch}\n\nmerge: pr requires a git remote and the gh CLI to open a PR; neither is available. The branch is kept for manual review.\n`);
@@ -152,6 +152,15 @@ export async function openPr(ctx, deps) {
   const body = redact("agent-orch: agents agreed and tests are green. Opened as a PR (merge: pr) instead of merging directly to main.")
     + (closes ? `\n\nCloses #${closes}` : "");
   const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, body);
-  if (cfg?.github?.autoMergePr) gh(["pr", "merge", branch, "--auto", `--${cfg.github.mergeMethod}`]);
+  // The PR is already open at this point — a failure enabling GitHub's native
+  // auto-merge (branch protection off, no merge queue, etc.) must not be
+  // reported as a cycle failure; log it and hand back the PR we did open.
+  if (cfg?.github?.autoMergePr) {
+    try {
+      gh(["pr", "merge", branch, "--auto", `--${cfg.github.mergeMethod}`]);
+    } catch (e) {
+      log(`could not enable auto-merge for ${branch}: ${e.message}`);
+    }
+  }
   return { prUrl: url };
 }
