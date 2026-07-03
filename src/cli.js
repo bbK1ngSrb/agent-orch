@@ -112,7 +112,7 @@ scope:
 
 # === GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> main) ===
 github:
-  mergeMethod: squash     # gh pr merge strategy: squash | merge | rebase; default: squash
+  mergeMethod: squash     # gh pr merge strategy for non-integration PRs; default: squash
   autoMergePr: false      # enable GitHub's native auto-merge on PRs orch opens/updates; default: false
 
 # === Auto docs-update after a real merge (optional) ===

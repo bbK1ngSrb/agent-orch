@@ -210,7 +210,9 @@ export async function openIntegrationPr(ctx, deps) {
 
   if (cfg?.github?.autoMergePr) {
     try {
-      gh(["pr", "merge", prRef, "--auto", `--${cfg.github.mergeMethod}`]);
+      // The persistent integration branch must stay in main's ancestry. Squash
+      // or rebase would strand orch/integration behind main after the first PR.
+      gh(["pr", "merge", prRef, "--auto", "--merge"]);
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
     }

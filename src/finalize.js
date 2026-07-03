@@ -88,7 +88,14 @@ export async function finalize(ctx, deps) {
         `is still at ${localIntegration} — refusing to report a false "merged"`,
       );
     }
-    const pr = await github.openIntegrationPr(ctx, deps);
+    let pr;
+    try {
+      pr = await github.openIntegrationPr(ctx, deps);
+    } catch (e) {
+      notify.escalate?.(orchDir, integrationBranch,
+        `# Escalation — ${integrationBranch}\n\nThe local integration branch is green, but the PR bridge failed after the merge landed locally: ${e.message}\n`);
+      pr = { prUrl: null };
+    }
     const shortSha = git.git(["rev-parse", "--short", "HEAD"], integration);
     notify.recordRun(orchDir, {
       ts: new Date().toISOString(), branch, verdict: "merged", sha: shortSha, rounds,

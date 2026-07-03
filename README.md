@@ -203,8 +203,9 @@ merges into `orch/integration` through `.orch/integration` under a brief
 test gate and version bump. Orch then pushes `orch/integration` and opens or
 updates one persistent PR from `orch/integration` to `main`; with
 `github.autoMergePr: true`, it also enables GitHub's native auto-merge on that
-PR. `main` is a mirror of GitHub's `main`: orch does not merge, reset, commit,
-or push it directly. After GitHub merges the PR, local `main` advances only by
+PR using a merge commit so `orch/integration` stays in `main`'s ancestry.
+`main` is a mirror of GitHub's `main`: orch does not merge, reset, commit, or
+push it directly. After GitHub merges the PR, local `main` advances only by
 fetching origin and fast-forwarding to `origin/main`.
 
 Two guards run while the lock is held: a file-overlap pre-check (comparing your

@@ -71,6 +71,30 @@ test("local merge success → opens or updates the integration PR", async () => 
   assert.equal(bridged, true);
 });
 
+test("integration PR bridge failure after local merge → records merged and escalates locally", async () => {
+  let escalated = null;
+  let cleaned = false;
+  const { deps, recorded } = baseDeps({
+    github: {
+      ...baseDeps().deps.github,
+      openIntegrationPr: async () => { throw new Error("gh failed"); },
+    },
+    notify: {
+      recordRun: (_d, e) => recorded.push(e),
+      cleanupReviews: () => { cleaned = true; },
+      escalate: (orchDir, branch, body) => { escalated = { orchDir, branch, body }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.prUrl, null);
+  assert.equal(recorded[0].verdict, "merged");
+  assert.equal("prUrl" in recorded[0], false);
+  assert.equal(cleaned, true);
+  assert.equal(escalated.branch, "orch/integration");
+  assert.match(escalated.body, /gh failed/);
+});
+
 test("path overlap with a peer → pr-fallback (no merge attempted)", async () => {
   let merged = false;
   const { deps, recorded } = baseDeps({

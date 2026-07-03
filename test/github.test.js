@@ -226,7 +226,8 @@ test("openIntegrationPr creates the persistent integration PR and enables auto-m
   assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
   const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
   assert.ok(mergeCall.includes("--auto"));
-  assert.ok(mergeCall.includes("--squash"));
+  assert.ok(mergeCall.includes("--merge"));
+  assert.equal(mergeCall.includes("--squash"), false);
 });
 
 test("openIntegrationPr updates an existing integration PR instead of creating another", async () => {
