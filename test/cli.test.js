@@ -68,6 +68,26 @@ test("maybeSpawnDocs does not spawn under --dry", () => {
   assert.equal(m.calls.length, 0);
 });
 
+test("--config-file layers a custom yml onto orch.yml for the run (F: config override)", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cfgfile-"));
+  const override = join(d, "custom.yml");
+  writeFileSync(override, "merge: ff-only\n");
+  const prev = cwd();
+  chdir(d);
+  let out = "";
+  try {
+    process.exitCode = 0;
+    await main(["task", "hello world", "--dry", "--config-file", override], {
+      stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
+    });
+  } finally {
+    chdir(prev);
+    process.exitCode = 0;
+  }
+  const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(plain, /merge\s+ff-only/); // orch.yml default is no-ff; --config-file overrode it
+});
+
 test("slugify produces a branch-safe slug", () => {
   assert.equal(slugify("Fix the flaky test!!"), "fix-the-flaky-test");
 });
@@ -118,6 +138,11 @@ test("parse captures --file flag", () => {
   const p = parse(["task", "--file", "task.md", "--dry"]);
   assert.equal(p.command, "task");
   assert.equal(p.flags.file, "task.md");
+});
+
+test("parse captures --config-file flag", () => {
+  const p = parse(["task", "do x", "--config-file", "custom.yml", "--dry"]);
+  assert.equal(p.flags["config-file"], "custom.yml");
 });
 
 test("parse captures --no-banner flag", () => {

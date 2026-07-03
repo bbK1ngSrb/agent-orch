@@ -107,17 +107,25 @@ export function configPath(dir) {
   return existsSync(preferred) ? preferred : join(dir, "orch.yml");
 }
 
-export function load(dir) {
+// overridePath (--config-file) layers on top of the repo's orch.yml, same
+// deep-merge rules — lets a run apply one-off settings without editing orch.yml.
+export function load(dir, overridePath) {
   let user = {};
   const p = configPath(dir);
   if (existsSync(p)) user = parse(readFileSync(p, "utf8")) || {};
+  let override = {};
+  if (overridePath) {
+    if (!existsSync(overridePath)) throw new Error(`orch: --config-file not found: ${overridePath}`);
+    override = parse(readFileSync(overridePath, "utf8")) || {};
+  }
   const cfg = {
     ...DEFAULTS,
     ...user,
-    cheap: { ...DEFAULTS.cheap, ...(user.cheap || {}) },
-    scope: { ...DEFAULTS.scope, ...(user.scope || {}) },
-    github: { ...DEFAULTS.github, ...(user.github || {}) },
-    docs: { ...DEFAULTS.docs, ...(user.docs || {}) },
+    ...override,
+    cheap: { ...DEFAULTS.cheap, ...(user.cheap || {}), ...(override.cheap || {}) },
+    scope: { ...DEFAULTS.scope, ...(user.scope || {}), ...(override.scope || {}) },
+    github: { ...DEFAULTS.github, ...(user.github || {}), ...(override.github || {}) },
+    docs: { ...DEFAULTS.docs, ...(user.docs || {}), ...(override.docs || {}) },
   };
   validate(cfg);
   return cfg;

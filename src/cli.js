@@ -203,6 +203,7 @@ export function parse(argv) {
       reviewers: { type: "string" },
       cheap: { type: "boolean" }, // force author+reviewer to orch.yml cheap.role for this run
       file: { type: "string" },
+      "config-file": { type: "string" }, // load a .yml file, layered on top of orch.yml for this run
       "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
       "no-banner": { type: "boolean" },
       link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
@@ -611,7 +612,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   const wo = buildAdapterWorkOrder(name);
   const task = wo.title;
   const authorPrompt = buildAuthorPrompt(wo);
-  let cfg = load(repo);
+  let cfg = load(repo, flags["config-file"]);
   if (flags.pr) cfg = { ...cfg, merge: "pr" };
   const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
   const preflightFn = deps.preflight || preflight;
@@ -690,7 +691,7 @@ export async function main(argv, deps = {}) {
     // fatal agent-CLI check — init's whole point is to report installed CLIs
     // non-fatally via detectAgents() below, not require them up front.
     // load() tolerates a missing config.
-    const cfg = load(repo);
+    const cfg = load(repo, flags["config-file"]);
     preflightFn({ agents: [] }, orchDir);
     mkdirSync(orchDir, { recursive: true });
     const ex = join(orchDir, "orch.yml");
@@ -760,7 +761,7 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "task" || command === "review" || command === "issue") {
-    let cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: command === "review" });
+    let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: command === "review" });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
 
     // F3: operator kill switch + one-cycle-at-a-time lock.
@@ -931,7 +932,7 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "pr") {
-    const cfg = applyRoleOverrides(load(repo), flags, { allowReviewerOnly: true });
+    const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const n = rest[0];
     if (!n) throw new Error("usage: orch pr <number> [--merge]");
     preflightFn(cfg, orchDir);
@@ -986,7 +987,8 @@ Usage:
   If launched from main, orch creates and switches to orch/<slug> first.
   After a merge, orch pushes main, deletes its temp branches, and prints a summary;
   --no-tidy leaves all branches/checkout untouched.
-  (flags: --dry, --cheap, --link, --no-tidy, --no-banner, --version, --help)`);
+  --config-file <path.yml> layers a custom YAML file on top of orch.yml for this run only.
+  (flags: --dry, --cheap, --config-file, --link, --no-tidy, --no-banner, --version, --help)`);
 }
 
 function costSuffix(result) {

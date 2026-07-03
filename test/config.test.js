@@ -110,6 +110,29 @@ test(".orch/orch.yml takes precedence over bare orch.yml", () => {
   assert.equal(load(d).merge, "ff-only");
 });
 
+test("load() accepts an override path (--config-file) layered on top of orch.yml", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "merge: no-ff\nscope:\n  maxLines: 100\n");
+  const override = join(d, "custom.yml");
+  writeFileSync(override, "merge: ff-only\nscope:\n  maxLines: 200\n");
+  const c = load(d, override);
+  assert.equal(c.merge, "ff-only");
+  assert.equal(c.scope.maxLines, 200);
+  assert.deepEqual(c.scope.ignore, ["*.lock", "dist/**", "*.snap"]); // default kept
+});
+
+test("load() override path applies even with no repo orch.yml", () => {
+  const d = tmp();
+  const override = join(d, "custom.yml");
+  writeFileSync(override, "reviseCap: 7\n");
+  assert.equal(load(d, override).reviseCap, 7);
+});
+
+test("load() throws when --config-file path does not exist", () => {
+  const d = tmp();
+  assert.throws(() => load(d, join(d, "missing.yml")), /--config-file not found/);
+});
+
 test("invalid merge value throws", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "merge: rebase-please\n");

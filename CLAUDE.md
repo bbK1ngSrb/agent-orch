@@ -25,3 +25,9 @@ Two interactive sessions sharing this working tree race on a single `HEAD`: a co
 can land on whichever branch the other session last checked out (see issue #14). Run
 each concurrent session in its own `git worktree`. orch's per-cycle worktree isolation
 does **not** cover manual/interactive sessions sharing the primary checkout.
+
+<!-- orch:begin (managed by `orch init --link`; edits here are overwritten) -->
+## orch
+This repo uses agent-orch. See `.orch/ORCH.md` for usage; config in `.orch/orch.yml`.
+@.orch/ORCH.md
+<!-- orch:end -->
