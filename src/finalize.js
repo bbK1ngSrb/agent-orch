@@ -1,8 +1,8 @@
 // The only globally-serialized step. Holds .orch/merge.lock while it syncs the
 // integration worktree, runs the two conflict guards (file-overlap pre-check +
-// post-merge re-test), and either lands the merge into local main or demotes the
-// branch to a PR / local escalation. The engine calls this via deps.finalize so
-// it stays a pure state machine.
+// post-merge re-test), and either lands the merge into the integration branch
+// plus its PR bridge or demotes the branch to a PR / local escalation. The
+// engine calls this via deps.finalize so it stays a pure state machine.
 
 // Sums a cycle's per-role runStats into a single { tokens, costUsd } pair for
 // run-history persistence. costUsd is null (omitted) unless at least one
@@ -42,39 +42,36 @@ export async function finalize(ctx, deps) {
     return demote(ctx, deps, "merge-lock timeout"); // never acquired → don't touch the worktree
   }
   try {
-    // Catch local `main` up to origin BEFORE building on it: `orch task`/`orch issue`
+    // Catch local `main` up to origin BEFORE building from it: `orch task`/`orch issue`
     // only does this once, at the start of the whole invocation. If some other
-    // checkout of this origin pushed a merge since then, our local main is stale;
-    // basing this cycle's merge on it wouldn't corrupt anything (a plain push is
-    // fast-forward-only and already fails loudly, with rollback, if rejected —
-    // see complete.js), but it would waste the whole cycle by getting rejected at
-    // push time. Catching up here avoids that. Local main being AHEAD of origin is
-    // normal mid-invocation (main is only pushed once, at the very end) so it's not
-    // treated as a failure — only a genuine two-way divergence demotes.
-    const sync = git.syncMainFromOrigin(repo, { allowAhead: true });
+    // checkout of this origin merged a PR since then, our local main is stale.
+    // Local main must never be ahead here: orch lands on the integration branch
+    // and lets GitHub advance main through the PR.
+    const sync = git.syncMainFromOrigin(repo);
     if (!sync.ok) return demote(ctx, deps, `main diverged from origin: ${sync.reason}`);
 
-    const integration = git.ensureIntegrationWorktree(repo, orchDir);
-    git.syncWorktreeToMain(integration);
+    const integrationBranch = cfg.integrationBranch || "orch/integration";
+    const integration = git.ensureIntegrationWorktree(repo, orchDir, integrationBranch);
+    git.syncWorktreeToIntegration(integration, integrationBranch);
 
-    // Guard 1: file-overlap. Anything that landed on main since our base, plus
+    // Guard 1: file-overlap. Anything that landed on integration since our base, plus
     // any live peer's changed paths. Read under the lock so it is consistent.
-    const others = [...git.changedSince(repo, baseSha), ...inflight.peerPaths(orchDir, sid)];
+    const others = [...git.changedSince(repo, baseSha, integrationBranch), ...inflight.peerPaths(orchDir, sid)];
     if (overlaps(paths, others)) return demote(ctx, deps, "overlap");
 
-    const preSha = git.git(["rev-parse", "HEAD"], integration); // main tip pre-merge
+    const preSha = git.git(["rev-parse", "HEAD"], integration); // integration tip pre-merge
     // `orch issue <n>`: stamp `Closes #n` in the no-ff merge commit so the issue
-    // auto-closes once main reaches origin. ponytail: ff-only has no merge commit
+    // auto-closes once GitHub merges the integration PR. ponytail: ff-only has no merge commit
     // to carry it, so it won't auto-close — default is no-ff; demote PR covers the
     // fallback. The number is our own int, not attacker text — safe to interpolate.
     const message = closes ? `Merge ${branch}\n\nCloses #${closes}` : null;
     const m = git.mergeInWorktree(integration, branch, cfg.merge, message);
     if (!m.ok) return demote(ctx, deps, "conflict");
 
-    // Guard 2: re-run the test gate against integrated main.
+    // Guard 2: re-run the test gate against integrated branch state.
     const { pass } = gate.run(testCmd, integration);
     if (!pass) {
-      git.git(["reset", "--hard", preSha], integration); // roll main back
+      git.git(["reset", "--hard", preSha], integration); // roll integration back
       return demote(ctx, deps, "post-merge-test-fail");
     }
 
@@ -83,27 +80,31 @@ export async function finalize(ctx, deps) {
     git.bumpVersion(integration, closes ? `${branch} (closes #${closes})` : branch);
 
     const sha = git.git(["rev-parse", "HEAD"], integration);
-    // The integration worktree is checked out on branch `main`, so this commit
-    // should already be visible as `repo`'s local main (same .git, shared refs) —
-    // but don't just assume it: verify before reporting success, so a broken/stale
-    // integration worktree fails loudly instead of "merged" going out while local
-    // main never actually moved.
-    const localMain = git.git(["rev-parse", "main"], repo);
-    if (localMain !== sha) {
+    const localIntegration = git.git(["rev-parse", integrationBranch], repo);
+    if (localIntegration !== sha) {
       notify.resetKpi?.(orchDir);
       throw new Error(
-        `orch: merge commit ${sha} was built in the integration worktree but local main ` +
-        `is still at ${localMain} — refusing to report a false "merged"`,
+        `orch: merge commit ${sha} was built in the integration worktree but ${integrationBranch} ` +
+        `is still at ${localIntegration} — refusing to report a false "merged"`,
       );
     }
+    const pr = await github.openIntegrationPr(ctx, deps);
     const shortSha = git.git(["rev-parse", "--short", "HEAD"], integration);
     notify.recordRun(orchDir, {
       ts: new Date().toISOString(), branch, verdict: "merged", sha: shortSha, rounds,
+      ...(pr.prUrl ? { prUrl: pr.prUrl } : {}),
       ...(usage.tokens ? { tokens: usage.tokens } : {}),
       ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
     });
     notify.cleanupReviews(orchDir, branch);
-    return { status: "merged", reason: "agreed + green + merged", sha: shortSha };
+    return {
+      status: "merged",
+      reason: pr.prUrl
+        ? `agreed + green + integrated → PR ${pr.prUrl}`
+        : "agreed + green + integrated locally; PR bridge unavailable",
+      sha: shortSha,
+      prUrl: pr.prUrl,
+    };
   } finally {
     lock.releaseLock(orchDir, "merge.lock");
   }

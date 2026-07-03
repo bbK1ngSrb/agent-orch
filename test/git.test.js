@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToMain, mergeInWorktree, changedSince, syncMainFromOrigin, resetMainToOriginIfDiverged, bumpVersion, verifyOriginContains } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, mergeInWorktree, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -42,7 +42,6 @@ function commitFile(repo, file, text, msg) {
 
 test("createTaskBranch lifecycle + ff-only merge in the integration worktree", () => {
   const repo = newRepo();
-  git(["checkout", "-b", "work"], repo); // cwd off main so integration can own main
   const wt = join(repo, ".orch", "wt", "b");
   createTaskBranch(repo, wt, "pr/claude/x", "main", "");
   writeFileSync(join(wt, "b.txt"), "2\n");
@@ -51,10 +50,11 @@ test("createTaskBranch lifecycle + ff-only merge in the integration worktree", (
   pruneWorktree(repo, wt);
 
   const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
-  syncWorktreeToMain(integ);
+  syncWorktreeToIntegration(integ);
   const r = mergeInWorktree(integ, "pr/claude/x", "ff-only");
   assert.equal(r.ok, true);
-  assert.match(git(["log", "--oneline", "main"], repo), /add b/);
+  assert.match(git(["log", "--oneline", "orch/integration"], repo), /add b/);
+  assert.doesNotMatch(git(["log", "--oneline", "main"], repo), /add b/);
 });
 
 test("createTaskBranch refuses an existing branch", () => {
@@ -184,18 +184,17 @@ test("reclaimOrphanWorktrees leaves the main worktree and other branches alone",
   assert.equal(branchExists(repo, "main"), true);
 });
 
-test("ensureIntegrationWorktree reattaches a reused worktree that drifted onto detached HEAD (#advance-main-ref)", () => {
+test("ensureIntegrationWorktree uses a dedicated branch and leaves main available", () => {
   const repo = newRepo();
-  git(["checkout", "-b", "work"], repo); // cwd off main so integration can own main
 
-  // first-ever call: creates the worktree attached to main, as normal
   const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
-  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], integ), "main");
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], integ), "orch/integration");
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "main");
 
-  // simulate the worktree drifting off branch main (crash mid-op, manual
+  // simulate the worktree drifting off the integration branch (crash mid-op, manual
   // recovery) — the merge commit would then land on a detached HEAD and
-  // refs/heads/main would silently never advance
-  git(["switch", "--detach", "main"], integ);
+  // refs/heads/orch/integration would silently never advance
+  git(["switch", "--detach", "orch/integration"], integ);
 
   const wt = join(repo, ".orch", "wt", "b");
   createTaskBranch(repo, wt, "pr/claude/x", "main", "");
@@ -204,16 +203,17 @@ test("ensureIntegrationWorktree reattaches a reused worktree that drifted onto d
   git(["commit", "-m", "add b"], wt);
   pruneWorktree(repo, wt);
 
-  // reused on a later cycle: must reattach to main before anything merges into it
+  // reused on a later cycle: must reattach before anything merges into it
   const integ2 = ensureIntegrationWorktree(repo, join(repo, ".orch"));
-  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], integ2), "main");
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], integ2), "orch/integration");
 
   const r = mergeInWorktree(integ2, "pr/claude/x", "ff-only");
   assert.equal(r.ok, true);
-  assert.match(git(["log", "--oneline", "main"], repo), /add b/); // refs/heads/main actually advanced
+  assert.match(git(["log", "--oneline", "orch/integration"], repo), /add b/); // integration branch actually advanced
+  assert.doesNotMatch(git(["log", "--oneline", "main"], repo), /add b/);
 });
 
-test("ff-only merge fails when main moved past the branch base", () => {
+test("ff-only merge fails when integration moved past the branch base", () => {
   const repo = newRepo();
   git(["checkout", "-b", "work"], repo);
   const wt = join(repo, ".orch", "wt", "c");
@@ -222,8 +222,8 @@ test("ff-only merge fails when main moved past the branch base", () => {
   git(["add", "."], wt); git(["commit", "-m", "add c"], wt);
   pruneWorktree(repo, wt);
   const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
-  writeFileSync(join(integ, "d.txt"), "4\n"); // move main forward (disjoint file)
-  git(["add", "."], integ); git(["commit", "-m", "move main"], integ);
+  writeFileSync(join(integ, "d.txt"), "4\n"); // move integration forward (disjoint file)
+  git(["add", "."], integ); git(["commit", "-m", "move integration"], integ);
 
   const r = mergeInWorktree(integ, "pr/claude/y", "ff-only");
   assert.equal(r.ok, false); // no longer a fast-forward
@@ -289,12 +289,13 @@ test("reclaim SWEEPS a worktree with an empty (pre-PID / died-early) marker", ()
   assert.equal(branchExists(repo, "pr/claude/empty"), false);
 });
 
-test("changedSince lists files merged into main after a base sha", () => {
+test("changedSince lists files merged into the named branch after a base sha", () => {
   const repo = newRepo();
   const base = git(["rev-parse", "main"], repo);
+  git(["switch", "-c", "orch/integration"], repo);
   writeFileSync(join(repo, "new.txt"), "x\n");
   git(["add", "."], repo); git(["commit", "-m", "land new"], repo);
-  assert.deepEqual(changedSince(repo, base), ["new.txt"]);
+  assert.deepEqual(changedSince(repo, base, "orch/integration"), ["new.txt"]);
 });
 
 test("syncMainFromOrigin fast-forwards local main before new task bases", () => {
@@ -345,7 +346,7 @@ test("syncMainFromOrigin refuses a local main diverged from origin/main", () => 
   assert.notEqual(git(["rev-parse", "main"], repo), git(["rev-parse", "origin/main"], repo));
 });
 
-test("syncMainFromOrigin refuses local main ahead of origin/main by default", () => {
+test("syncMainFromOrigin refuses local main ahead of origin/main", () => {
   const repo = newRepo();
   addOrigin(repo);
   commitFile(repo, "local.txt", "local\n", "advance local");
@@ -354,20 +355,6 @@ test("syncMainFromOrigin refuses local main ahead of origin/main by default", ()
 
   assert.equal(r.ok, false);
   assert.match(r.reason, /ahead/);
-});
-
-test("syncMainFromOrigin with allowAhead accepts local main ahead of origin/main", () => {
-  const repo = newRepo();
-  addOrigin(repo);
-  const local = git(["rev-parse", "main"], repo);
-  commitFile(repo, "local.txt", "local\n", "advance local");
-
-  const r = syncMainFromOrigin(repo, { allowAhead: true });
-
-  assert.equal(r.ok, true);
-  assert.equal(r.ahead, true);
-  assert.notEqual(git(["rev-parse", "main"], repo), local);
-  assert.notEqual(git(["rev-parse", "main"], repo), git(["rev-parse", "origin/main"], repo));
 });
 
 test("verifyOriginContains checks ancestry against refs/remotes/origin/main", () => {
@@ -382,21 +369,6 @@ test("verifyOriginContains checks ancestry against refs/remotes/origin/main", ()
 
   git(["push", "origin", "main"], repo);
   assert.deepEqual(verifyOriginContains(repo, local), { ok: true });
-});
-
-test("resetMainToOriginIfDiverged rolls local main back when origin advanced", () => {
-  const repo = newRepo();
-  const remote = addOrigin(repo);
-  const peer = cloneRemote(remote);
-  commitFile(peer, "remote.txt", "remote\n", "advance remote");
-  git(["push", "origin", "main"], peer);
-  commitFile(repo, "local.txt", "local\n", "advance local");
-
-  const r = resetMainToOriginIfDiverged(repo);
-
-  assert.equal(r.rolledBack, true);
-  assert.equal(git(["rev-parse", "main"], repo), git(["rev-parse", "origin/main"], repo));
-  assert.equal(readFileSync(join(repo, "remote.txt"), "utf8"), "remote\n");
 });
 
 test("reclaim PRESERVES a worktree whose branch is in liveBranches even when marker has dead pid (final-review I3)", () => {

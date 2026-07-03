@@ -13,8 +13,9 @@ const DEFAULTS = {
   stageTimeout: 25, // #56: per-stage wall-clock cap in MINUTES; 0 disables. A stalled
                     // codex/claude stage is killed and the cycle fails (nonzero exit)
                     // instead of hanging forever on an infinite "still running" heartbeat.
-  merge: "no-ff", // ff-only | no-ff | pr — "pr" opts out of direct-to-main: an AGREE+green
-                  // cycle opens a PR (github.openPr) instead of git.mergeInWorktree
+  integrationBranch: "orch/integration", // local merge target; main is advanced only by GitHub PR + ff-only fetch
+  merge: "no-ff", // ff-only | no-ff | pr — "pr" skips local integration: an AGREE+green
+                  // cycle opens a per-cycle PR (github.openPr) instead of git.mergeInWorktree
   concurrency: 4, // max concurrent cycles per repo dir; over this, a cycle exits rather than blocks
   cheap: {
     role: null, // role spec ("<agent> [model] [effort]") used for author+reviewer when cheap routing triggers
@@ -22,8 +23,8 @@ const DEFAULTS = {
   },
   scope: { maxLines: 0, ignore: ["*.lock", "dist/**", "*.snap"] },
   github: {
-    mergeMethod: "squash", // gh pr merge strategy for `orch pr <n> --merge` and merge: pr's auto-merge
-    autoMergePr: false, // when merge: pr, also enable GitHub auto-merge on the PR it opens
+    mergeMethod: "squash", // gh pr merge strategy for orch-owned PR auto-merge
+    autoMergePr: false, // enable GitHub auto-merge on PRs orch opens or updates
   },
   docs: {
     autoUpdate: false, // opt-in per repo; flip true in .orch/orch.yml
@@ -49,6 +50,8 @@ function validate(cfg) {
     throw new Error("orch.yml: reviseCap must be a positive integer");
   if (!Number.isInteger(cfg.stageTimeout) || cfg.stageTimeout < 0)
     throw new Error("orch.yml: stageTimeout must be a non-negative integer (minutes; 0 disables)");
+  if (typeof cfg.integrationBranch !== "string" || !cfg.integrationBranch.trim())
+    throw new Error("orch.yml: integrationBranch must be a non-empty string");
   if (!Number.isInteger(cfg.concurrency) || cfg.concurrency < 1)
     throw new Error("orch.yml: concurrency must be a positive integer");
   if (cfg.cheap.role != null && (typeof cfg.cheap.role !== "string" || !cfg.cheap.role.trim()))

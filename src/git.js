@@ -91,23 +91,15 @@ export function currentBranch(repo) {
   return git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
 }
 
-// Detach the primary checkout onto main's tip. A detached checkout peels `main` to
-// its commit without claiming the branch ref, so this succeeds even while the
-// integration worktree owns `main` — freeing the operator's old branch for deletion.
-export function detachToMain(repo) {
-  git(["switch", "--detach", "--quiet", "main"], repo);
-}
-
-// Safe delete: a branch is safe to drop only when it is fully contained in `main`
-// (every commit already on main → deleting the ref loses nothing). We test that
-// against main directly via merge-base, NOT `branch -d`, because `-d` judges "merged"
-// relative to the current HEAD — which, if a detach failed, is still the operator's
-// branch and would wrongly flag a truly-merged cycle branch as unmerged. unmerged:true
+// Safe delete: a branch is safe to drop only when it is fully contained in the
+// configured landing branch (every commit already there → deleting the ref loses
+// nothing). We test that branch directly via merge-base, NOT `branch -d`, because
+// `-d` judges "merged" relative to the current HEAD. unmerged:true
 // means real commits would be lost, so the caller must gate on the operator's consent.
-export function deleteBranchSafe(repo, branch) {
-  const inMain = gitTry(["merge-base", "--is-ancestor", branch, "main"], repo).ok;
-  if (!inMain) return { ok: false, unmerged: true };
-  const r = gitTry(["branch", "-D", branch], repo); // proven contained in main → -D is loss-free
+export function deleteBranchSafe(repo, branch, base = "main") {
+  const inBase = gitTry(["merge-base", "--is-ancestor", branch, base], repo).ok;
+  if (!inBase) return { ok: false, unmerged: true };
+  const r = gitTry(["branch", "-D", branch], repo); // proven contained in base → -D is loss-free
   return r.ok ? { ok: true } : { ok: false, reason: r.out.trim() };
 }
 
@@ -115,13 +107,6 @@ export function deleteBranchSafe(repo, branch) {
 // after the operator explicitly consents to losing the work.
 export function forceDeleteBranch(repo, branch) {
   git(["branch", "-D", branch], repo);
-}
-
-// Fast-forward-only push of main to origin. Never forces; a missing remote, auth
-// failure, or non-ff rejection comes back as {ok:false, reason} for plain reporting.
-export function pushMain(repo) {
-  const r = gitTry(["push", "origin", "main"], repo);
-  return r.ok ? { ok: true } : { ok: false, reason: r.out.trim() };
 }
 
 export function verifyOriginContains(repo, commit) {
@@ -177,12 +162,7 @@ function moveMainToOrigin(repo, mode) {
   git(["branch", "-f", "main", ORIGIN_MAIN_REF], repo);
 }
 
-// allowAhead: local main containing commits origin doesn't have yet is expected
-// mid-invocation (main is only pushed once, at the end — see complete.js) and
-// isn't a divergence; callers mid-run pass allowAhead so that normal state
-// isn't treated as a failure. The CLI's start-of-invocation call leaves it
-// false, since being ahead there means unpushed work from a previous run.
-export function syncMainFromOrigin(repo, { allowAhead = false } = {}) {
+export function syncMainFromOrigin(repo) {
   const fetched = fetchOriginMain(repo);
   if (!fetched.ok) {
     if (fetched.missingOrigin) return { ok: true, skipped: true, reason: fetched.reason };
@@ -206,21 +186,9 @@ export function syncMainFromOrigin(repo, { allowAhead = false } = {}) {
 
   const remoteBehind = gitTry(["merge-base", "--is-ancestor", ORIGIN_MAIN_REF, "main"], repo).ok;
   if (remoteBehind) {
-    if (allowAhead) return { ok: true, updated: false, ahead: true };
-    return { ok: false, reason: "local main is ahead of origin/main; push or reset main before running orch" };
+    return { ok: false, reason: "local main is ahead of origin/main; reconcile it before running orch" };
   }
-  return { ok: false, reason: "local main has diverged from origin/main; sync or reset main before running orch" };
-}
-
-export function resetMainToOriginIfDiverged(repo) {
-  const fetched = fetchOriginMain(repo);
-  if (!fetched.ok) return { rolledBack: false, reason: fetched.reason };
-  if (gitTry(["merge-base", "--is-ancestor", ORIGIN_MAIN_REF, "main"], repo).ok)
-    return { rolledBack: false, reason: "origin/main is already an ancestor of local main" };
-  const from = git(["rev-parse", "main"], repo);
-  const to = git(["rev-parse", ORIGIN_MAIN_REF], repo);
-  moveMainToOrigin(repo, "reset");
-  return { rolledBack: true, from, to };
+  return { ok: false, reason: "local main has diverged from origin/main; reconcile it before running orch" };
 }
 
 export function pruneWorktree(repo, path) {
@@ -299,31 +267,27 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
   return { recovered };
 }
 
-// One reused worktree, checked out on the `main` branch, where all merges land.
-// Because it owns `main`, cwd must NOT be on main (enforced by the CLI preflight)
-// — git forbids the same branch in two worktrees. The merge commit advances main
-// directly; no ref-move gymnastics.
-export function ensureIntegrationWorktree(repo, orchDir) {
+// One reused worktree, checked out on the dedicated integration branch where
+// local merges land. `main` stays free for an operator checkout and mirrors
+// GitHub's main via fetch + fast-forward only.
+export function ensureIntegrationWorktree(repo, orchDir, branch = "orch/integration") {
   const path = join(orchDir, "integration");
   mkdirSync(orchDir, { recursive: true });
   gitTry(["worktree", "prune"], repo); // clear a stale registration if the dir was removed
   if (!existsSync(path)) {
-    git(["worktree", "add", path, "main"], repo);
-  } else if (git(["rev-parse", "--abbrev-ref", "HEAD"], path) !== "main") {
-    // A reused worktree that drifted off branch `main` (crash mid-op, manual
-    // recovery poking around in it) merges/commits onto a detached HEAD instead
-    // of refs/heads/main: the commit builds fine but main silently never moves.
-    // Nothing else can hold `main` here — it's this worktree's sole reason to
-    // exist — so reattaching is always safe.
-    git(["switch", "main"], path);
+    if (branchExists(repo, branch)) git(["worktree", "add", path, branch], repo);
+    else git(["worktree", "add", "-b", branch, path, "main"], repo);
+  } else if (git(["rev-parse", "--abbrev-ref", "HEAD"], path) !== branch) {
+    if (branchExists(repo, branch)) git(["switch", branch], path);
+    else git(["switch", "-c", branch, "main"], path);
   }
   return path;
 }
 
-// Pull the integration worktree to main's current tip and drop any leftover
+// Pull the integration worktree to its branch tip and drop any leftover
 // half-merge / untracked cruft from a crashed finalize (§6.4).
-export function syncWorktreeToMain(integrationPath) {
-  git(["reset", "--hard", "main"], integrationPath);
+export function syncWorktreeToIntegration(integrationPath, branch = "orch/integration") {
+  git(["reset", "--hard", branch], integrationPath);
   git(["clean", "-fd"], integrationPath);
 }
 
@@ -400,8 +364,8 @@ export function bumpVersion(integrationPath, entry) {
   }
 }
 
-// Files changed on main since a given sha (what landed after a branch's base).
-export function changedSince(repo, sha) {
-  const out = gitTry(["diff", "--name-only", `${sha}..main`], repo);
+// Files changed on the landing branch since a given sha (what landed after a branch's base).
+export function changedSince(repo, sha, base = "main") {
+  const out = gitTry(["diff", "--name-only", `${sha}..${base}`], repo);
   return out.ok ? out.out.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 }

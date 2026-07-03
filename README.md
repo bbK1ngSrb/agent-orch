@@ -191,24 +191,26 @@ orch: concurrency cap 4 reached — 5 cycles live; skipping pr/claude/<slug>-<si
 
 Reduce the cap or wait for a live cycle to finish, then rerun.
 
-**Launching from `main`.** The integration worktree keeps `main` checked out
-inside `.orch/integration`; git forbids the same branch in two worktrees at
-once. When you launch from `main`, orch automatically creates and switches to
-an `orch/<task-slug>` branch at the current commit before the cycle starts:
-
-```
-orch: main is reserved for the integration worktree - created and switched to orch/<task-slug> (your changes carried over)
-```
-
-If that branch name already exists, orch appends `-2`, `-3`, and so on.
+**Launching from `main`.** `main` is no longer reserved by orch. You can keep
+your primary checkout on `main`; orch's permanent worktree checks out the
+dedicated `orch/integration` branch inside `.orch/integration` instead.
 Uncommitted changes stay in your cwd; orch never stashes, resets, or discards
 them.
 
-**Merge path.** When all reviewers agree and tests pass, the cycle merges into
-local `main` through `.orch/integration` under a brief `merge.lock` — no push.
+**Two-speed merge path.** When all reviewers agree and tests pass, the cycle
+merges into `orch/integration` through `.orch/integration` under a brief
+`merge.lock`. That branch is immediately usable locally after the post-merge
+test gate and version bump. Orch then pushes `orch/integration` and opens or
+updates one persistent PR from `orch/integration` to `main`; with
+`github.autoMergePr: true`, it also enables GitHub's native auto-merge on that
+PR. `main` is a mirror of GitHub's `main`: orch does not merge, reset, commit,
+or push it directly. After GitHub merges the PR, local `main` advances only by
+fetching origin and fast-forwarding to `origin/main`.
+
 Two guards run while the lock is held: a file-overlap pre-check (comparing your
-changed paths against live peers' paths and anything that landed on `main` since
-your cycle started) and a post-merge re-test against the integrated tree.
+changed paths against live peers' paths and anything that landed on
+`orch/integration` since your cycle started) and a post-merge re-test against
+the integrated tree.
 
 **PR-fallback.** A cycle demotes to a PR (or local escalation) when:
 - `overlap` — your files collide with a concurrent cycle or a landed commit
@@ -220,18 +222,18 @@ With a git remote and `gh` CLI available, the branch is pushed and a PR is
 opened. Without them, `.orch/reviews/<branch>/DECISION.md` is written and the
 branch is kept for manual review.
 
-**`merge: pr` — opt out of direct-to-main.** Set `merge: pr` in `.orch/orch.yml`
-and an agreed + green cycle never touches local `main` or `merge.lock` — it
-always pushes the branch and opens a PR instead, so branch protection / CI-gated
-merge checks still apply. Needs a git remote and the `gh` CLI; without them the
-cycle escalates locally the same way PR-fallback does. Set
-`github.autoMergePr: true` to also enable GitHub's native auto-merge on that PR
-(merged automatically once its own checks pass) — if enabling auto-merge fails
-(e.g. branch protection isn't configured), the PR itself still stands; only the
-auto-merge step is skipped.
+**`merge: pr` — per-cycle PR mode.** Set `merge: pr` in `.orch/orch.yml` and an
+agreed + green cycle skips the local integration branch and `merge.lock`; it
+pushes that cycle branch and opens its own PR to `main` instead. This mode is
+unchanged by the persistent `orch/integration` bridge. Needs a git remote and
+the `gh` CLI; without them the cycle escalates locally the same way PR-fallback
+does. Set `github.autoMergePr: true` to also enable GitHub's native auto-merge
+on that PR (merged automatically once its own checks pass) — if enabling
+auto-merge fails (e.g. branch protection isn't configured), the PR itself still
+stands; only the auto-merge step is skipped.
 
 ## Version bump on merge
-Every cycle that lands via the local merge path (not `merge: pr`) patch-bumps
+Every cycle that lands via the local integration path (not `merge: pr`) patch-bumps
 `package.json` right after the post-merge test gate passes: `x.y.z` → `x.y.(z+1)`,
 mirrored into `package-lock.json`'s root version and `src/version.js` (the file
 `orch --version` reads, if the target repo has one), plus a prepended

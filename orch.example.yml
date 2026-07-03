@@ -20,7 +20,8 @@ agents: [claude, codex]   # default: [claude, codex]
 # === Cycle ===
 test: auto                # "auto" detects the test command, or set one, e.g. "pytest -q"
 reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
-merge: no-ff              # merge into main: ff-only | no-ff | pr; default: no-ff (concurrent disjoint cycles both land; ff-only = linear but extra cycles fall back to PR; pr = never touch local main, always open a GitHub PR)
+integrationBranch: orch/integration  # local merge target for no-ff/ff-only; default: orch/integration
+merge: no-ff              # merge into integrationBranch: ff-only | no-ff | pr; default: no-ff (pr = skip local integration and open a per-cycle branch PR)
 
 # === Cheap-agent dispatch (optional) ===
 # `orch task --cheap` forces `role` (e.g. a local llm via ccr) ad hoc; without
@@ -35,10 +36,10 @@ scope:
   maxLines: 0             # 0 = disabled; >0 rejects oversized author commits
   ignore: ["*.lock", "dist/**", "*.snap"]   # globs excluded from the line count
 
-# === GitHub PR bridge (orch pr <n>; also used by merge: pr above) ===
+# === GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> main) ===
 github:
   mergeMethod: squash     # gh pr merge strategy: squash | merge | rebase; default: squash
-  autoMergePr: false      # with merge: pr, also enable GitHub's native auto-merge on the PR it opens; default: false
+  autoMergePr: false      # enable GitHub's native auto-merge on PRs orch opens/updates; default: false
 
 # === Auto docs-update after a real merge (optional) ===
 docs:

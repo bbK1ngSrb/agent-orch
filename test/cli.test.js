@@ -866,13 +866,11 @@ test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
   }
 });
 
-// --no-tidy isolates the switchFromMain (#43) behavior from the post-run cleanup
-// (#44), which would otherwise detach HEAD and delete the orch branch.
-test("orch task on main auto-creates and switches to an orch slug branch", async () => {
+test("orch task can run while the operator checkout stays on main", async () => {
   const repo = initGitRepo();
   const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
-  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task");
-  assert.match(logs.join("\n"), /created and switched to orch\/some-task/);
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "main");
+  assert.doesNotMatch(logs.join("\n"), /main is reserved/);
   assert.match(logs.join("\n"), /orch: pr\/claude\/some-task-\d+-[0-9a-z]+: merged \(test\)/);
   assert.match(logs.join("\n"), /after 1 round\(s\).*; cost 60 tokens/);
 });
@@ -889,27 +887,27 @@ test("orch task fast-forwards stale local main from origin before branching", as
 
   assert.equal(gitDep.git(["rev-parse", "main"], repo), gitDep.git(["rev-parse", "origin/main"], repo));
   assert.equal(readFileSync(join(repo, "remote.txt"), "utf8"), "remote\n");
-  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task");
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "main");
   assert.match(logs.join("\n"), /fast-forwarded local main from origin\/main/);
 });
 
-test("orch task on main appends a numeric suffix when the orch slug branch exists", async () => {
+test("orch task branch naming is independent of an existing orch slug branch", async () => {
   const repo = initGitRepo();
   gitDep.git(["branch", "orch/some-task"], repo);
   gitDep.git(["branch", "orch/some-task-2"], repo);
   const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
-  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/some-task-3");
-  assert.match(logs.join("\n"), /created and switched to orch\/some-task-3/);
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "main");
+  assert.match(logs.join("\n"), /orch: pr\/claude\/some-task-\d+-[0-9a-z]+: merged \(test\)/);
 });
 
-test("#44: a merged task run hands the operator+cycle branches to finishRun for tidy-up", async () => {
+test("#44: a merged task run hands cycle branches to finishRun for tidy-up", async () => {
   const repo = initGitRepo();
   const calls = [];
   await runMainInRepo(repo, ["task", "some task"], { finishRun: async (ctx) => { calls.push(ctx); } });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].operatorBranch, "orch/some-task");
   assert.equal(calls[0].task, "some task");
   assert.match(calls[0].merged[0], /^pr\/claude\/some-task-/);
+  assert.equal(calls[0].integrationBranch, "orch/integration");
   assert.deepEqual(calls[0].runStats, [
     { role: "author", agent: "claude", model: "gpt-test-author", tokens: 40 },
     { role: "reviewer", agent: "codex", model: "gpt-test-review", tokens: 20 },
@@ -946,17 +944,17 @@ test("#44: a non-merged (escalated) run is not handed to finishRun", async () =>
 test("orch task already off main leaves cwd branch unchanged", async () => {
   const repo = initGitRepo();
   gitDep.git(["switch", "-c", "work"], repo);
-  const logs = await runMainInRepo(repo, ["task", "some task"]);
+  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
   assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "work");
   assert.doesNotMatch(logs.join("\n"), /created and switched/);
 });
 
-test("orch task on main carries uncommitted cwd changes to the new branch", async () => {
+test("orch task on main leaves uncommitted cwd changes in place", async () => {
   const repo = initGitRepo();
   writeFileSync(join(repo, "a.txt"), "dirty\n");
   writeFileSync(join(repo, "scratch.txt"), "untracked\n");
-  await runMainInRepo(repo, ["task", "touch dirty", "--no-tidy"]); // isolate #43 carry from #44 detach
-  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "orch/touch-dirty");
+  await runMainInRepo(repo, ["task", "touch dirty", "--no-tidy"]);
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "main");
   assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "dirty\n");
   assert.equal(readFileSync(join(repo, "scratch.txt"), "utf8"), "untracked\n");
   const status = gitDep.git(["status", "--porcelain"], repo);
