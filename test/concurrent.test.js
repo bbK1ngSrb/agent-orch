@@ -15,7 +15,10 @@ function realDeps() {
     git: gitNs, gate: { run: () => ({ pass: true }) },
     lock: { acquireBlocking, releaseLock },
     inflight,
-    github: { demote: async ({ branch }) => ({ prUrl: null }) }, // no remote → local escalate
+    github: {
+      demote: async ({ branch }) => ({ prUrl: null }),
+      openIntegrationPr: async () => ({ prUrl: null }),
+    },
     notify,
   };
 }
@@ -27,7 +30,6 @@ function newRepo() {
   git(["config", "user.name", "t"], d);
   writeFileSync(join(d, "base.txt"), "0\n");
   git(["add", "."], d); git(["commit", "-m", "init"], d);
-  git(["checkout", "-b", "work"], d); // cwd off main
   return d;
 }
 
@@ -41,7 +43,7 @@ function makeBranch(repo, orchDir, name, file, content) {
   return base;
 }
 
-test("two disjoint branches both auto-merge into main", async () => {
+test("two disjoint branches both auto-merge into integration", async () => {
   const repo = newRepo();
   const orchDir = join(repo, ".orch");
   const baseA = makeBranch(repo, orchDir, "pr/claude/a-1", "a.txt", "A\n");
@@ -52,9 +54,10 @@ test("two disjoint branches both auto-merge into main", async () => {
 
   assert.equal(rA.status, "merged");
   assert.equal(rB.status, "merged");
-  const log = git(["log", "--oneline", "main"], repo);
+  const log = git(["log", "--oneline", "orch/integration"], repo);
   assert.match(log, /add a.txt/);
   assert.match(log, /add b.txt/);
+  assert.doesNotMatch(git(["log", "--oneline", "main"], repo), /add a.txt/);
 });
 
 test("overlapping branches: first merges, second demotes (overlap)", async () => {
@@ -71,7 +74,7 @@ test("overlapping branches: first merges, second demotes (overlap)", async () =>
   assert.match(rB.reason, /overlap/);
 });
 
-test("clean text merge but post-merge tests fail → demote, main unchanged", async () => {
+test("clean text merge but post-merge tests fail → demote, integration unchanged", async () => {
   const repo = newRepo();
   const orchDir = join(repo, ".orch");
   const base = makeBranch(repo, orchDir, "pr/claude/a-1", "a.txt", "A\n");
@@ -83,5 +86,5 @@ test("clean text merge but post-merge tests fail → demote, main unchanged", as
 
   assert.equal(r.status, "pr-fallback");
   assert.match(r.reason, /post-merge-test-fail/);
-  assert.equal(git(["rev-parse", "main"], repo), before); // main rolled back
+  assert.equal(git(["rev-parse", "main"], repo), before); // main was never touched
 });

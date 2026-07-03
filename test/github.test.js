@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runPr, buildComment, demote, openPr } from "../src/github.js";
+import { runPr, buildComment, demote, openPr, openIntegrationPr } from "../src/github.js";
 
 function makeDeps({ status = "approved", state = "OPEN" } = {}) {
   const calls = { gh: [], git: [] };
@@ -205,6 +205,47 @@ test("openPr escalates locally when there is no remote", async () => {
   const r = await openPr({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", cfg }, { gh, git, notify });
   assert.equal(r.prUrl, null);
   assert.equal(escalated.branch, "pr/claude/x-1");
+});
+
+test("openIntegrationPr creates the persistent integration PR and enables auto-merge", async () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return "[]";
+    if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/12\n";
+    return "";
+  };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.ok(calls.some((c) => c.join(" ") === "git push -u origin orch/integration"));
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
+  const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
+  assert.ok(mergeCall.includes("--auto"));
+  assert.ok(mergeCall.includes("--merge"));
+  assert.equal(mergeCall.includes("--squash"), false);
+});
+
+test("openIntegrationPr updates an existing integration PR instead of creating another", async () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit" && c[3] === "12"));
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
 });
 
 test("§3f: runPr comment passes through redact (no raw secret in the body)", async () => {

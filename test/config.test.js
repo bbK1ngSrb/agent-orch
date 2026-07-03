@@ -145,6 +145,16 @@ test("merge: pr is a valid opt-in for PR-gated merges", () => {
   assert.equal(load(d).merge, "pr");
 });
 
+test("integrationBranch defaults to orch/integration; blank value throws", () => {
+  assert.equal(load(tmp()).integrationBranch, "orch/integration");
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "integrationBranch: custom/integration\n");
+  assert.equal(load(d).integrationBranch, "custom/integration");
+  const bad = tmp();
+  writeFileSync(join(bad, "orch.yml"), "integrationBranch: ''\n");
+  assert.throws(() => load(bad), /integrationBranch must be a non-empty string/);
+});
+
 test("github.mergeMethod defaults to squash; invalid value throws", () => {
   assert.equal(load(tmp()).github.mergeMethod, "squash");
   const d = tmp();

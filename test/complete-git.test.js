@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, currentBranch, detachToMain, deleteBranchSafe, forceDeleteBranch, pushMain } from "../src/git.js";
+import { git, currentBranch, deleteBranchSafe, forceDeleteBranch } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-complete-"));
@@ -21,23 +21,6 @@ test("currentBranch reports the branch, and 'HEAD' when detached", () => {
   assert.equal(currentBranch(repo), "main");
   git(["switch", "--detach", "HEAD"], repo);
   assert.equal(currentBranch(repo), "HEAD");
-});
-
-// The load-bearing assumption: a linked worktree owns `main`, yet the primary
-// checkout must still be able to detach onto main's tip so its old branch frees up.
-test("detachToMain works even while another worktree owns main", () => {
-  const repo = newRepo();
-  writeFileSync(join(repo, "a.txt"), "2\n"); git(["commit", "-am", "second"], repo);
-  const mainSha = git(["rev-parse", "main"], repo);
-  // operator is parked on a fresh orch branch first (what switchFromMain does),
-  // freeing `main` for the integration worktree to squat — the real run order.
-  git(["switch", "-c", "orch/foo"], repo);
-  git(["worktree", "add", join(repo, ".orch", "integration"), "main"], repo);
-
-  detachToMain(repo);
-
-  assert.equal(currentBranch(repo), "HEAD");                 // detached, not on a branch
-  assert.equal(git(["rev-parse", "HEAD"], repo), mainSha);   // at main's tip
 });
 
 test("deleteBranchSafe deletes a merged branch, refuses an unmerged one", () => {
@@ -72,23 +55,4 @@ test("forceDeleteBranch drops an unmerged branch", () => {
   git(["switch", "--detach", "main"], repo);
   forceDeleteBranch(repo, "feature");
   assert.throws(() => git(["rev-parse", "--verify", "refs/heads/feature"], repo));
-});
-
-test("pushMain reports a clean failure when there is no remote (never throws)", () => {
-  const repo = newRepo();
-  const r = pushMain(repo);
-  assert.equal(r.ok, false);
-  assert.ok(typeof r.reason === "string" && r.reason.length > 0);
-});
-
-test("pushMain fast-forwards an existing remote", () => {
-  const remote = mkdtempSync(join(tmpdir(), "orch-remote-"));
-  git(["init", "--bare", "-b", "main"], remote);
-  const repo = newRepo();
-  git(["remote", "add", "origin", remote], repo);
-  git(["push", "-u", "origin", "main"], repo);
-  writeFileSync(join(repo, "a.txt"), "2\n"); git(["commit", "-am", "second"], repo);
-  const r = pushMain(repo);
-  assert.equal(r.ok, true);
-  assert.equal(git(["rev-parse", "main"], remote), git(["rev-parse", "main"], repo));
 });

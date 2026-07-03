@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runCycle } from "./engine.js";
-import { runPr, demote, openPr, buildIssueComment } from "./github.js";
+import { runPr, demote, openPr, openIntegrationPr, buildIssueComment } from "./github.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -92,7 +92,8 @@ agents: [claude, codex]   # default: [claude, codex]
 test: auto                # "auto" detects the test command, or set one, e.g. "pytest -q"
 reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
 stageTimeout: 25          # per-stage wall-clock cap in MINUTES; 0 disables; default: 25. A stalled author/review (e.g. a wedged codex exec) is killed and the cycle fails (nonzero exit) instead of hanging forever. Env override: ORCH_STAGE_TIMEOUT_MS (milliseconds)
-merge: no-ff              # merge into main: ff-only | no-ff | pr; default: no-ff (concurrent disjoint cycles both land; ff-only = linear but extra cycles fall back to PR; pr = never touch local main, always open a GitHub PR)
+integrationBranch: orch/integration  # local merge target for no-ff/ff-only; default: orch/integration
+merge: no-ff              # merge into integrationBranch: ff-only | no-ff | pr; default: no-ff (pr = skip local integration and open a per-cycle branch PR)
 concurrency: 4            # max concurrent orch cycles in this repo dir; over this a cycle exits; default: 4
 
 # === Cheap-agent dispatch (optional) ===
@@ -109,10 +110,10 @@ scope:
   maxLines: 0             # 0 = disabled; >0 escalates author commits over this many changed lines
   ignore: ["*.lock", "dist/**", "*.snap"]   # globs excluded from the line count
 
-# === GitHub PR bridge (orch pr <n>; also used by merge: pr above) ===
+# === GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> main) ===
 github:
-  mergeMethod: squash     # gh pr merge strategy: squash | merge | rebase; default: squash
-  autoMergePr: false      # with merge: pr, also enable GitHub's native auto-merge on the PR it opens; default: false
+  mergeMethod: squash     # gh pr merge strategy for non-integration PRs; default: squash
+  autoMergePr: false      # enable GitHub's native auto-merge on PRs orch opens/updates; default: false
 
 # === Auto docs-update after a real merge (optional) ===
 docs:
@@ -129,7 +130,10 @@ docs:
 const ORCH_DOC = `# Using orch in this repo
 
 This repo is set up for **agent-orch**: it authors a change with one agent,
-cross-audits it with a second, gates on tests, then merges.
+cross-audits it with a second, gates on tests, then merges into
+\`orch/integration\` and opens or updates the persistent PR to \`main\`.
+\`main\` is a GitHub mirror; update it locally only by fetching and
+fast-forwarding \`origin/main\`.
 
 ## Commands
 - \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
@@ -375,7 +379,11 @@ function realIo() {
 export function realDeps() {
   const ghShell = (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString();
   const ghDeps = { gh: ghShell, git: git.git, notify, log: (m) => process.stderr.write(`▶ ${m}\n`) };
-  const githubDep = { demote: (ctx) => demote(ctx, ghDeps), openPr: (ctx) => openPr(ctx, ghDeps) };
+  const githubDep = {
+    demote: (ctx) => demote(ctx, ghDeps),
+    openPr: (ctx) => openPr(ctx, ghDeps),
+    openIntegrationPr: (ctx) => openIntegrationPr(ctx, ghDeps),
+  };
   const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify });
   return { adapters, git, gate, scope, notify, inflight, finalize: finalizeDep, checkpoint, reviewLog };
 }
@@ -489,22 +497,6 @@ export function maybePrintRunBanner(cfg, runs, flags, stdout = process.stdout) {
   const color = stdout.isTTY && process.env.NO_COLOR == null;
   stdout.write(`${runBanner(cfg, runs, { color, columns: stdout.columns })}\n`);
   return true;
-}
-
-function nextAvailableOrchBranch(repo, slugSource) {
-  const base = `orch/${slugify(slugSource)}`;
-  let branch = base;
-  for (let i = 2; git.branchExists(repo, branch); i++) branch = `${base}-${i}`;
-  return branch;
-}
-
-function switchFromMain(repo, slugSource) {
-  const head = git.git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
-  if (head !== "main") return null;
-  const branch = nextAvailableOrchBranch(repo, slugSource);
-  git.git(["switch", "-c", branch], repo);
-  console.log(`orch: main is reserved for the integration worktree - created and switched to ${branch} (your changes carried over)`);
-  return branch;
 }
 
 // The author of a surviving committed branch to resume, or null. Scans resume
@@ -807,20 +799,18 @@ export async function main(argv, deps = {}) {
     cfg = applyCheapOverride(cfg, flags, workOrder);
     if (!dry) preflightFn(cfg, orchDir); // dry-run never shells out, so don't require CLIs
 
-    // Integration worktree owns `main`; if cwd is on main, move it to an
-    // operator branch before reclaim/picking branches. Reclaim orphaned
+    // Main is a GitHub mirror; task mode fast-forwards it from origin before
+    // branches are based on it. Reclaim orphaned
     // worktrees BEFORE picking branches so resume resolution (#24) sees
     // post-reclaim truth — a hard-killed orphan branch is already gone by then,
     // so resume safely degrades to a fresh start instead of attaching a dead ref.
     let liveBranches = new Set();
-    let operatorBranch = null; // #44: the orch/<slug> we parked the operator on, if any
     if (!dry) {
       if (mode === "task") {
         const sync = git.syncMainFromOrigin(repo);
         if (!sync.ok) throw new Error(`orch: cannot start from stale main: ${sync.reason}`);
         if (sync.updated) console.log("orch: fast-forwarded local main from origin/main");
       }
-      operatorBranch = switchFromMain(repo, mode === "task" ? task : `review ${reviewBranch}`);
       liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
       // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers.
       resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
@@ -868,7 +858,8 @@ export async function main(argv, deps = {}) {
     if (!dry && runs.some((run) => run.resume)) notify.resetKpi(orchDir);
 
     const results = [];
-    const mergedBranches = []; // #44: cycle branches that actually landed on main
+    const mergedBranches = []; // cycle branches that actually landed on integration
+    const prUrls = [];
     for (const run of runs) {
       if (!dry) {
         const baseSha = git.git(["rev-parse", "main"], repo);
@@ -892,6 +883,7 @@ export async function main(argv, deps = {}) {
         }
         console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${cleanStreakSuffix(orchDir, dry)}; cost ${result.usageSummary}`);
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
+        if (result.prUrl) prUrls.push(result.prUrl);
         if (result.status === "escalated" || result.status === "pr-fallback") {
           process.exitCode = 2;
           // Issue bridge: leave a trace on the source issue — headless runs have
@@ -924,7 +916,7 @@ export async function main(argv, deps = {}) {
       const io = deps.io || realIo();
       const runStats = results.flatMap((r) => r.runStats || []);
       await finishFn(
-        { repo, orchDir, task, operatorBranch, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats },
+        { repo, orchDir, task, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls },
         { git, io, notify },
       );
     }
@@ -984,8 +976,7 @@ Usage:
   A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).
   --cheap forces orch.yml's cheap.role (e.g. a local llm) for one run (task/issue);
   set cheap.paths to auto-route matching --file/orch issue work orders without the flag.
-  If launched from main, orch creates and switches to orch/<slug> first.
-  After a merge, orch pushes main, deletes its temp branches, and prints a summary;
+  After a merge, orch updates \`orch/integration\`, opens/updates its PR to main, deletes temp branches, and prints a summary;
   --no-tidy leaves all branches/checkout untouched.
   --config-file <path.yml> layers a custom YAML file on top of orch.yml for this run only.
   (flags: --dry, --cheap, --config-file, --link, --no-tidy, --no-banner, --version, --help)`);

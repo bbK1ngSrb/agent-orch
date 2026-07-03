@@ -1,6 +1,6 @@
 // Post-run completion for a human at a terminal. After a successful `orch task`,
 // a git-illiterate operator should be left in a clean, self-explained state: orch
-// saves to GitHub, tidies the temporary branches and scratch state it created, and
+// reports the integration PR, tidies the temporary branches and scratch state it created, and
 // prints a plain-English summary. Anything that could irreversibly lose work is
 // marked ❗, explained, and gated on the operator's [y/N] — never done silently.
 //
@@ -9,63 +9,23 @@
 // synced/detached/deleted), so the optional docs-update child can run it too.
 
 export async function finishRun(ctx, deps) {
-  const { repo, orchDir, task, operatorBranch, merged = [], interactive, docsPending = false, runStats = [] } = ctx;
-  const { git, io, notify } = deps;
+  const {
+    repo, task, merged = [], interactive, docsPending = false, runStats = [],
+    integrationBranch = "orch/integration", prUrls = [],
+  } = ctx;
+  const { git, io } = deps;
 
-  const sha = git.git(["rev-parse", "--short", "main"], repo);
+  const sha = git.git(["rev-parse", "--short", integrationBranch], repo);
 
-  // 1. Sync - fast-forward push only. Never force. If origin/main advanced
-  //    meanwhile, roll local main back to origin/main and stop loudly so later
-  //    cycles do not base on an unpushable local merge.
-  const push = git.pushMain(repo);
-  // A zero exit from `git push` isn't proof origin actually moved — verify
-  // origin/main landed at the sha we just pushed before calling it saved, so a
-  // push that reports success without taking effect doesn't get reported as one.
-  if (push.ok) {
-    let landed = null;
-    try { landed = git.git(["rev-parse", "--short", "origin/main"], repo); } catch { /* treat as not landed */ }
-    if (landed !== sha) {
-      push.ok = false;
-      push.reason = `push reported success but origin/main is ${landed || "unknown"}, not ${sha}`;
-    }
-  }
-  if (!push.ok && git.resetMainToOriginIfDiverged) {
-    const rollback = git.resetMainToOriginIfDiverged(repo);
-    if (rollback.rolledBack) {
-      if (orchDir) notify?.resetKpi?.(orchDir);
-      throw new Error(
-        `orch: push to origin/main failed after merging, and origin/main has advanced. ` +
-        `Reset local main back to origin/main to avoid poisoning later cycles. ` +
-        `Merged branch(es) kept for recovery: ${merged.join(", ")}. ` +
-        `Push output: ${push.reason || "push failed"}`,
-      );
-    }
-  }
-
-  // 2. Free the operator's checkout. orch parks them on a fresh `orch/<slug>` branch
-  //    at start (operatorBranch); detach onto the merged main tip so that branch can
-  //    be deleted and they see the finished result. If orch never moved them
-  //    (operatorBranch null = they were on their own branch), leave their checkout be.
-  //    The merge already succeeded — a cleanup failure must NEVER surface as a crash
-  //    (#44). Detach can refuse if uncommitted edits would be clobbered by the now-
-  //    advanced main; degrade to leaving them where they are and saying so plainly.
-  let detached = false;
-  let parked = null;
-  if (operatorBranch) {
-    try { git.detachToMain(repo); detached = true; }
-    catch { parked = operatorBranch; }
-  }
-
-  // 3. Delete the branches orch created. `branch -d` refuses to drop anything not
-  //    merged into main, so the safe path can never lose work; only an explicit,
+  // Delete the branches orch created. The safe path refuses to drop anything not
+  //    merged into integration, so it can never lose work; only an explicit,
   //    consented force-delete (-D) can — and only on a real terminal. Skip the
-  //    operator branch unless we actually freed it (it's still checked out otherwise).
+  //    operator branch: orch no longer moves a main checkout to a temporary branch.
   const toDelete = [...merged];
-  if (operatorBranch && detached) toDelete.push(operatorBranch);
   const deleted = [];
   const leftover = [];
   for (const br of toDelete) {
-    const res = git.deleteBranchSafe(repo, br);
+    const res = git.deleteBranchSafe(repo, br, integrationBranch);
     if (res.ok) { deleted.push(br); continue; }
     if (res.unmerged && interactive) {
       const ok = await io.confirm(
@@ -81,8 +41,8 @@ export async function finishRun(ctx, deps) {
     leftover.push(br);
   }
 
-  io.print(summarize({ task, sha, push, deleted, leftover, operatorBranch, parked, docsPending, runStats }));
-  return { pushed: push.ok, pushReason: push.reason, deleted, leftover, parked };
+  io.print(summarize({ task, sha, deleted, leftover, docsPending, runStats, integrationBranch, prUrls }));
+  return { deleted, leftover };
 }
 
 function formatInt(n) {
@@ -124,19 +84,15 @@ function summarizeStats(runStats) {
   return lines;
 }
 
-function summarize({ task, sha, push, deleted, leftover, operatorBranch, parked, docsPending, runStats }) {
+function summarize({ task, sha, deleted, leftover, docsPending, runStats, integrationBranch, prUrls }) {
   const L = [];
   L.push(`✅ All done — "${task}"`);
   L.push("");
   L.push("What happened:");
   L.push("  • Two AI agents wrote and reviewed the change; they agreed and the tests passed.");
-  L.push(`  • It is now part of your project's main version (main, ${sha}).`);
-  if (push.ok) {
-    L.push("  • Saved to GitHub (origin/main is up to date).");
-  } else {
-    L.push(`  • ⚠️ Not saved to GitHub yet — ${push.reason || "push failed"}.`);
-    L.push("    To save it yourself, run:  git push origin main");
-  }
+  L.push(`  • It is now in ${integrationBranch} (${sha}) and ready locally.`);
+  if (prUrls.length) L.push(`  • GitHub will advance main through ${prUrls[0]}.`);
+  else L.push("  • Main was not changed locally; it advances only after the integration PR merges on GitHub.");
   if (deleted.length) {
     const n = deleted.length;
     L.push(`  • Tidied up ${n} temporary work ${n === 1 ? "branch" : "branches"} and orch's scratch files.`);
@@ -149,14 +105,6 @@ function summarize({ task, sha, push, deleted, leftover, operatorBranch, parked,
     L.push("📝 A documentation update is still running in the background — it will be saved");
     L.push("   and tidied up the same way when it finishes.");
     L.push("");
-  }
-  if (parked) {
-    L.push(`Couldn't move your checkout — you have uncommitted edits, so you're still on`);
-    L.push(`"${parked}". Nothing was lost; commit or stash those edits, then you're free`);
-    L.push("to switch away. (orch left this branch in place for you.)");
-  } else if (operatorBranch) {
-    L.push("You're now viewing the finished result. Git shows this as a \"detached\" view —");
-    L.push("that's normal here and nothing is wrong; your work is safely on main.");
   }
   if (leftover.length) {
     L.push("");

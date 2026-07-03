@@ -164,3 +164,58 @@ export async function openPr(ctx, deps) {
   }
   return { prUrl: url };
 }
+
+// Default local-merge landing bridge: the reusable integration branch is already
+// merged, tested, and bumped locally. Push that branch and maintain one PR from
+// it to main; GitHub owns the final main update.
+export async function openIntegrationPr(ctx, deps) {
+  const { repo, orchDir, cfg } = ctx;
+  const branch = cfg.integrationBranch || "orch/integration";
+  const { git, gh, notify, log = () => {} } = deps;
+  if (!hasRemote(repo, git) || !ghAvailable(gh)) {
+    notify.escalate?.(orchDir, branch,
+      `# Escalation — ${branch}\n\nThe local integration branch is green, but a git remote and the gh CLI are required to open or update the PR to main.\n`);
+    return { prUrl: null };
+  }
+
+  const title = "orch: integrate green local cycles";
+  const body = redact(
+    "agent-orch: local integration passed. This persistent PR gates orch/integration into main; main is a GitHub mirror and is not advanced locally.",
+  );
+  git(["push", "-u", "origin", branch], repo);
+  const open = JSON.parse(gh([
+    "pr", "list",
+    "--head", branch,
+    "--base", "main",
+    "--state", "open",
+    "--json", "number,url",
+  ]) || "[]");
+
+  let prRef;
+  let url;
+  if (open[0]) {
+    prRef = String(open[0].number);
+    url = open[0].url;
+    gh(["pr", "edit", prRef, "--title", title, "--body", body]);
+    log(`updated integration PR #${prRef}: ${url}`);
+  } else {
+    url = gh([
+      "pr", "create", "--head", branch, "--base", "main",
+      "--title", title,
+      "--body", body,
+    ]).trim();
+    prRef = branch;
+    log(`opened integration PR for ${branch}: ${url}`);
+  }
+
+  if (cfg?.github?.autoMergePr) {
+    try {
+      // The persistent integration branch must stay in main's ancestry. Squash
+      // or rebase would strand orch/integration behind main after the first PR.
+      gh(["pr", "merge", prRef, "--auto", "--merge"]);
+    } catch (e) {
+      log(`could not enable auto-merge for ${branch}: ${e.message}`);
+    }
+  }
+  return { prUrl: url };
+}
