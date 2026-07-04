@@ -24,7 +24,11 @@ on stalemate it asks you. All compute is local.
 
 ## Requirements
 - Node ≥ 18
-- At least one agent CLI on PATH: `claude`, `codex`, `copilot`, or `ccr` (for local-llm models)
+- At least one agent CLI installed: `claude`, `codex`, `copilot`, or `ccr` (for
+  local-llm models). PATH is preferred, but if the caller's PATH is degraded
+  (wrappers, cron, hooks often drop `~/.local/bin`), preflight also probes
+  `~/.local/bin` and the running node's own bin dir (covers `npm i -g` / nvm)
+  and spawns the CLI by absolute path.
 
 ## Install
 The CLI is exposed as `orch`:
