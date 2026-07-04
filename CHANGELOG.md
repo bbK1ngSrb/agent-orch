@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.4 — 2026-07-04
+- pr/copilot/docs-only-add-a-reference-to-the-compani-2095951-0
+
 ## 0.2.3 — 2026-07-04
 - pr/codex/auto-docs-mr6bvb570-update-documentation-1671052-0
 
