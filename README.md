@@ -234,12 +234,13 @@ push it directly. After GitHub merges the PR, local `main` advances only by
 fetching origin and fast-forwarding to `origin/main`.
 
 Two guards run while the lock is held: a file-overlap pre-check (comparing your
-changed paths against live peers' paths and anything that landed on
-`orch/integration` since your cycle started) and a post-merge re-test against
-the integrated tree.
+changed paths against live in-flight peers' paths — commits already landed on
+`orch/integration` are not pre-checked; a real conflict with them fails the
+merge itself, and a semantic conflict fails the post-merge re-test) and a
+post-merge re-test against the integrated tree.
 
 **PR-fallback.** A cycle demotes to a PR (or local escalation) when:
-- `overlap` — your files collide with a concurrent cycle or a landed commit
+- `overlap` — your files collide with a live concurrent cycle's files
 - `conflict` — the merge itself fails
 - `post-merge-test-fail` — tests fail after merge into `.orch/integration`
 - `merge-lock timeout` — the lock was never acquired
