@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.3 — 2026-07-04
+- pr/codex/auto-docs-mr6bvb570-update-documentation-1671052-0
+
 ## 0.2.2 — 2026-07-04
 - pr/claude/agent-cli-resolution-fails-when-path-lac-1613238-0 (closes #91)
 
