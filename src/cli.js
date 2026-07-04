@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, accessSync, constants } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, delimiter } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
@@ -339,8 +339,13 @@ const FALLBACK_BIN_DIRS = [join(homedir(), ".local", "bin"), dirname(process.exe
 
 // PATH lookup first; on miss, probe well-known install dirs and return the
 // absolute path so spawns work even though PATH can't find the CLI. Null = nowhere.
-export function resolveAgentBin(exe, dirs = FALLBACK_BIN_DIRS) {
-  try { execFileSync("which", [exe], { stdio: "ignore" }); return exe; } catch { /* fall through */ }
+// PATH is searched directly (no external `which`) so resolution works even when
+// PATH is too degraded to find `which` itself.
+export function resolveAgentBin(exe, dirs = FALLBACK_BIN_DIRS, envPath = process.env.PATH) {
+  for (const d of (envPath || "").split(delimiter)) {
+    if (!d) continue;
+    try { accessSync(join(d, exe), constants.X_OK); return exe; } catch { /* keep searching */ }
+  }
   for (const d of dirs) {
     const p = join(d, exe);
     try { accessSync(p, constants.X_OK); return p; } catch { /* keep probing */ }

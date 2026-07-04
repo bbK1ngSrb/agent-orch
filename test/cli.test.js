@@ -412,6 +412,17 @@ test("resolveAgentBin returns the bare name when the CLI is on PATH", () => {
   assert.equal(resolveAgentBin("ls"), "ls"); // PATH hit → spawn by name as before
 });
 
+test("resolveAgentBin searches the given PATH itself, without external which", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-bin-"));
+  const p = join(d, "fake-path-cli-xyz");
+  writeFileSync(p, "#!/bin/sh\n");
+  chmodSync(p, 0o755);
+  // PATH holds only d — a PATH too degraded to find `which` itself. The CLI
+  // still resolves by name, and empty PATH entries are skipped, not treated as cwd.
+  assert.equal(resolveAgentBin("fake-path-cli-xyz", [], `:${d}:`), "fake-path-cli-xyz");
+  assert.equal(resolveAgentBin("fake-path-cli-xyz", [], ""), null); // empty PATH, no fallbacks
+});
+
 test("resolveAgentBin falls back to a known install dir when PATH misses", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-bin-"));
   const p = join(d, "fake-agent-cli-xyz");
