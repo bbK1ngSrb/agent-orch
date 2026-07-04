@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.6 — 2026-07-04
+- pr/claude/auto-docs-mr6o1ntq0-update-documentation-2173998-0
+
 ## 0.2.5 — 2026-07-04
 - pr/codex/silence-spurious-no-such-remote-origin-n-2154426-0
 
