@@ -28,7 +28,7 @@ export function git(args, cwd) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
-function gitTry(args, cwd) {
+export function gitTry(args, cwd) {
   try {
     const out = execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
     return { ok: true, out: (out || "").toString() };
