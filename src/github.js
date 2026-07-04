@@ -124,13 +124,13 @@ export async function demote(ctx, deps) {
   const { git, gh, notify } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate(orchDir, branch,
-      `# Escalation — ${branch}\n\nAuto-merge demoted (reason: ${reason}). No git remote or gh CLI available to open a PR. The branch is kept for manual review.\n`);
+      `# Escalation — ${branch}\n\nAuto-merge demoted.\n\n${reason}\n\nNo git remote or gh CLI available to open a PR. The branch is kept for manual review.\n`);
     return { prUrl: null };
   }
   // A `Closes #N` line (issue bridge) is appended AFTER redact — it's our own
   // int, and redact would not touch it anyway, but keeping it outside the
   // scrub guarantees gh sees it intact.
-  const body = redact(`Auto-demoted by agent-orch (reason: ${reason}). Agents agreed and the branch was green in isolation, but it could not be safely auto-merged into main.`)
+  const body = redact(`Auto-demoted by agent-orch.\n\n${reason}`)
     + (closes ? `\n\nCloses #${closes}` : "");
   const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, body);
   return { prUrl: url };

@@ -709,10 +709,10 @@ test("init prints an agent-detection summary using the injected detectAgents", a
   try {
     await main(["init"], {
       preflight() {},
-      detectAgents: () => ({ found: ["claude", "glm-4.5-air"], missing: ["codex (no CLI on PATH)"] }),
+      detectAgents: () => ({ found: ["claude", "glm-4.5-air"], missing: ["codex (CLI not found: PATH + fallback dirs)"] }),
     });
     assert.ok(logs.some((l) => l.includes("detected: claude, glm-4.5-air")));
-    assert.ok(logs.some((l) => l.includes("not found: codex (no CLI on PATH)")));
+    assert.ok(logs.some((l) => l.includes("not found: codex (CLI not found: PATH + fallback dirs)")));
   } finally {
     console.log = origLog;
     chdir(prev);
@@ -728,10 +728,9 @@ test("init succeeds via the real (unstubbed) preflight regardless of installed a
     // check .orch/ writability for init, not require claude/codex on PATH,
     // otherwise a clean machine would throw before ever seeing the
     // detectAgents() "not found" summary this command exists to print.
-    // detectAgents IS stubbed: the real one shells out to `which`/reads
-    // ~/.claude-code-router, which is environment-dependent (breaks on
-    // machines without `which`, e.g. Windows) and irrelevant to what this
-    // test checks.
+    // detectAgents IS stubbed: the real one probes PATH/fallback dirs and reads
+    // ~/.claude-code-router, which is environment-dependent and irrelevant to
+    // what this test checks.
     await main(["init"], { detectAgents: () => ({ found: [], missing: [] }) });
     assert.ok(existsSync(join(d, ".orch", "orch.yml")));
   } finally {
