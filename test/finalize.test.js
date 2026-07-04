@@ -98,14 +98,23 @@ test("integration PR bridge failure after local merge → records merged and esc
 test("path overlap with a peer → pr-fallback (no merge attempted)", async () => {
   let merged = false;
   const { deps, recorded } = baseDeps({
-    inflight: { peerPaths: () => ["src/a.js"] },
+    inflight: {
+      listLive: () => [{ sid: "peer-2", paths: ["src/a.js"] }],
+      peerPaths: () => { throw new Error("listLive should provide peer details"); },
+    },
     git: { ...baseDeps().deps.git, mergeInWorktree: () => { merged = true; return { ok: true }; } },
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "pr-fallback");
-  assert.equal(r.reason.includes("overlap"), true);
+  assert.match(r.reason, /trigger: overlap/);
+  assert.match(r.reason, /review: AGREE after 1 round/);
+  assert.match(r.reason, /test gate: passed on branch \(npm test\)/);
+  assert.match(r.reason, /branch state: base base; orch\/integration deadbee/);
+  assert.match(r.reason, /peer overlap: peer-2: src\/a\.js/);
+  assert.match(r.reason, /next action:/);
   assert.equal(merged, false);
   assert.equal(recorded[0].verdict, "pr-fallback");
+  assert.match(recorded[0].reason, /peer overlap: peer-2: src\/a\.js/);
 });
 
 test("overlap with a changeset landed since base → merge attempted, lands when clean (#96)", async () => {
@@ -124,10 +133,20 @@ test("overlap with a changeset landed since base → merge attempted, lands when
 });
 
 test("merge conflict → pr-fallback", async () => {
-  const { deps } = baseDeps({ git: { ...baseDeps().deps.git, mergeInWorktree: () => ({ ok: false, reason: "CONFLICT" }) } });
+  const { deps } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      mergeInWorktree: () => ({
+        ok: false,
+        reason: "CONFLICT (content): Merge conflict in src/a.js\nAutomatic merge failed",
+      }),
+    },
+  });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "pr-fallback");
-  assert.match(r.reason, /conflict/);
+  assert.match(r.reason, /trigger: conflict/);
+  assert.match(r.reason, /conflicting paths: src\/a\.js/);
+  assert.match(r.reason, /next action: resolve the merge conflict/);
 });
 
 test("post-merge test failure → reset + pr-fallback", async () => {
@@ -139,7 +158,8 @@ test("post-merge test failure → reset + pr-fallback", async () => {
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "pr-fallback");
-  assert.match(r.reason, /post-merge-test-fail/);
+  assert.match(r.reason, /trigger: post-merge-test-fail/);
+  assert.match(r.reason, /integration gate: failed after merge/);
   assert.ok(resets.length === 1); // rolled main back to pre-merge sha
 });
 
@@ -151,7 +171,7 @@ test("demote reason is forwarded to github.demote (final-review I2)", async () =
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "pr-fallback");
-  assert.equal(capturedCtx.reason, "conflict"); // reason threaded via { ...ctx, reason }
+  assert.match(capturedCtx.reason, /trigger: conflict/); // reason threaded via { ...ctx, reason }
 });
 
 test("issue bridge: closes #N is stamped into the no-ff merge commit message", async () => {
@@ -294,7 +314,9 @@ test("main diverged from origin at merge time → pr-fallback (no merge attempte
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "pr-fallback");
+  assert.match(r.reason, /trigger: main-sync-failed/);
   assert.match(r.reason, /diverged from origin/);
+  assert.match(r.reason, /next action: inspect local main/);
   assert.equal(merged, false);
   assert.equal(recorded[0].verdict, "pr-fallback");
 });
@@ -310,6 +332,7 @@ test("local main ahead of origin at merge time → pr-fallback (orch never pushe
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "pr-fallback");
+  assert.match(r.reason, /trigger: main-sync-failed/);
   assert.match(r.reason, /ahead of origin/);
   assert.equal(merged, false);
   assert.equal(recorded[0].verdict, "pr-fallback");
@@ -324,6 +347,8 @@ test("merge-lock timeout → pr-fallback without touching the worktree", async (
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "pr-fallback");
+  assert.match(r.reason, /trigger: merge-lock timeout/);
+  assert.match(r.reason, /next action: retry/);
   assert.equal(ensured, false);
   assert.equal(releaseCalls, 0); // must not release a lock we never acquired
 });

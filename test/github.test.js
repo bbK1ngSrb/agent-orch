@@ -94,10 +94,16 @@ test("demote opens a PR when a remote and gh are present", async () => {
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   const notify = { escalate: () => { throw new Error("should not escalate when PR opens"); } };
 
-  const r = await demote({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", reason: "overlap" }, { gh, git, notify });
+  const reason = "trigger: overlap\nreview: AGREE after 1 round(s)\nnext action: rerun orch review";
+  const r = await demote({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", reason }, { gh, git, notify });
   assert.equal(r.prUrl, "https://github.com/o/r/pull/7");
   assert.ok(calls.some((c) => c[0] === "git" && c[1] === "push"));
   assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
+  const args = calls.find((c) => c[0] === "gh" && c[2] === "create");
+  const body = args[args.indexOf("--body") + 1];
+  assert.match(body, /Auto-demoted by agent-orch/);
+  assert.match(body, /trigger: overlap/);
+  assert.match(body, /next action: rerun orch review/);
 });
 
 test("issue bridge: demote appends Closes #N to the PR body so the issue auto-closes", async () => {
@@ -127,10 +133,13 @@ test("demote escalates locally when there is no remote", async () => {
   const git = (args) => (args[0] === "remote" ? "" : ""); // no remotes
   const notify = { escalate: (orchDir, branch, brief) => { escalated = { branch, brief }; } };
 
-  const r = await demote({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", reason: "conflict" }, { gh, git, notify });
+  const reason = "trigger: conflict\nconflicting paths: src/a.js\nnext action: resolve the merge conflict";
+  const r = await demote({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", reason }, { gh, git, notify });
   assert.equal(r.prUrl, null);
   assert.equal(escalated.branch, "pr/claude/x-1");
   assert.match(escalated.brief, /conflict/);
+  assert.match(escalated.brief, /conflicting paths: src\/a\.js/);
+  assert.match(escalated.brief, /next action: resolve the merge conflict/);
 });
 
 test("§3f: demote redacts a secret-shaped branch in the PR title/body it posts", async () => {

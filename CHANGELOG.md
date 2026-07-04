@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.7 — 2026-07-04
+- pr/codex/demote-escalation-output-too-terse-for-h-2523553-0 (closes #102)
+
 ## 0.2.6 — 2026-07-04
 - pr/claude/auto-docs-mr6o1ntq0-update-documentation-2173998-0
 
