@@ -286,6 +286,19 @@ test("audit rethrows on usage limit instead of masking as DISAGREE", async () =>
   await assert.rejects(() => adapter.audit("pr/x/y", tmpdir()), /usage limit/);
 });
 
+test("audit does not abort when a SUCCESSFUL run merely mentions limits (#85)", async () => {
+  // A reviewer legitimately discussing rate/usage limits in its transcript
+  // (e.g. auditing adapter code) must not be misclassified as a provider
+  // limit error — only failed runs are limit candidates.
+  const adapter = makeCliAdapter({
+    name: "chatty",
+    bin: "sh",
+    buildArgs: () => ["-c", "echo 'AGREE: the adapter handles usage limit and 429 responses correctly'"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+});
+
 test("isUsageLimit matches limit messages but not generic failures", () => {
   assert.ok(isUsageLimit("Claude usage limit reached"));
   assert.ok(isUsageLimit("Error 429: too many requests"));
