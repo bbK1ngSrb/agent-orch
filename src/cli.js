@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, accessSync, constants } from "node:fs";
+import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
@@ -331,6 +332,22 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
   };
 }
 
+// Where agent CLIs usually live when the caller's PATH is degraded (wrappers,
+// cron, hooks often drop ~/.local/bin): the user-local bin dir and the running
+// node's own bin dir (covers `npm i -g` and nvm installs without spawning npm).
+const FALLBACK_BIN_DIRS = [join(homedir(), ".local", "bin"), dirname(process.execPath)];
+
+// PATH lookup first; on miss, probe well-known install dirs and return the
+// absolute path so spawns work even though PATH can't find the CLI. Null = nowhere.
+export function resolveAgentBin(exe, dirs = FALLBACK_BIN_DIRS) {
+  try { execFileSync("which", [exe], { stdio: "ignore" }); return exe; } catch { /* fall through */ }
+  for (const d of dirs) {
+    const p = join(d, exe);
+    try { accessSync(p, constants.X_OK); return p; } catch { /* keep probing */ }
+  }
+  return null;
+}
+
 export function preflight(cfg, orchDir) {
   // Check the rotation pool plus any explicitly pinned roles. Role entries are
   // specs ("<agent> [model] [effort]"); only the agent name needs a CLI on PATH.
@@ -344,8 +361,9 @@ export function preflight(cfg, orchDir) {
   for (const name of names) {
     const a = adapters.get(name); // throws on unknown
     const exe = a.bin || a.name; // local models run via `ccr`, not their own name
-    try { execFileSync("which", [exe], { stdio: "ignore" }); }
-    catch { throw new Error(`agent CLI not found on PATH: ${exe} (for agent ${name})`); }
+    const resolved = resolveAgentBin(exe);
+    if (!resolved) throw new Error(`agent CLI not found on PATH: ${exe} (for agent ${name}; also probed ${FALLBACK_BIN_DIRS.join(", ")})`);
+    if (resolved !== exe) a.bin = resolved; // off-PATH but found: spawn by absolute path
   }
   // Fail fast with a clear message if .orch/ is read-only (sandbox / RO mount),
   // instead of a raw EACCES/EROFS later from the first last-author write.

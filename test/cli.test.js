@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as gitDep from "../src/git.js";
@@ -406,6 +406,26 @@ test("preflight throws a clear error when .orch/ is read-only", () => {
   } finally {
     chmodSync(d, 0o755); // restore so tmp cleanup works
   }
+});
+
+test("resolveAgentBin returns the bare name when the CLI is on PATH", () => {
+  assert.equal(resolveAgentBin("ls"), "ls"); // PATH hit → spawn by name as before
+});
+
+test("resolveAgentBin falls back to a known install dir when PATH misses", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-bin-"));
+  const p = join(d, "fake-agent-cli-xyz");
+  writeFileSync(p, "#!/bin/sh\n");
+  chmodSync(p, 0o755);
+  assert.equal(resolveAgentBin("fake-agent-cli-xyz", [d]), p); // off-PATH → absolute path
+  assert.equal(resolveAgentBin("truly-missing-cli-xyz", [d]), null); // nowhere → null
+});
+
+test("resolveAgentBin ignores a non-executable file in a fallback dir", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-bin-"));
+  writeFileSync(join(d, "not-exec-xyz"), "");
+  chmodSync(join(d, "not-exec-xyz"), 0o644);
+  assert.equal(resolveAgentBin("not-exec-xyz", [d]), null);
 });
 
 test("nextAuthor honors explicit fixed roles over rotation", () => {
