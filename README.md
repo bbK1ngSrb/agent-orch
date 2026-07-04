@@ -4,6 +4,10 @@
 
 # agent-orch
 
+[![npm](https://img.shields.io/npm/v/%40bbk1ng%2Fagent-orch?label=npm&color=cb3837)](https://www.npmjs.com/package/@bbk1ng/agent-orch)
+[![CI](https://github.com/bbK1ngSrb/agent-orch/actions/workflows/ci.yml/badge.svg)](https://github.com/bbK1ngSrb/agent-orch/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-PolyForm%20NC%201.0.0-blue)](LICENSE)
+
 > [!WARNING]
 > **License Notice**: `agent-orch` is a **Source-Available, Non-Commercial** project,
 > licensed under [PolyForm Noncommercial 1.0.0](LICENSE) for educational, research,
