@@ -209,14 +209,16 @@ function detail(out) {
 }
 
 export function makeCliAdapter({ name, bin, buildArgs }) {
-  return {
+  // Spawns read adapter.bin (not the closed-over param) so preflight can rewrite
+  // it to an absolute path when the CLI is found off-PATH in a known install dir.
+  const adapter = {
     name,
     bin, // the actual executable (may differ from name, e.g. local models run via `ccr`)
     async author(task, wd, opts = {}) {
       // Author must succeed; a failure here is a hard error (no commits made).
       const args = buildArgs(render("author", { task }), wd, opts);
-      const result = await runAgent(bin, args, wd, `${name} authoring`, { stageTimeoutMs: opts.stageTimeoutMs });
-      if (!result.ok) throw new Error(result.out || `Command failed: ${bin}`);
+      const result = await runAgent(adapter.bin, args, wd, `${name} authoring`, { stageTimeoutMs: opts.stageTimeoutMs });
+      if (!result.ok) throw new Error(result.out || `Command failed: ${adapter.bin}`);
       const out = result.out;
       const usage = parseRunUsage(out, modelFromArgs(args, opts));
       // The agent edits files in the worktree but cannot be trusted to commit
@@ -235,7 +237,7 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
       const args = buildArgs(render("review", { branch }), wd, opts);
-      const { out, ok } = await runCapture(bin, args, wd, `${name} auditing`, { stageTimeoutMs: opts.stageTimeoutMs });
+      const { out, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, { stageTimeoutMs: opts.stageTimeoutMs });
       const usage = parseRunUsage(out, modelFromArgs(args, opts));
       const parsed = parseVerdict(out);
       // A nonzero agent that still printed an explicit DISAGREE gave a real,
@@ -251,4 +253,5 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
       return { ...parsed, usage }; // unparseable/empty -> DISAGREE "unparseable verdict"
     },
   };
+  return adapter;
 }

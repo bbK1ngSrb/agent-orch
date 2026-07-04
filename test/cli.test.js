@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
+import * as adapters from "../src/adapters/index.js";
 import * as gitDep from "../src/git.js";
 import * as notify from "../src/notify.js";
 
@@ -405,6 +406,63 @@ test("preflight throws a clear error when .orch/ is read-only", () => {
     );
   } finally {
     chmodSync(d, 0o755); // restore so tmp cleanup works
+  }
+});
+
+test("resolveAgentBin returns the bare name when the CLI is on PATH", () => {
+  assert.equal(resolveAgentBin("ls"), "ls"); // PATH hit → spawn by name as before
+});
+
+test("resolveAgentBin searches the given PATH itself, without external which", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-bin-"));
+  const p = join(d, "fake-path-cli-xyz");
+  writeFileSync(p, "#!/bin/sh\n");
+  chmodSync(p, 0o755);
+  // PATH holds only d — a PATH too degraded to find `which` itself. The CLI
+  // still resolves by name, and empty PATH entries are skipped, not treated as cwd.
+  assert.equal(resolveAgentBin("fake-path-cli-xyz", [], `:${d}:`), "fake-path-cli-xyz");
+  assert.equal(resolveAgentBin("fake-path-cli-xyz", [], ""), null); // empty PATH, no fallbacks
+});
+
+test("resolveAgentBin falls back to a known install dir when PATH misses", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-bin-"));
+  const p = join(d, "fake-agent-cli-xyz");
+  writeFileSync(p, "#!/bin/sh\n");
+  chmodSync(p, 0o755);
+  assert.equal(resolveAgentBin("fake-agent-cli-xyz", [d]), p); // off-PATH → absolute path
+  assert.equal(resolveAgentBin("truly-missing-cli-xyz", [d]), null); // nowhere → null
+});
+
+test("resolveAgentBin ignores a non-executable file in a fallback dir", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-bin-"));
+  writeFileSync(join(d, "not-exec-xyz"), "");
+  chmodSync(join(d, "not-exec-xyz"), 0o644);
+  assert.equal(resolveAgentBin("not-exec-xyz", [d]), null);
+});
+
+test("resolveAgentBin verifies an already-absolute path instead of PATH-searching it", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-bin-"));
+  const p = join(d, "abs-cli-xyz");
+  writeFileSync(p, "#!/bin/sh\n");
+  chmodSync(p, 0o755);
+  assert.equal(resolveAgentBin(p, [], ""), p); // absolute + executable → itself
+  assert.equal(resolveAgentBin(join(d, "missing-xyz"), [], ""), null); // absolute + gone → null
+});
+
+test("preflight stays green when a prior preflight rewrote adapter.bin to an absolute path", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-bin-"));
+  const p = join(d, "claude");
+  writeFileSync(p, "#!/bin/sh\n");
+  chmodSync(p, 0o755);
+  const a = adapters.get("claude");
+  const orig = a.bin;
+  try {
+    a.bin = p; // simulate an earlier preflight's off-PATH absolute-path rewrite
+    preflight({ agents: ["claude"] }); // second preflight in the same process
+    preflight({ agents: ["claude"] }); // and a third — must stay idempotent
+    assert.equal(a.bin, p);
+  } finally {
+    a.bin = orig;
   }
 });
 
