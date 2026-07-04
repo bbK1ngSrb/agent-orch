@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.0 — 2026-07-04
+- First public release. Repo flipped public: full-history secret/leak audit, GitHub metadata redactions, CI workflows gated to trusted authors, secret scanning + push protection enabled, social preview added.
+
 ## 0.1.8 — 2026-07-03
 - pr/codex/free-main-from-the-integration-worktree--459556-0
 
