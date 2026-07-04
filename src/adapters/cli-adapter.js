@@ -101,10 +101,12 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
 // Returns { out, ok }. On nonzero exit / crash, still captures whatever the
 // agent printed so audit() can fail safely instead of throwing — EXCEPT a usage
 // limit, which we rethrow so the run aborts (rather than logging a bogus
-// DISAGREE) and the harness can wait for reset and resume.
+// DISAGREE) and the harness can wait for reset and resume. Only FAILED runs
+// are limit candidates: a successful transcript that merely *discusses* rate
+// limits (e.g. a review of adapter code) must not abort the cycle (#85).
 async function runCapture(bin, args, cwd, label, runOpts = {}) {
   const result = await runAgent(bin, args, cwd, label, runOpts);
-  if (isUsageLimit(result.out)) throw new Error(`usage limit hit: ${result.out.trim().slice(0, 200)}`);
+  if (!result.ok && isUsageLimit(result.out)) throw new Error(`usage limit hit: ${result.out.trim().slice(0, 200)}`);
   return result;
 }
 
