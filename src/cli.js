@@ -142,11 +142,13 @@ fast-forwarding \`origin/main\`.
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
 - \`orch agent add <name>\`          add an agent to the rotation pool
 - \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
+- \`orch dashboard [--json]\`        live cycle status, log tail, run history, metrics
 
 A role is a spec \`"<agent> [model] [effort]"\`, e.g.
 \`--author "claude claude-opus-4-8 high" --reviewer "codex"\`.
 \`--cheap\` forces \`orch.yml\`'s \`cheap.role\` (e.g. a local llm) for one run;
 set \`cheap.paths\` to auto-route matching \`--file\`/\`orch issue\` work orders.
+\`--config-file <path.yml>\` layers a custom YAML file on top of \`orch.yml\` for one run.
 Config and every option live in \`.orch/orch.yml\`.
 
 Run \`orch --help\` for the full flag list.
@@ -955,31 +957,48 @@ export async function main(argv, deps = {}) {
 }
 
 function printUsage() {
-  console.log(`agent-orch ${VERSION}
-Usage:
-  orch init [--link]   (--link: wire .orch/ORCH.md into CLAUDE.md/AGENTS.md/GEMINI.md)
-  orch agent add <name>
-  orch agent build <name> [--pr]
-    (unregistered agent → scaffolds src/adapters/<name>.js through orch's own
-     author→audit→test pipeline, isolated in its own worktree/branch; default
-     lands on that local branch only, --pr opens a PR instead)
-  orch task "change" [--author "<agent> [model] [effort]" --reviewer "<agent> [model] [effort]"]
-    (or: orch task --file work-order.json — an UNTRUSTED JSON work order:
-     {title, problem, repro_steps[], suspected_paths[], acceptance_criteria[]}; title/problem required)
-  orch issue <number> [--author ... --reviewer ...]
-    (fetch a GitHub issue as an UNTRUSTED work order, run the full cycle, and
-     stamp "Closes #<number>" on the merge so it auto-closes)
-  orch review <branch> [--reviewer "claude claude-opus-4-8 high, codex"]
-  orch pr <number> [--merge] [--reviewer ...]
-  orch dashboard [--json] [--limit N]
-    (read-only: live cycle status/stage, streaming log tail, run history, success-rate metrics)
-  A role spec is "<agent> [model] [effort]"; model may carry a subversion (e.g. claude-opus-4-8).
-  --cheap forces orch.yml's cheap.role (e.g. a local llm) for one run (task/issue);
-  set cheap.paths to auto-route matching --file/orch issue work orders without the flag.
-  After a merge, orch updates \`orch/integration\`, opens/updates its PR to main, deletes temp branches, and prints a summary;
-  --no-tidy leaves all branches/checkout untouched.
-  --config-file <path.yml> layers a custom YAML file on top of orch.yml for this run only.
-  (flags: --dry, --cheap, --config-file, --link, --no-tidy, --no-banner, --version, --help)`);
+  console.log(`orch - Run coding agents in an author, review, test, and merge loop.
+
+Usage: orch <command> [options]
+
+Commands:
+  init                  Scaffold .orch/orch.yml and .orch/ORCH.md.
+  agent add <name>      Add a registered agent to the rotation pool.
+  agent build <name>    Scaffold an adapter via orch's author/audit/test loop.
+  task "change"         Run a cycle and update orch/integration on merge.
+  task --file <file>    Run a cycle from an untrusted JSON work order.
+  issue <number>        Run from a GitHub issue and close it on merge.
+  review <branch>       Audit an existing branch without merging.
+  pr <number>           Review a GitHub PR; add --merge to merge if approved.
+  dashboard             Show read-only live status, log tail, and run history.
+  help                  Show this help.
+
+Options:
+  -h, --help            Show this help.
+  --version             Print the version.
+  --author <role>       Set author as "<agent> [model] [effort]".
+  --authors <roles>     Set comma-separated authors; each gets a branch.
+  --reviewer <role>     Set reviewer as "<agent> [model] [effort]".
+  --reviewers <roles>   Set comma-separated reviewers.
+  --cheap               Use cheap.role; cheap.paths can auto-route work orders.
+  --config-file <file>  Layer YAML config over orch.yml for this run.
+  --dry                 Plan without shelling out or changing git.
+  --link                With init, link .orch/ORCH.md from agent docs.
+  --no-banner           Hide the run banner.
+  --no-tidy             Leave task branches and checkouts after merge.
+  --json                With dashboard, print JSON.
+  --limit <n>           With dashboard, limit history rows.
+  --merge               With pr, merge approved PRs.
+  --pr                  With agent build, open a PR instead.
+
+Examples:
+  orch init --link
+  orch task "add input validation" --reviewer "codex"
+  orch task --file work-order.json --cheap
+  orch issue 42
+  orch dashboard --json --limit 5
+
+Full docs: see .orch/ORCH.md in initialized repos and the README.`);
 }
 
 function costSuffix(result) {
