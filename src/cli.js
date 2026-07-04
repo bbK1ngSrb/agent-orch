@@ -696,8 +696,13 @@ export async function main(argv, deps = {}) {
   const appCreds = !process.env.GH_TOKEN && appCredsFromEnv();
   if (appCreds) {
     try {
-      const slug = parseRepoSlug(git.git(["remote", "get-url", "origin"], repo));
-      process.env.GH_TOKEN = await installationToken({ ...appCreds, ...slug });
+      const origin = git.gitTry(["remote", "get-url", "origin"], repo);
+      if (origin.ok) {
+        const slug = parseRepoSlug(origin.out);
+        process.env.GH_TOKEN = await installationToken({ ...appCreds, ...slug });
+      } else if (!/No such remote ['"]?origin['"]?/.test(origin.out)) {
+        throw new Error(origin.out.trim() || "git remote get-url origin failed");
+      }
     } catch (e) {
       process.stderr.write(`▶ orch: GitHub App auth unavailable (${e.message}); using ambient gh auth\n`);
     }

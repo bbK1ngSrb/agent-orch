@@ -107,6 +107,38 @@ test("--dry completes without any agent CLI on PATH (F2)", async () => {
   }
 });
 
+test("GitHub App auth is silent when repo has no origin remote", async () => {
+  const repo = initGitRepo("orch-no-origin-");
+  const prev = cwd();
+  const prevEnv = {
+    GH_TOKEN: process.env.GH_TOKEN,
+    ORCH_APP_ID: process.env.ORCH_APP_ID,
+    ORCH_APP_PRIVATE_KEY: process.env.ORCH_APP_PRIVATE_KEY,
+  };
+  const prevStderrWrite = process.stderr.write;
+  let stderr = "";
+  chdir(repo);
+  delete process.env.GH_TOKEN;
+  process.env.ORCH_APP_ID = "1";
+  process.env.ORCH_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx";
+  process.stderr.write = (chunk, ...args) => {
+    stderr += String(chunk);
+    if (typeof args[args.length - 1] === "function") args[args.length - 1]();
+    return true;
+  };
+  try {
+    await main(["init"], { preflight() {} });
+    assert.equal(stderr, "");
+  } finally {
+    process.stderr.write = prevStderrWrite;
+    chdir(prev);
+    for (const [k, v] of Object.entries(prevEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
 test("main prints startup banner for task runs on TTY", async () => {
   let out = "";
   await runMainCapture(["task", "hello world", "--dry"], {
