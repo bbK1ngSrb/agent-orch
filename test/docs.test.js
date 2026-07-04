@@ -9,6 +9,7 @@ const read = (rel) =>
 const pkg = JSON.parse(read("package.json"));
 const readme = read("README.md");
 const design = read("docs/design.md");
+const exampleConfig = read("orch.example.yml");
 const coc = read("CODE_OF_CONDUCT.md");
 
 test("the CLI bin is `orch`", () => {
@@ -25,6 +26,16 @@ test("README does not promise install commands that resolve to a different npm p
 test("README documents the `orch` CLI", () => {
   assert.match(readme, /orch\s+init/);
   assert.match(readme, /orch agent add <name>/);
+});
+
+test("docs list the built-in CLI adapters", () => {
+  for (const doc of [readme, design, exampleConfig]) {
+    assert.match(doc, /claude/);
+    assert.match(doc, /codex/);
+    assert.match(doc, /copilot/);
+  }
+  assert.doesNotMatch(design, /Ship two adapters/);
+  assert.doesNotMatch(design, /claude` and\/or `codex/);
 });
 
 test("design doc reflects the GitHub PR bridge", () => {
