@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, accessSync, constants } from "node:fs";
-import { join, dirname, delimiter } from "node:path";
+import { join, dirname, delimiter, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
@@ -342,6 +342,11 @@ const FALLBACK_BIN_DIRS = [join(homedir(), ".local", "bin"), dirname(process.exe
 // PATH is searched directly (no external `which`) so resolution works even when
 // PATH is too degraded to find `which` itself.
 export function resolveAgentBin(exe, dirs = FALLBACK_BIN_DIRS, envPath = process.env.PATH) {
+  if (isAbsolute(exe)) {
+    // Already resolved (e.g. by a prior preflight that rewrote adapter.bin):
+    // just verify it's still executable instead of treating it as a PATH name.
+    try { accessSync(exe, constants.X_OK); return exe; } catch { return null; }
+  }
   for (const d of (envPath || "").split(delimiter)) {
     if (!d) continue;
     try { accessSync(join(d, exe), constants.X_OK); return exe; } catch { /* keep searching */ }
