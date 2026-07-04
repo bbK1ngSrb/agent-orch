@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildArgs as claudeArgs } from "../src/adapters/claude.js";
 import { buildArgs as codexArgs } from "../src/adapters/codex.js";
+import { buildArgs as copilotArgs } from "../src/adapters/copilot.js";
 import { get } from "../src/adapters/index.js";
 import { makeCliAdapter, isUsageLimit, parseRunUsage } from "../src/adapters/cli-adapter.js";
 
@@ -26,11 +27,23 @@ test("codex buildArgs appends --model and reasoning-effort config when given", (
       "--model", "gpt-5.1", "-c", 'model_reasoning_effort="medium"', "PROMPT"]);
 });
 
+test("copilot buildArgs uses prompt mode with non-interactive tool permission", () => {
+  assert.deepEqual(copilotArgs("PROMPT", "/wd"),
+    ["-p", "PROMPT", "--allow-all-tools", "--add-dir", "/wd"]);
+});
+
+test("copilot buildArgs appends --model when given", () => {
+  assert.deepEqual(copilotArgs("PROMPT", "/wd", { model: "gpt-5.1" }),
+    ["-p", "PROMPT", "--allow-all-tools", "--add-dir", "/wd", "--model", "gpt-5.1"]);
+});
+
 test("buildArgs omits model/effort flags when absent (no regression)", () => {
   assert.deepEqual(claudeArgs("P", "/wd", {}),
     ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions", "P"]);
   assert.deepEqual(codexArgs("P", "/wd", {}),
     ["exec", "--cd", "/wd", "--dangerously-bypass-approvals-and-sandbox", "P"]);
+  assert.deepEqual(copilotArgs("P", "/wd", {}),
+    ["-p", "P", "--allow-all-tools", "--add-dir", "/wd"]);
 });
 
 test("adapter forwards model/effort opts to buildArgs", async () => {
@@ -289,6 +302,7 @@ test("codex buildArgs uses exec --cd with headless write permission", () => {
 test("registry resolves known adapters and rejects unknown", () => {
   assert.equal(get("claude").name, "claude");
   assert.equal(get("codex").name, "codex");
+  assert.equal(get("copilot").name, "copilot");
   assert.throws(() => get("nope"), /unknown agent/);
 });
 
@@ -302,4 +316,5 @@ test("local models register, run via ccr, and select model by flag", () => {
 
 test("adapter exposes bin for preflight", () => {
   assert.equal(get("claude").bin, "claude"); // name === bin for native agents
+  assert.equal(get("copilot").bin, "copilot");
 });

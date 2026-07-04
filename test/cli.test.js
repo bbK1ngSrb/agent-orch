@@ -516,6 +516,20 @@ test("agent add appends a known agent to the pool, preserving comments", async (
   }
 });
 
+test("agent add appends copilot to the pool", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    await main(["agent", "add", "copilot"]);
+    const text = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
+    assert.match(text, /agents: \[claude, codex, copilot\]/);
+  } finally {
+    chdir(prev);
+  }
+});
+
 test("agent add rejects an unknown agent", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-"));
   const prev = cwd();
