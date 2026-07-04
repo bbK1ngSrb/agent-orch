@@ -987,7 +987,17 @@ test("--help / -h print usage and exit cleanly (no unknown-option error)", async
     } finally {
       console.log = orig;
     }
-    assert.match(logs.join("\n"), /Usage:/);
+    const usage = logs.join("\n");
+    assert.match(usage, /^orch - Run coding agents in an author, review, test, and merge loop\./);
+    assert.match(usage, /Usage: orch <command> \[options\]/);
+    assert.match(usage, /\nCommands:\n  init\s+Scaffold \.orch\/orch\.yml/);
+    assert.match(usage, /\nOptions:\n  -h, --help\s+Show this help\./);
+    assert.match(usage, /\nExamples:\n  orch init --link/);
+    assert.match(usage, /Full docs: see \.orch\/ORCH\.md in initialized repos and the README\./);
+    assert.doesNotMatch(usage, /\n\s+\(/);
+    for (const line of usage.split("\n")) {
+      assert.ok(line.length <= 80, `usage line exceeds 80 columns: ${line}`);
+    }
   }
 });
 
