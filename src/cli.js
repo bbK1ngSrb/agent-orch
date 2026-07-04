@@ -74,7 +74,7 @@ const SCAFFOLD = `# agent-orch config — all keys optional. Commented keys show
 
 # === Agents ===
 # Rotation pool: picks author/reviewer when no explicit roles are set below.
-# Built-in: claude, codex. Local llm models (run via ccr): qwen3-coder-30b,
+# Built-in: claude, codex, copilot. Local llm models (run via ccr): qwen3-coder-30b,
 # deepseek-coder-v2-lite, glm-4.5-air. Append a known agent with \`orch agent add <name>\`.
 agents: [claude, codex]   # default: [claude, codex]
 
