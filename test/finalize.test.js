@@ -117,22 +117,19 @@ test("path overlap with a peer → pr-fallback (no merge attempted)", async () =
   assert.match(recorded[0].reason, /peer overlap: peer-2: src\/a\.js/);
 });
 
-test("overlap with a changeset landed since base → pr-fallback", async () => {
-  const g = baseDeps().deps.git;
-  const { deps } = baseDeps({
+test("overlap with a changeset landed since base → merge attempted, lands when clean (#96)", async () => {
+  let merged = false;
+  const { deps, recorded } = baseDeps({
     git: {
-      ...g,
+      ...baseDeps().deps.git,
       changedSince: () => ["src/a.js"],
-      git: (args, cwd) => {
-        if (args[0] === "log") return "abc123 landed change\n";
-        return g.git(args, cwd);
-      },
+      mergeInWorktree: () => { merged = true; return { ok: true, reason: "merged" }; },
     },
   });
   const r = await finalize(ctx(), deps);
-  assert.equal(r.status, "pr-fallback");
-  assert.match(r.reason, /landed overlap: src\/a\.js/);
-  assert.match(r.reason, /landed commits: abc123 landed change/);
+  assert.equal(r.status, "merged");
+  assert.equal(merged, true);
+  assert.equal(recorded[0].verdict, "merged");
 });
 
 test("merge conflict → pr-fallback", async () => {
