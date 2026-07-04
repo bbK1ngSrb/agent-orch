@@ -365,7 +365,10 @@ export function bumpVersion(integrationPath, entry) {
 }
 
 // Files changed on the landing branch since a given sha (what landed after a branch's base).
+// Three-dot: diff from merge-base(sha, base) to base. Two-dot would return the
+// REVERSE diff when base is behind sha (integration behind main), reporting every
+// main-only change as "landed on integration" and false-positiving the overlap guard.
 export function changedSince(repo, sha, base = "main") {
-  const out = gitTry(["diff", "--name-only", `${sha}..${base}`], repo);
+  const out = gitTry(["diff", "--name-only", `${sha}...${base}`], repo);
   return out.ok ? out.out.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 }

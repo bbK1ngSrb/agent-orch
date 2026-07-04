@@ -298,6 +298,17 @@ test("changedSince lists files merged into the named branch after a base sha", (
   assert.deepEqual(changedSince(repo, base, "orch/integration"), ["new.txt"]);
 });
 
+test("changedSince is empty when the named branch is BEHIND the base sha (no reverse diff)", () => {
+  const repo = newRepo();
+  git(["branch", "orch/integration"], repo); // integration at current main tip
+  writeFileSync(join(repo, "ahead.txt"), "x\n");
+  git(["add", "."], repo); git(["commit", "-m", "advance main past integration"], repo);
+  const base = git(["rev-parse", "main"], repo);
+  // integration is now an ancestor of base: nothing landed there since our base,
+  // so main-only changes must NOT be reported as overlap candidates.
+  assert.deepEqual(changedSince(repo, base, "orch/integration"), []);
+});
+
 test("syncMainFromOrigin fast-forwards local main before new task bases", () => {
   const repo = newRepo();
   const remote = addOrigin(repo);
