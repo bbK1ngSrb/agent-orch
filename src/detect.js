@@ -29,7 +29,7 @@ export function detectAgents(deps = {}) {
   const found = [];
   const missing = [];
 
-  for (const name of ["claude", "codex"]) {
+  for (const name of ["claude", "codex", "copilot"]) {
     try { which(name); found.push(name); }
     catch { missing.push(`${name} (no CLI on PATH)`); }
   }

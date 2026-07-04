@@ -7,8 +7,8 @@ function which(found) {
 }
 
 test("detectAgents: reports CLI agents found on PATH", () => {
-  const { found, missing } = detectAgents({ which: which(["claude", "codex"]) });
-  assert.deepEqual(found, ["claude", "codex"]);
+  const { found, missing } = detectAgents({ which: which(["claude", "codex", "copilot"]) });
+  assert.deepEqual(found, ["claude", "codex", "copilot"]);
   assert.deepEqual(missing, ["local (ccr not on PATH)"]);
 });
 
@@ -16,6 +16,7 @@ test("detectAgents: reports a missing CLI agent by name", () => {
   const { found, missing } = detectAgents({ which: which(["claude"]) });
   assert.deepEqual(found, ["claude"]);
   assert.ok(missing.includes("codex (no CLI on PATH)"));
+  assert.ok(missing.includes("copilot (no CLI on PATH)"));
 });
 
 test("detectAgents: reads local models from ccr's router config when ccr is on PATH", () => {
