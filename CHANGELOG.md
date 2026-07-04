@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.2 — 2026-07-04
+- pr/claude/agent-cli-resolution-fails-when-path-lac-1613238-0 (closes #91)
+
 ## 0.2.1 — 2026-07-04
 - pr/claude/changedsince-reverse-diff-false-overlap--1531103-0 (closes #89)
 
