@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/orch-logo.png" alt="orch — agents orchestration tool" width="520">
+  <img src="https://raw.githubusercontent.com/bbK1ngSrb/agent-orch/main/docs/assets/orch-logo.png" alt="orch — agents orchestration tool" width="520">
 </p>
 
 # agent-orch

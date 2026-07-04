@@ -1,16 +1,41 @@
 {
-  "name": "agent-orch",
+  "name": "@bbk1ngsrb/agent-orch",
   "version": "0.2.0",
-  "description": "Run local coding agents in a cross-audit loop on any git repo",
+  "description": "Run local coding agents in a cross-audit loop on any git repo — author, cross-audit, test-gate, merge. Educational; not for production.",
   "type": "module",
   "bin": {
     "orch": "bin/orch.js"
   },
+  "files": [
+    "bin",
+    "src"
+  ],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "prepublishOnly": "npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bbK1ngSrb/agent-orch.git"
+  },
+  "homepage": "https://github.com/bbK1ngSrb/agent-orch#readme",
+  "bugs": {
+    "url": "https://github.com/bbK1ngSrb/agent-orch/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "orchestration",
+    "code-review",
+    "cross-audit",
+    "claude",
+    "codex",
+    "cli"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "license": "PolyForm-Noncommercial-1.0.0",
   "dependencies": {
