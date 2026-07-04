@@ -22,12 +22,16 @@ asks you. All compute is local.
 - At least one agent CLI on PATH: `claude`, `codex`, or `ccr` (for local-llm models)
 
 ## Install
-Not yet published to npm — install from source. The CLI is exposed as `orch`:
+The CLI is exposed as `orch`:
+```bash
+npm install -g @bbk1ng/agent-orch
+orch <command>
+```
+Or from source:
 ```bash
 git clone https://github.com/bbK1ngSrb/agent-orch.git
 cd agent-orch
 npm install -g .        # puts `orch` on your PATH
-orch <command>
 ```
 Prefer not to install globally? Run the CLI in place with `node bin/orch.js <command>`
 from the cloned checkout.
