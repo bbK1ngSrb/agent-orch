@@ -19,11 +19,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bbK1ngSrb/agent-orch.git"
+    "url": "git+https://github.com/bbk1ng/agent-orch.git"
   },
-  "homepage": "https://github.com/bbK1ngSrb/agent-orch#readme",
+  "homepage": "https://github.com/bbk1ng/agent-orch#readme",
   "bugs": {
-    "url": "https://github.com/bbK1ngSrb/agent-orch/issues"
+    "url": "https://github.com/bbk1ng/agent-orch/issues"
   },
   "keywords": [
     "ai-agents",

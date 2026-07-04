@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/bbK1ngSrb/agent-orch/main/docs/assets/orch-logo.png" alt="orch — agents orchestration tool" width="520">
+  <img src="https://raw.githubusercontent.com/bbk1ng/agent-orch/main/docs/assets/orch-logo.png" alt="orch — agents orchestration tool" width="520">
 </p>
 
 # agent-orch
 
 [![npm](https://img.shields.io/npm/v/%40bbk1ng%2Fagent-orch?label=npm&color=cb3837)](https://www.npmjs.com/package/@bbk1ng/agent-orch)
-[![CI](https://github.com/bbK1ngSrb/agent-orch/actions/workflows/ci.yml/badge.svg)](https://github.com/bbK1ngSrb/agent-orch/actions/workflows/ci.yml)
+[![CI](https://github.com/bbk1ng/agent-orch/actions/workflows/ci.yml/badge.svg)](https://github.com/bbk1ng/agent-orch/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-PolyForm%20NC%201.0.0-blue)](LICENSE)
 
 > [!WARNING]
@@ -33,7 +33,7 @@ orch <command>
 ```
 Or from source:
 ```bash
-git clone https://github.com/bbK1ngSrb/agent-orch.git
+git clone https://github.com/bbk1ng/agent-orch.git
 cd agent-orch
 npm install -g .        # puts `orch` on your PATH
 ```

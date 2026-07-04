@@ -65,8 +65,8 @@ test("appCredsFromEnv: null when unconfigured, inline PEM passthrough", () => {
 });
 
 test("parseRepoSlug: ssh and https forms", () => {
-  assert.deepEqual(parseRepoSlug("git@github.com:bbK1ngSrb/agent-orch.git"), { owner: "bbK1ngSrb", repo: "agent-orch" });
-  assert.deepEqual(parseRepoSlug("https://github.com/bbK1ngSrb/agent-orch"), { owner: "bbK1ngSrb", repo: "agent-orch" });
-  assert.deepEqual(parseRepoSlug("https://github.com/bbK1ngSrb/agent-orch.git\n"), { owner: "bbK1ngSrb", repo: "agent-orch" });
+  assert.deepEqual(parseRepoSlug("git@github.com:bbk1ng/agent-orch.git"), { owner: "bbk1ng", repo: "agent-orch" });
+  assert.deepEqual(parseRepoSlug("https://github.com/bbk1ng/agent-orch"), { owner: "bbk1ng", repo: "agent-orch" });
+  assert.deepEqual(parseRepoSlug("https://github.com/bbk1ng/agent-orch.git\n"), { owner: "bbk1ng", repo: "agent-orch" });
   assert.throws(() => parseRepoSlug("https://gitlab.com/x/y.git"), /cannot parse/);
 });

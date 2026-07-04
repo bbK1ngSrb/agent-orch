@@ -24,7 +24,7 @@ runtimes will be assessed but may be declined.
 
 Report privately through GitHub's coordinated disclosure flow:
 
-1. Go to the **[Security tab](https://github.com/bbK1ngSrb/agent-orch/security)**
+1. Go to the **[Security tab](https://github.com/bbk1ng/agent-orch/security)**
    of the repository.
 2. Click **"Report a vulnerability"** to open a private security advisory.
 3. Include the details below.
