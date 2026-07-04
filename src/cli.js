@@ -142,11 +142,13 @@ fast-forwarding \`origin/main\`.
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
 - \`orch agent add <name>\`          add an agent to the rotation pool
 - \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
+- \`orch dashboard [--json]\`        live cycle status, log tail, run history, metrics
 
 A role is a spec \`"<agent> [model] [effort]"\`, e.g.
 \`--author "claude claude-opus-4-8 high" --reviewer "codex"\`.
 \`--cheap\` forces \`orch.yml\`'s \`cheap.role\` (e.g. a local llm) for one run;
 set \`cheap.paths\` to auto-route matching \`--file\`/\`orch issue\` work orders.
+\`--config-file <path.yml>\` layers a custom YAML file on top of \`orch.yml\` for one run.
 Config and every option live in \`.orch/orch.yml\`.
 
 Run \`orch --help\` for the full flag list.

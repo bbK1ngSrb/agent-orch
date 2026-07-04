@@ -18,8 +18,9 @@
 
 Run two local coding agents (Claude, Codex) in a cross-audit loop on any git repo.
 One authors a small change; the other audits it; on agreement + green tests it
-merges to `main` locally; on disagreement it revises (capped); on stalemate it
-asks you. All compute is local.
+merges into a local `orch/integration` branch (and opens/updates a persistent PR
+to `main` — GitHub owns the `main` merge); on disagreement it revises (capped);
+on stalemate it asks you. All compute is local.
 
 ## Requirements
 - Node ≥ 18
@@ -52,13 +53,15 @@ orch issue 42                               # fetch issue #42 as a work order, r
 orch review pr/claude/some-branch          # audit an existing branch (no authoring)
 orch pr 42                                  # audit a GitHub PR, post verdict as a comment
 orch pr 42 --merge                          # ...and merge it via gh if agents approve
+orch agent build mynewagent                 # scaffold a missing adapter via orch's own pipeline
+orch dashboard                              # live cycle status, log tail, run history, metrics
 ```
 Add `--dry` to any `task`/`review` run to simulate a cycle without touching git,
 agents, or tests. `orch` exits non-zero (`2`) when a cycle escalates for a human.
 
-After a `task` run merges, `orch` tidies up for you: it pushes `main` to GitHub,
-deletes the temporary work branches it created, returns your checkout to the
-finished result, and prints a plain-English summary of what it did. Anything that
+After a `task` run merges, `orch` tidies up for you: it pushes `orch/integration`
+to GitHub and opens/updates its persistent PR to `main`, deletes the temporary
+work branches it created, and prints a plain-English summary of what it did. Anything that
 could lose work (e.g. a branch with unmerged commits) is explained and only removed
 after you confirm `[y/N]`; with no terminal attached it is left untouched and noted.
 Pass `--no-tidy` to skip this and leave every branch and checkout exactly as-is.
@@ -120,8 +123,15 @@ orch task "fix the flaky login test"
 - `orch issue <n>` — fetch GitHub issue #n (title+body, treated as an untrusted work order), run the full cycle, and stamp `Closes #n` on the no-ff merge so it auto-closes once main reaches origin. Needs the [`gh`] CLI authenticated. If the cycle escalates or falls back to a PR instead of merging, orch posts a comment on the source issue (verdict, branch, reason, round count) — headless runs have no one watching stdout, so this is the only trace besides the local `.orch/reviews/<branch>/DECISION.md`.
 - `orch review <branch>` — audit an existing branch.
 - `orch pr <n> [--merge]` — audit a GitHub PR, comment the verdict, optionally merge via `gh`.
+- `orch agent build <name> [--pr]` — an unregistered agent name scaffolds `src/adapters/<name>.js` through orch's own author → audit → test pipeline, isolated in its own worktree/branch. Default lands on that local branch only; `--pr` opens a PR instead.
+- `orch dashboard [--json] [--limit N]` — read-only view of live cycle status/stage, streaming log tail, run history, and success-rate metrics.
 Add `--reviewer name` or `--reviewers a,b` to override review agents for
 `review`/`pr` runs.
+
+Other flags: `--cheap` forces `orch.yml`'s `cheap.role` (e.g. a local llm) for one
+`task`/`issue` run — set `cheap.paths` to auto-route matching `--file`/`orch issue`
+work orders without the flag; `--config-file <path.yml>` layers a custom YAML file
+on top of `orch.yml` for one run; `--no-banner` suppresses the startup banner.
 
 ## Config (`.orch/orch.yml`, all optional)
 See `orch.example.yml`. Most repos need no config. A bare `orch.yml` at the
