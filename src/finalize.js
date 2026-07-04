@@ -19,7 +19,7 @@ function totalUsage(runStats = []) {
 }
 
 export async function finalize(ctx, deps) {
-  const { repo, orchDir, branch, sid, baseSha, paths, testCmd, cfg, rounds, closes, runStats } = ctx;
+  const { repo, orchDir, branch, sid, paths, testCmd, cfg, rounds, closes, runStats } = ctx;
   const { git, gate, lock, inflight, github, notify } = deps;
   const usage = totalUsage(runStats);
 
@@ -54,10 +54,13 @@ export async function finalize(ctx, deps) {
     const integration = git.ensureIntegrationWorktree(repo, orchDir, integrationBranch);
     git.syncWorktreeToIntegration(integration, integrationBranch);
 
-    // Guard 1: file-overlap. Anything that landed on integration since our base, plus
-    // any live peer's changed paths. Read under the lock so it is consistent.
-    const others = [...git.changedSince(repo, baseSha, integrationBranch), ...inflight.peerPaths(orchDir, sid)];
-    if (overlaps(paths, others)) return demote(ctx, deps, "overlap");
+    // Guard 1: file-overlap with live in-flight peers only, read under the lock so it
+    // is consistent. A peer hasn't landed yet, so Guard 2 can't see its changes and
+    // last-writer-wins races remain possible — demote. Overlap with commits already
+    // landed on integration is deliberately NOT pre-demoted: a textual conflict fails
+    // the merge below, and a semantic conflict fails the Guard 2 re-test — a cleanly
+    // mergeable green branch should land (#96).
+    if (overlaps(paths, inflight.peerPaths(orchDir, sid))) return demote(ctx, deps, "overlap");
 
     const preSha = git.git(["rev-parse", "HEAD"], integration); // integration tip pre-merge
     // `orch issue <n>`: stamp `Closes #n` in the no-ff merge commit so the issue

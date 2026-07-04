@@ -60,7 +60,7 @@ test("two disjoint branches both auto-merge into integration", async () => {
   assert.doesNotMatch(git(["log", "--oneline", "main"], repo), /add a.txt/);
 });
 
-test("overlapping branches: first merges, second demotes (overlap)", async () => {
+test("conflicting branches: first merges, second demotes (conflict, not pre-demoted)", async () => {
   const repo = newRepo();
   const orchDir = join(repo, ".orch");
   const baseA = makeBranch(repo, orchDir, "pr/claude/a-1", "shared.txt", "A\n");
@@ -71,7 +71,43 @@ test("overlapping branches: first merges, second demotes (overlap)", async () =>
 
   assert.equal(rA.status, "merged");
   assert.equal(rB.status, "pr-fallback");
-  assert.match(rB.reason, /overlap/);
+  assert.match(rB.reason, /conflict/);
+});
+
+test("same file already landed, but cleanly mergeable → second branch still merges (#96)", async () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  // base.txt has distinct regions; A edits the top, B edits the bottom — same file,
+  // file-level overlap, zero textual conflict.
+  writeFileSync(join(repo, "base.txt"), "top\n1\n2\n3\n4\n5\n6\n7\n8\nbottom\n");
+  git(["add", "."], repo); git(["commit", "-m", "regions"], repo);
+  const baseA = makeBranch(repo, orchDir, "pr/claude/a-1", "base.txt", "TOP\n1\n2\n3\n4\n5\n6\n7\n8\nbottom\n");
+  const baseB = makeBranch(repo, orchDir, "pr/codex/b-2", "base.txt", "top\n1\n2\n3\n4\n5\n6\n7\n8\nBOTTOM\n");
+
+  const rA = await finalize({ repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: baseA, paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
+  const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
+
+  assert.equal(rA.status, "merged");
+  assert.equal(rB.status, "merged");
+  const merged = git(["show", "orch/integration:base.txt"], repo);
+  assert.match(merged, /TOP/);
+  assert.match(merged, /BOTTOM/);
+});
+
+test("in-flight peer overlap → pr-fallback before any merge attempt", async () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const baseB = makeBranch(repo, orchDir, "pr/codex/b-2", "shared.txt", "B\n");
+  // A live peer (not yet landed) has published the same path.
+  inflight.register(orchDir, "peer", { branch: "pr/claude/a-1", pid: process.pid, baseSha: baseB });
+  inflight.setPaths(orchDir, "peer", ["shared.txt"]);
+  try {
+    const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
+    assert.equal(rB.status, "pr-fallback");
+    assert.match(rB.reason, /overlap/);
+  } finally {
+    inflight.deregister(orchDir, "peer");
+  }
 });
 
 test("clean text merge but post-merge tests fail → demote, integration unchanged", async () => {
