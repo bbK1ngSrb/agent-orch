@@ -26,6 +26,15 @@ export async function runCycle(opts, deps) {
     recordReviewOutcomes(deps.reviewLog, orchDir, reviewOutcomes, final);
     return final;
   };
+  const recordTerminal = (result) => {
+    const usage = totalUsage(runStats);
+    notify.recordRun?.(orchDir, {
+      ts: new Date().toISOString(), branch, verdict: result.status, reason: result.reason, rounds: result.rounds,
+      ...(usage.tokens ? { tokens: usage.tokens } : {}),
+      ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
+    });
+    return done(result);
+  };
   const recordUsage = (role, agent, result, fallbackModel = null) => {
     const usage = result?.usage || {};
     const tokens = Number(usage.tokens) || 0;
@@ -65,7 +74,7 @@ export async function runCycle(opts, deps) {
       if (cfg.scope.maxLines > 0) {
         const n = scope.count(branch, worktree, cfg.scope.ignore);
         if (n > cfg.scope.maxLines) {
-          return done(escalate(notify, orchDir, branch, 1,
+          return recordTerminal(escalate(notify, orchDir, branch, 1,
             `scope: ${n} changed lines exceed cap ${cfg.scope.maxLines} — split the PR`));
         }
       }
@@ -136,13 +145,13 @@ export async function runCycle(opts, deps) {
         const agentErrors = disagree.filter((v) => v.agentError);
         if (agentErrors.length) {
           const reason = `agent error: ${agentErrors.map((v) => `${v.reviewer} ${v.reason}`).join("; ")}`;
-          return done(escalate(notify, orchDir, branch, round, reason));
+          return recordTerminal(escalate(notify, orchDir, branch, round, reason));
         }
       }
 
       if (verdict.decision === "AGREE") {
         if (!testCmd) {
-          return done(escalate(notify, orchDir, branch, round,
+          return recordTerminal(escalate(notify, orchDir, branch, round,
             "no test gate detected — set `test:` in orch.yml or merge manually"));
         }
         let pass;
@@ -155,13 +164,13 @@ export async function runCycle(opts, deps) {
           if (pass) checkpoint?.record(orchDir, sid, { branch, round, stage: "tested", reason: verdict.reason });
         }
         if (!pass) {
-          return done(escalate(notify, orchDir, branch, round,
+          return recordTerminal(escalate(notify, orchDir, branch, round,
             "AGREE but tests are red — not merging"));
         }
         // PR-bridge audit: report the verdict, let GitHub own the merge. Reviews
         // are kept (not cleaned) so the caller can quote them in a PR comment.
         if (noMerge) {
-          return done({ status: "approved", reason: "agreed + green (no merge)", rounds: round });
+          return recordTerminal({ status: "approved", reason: "agreed + green (no merge)", rounds: round });
         }
         // Compute the loop-guard signals BEFORE finalize: a ff merge makes
         // main...branch empty, so reading it post-merge always yields [].
@@ -173,7 +182,7 @@ export async function runCycle(opts, deps) {
         // gate, not the prompt, is what keeps guardrail files out of main.
         const prot = checkPaths(changed);
         if (!prot.ok) {
-          return done(escalate(notify, orchDir, branch, round,
+          return recordTerminal(escalate(notify, orchDir, branch, round,
             `protected paths touched: ${prot.violations.join(", ")} — orch will not merge guardrail files`));
         }
         const docsOnly = isDocsOnly(changed, cfg.docs.paths);
@@ -200,7 +209,7 @@ export async function runCycle(opts, deps) {
         });
         notify.escalate(orchDir, branch, brief);
         const why = mode === "review" ? "review verdict: DISAGREE" : "stalemate after cap";
-        return done({ status: "escalated", reason: why, rounds: round });
+        return recordTerminal({ status: "escalated", reason: why, rounds: round });
       }
 
       notify.phase(`${author.name} revising (round ${round + 1})`);

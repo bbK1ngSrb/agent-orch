@@ -41,6 +41,20 @@ test("liveCycles excludes entries whose owner pid is dead", () => {
   assert.deepEqual(dashboard.liveCycles(d), []);
 });
 
+test("interruptedCycles reports checkpoints without a live owner", () => {
+  const d = freshDir();
+  checkpoint.record(d, "sid-dead", { branch: "pr/codex/crashed", round: 2, stage: "reviewed" });
+  inflight.register(d, "sid-live", { branch: "pr/codex/live", pid: process.pid, baseSha: "abc" });
+  checkpoint.record(d, "sid-live", { branch: "pr/codex/live", round: 1, stage: "tested" });
+
+  const interrupted = dashboard.interruptedCycles(d);
+  assert.equal(interrupted.length, 1);
+  assert.equal(interrupted[0].sid, "sid-dead");
+  assert.equal(interrupted[0].branch, "pr/codex/crashed");
+  assert.equal(interrupted[0].stage, "review");
+  assert.equal(interrupted[0].round, 2);
+});
+
 test("runHistory reads runs.jsonl, newest first, capped at limit", () => {
   const d = freshDir();
   notify.recordRun(d, { ts: "1", branch: "b1", verdict: "merged", rounds: 1 });
@@ -97,6 +111,7 @@ test("render produces a readable text summary with live cycles, history, and met
   assert.match(text, /Live cycles \(1\)/);
   assert.match(text, /b1/);
   assert.match(text, /\[test round 1\]/);
+  assert.match(text, /Interrupted cycles \(0\)/);
   assert.match(text, /Run history/);
   assert.match(text, /Metrics/);
   assert.match(text, /success rate: 100%/);
@@ -107,5 +122,16 @@ test("render handles a fully empty .orch/ without throwing", () => {
   const d = freshDir();
   const text = dashboard.render(d);
   assert.match(text, /Live cycles \(0\)/);
+  assert.match(text, /Interrupted cycles \(0\)/);
   assert.match(text, /\(none\)/);
+});
+
+test("render surfaces checkpoint-only interrupted cycles", () => {
+  const d = freshDir();
+  checkpoint.record(d, "sid-crash", { branch: "pr/codex/crashed", round: 1, stage: "reviewed" });
+  const text = dashboard.render(d);
+  assert.match(text, /Interrupted cycles \(1\)/);
+  assert.match(text, /pr\/codex\/crashed/);
+  assert.match(text, /\[review round 1\]/);
+  assert.match(text, /sid=sid-crash/);
 });
