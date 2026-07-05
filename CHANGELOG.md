@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.14 — 2026-07-05
+- orch agent build ignores --author/--reviewer role overrides (closes [#117](https://github.com/bbk1ng/agent-orch/issues/117))
+
 ## 0.2.13 — 2026-07-05
 - auto-docs mr7tienq0 update documentation to reflect the latest merged changes
 
