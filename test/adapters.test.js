@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { buildArgs as claudeArgs } from "../src/adapters/claude.js";
 import { buildArgs as codexArgs } from "../src/adapters/codex.js";
 import { buildArgs as copilotArgs } from "../src/adapters/copilot.js";
+import { buildArgs as geminiArgs } from "../src/adapters/gemini.js";
 import { get } from "../src/adapters/index.js";
 import { makeCliAdapter, isUsageLimit, parseRunUsage } from "../src/adapters/cli-adapter.js";
 
@@ -37,6 +38,15 @@ test("copilot buildArgs appends --model when given", () => {
     ["-p", "PROMPT", "--allow-all-tools", "--add-dir", "/wd", "--model", "gpt-5.1"]);
 });
 
+test("gemini buildArgs uses prompt mode with non-interactive approval", () => {
+  assert.deepEqual(geminiArgs("PROMPT", "/wd"), ["-p", "PROMPT", "--yolo"]);
+});
+
+test("gemini buildArgs appends --model when given", () => {
+  assert.deepEqual(geminiArgs("PROMPT", "/wd", { model: "gemini-2.5-pro" }),
+    ["-p", "PROMPT", "--yolo", "--model", "gemini-2.5-pro"]);
+});
+
 test("buildArgs omits model/effort flags when absent (no regression)", () => {
   assert.deepEqual(claudeArgs("P", "/wd", {}),
     ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions", "P"]);
@@ -44,6 +54,7 @@ test("buildArgs omits model/effort flags when absent (no regression)", () => {
     ["exec", "--cd", "/wd", "--dangerously-bypass-approvals-and-sandbox", "P"]);
   assert.deepEqual(copilotArgs("P", "/wd", {}),
     ["-p", "P", "--allow-all-tools", "--add-dir", "/wd"]);
+  assert.deepEqual(geminiArgs("P", "/wd", {}), ["-p", "P", "--yolo"]);
 });
 
 test("adapter forwards model/effort opts to buildArgs", async () => {
@@ -316,6 +327,7 @@ test("registry resolves known adapters and rejects unknown", () => {
   assert.equal(get("claude").name, "claude");
   assert.equal(get("codex").name, "codex");
   assert.equal(get("copilot").name, "copilot");
+  assert.equal(get("gemini").name, "gemini");
   assert.throws(() => get("nope"), /unknown agent/);
 });
 
@@ -330,4 +342,5 @@ test("local models register, run via ccr, and select model by flag", () => {
 test("adapter exposes bin for preflight", () => {
   assert.equal(get("claude").bin, "claude"); // name === bin for native agents
   assert.equal(get("copilot").bin, "copilot");
+  assert.equal(get("gemini").bin, "gemini");
 });
