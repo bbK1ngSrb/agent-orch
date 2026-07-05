@@ -1374,3 +1374,22 @@ test("orch continue <sid> requires the usage argument", async () => {
   const repo = initGitRepo("orch-continue-usage-");
   await assert.rejects(runMainInRepo(repo, ["continue"]), /usage: orch continue <sid>/);
 });
+
+test("orch continue <sid> refuses to resume an inflight-only branch with no committed changes", async () => {
+  const repo = initGitRepo("orch-continue-empty-");
+  const sid = "cafebabe";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  // Simulate a death before the author's first commit: an inflight record
+  // exists (registered before authoring starts) but no checkpoint was ever
+  // written (checkpoints only appear once a review round completes), and the
+  // branch carries no committed diff vs. main.
+  inflight.register(join(repo, ".orch"), sid, { branch, pid: process.pid, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid]),
+    /has no committed changes/,
+  );
+});

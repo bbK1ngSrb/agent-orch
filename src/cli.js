@@ -956,6 +956,12 @@ export async function main(argv, deps = {}) {
     const branch = ck?.branch || inf?.branch;
     if (!branch) throw new Error(`orch: no checkpoint or inflight record for sid ${sid} — nothing to resume`);
     if (!git.branchExists(repo, branch)) throw new Error(`orch: branch ${branch} (sid ${sid}) no longer exists`);
+    // inflight-only fallback (no checkpoint ever written): the run may have died
+    // before the author committed anything — unlike the checkpoint path, an
+    // inflight record alone doesn't prove there's work to review/merge.
+    if (inf && git.changedFiles(repo, branch).length === 0) {
+      throw new Error(`orch: branch ${branch} (sid ${sid}) has no committed changes — the run died before authoring finished; start a fresh \`orch task\` instead`);
+    }
 
     const authorName = branch.split("/")[1];
     if (!authorName || !cfg.agents.includes(authorName)) {
@@ -968,7 +974,11 @@ export async function main(argv, deps = {}) {
     const reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
 
     const run = {
-      mode: "task", task: `continue ${sid}`, branch, sid, resume: true,
+      // No original task text survives in the checkpoint/inflight record, so
+      // `task` falls back to the branch name — changelogEntry() and the
+      // terminal summary both read `task`; the raw "continue <sid>" command
+      // is not a meaningful changelog/summary label.
+      mode: "task", task: branch, branch, sid, resume: true,
       authorName, author: { agent: authorName, model: null, effort: null },
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers, cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
