@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as checkpoint from "../src/checkpoint.js";
@@ -38,6 +38,13 @@ test("checkpoints are isolated per sid", () => {
   checkpoint.record(d, "sid-2", { branch: "b", round: 3, stage: "reviewed", decision: "AGREE" });
   assert.equal(checkpoint.lookup(d, "sid-1").branch, "a");
   assert.equal(checkpoint.lookup(d, "sid-2").branch, "b");
+});
+
+test("record without a sid writes nothing (PR bridge runs runCycle sid-less)", () => {
+  const d = freshDir();
+  checkpoint.record(d, undefined, { branch: "pr-1", round: 1, stage: "tested" });
+  assert.equal(existsSync(join(d, "checkpoints")), false);
+  assert.equal(checkpoint.lookup(d, undefined), null);
 });
 
 test("clear removes the record", () => {

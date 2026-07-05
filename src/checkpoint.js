@@ -9,6 +9,10 @@ const dir = (orchDir) => join(orchDir, "checkpoints");
 const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
 
 export function record(orchDir, sid, data) {
+  // No sid → no resume path exists (the PR bridge calls runCycle without one).
+  // Writing would leave a dangling `undefined.json` the dashboard reads as a
+  // cycle that died mid-flight.
+  if (!sid) return;
   mkdirSync(dir(orchDir), { recursive: true });
   writeFileSync(file(orchDir, sid), JSON.stringify({ ...data, ts: new Date().toISOString() }));
 }
