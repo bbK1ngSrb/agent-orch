@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { IS_WINDOWS } from "./platform.js";
 
 function safeRead(p) {
   try { return readFileSync(p, "utf8"); } catch { return ""; }
@@ -39,7 +40,10 @@ export function splitArgs(cmd) {
 export function run(cmd, cwd) {
   const argv = splitArgs(cmd || "");
   if (argv.length === 0) return { pass: false, log: "empty test command" };
-  const r = spawnSync(argv[0], argv.slice(1), { cwd, encoding: "utf8" });
+  // shell on Windows only: test runners resolve to .cmd shims (npm.cmd,
+  // pytest via wrapper) which Node refuses to spawn shell-less. The command is
+  // short config-provided argv (never prompt text), so cmd quoting is safe here.
+  const r = spawnSync(argv[0], argv.slice(1), { cwd, encoding: "utf8", shell: IS_WINDOWS });
   const log = (r.stdout || "") + (r.stderr || "") + (r.error ? String(r.error.message) : "");
   return { pass: r.status === 0, log };
 }

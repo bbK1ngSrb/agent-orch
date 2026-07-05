@@ -2,16 +2,24 @@ name: ci
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with: { node-version: "24" }
       - run: npm ci || npm install
       - run: npm test
+      # Linux-only steps: the invariant lint needs bash glob expansion (pwsh
+      # passes *.yml literally) and one run of a repo-level check suffices.
       - name: token-step invariant (§3g)
+        if: runner.os == 'Linux'
         run: node scripts/lint-token-step.js .github/workflows/*.yml
       - name: bash selftest
+        if: runner.os == 'Linux'
         run: |
           if [ -f harness/orch-loop.sh ]; then
             bash harness/orch-loop.sh --selftest
