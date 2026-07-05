@@ -405,7 +405,8 @@ function dryDeps() {
     scope: { count: () => 0 },
     inflight: { setPaths() {} },
     finalize: async () => ({ status: "merged", reason: "dry-run", sha: "dry" }),
-    notify,
+    // Dry-run must not pollute the real run history/KPIs.
+    notify: { ...notify, recordRun() {} },
   };
 }
 
@@ -887,8 +888,11 @@ export async function main(argv, deps = {}) {
         results.push(result);
         // Cycle returned (any terminal status) → drop the resume + checkpoint records.
         // A quota throw skips this line, leaving both for the next run to resume (#24).
-        if (!dry && run.mode === "task") {
-          resume.clear(orchDir, run.task, run.authorName);
+        // Checkpoints clear for every mode: review/pr cycles write reviewed/tested
+        // checkpoints too, and a completed run left dangling would read as
+        // "died mid-flight" on the dashboard.
+        if (!dry) {
+          if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
         }
         console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${cleanStreakSuffix(orchDir, dry)}; cost ${result.usageSummary}`);

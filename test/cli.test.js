@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -11,6 +11,7 @@ import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
 import * as gitDep from "../src/git.js";
 import * as notify from "../src/notify.js";
+import * as checkpointDep from "../src/checkpoint.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
 function mockSpawn() {
@@ -1237,4 +1238,34 @@ test("realDeps() wires github.openPr — a merge:pr cycle escalates cleanly inst
   assert.equal(result.status, "escalated");
   assert.match(result.reason, /merge: pr needs a remote/);
   assert.ok(existsSync(join(orchDir, "reviews", branch, "DECISION.md")));
+});
+
+// Regression (#106 review finding): review/pr-mode cycles write reviewed/tested
+// checkpoints too, but the post-cycle clear was gated on mode === "task" — a
+// normally COMPLETED `orch review` left a dangling checkpoint forever, which the
+// dashboard's interruptedCycles() then reported as "died mid-flight".
+test("completed review cycle clears its checkpoint (no false interrupted entry)", async () => {
+  const repo = initGitRepo("orch-review-ck-");
+  gitDep.git(["branch", "pr/claude/some-fix"], repo);
+
+  let recorded = 0;
+  const ck = { ...checkpointDep, record: (...a) => { recorded++; return checkpointDep.record(...a); } };
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: ck,
+    // DISAGREE → review mode escalates on round 1; the "reviewed" checkpoint is
+    // already on disk by then, so a completed run must still clean it up.
+    adapters: { get: (name) => ({ name, async audit() { return { decision: "DISAGREE", reason: "no", raw: "", usage: {} }; } }) },
+  };
+  try {
+    process.exitCode = 0;
+    await runMainInRepo(repo, ["review", "pr/claude/some-fix"], { cycleDeps });
+  } finally {
+    process.exitCode = 0;
+  }
+
+  assert.ok(recorded > 0); // the cycle really wrote a checkpoint mid-flight
+  const dir = join(repo, ".orch", "checkpoints");
+  const leftover = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")) : [];
+  assert.deepEqual(leftover, []); // ...and the completed run cleared it
 });

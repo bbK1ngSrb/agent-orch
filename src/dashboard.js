@@ -1,5 +1,6 @@
 // Read-only view over existing .orch/ state: live cycles (inflight + their
-// latest checkpoint), run history (runs.jsonl), and success-rate metrics.
+// latest checkpoint), interrupted checkpoints, run history (runs.jsonl), and
+// success-rate metrics.
 // No new persistence — this only reads what engine.js/finalize.js/notify.js
 // already write.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -28,6 +29,34 @@ export function liveCycles(orchDir) {
       };
     })
     .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+}
+
+function readCheckpoints(orchDir) {
+  const d = join(orchDir, "checkpoints");
+  if (!existsSync(d)) return [];
+  const out = [];
+  for (const f of readdirSync(d)) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const ck = JSON.parse(readFileSync(join(d, f), "utf8"));
+      if (!ck?.branch) continue;
+      out.push({
+        sid: f.slice(0, -".json".length),
+        branch: ck.branch,
+        stage: STAGE_LABELS[ck.stage] || ck.stage || "unknown",
+        round: ck.round ?? null,
+        lastUpdate: ck.ts || null,
+      });
+    } catch {
+      // Ignore corrupt partial writes; checkpoint.lookup behaves the same way.
+    }
+  }
+  return out.sort((a, b) => ((a.lastUpdate || "") < (b.lastUpdate || "") ? 1 : -1));
+}
+
+export function interruptedCycles(orchDir, live = liveCycles(orchDir)) {
+  const liveSids = new Set(live.map((c) => c.sid));
+  return readCheckpoints(orchDir).filter((c) => !liveSids.has(c.sid));
 }
 
 function readJsonl(p) {
@@ -79,8 +108,10 @@ export function latestLog(orchDir, branch, lines = 12) {
 
 export function snapshot(orchDir, { historyLimit = 10 } = {}) {
   const live = liveCycles(orchDir);
+  const interrupted = interruptedCycles(orchDir, live);
   return {
     live: live.map((c) => ({ ...c, log: latestLog(orchDir, c.branch) })),
+    interrupted,
     history: runHistory(orchDir, historyLimit),
     metrics: metrics(orchDir),
   };
@@ -90,7 +121,7 @@ function pct(n) { return n == null ? "n/a" : `${Math.round(n * 100)}%`; }
 function usd(n) { return n == null ? "n/a" : `$${n.toFixed(4)}`; }
 
 export function render(orchDir, opts = {}) {
-  const { live, history, metrics: m } = snapshot(orchDir, opts);
+  const { live, interrupted, history, metrics: m } = snapshot(orchDir, opts);
   const lines = [];
   lines.push(`orch dashboard — ${orchDir}`);
   lines.push("");
@@ -102,6 +133,17 @@ export function render(orchDir, opts = {}) {
       const round = c.round != null ? ` round ${c.round}` : "";
       lines.push(`  ${c.branch}  [${c.stage}${round}]  pid=${c.pid}  since ${c.startedAt}`);
       if (c.log) lines.push(`    log (${c.log.file}): ${c.log.tail.split("\n").pop()}`);
+    }
+  }
+  lines.push("");
+  lines.push(`Interrupted cycles (${interrupted.length})`);
+  if (!interrupted.length) {
+    lines.push("  (none)");
+  } else {
+    for (const c of interrupted) {
+      const round = c.round != null ? ` round ${c.round}` : "";
+      const when = c.lastUpdate ? `  last update ${c.lastUpdate}` : "";
+      lines.push(`  ${c.branch}  [${c.stage}${round}]  sid=${c.sid}${when}`);
     }
   }
   lines.push("");
