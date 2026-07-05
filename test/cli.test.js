@@ -12,6 +12,7 @@ import * as adapters from "../src/adapters/index.js";
 import * as gitDep from "../src/git.js";
 import * as notify from "../src/notify.js";
 import * as checkpointDep from "../src/checkpoint.js";
+import { IS_WINDOWS } from "../src/platform.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
 function mockSpawn() {
@@ -428,7 +429,7 @@ test("nextAuthor ignores a pin not in the agents pool (#27)", () => {
   assert.equal(r.authorName, "claude");
 });
 
-test("preflight throws a clear error when .orch/ is read-only", () => {
+test("preflight throws a clear error when .orch/ is read-only", { skip: IS_WINDOWS && "chmod doesn't restrict directory writes on Windows" }, () => {
   const d = mkdtempSync(join(tmpdir(), "orch-ro-"));
   chmodSync(d, 0o555); // read-only dir → child .orch write must fail
   const orchDir = join(d, ".orch");
@@ -466,7 +467,7 @@ test("resolveAgentBin falls back to a known install dir when PATH misses", () =>
   assert.equal(resolveAgentBin("truly-missing-cli-xyz", [d]), null); // nowhere → null
 });
 
-test("resolveAgentBin ignores a non-executable file in a fallback dir", () => {
+test("resolveAgentBin ignores a non-executable file in a fallback dir", { skip: IS_WINDOWS && "no exec-bit concept for extensionless files on Windows" }, () => {
   const d = mkdtempSync(join(tmpdir(), "orch-bin-"));
   writeFileSync(join(d, "not-exec-xyz"), "");
   chmodSync(join(d, "not-exec-xyz"), 0o644);
