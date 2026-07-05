@@ -104,6 +104,28 @@ test("audit returns parsed model, token usage, and estimated cost from agent out
   assert.deepEqual(v.usage, { model: "gpt-5.1", tokens: 125, inputTokens: 100, outputTokens: 25, costUsd: 0.000875 });
 });
 
+test("audit captures stderr from successful agent runs", async () => {
+  const adapter = makeCliAdapter({
+    name: "stderr-reviewer",
+    bin: "sh",
+    buildArgs: () => ["-c", "printf 'AGREE stderr verdict\\n' >&2"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.match(v.raw, /stderr verdict/);
+});
+
+test("audit does not let successful stderr override a parseable stdout verdict", async () => {
+  const adapter = makeCliAdapter({
+    name: "stderr-warning",
+    bin: "sh",
+    buildArgs: () => ["-c", "printf 'AGREE stdout verdict\\n'; printf 'warning mentions DISAGREE\\n' >&2"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.match(v.raw, /warning mentions DISAGREE/);
+});
+
 test("audit emits elapsed progress while the agent is still running", async () => {
   const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
   const priorWrite = process.stderr.write;
