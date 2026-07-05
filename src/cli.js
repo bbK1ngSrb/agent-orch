@@ -940,6 +940,63 @@ export async function main(argv, deps = {}) {
     return;
   }
 
+  if (command === "continue") {
+    const sid = rest[0];
+    if (!sid) throw new Error("usage: orch continue <sid>");
+    const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
+    const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
+    if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
+    if (!dry) preflightFn(cfg, orchDir);
+
+    // Checkpoint is authoritative (survives whatever killed the process — stage
+    // timeout, adapter crash, hung stdio); inflight is only a fallback for a run
+    // that died before its first review round wrote a checkpoint.
+    const ck = checkpoint.lookup(orchDir, sid);
+    const inf = ck ? null : inflight.lookup(orchDir, sid);
+    const branch = ck?.branch || inf?.branch;
+    if (!branch) throw new Error(`orch: no checkpoint or inflight record for sid ${sid} — nothing to resume`);
+    if (!git.branchExists(repo, branch)) throw new Error(`orch: branch ${branch} (sid ${sid}) no longer exists`);
+
+    const authorName = branch.split("/")[1];
+    if (!authorName || !cfg.agents.includes(authorName)) {
+      throw new Error(`orch: cannot determine a registered author from branch ${branch}`);
+    }
+    const configured = configuredReviewers(cfg);
+    const reviewerList = configured
+      ? reviewersForAuthor(authorName, configured)
+      : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
+    const reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+
+    const run = {
+      mode: "task", task: `continue ${sid}`, branch, sid, resume: true,
+      authorName, author: { agent: authorName, model: null, effort: null },
+      reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
+      reviewers, cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
+    };
+
+    if (!dry) {
+      const baseSha = git.git(["rev-parse", "main"], repo);
+      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha });
+    }
+    try {
+      const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
+      if (!dry) checkpoint.clear(orchDir, sid);
+      console.log(`orch${dry ? " (dry)" : ""}: ${branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s); cost ${result.usageSummary}`);
+      if (result.status === "merged" && !dry && !flags["no-tidy"]) {
+        const finishFn = deps.finishRun || finishRun;
+        const io = deps.io || realIo();
+        await finishFn(
+          { repo, orchDir, task: run.task, merged: [branch], interactive: Boolean(process.stdin.isTTY), runStats: result.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: result.prUrl ? [result.prUrl] : [] },
+          { git, io, notify },
+        );
+      }
+      if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
+    } finally {
+      if (!dry) inflight.deregister(orchDir, sid);
+    }
+    return;
+  }
+
   if (command === "pr") {
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const n = rest[0];
@@ -1000,6 +1057,7 @@ Commands:
   task --file <file>    Run a cycle from an untrusted JSON work order.
   issue <number>        Run from a GitHub issue and close it on merge.
   review <branch>       Audit an existing branch without merging.
+  continue <sid>        Resume an interrupted/stalled cycle from its checkpoint.
   pr <number>           Review a GitHub PR; add --merge to merge if approved.
   dashboard             Show read-only live status, log tail, and run history.
   completion [bash]     Print the bash completion script (default: bash).

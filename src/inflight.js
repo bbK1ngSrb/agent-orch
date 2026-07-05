@@ -28,6 +28,13 @@ export function deregister(orchDir, sid) {
   rmSync(file(orchDir, sid), { force: true });
 }
 
+// Raw read, ignoring pid liveness — `orch continue` needs the branch of a sid
+// whose owning process is already dead (that's the whole point of resuming it).
+export function lookup(orchDir, sid) {
+  try { return JSON.parse(readFileSync(file(orchDir, sid), "utf8")); }
+  catch { return null; } // ENOENT / parse error → no record
+}
+
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; }
 }

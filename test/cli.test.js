@@ -1326,3 +1326,51 @@ test("completed review cycle clears its checkpoint (no false interrupted entry)"
   const leftover = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")) : [];
   assert.deepEqual(leftover, []); // ...and the completed run cleared it
 });
+
+test("orch continue <sid> resumes from checkpoint, past review, without re-authoring", async () => {
+  const repo = initGitRepo("orch-continue-");
+  const sid = "deadbeef";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  let authorCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { authorCalls++; return { usage: {} }; },
+        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const finishCalls = [];
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps, finishRun: async (ctx) => { finishCalls.push(ctx); } });
+
+  assert.equal(authorCalls, 0); // resume skips re-authoring — the branch already has the commit
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.equal(finishCalls.length, 1);
+  assert.deepEqual(finishCalls[0].merged, [branch]);
+  const ck = checkpointDep.lookup(join(repo, ".orch"), sid);
+  assert.equal(ck, null); // completed run clears its checkpoint
+});
+
+test("orch continue <sid> throws when no checkpoint or inflight record exists", async () => {
+  const repo = initGitRepo("orch-continue-missing-");
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", "nosuchsid"]),
+    /no checkpoint or inflight record for sid nosuchsid/,
+  );
+});
+
+test("orch continue <sid> requires the usage argument", async () => {
+  const repo = initGitRepo("orch-continue-usage-");
+  await assert.rejects(runMainInRepo(repo, ["continue"]), /usage: orch continue <sid>/);
+});
