@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.10 — 2026-07-05
+- pr/codex/changelog-entries-use-raw-branch-names-i-3031398-0 (closes #107)
+
 ## 0.2.9 — 2026-07-05
 - pr/codex/escalated-approved-crashed-cycles-never--2735699-0 (closes #106)
 
