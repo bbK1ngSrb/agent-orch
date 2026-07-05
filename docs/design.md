@@ -223,7 +223,7 @@ last such token. Malformed/missing verdict → treated as `DISAGREE` with reason
 
 - Install from source (`npm install -g .`); run via the `orch` bin. Not published
   to npm — the `agent-orch` name there is an unrelated package.
-- Prereq: at least one agent CLI (`claude`, `codex`, or `copilot`) on PATH —
+- Prereq: at least one agent CLI (`claude`, `codex`, `copilot`, or `gemini`) on PATH —
   documented in README, verified at `init` and at `task`/`review` preflight.
 - Repo ships: `README.md` (quickstart), `LICENSE` (MIT), `CONTRIBUTING.md` (adapter
   authoring guide), `orch.example.yml`, and CI that runs the tool's own unit tests.
