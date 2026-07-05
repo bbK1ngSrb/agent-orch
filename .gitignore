@@ -1,5 +1,6 @@
-node_modules/
 .orch/
+modules/
+node_modules/
 
 # generated orch run artifacts
 docs/task*-run*.md
@@ -11,7 +12,7 @@ docs/superpowers/
 docs/2026-06-23-cross-audit-pr-orchestration.md
 docs/2026-06-23-cross-audit-pr-orchestration-design.md
 docs/audit-findings.md
-tasks/homelab-leak-audit.md
+tasks/
 
 # stray multi-tool config files (this project is npm-only)
 .env
@@ -36,7 +37,22 @@ pnpm-lock.yaml
 /.zprofile
 /.zshrc
 /.idea
-/.vscode
 /scripts
 # Exception: load-bearing security lint (§3g) must stay tracked, not swept by /scripts.
 !/scripts/lint-token-step.js
+
+# Ignore all local VS Code configurations
+.vscode/*
+
+# BUT allow sharing of core team configurations if they exist
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+
+# Ignore individual user workspace configurations
+*.code-workspace
+
+# Ignore built extensions
+*.vsix
