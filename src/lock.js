@@ -68,7 +68,7 @@ export function acquireBlocking(orchDir, lockName = "lock", { intervalMs = 200, 
 }
 
 // Synchronous sleep with no busy-spin and no dependencies.
-function sleepSync(ms) {
+export function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
