@@ -89,11 +89,15 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk) => { stdout += chunk; });
     child.stderr?.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", (e) => finish({ out: e.message || "", ok: false }));
+    child.on("error", (e) => {
+      const out = e.message || "";
+      finish({ out, raw: out, ok: false });
+    });
     child.on("close", (code, signal) => {
       const failed = code !== 0 || Boolean(signal);
-      const out = failed ? `${stdout}${stderr}` || `Command failed: ${bin}` : stdout;
-      finish({ out, ok: !failed });
+      const raw = `${stdout}${stderr}`;
+      const out = failed ? raw || `Command failed: ${bin}` : stdout;
+      finish({ out, raw, ok: !failed });
     });
   });
 }
@@ -237,20 +241,26 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
       const args = buildArgs(render("review", { branch }), wd, opts);
-      const { out, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, { stageTimeoutMs: opts.stageTimeoutMs });
-      const usage = parseRunUsage(out, modelFromArgs(args, opts));
+      const { out, raw, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, { stageTimeoutMs: opts.stageTimeoutMs });
+      const captured = raw || out;
+      const usage = parseRunUsage(captured, modelFromArgs(args, opts));
       const parsed = parseVerdict(out);
+      if (ok && parsed.reason === "unparseable verdict") {
+        const parsedRaw = parseVerdict(captured);
+        if (parsedRaw.reason !== "unparseable verdict") return { ...parsedRaw, usage };
+        return { ...parsed, reason: `unparseable verdict${detail(captured)}`, raw: captured, usage };
+      }
       // A nonzero agent that still printed an explicit DISAGREE gave a real,
       // actionable review finding — keep it (don't bury it as "agent exited").
       // An AGREE from a crashed agent is untrusted and falls through to below.
-      if (!ok && parsed.decision === "DISAGREE" && parsed.reason !== "unparseable verdict") return { ...parsed, usage };
+      if (!ok && parsed.decision === "DISAGREE" && parsed.reason !== "unparseable verdict") return { ...parsed, raw: captured, usage };
       // Nonzero with no usable verdict (#33): flag it `agentError` so the engine
       // escalates instead of asking the author to revise a non-code failure.
       // Surface WHY it died (#31): a bad model id / missing flag lives in `out` —
       // fold a trimmed tail into the reason so the escalation names the cause.
       // Local files only.
-      if (!ok) return { decision: "DISAGREE", reason: `agent exited nonzero${detail(out)}`, raw: out, agentError: true, usage };
-      return { ...parsed, usage }; // unparseable/empty -> DISAGREE "unparseable verdict"
+      if (!ok) return { decision: "DISAGREE", reason: `agent exited nonzero${detail(captured)}`, raw: captured, agentError: true, usage };
+      return { ...parsed, raw: captured, usage };
     },
   };
   return adapter;

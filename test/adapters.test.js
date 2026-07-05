@@ -115,6 +115,28 @@ test("audit returns parsed model, token usage, and estimated cost from agent out
   assert.deepEqual(v.usage, { model: "gpt-5.1", tokens: 125, inputTokens: 100, outputTokens: 25, costUsd: 0.000875 });
 });
 
+test("audit captures stderr from successful agent runs", async () => {
+  const adapter = makeCliAdapter({
+    name: "stderr-reviewer",
+    bin: "sh",
+    buildArgs: () => ["-c", "printf 'AGREE stderr verdict\\n' >&2"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.match(v.raw, /stderr verdict/);
+});
+
+test("audit does not let successful stderr override a parseable stdout verdict", async () => {
+  const adapter = makeCliAdapter({
+    name: "stderr-warning",
+    bin: "sh",
+    buildArgs: () => ["-c", "printf 'AGREE stdout verdict\\n'; printf 'warning mentions DISAGREE\\n' >&2"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.match(v.raw, /warning mentions DISAGREE/);
+});
+
 test("audit emits elapsed progress while the agent is still running", async () => {
   const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
   const priorWrite = process.stderr.write;
@@ -284,6 +306,19 @@ test("audit surfaces the agent's actual error in the DISAGREE reason (#31)", asy
   assert.equal(v.decision, "DISAGREE");
   assert.match(v.reason, /opus-4\.8/, "reason must include the agent's error output");
   assert.equal(v.agentError, true, "a bare crash is also flagged for fast-escalate (#33)");
+});
+
+test("audit falls back to the command failure text when a nonzero agent prints nothing", async () => {
+  const adapter = makeCliAdapter({
+    name: "silent-boom",
+    bin: "sh",
+    buildArgs: () => ["-c", "exit 9"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+  assert.equal(v.agentError, true);
+  assert.equal(v.reason, "agent exited nonzero: Command failed: sh");
+  assert.equal(v.raw, "Command failed: sh");
 });
 
 test("audit ignores AGREE printed by a crashed agent (F4 fail-safe)", async () => {

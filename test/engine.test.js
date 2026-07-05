@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { runCycle } from "../src/engine.js";
 
 function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
-  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], rounds: [], reviewLog: [] };
+  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], rounds: [], rawRounds: [], reviewLog: [] };
   const reviewerCache = new Map();
   const reviewerFor = (name) => {
     if (!reviewerCache.has(name)) {
@@ -41,6 +41,7 @@ function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gateP
     scope: { count: () => 0 },
     notify: {
       phase() {}, writeRound(_orchDir, _branch, round, content) { calls.rounds.push({ round, content }); return "p"; },
+      writeRoundRaw(_orchDir, _branch, round, content) { calls.rawRounds.push({ round, content }); return "rp"; },
       buildDecisionBrief: () => "brief", escalate() { return "d"; },
       recordRun(_dir, entry) { calls.recorded = entry; },
       cleanupReviews(_dir, branch) { calls.cleaned = branch; },
@@ -84,6 +85,17 @@ test("merged result carries author and reviewer run statistics", async () => {
   assert.deepEqual(r.usage, { tokens: 2000, costUsd: 0.04 });
   assert.equal(r.usageSummary, "2,000 tokens, ~$0.04");
   assert.match(deps._calls.rounds[0].content, /Verdict: AGREE\n\nCost: 2,000 tokens, ~\$0\.04/);
+});
+
+test("review rounds persist raw reviewer output alongside parsed verdicts", async () => {
+  const deps = makeDeps({
+    verdicts: [{ decision: "DISAGREE", reason: "unparseable verdict", raw: "soft error on stderr" }],
+  });
+  await runCycle({ ...opts, cfg: { ...opts.cfg, reviseCap: 1 } }, deps);
+  assert.equal(deps._calls.rawRounds.length, 1);
+  assert.equal(deps._calls.rawRounds[0].round, 1);
+  assert.match(deps._calls.rawRounds[0].content, /## rev/);
+  assert.match(deps._calls.rawRounds[0].content, /soft error on stderr/);
 });
 
 test("review outcomes are logged with terminal status and defect flag", async () => {

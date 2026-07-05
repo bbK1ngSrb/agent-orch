@@ -24,6 +24,13 @@ export function writeRound(orchDir, branch, round, content) {
   return p;
 }
 
+export function writeRoundRaw(orchDir, branch, round, content) {
+  const p = join(reviewsDir(orchDir, branch), `round-${round}-raw.md`);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, content);
+  return p;
+}
+
 export function buildDecisionBrief({ branch, reviewerCase, authorCase, diffSummary, rounds }) {
   return [
     `# Decision needed — ${branch}`,

@@ -3,13 +3,20 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeRound, buildDecisionBrief, reviewsDir, recordRun, kpi, escalate } from "../src/notify.js";
+import { writeRound, writeRoundRaw, buildDecisionBrief, reviewsDir, recordRun, kpi, escalate } from "../src/notify.js";
 
 test("writeRound creates nested round file", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-notify-"));
   const p = writeRound(d, "pr/claude/x", 2, "hello");
   assert.match(p, /reviews\/pr\/claude\/x\/round-2\.md$/);
   assert.equal(readFileSync(p, "utf8"), "hello");
+});
+
+test("writeRoundRaw creates nested raw round file", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-notify-"));
+  const p = writeRoundRaw(d, "pr/claude/x", 2, "raw hello");
+  assert.match(p, /reviews\/pr\/claude\/x\/round-2-raw\.md$/);
+  assert.equal(readFileSync(p, "utf8"), "raw hello");
 });
 
 test("reviewsDir keeps the path under .orch/reviews for normal branches", () => {

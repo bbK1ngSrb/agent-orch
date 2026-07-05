@@ -1,6 +1,18 @@
 import { isDocsOnly } from "./scope.js";
 import { checkPaths } from "./intake/allowlist.js";
 
+const RAW_OUTPUT_TAIL_CHARS = 12_000;
+
+function rawOutputTail(raw) {
+  const text = String(raw ?? "");
+  if (!text) return "(empty)";
+  return text.length > RAW_OUTPUT_TAIL_CHARS ? text.slice(-RAW_OUTPUT_TAIL_CHARS) : text;
+}
+
+function roundRawOutput(verdicts) {
+  return verdicts.map((v) => `## ${v.reviewer}\n\n${rawOutputTail(v.raw)}\n`).join("\n\n");
+}
+
 // Pure state machine. All side-effecting collaborators arrive via `deps`,
 // so tests stub them and dry-run is just another set of stubs.
 export async function runCycle(opts, deps) {
@@ -137,6 +149,7 @@ export async function runCycle(opts, deps) {
         };
         notify.writeRound(orchDir, branch, round,
           `# Round ${round}\n\nVerdict: ${verdict.decision}\n\nCost: ${formatUsage(totalUsage(runStats))}\n\n${verdict.reason}\n`);
+        notify.writeRoundRaw?.(orchDir, branch, round, roundRawOutput(verdicts));
         checkpoint?.record(orchDir, sid, { branch, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason });
 
         // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
