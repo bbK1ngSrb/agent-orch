@@ -7,6 +7,7 @@
 [![npm](https://img.shields.io/npm/v/%40bbk1ng%2Fagent-orch?label=npm&color=cb3837)](https://www.npmjs.com/package/@bbk1ng/agent-orch)
 [![CI](https://github.com/bbk1ng/agent-orch/actions/workflows/ci.yml/badge.svg)](https://github.com/bbk1ng/agent-orch/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-PolyForm%20NC%201.0.0-blue)](LICENSE)
+[![X](https://img.shields.io/badge/X-@agentorchbot-000000?logo=x)](https://x.com/agentorchbot)
 
 > [!WARNING]
 > **License Notice**: `agent-orch` is a **Source-Available, Non-Commercial** project,
