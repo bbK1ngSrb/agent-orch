@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.9 — 2026-07-05
+- pr/codex/escalated-approved-crashed-cycles-never--2735699-0 (closes #106)
+
 ## 0.2.8 — 2026-07-04
 - pr/claude/auto-docs-mr6yfds80-update-documentation-2548509-0
 
