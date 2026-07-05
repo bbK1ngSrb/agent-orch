@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.11 — 2026-07-05
+- fetchOriginMain has no retry on ref-lock race, demotes cycle to pr-fallback (closes [#112](https://github.com/bbk1ng/agent-orch/issues/112))
+
 ## 0.2.10 — 2026-07-05
 - pr/codex/changelog-entries-use-raw-branch-names-i-3031398-0 (closes #107)
 
