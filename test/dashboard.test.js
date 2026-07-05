@@ -57,13 +57,15 @@ test("interruptedCycles reports checkpoints without a live owner", () => {
 
 test("runHistory reads runs.jsonl, newest first, capped at limit", () => {
   const d = freshDir();
-  notify.recordRun(d, { ts: "1", branch: "b1", verdict: "merged", rounds: 1 });
-  notify.recordRun(d, { ts: "2", branch: "b2", verdict: "pr-fallback", rounds: 2 });
-  notify.recordRun(d, { ts: "3", branch: "b3", verdict: "merged", rounds: 1 });
+  notify.recordRun(d, { ts: "1", branch: "b1", sid: "sid-1", verdict: "merged", rounds: 1 });
+  notify.recordRun(d, { ts: "2", branch: "b2", sid: "sid-2", verdict: "pr-fallback", rounds: 2 });
+  notify.recordRun(d, { ts: "3", branch: "b3", sid: "sid-3", verdict: "merged", rounds: 1 });
   const h = dashboard.runHistory(d, 2);
   assert.equal(h.length, 2);
   assert.equal(h[0].ts, "3");
+  assert.equal(h[0].sid, "sid-3");
   assert.equal(h[1].ts, "2");
+  assert.equal(h[1].sid, "sid-2");
 });
 
 test("metrics computes success rate and usage totals", () => {
@@ -111,6 +113,7 @@ test("render produces a readable text summary with live cycles, history, and met
   assert.match(text, /Live cycles \(1\)/);
   assert.match(text, /b1/);
   assert.match(text, /\[test round 1\]/);
+  assert.match(text, /sid=sid-1/);
   assert.match(text, /Interrupted cycles \(0\)/);
   assert.match(text, /Run history/);
   assert.match(text, /Metrics/);
@@ -134,4 +137,17 @@ test("render surfaces checkpoint-only interrupted cycles", () => {
   assert.match(text, /pr\/codex\/crashed/);
   assert.match(text, /\[review round 1\]/);
   assert.match(text, /sid=sid-crash/);
+});
+
+test("snapshot includes sid for live, interrupted, and history entries", () => {
+  const d = freshDir();
+  inflight.register(d, "sid-live", { branch: "pr/codex/live", pid: process.pid, baseSha: "abc" });
+  checkpoint.record(d, "sid-live", { branch: "pr/codex/live", round: 1, stage: "tested" });
+  checkpoint.record(d, "sid-dead", { branch: "pr/codex/crashed", round: 2, stage: "reviewed" });
+  notify.recordRun(d, { ts: "1", branch: "pr/codex/done", sid: "sid-hist", verdict: "merged", rounds: 1 });
+
+  const snap = dashboard.snapshot(d);
+  assert.equal(snap.live[0].sid, "sid-live");
+  assert.equal(snap.interrupted[0].sid, "sid-dead");
+  assert.equal(snap.history[0].sid, "sid-hist");
 });

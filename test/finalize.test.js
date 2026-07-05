@@ -36,6 +36,7 @@ test("clean path → merged + recorded", async () => {
   const { deps, recorded } = baseDeps();
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merged");
+  assert.equal(recorded[0].sid, "1");
   assert.equal(recorded[0].verdict, "merged");
 });
 
@@ -113,6 +114,7 @@ test("path overlap with a peer → pr-fallback (no merge attempted)", async () =
   assert.match(r.reason, /peer overlap: peer-2: src\/a\.js/);
   assert.match(r.reason, /next action:/);
   assert.equal(merged, false);
+  assert.equal(recorded[0].sid, "1");
   assert.equal(recorded[0].verdict, "pr-fallback");
   assert.match(recorded[0].reason, /peer overlap: peer-2: src\/a\.js/);
 });
@@ -290,6 +292,7 @@ test("merge: pr → opens a PR instead of merging locally, no lock taken", async
   assert.equal(r.prUrl, "https://x/pr/9");
   assert.equal(locked, false);
   assert.equal(mergedInWorktree, false);
+  assert.equal(recorded[0].sid, "1");
   assert.equal(recorded[0].verdict, "pr");
 });
 
@@ -297,6 +300,7 @@ test("merge: pr with no remote/gh → escalated, no crash", async () => {
   const { deps, recorded } = baseDeps({ github: { openPr: async () => ({ prUrl: null }) } });
   const r = await finalize({ ...ctx(), cfg: { merge: "pr" } }, deps);
   assert.equal(r.status, "escalated");
+  assert.equal(recorded[0].sid, "1");
   assert.equal(recorded[0].verdict, "escalated");
 });
 
