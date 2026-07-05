@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { sleepSync } from "./lock.js";
 
 const ORIGIN_MAIN_REF = "refs/remotes/origin/main";
 
@@ -118,11 +119,24 @@ export function verifyOriginContains(repo, commit) {
     : { ok: false, reason: `${commit} is not contained in origin/main` };
 }
 
-function fetchOriginMain(repo) {
+// Ref-lock contention: concurrent orch cycles share one .git and thus one
+// refs/remotes/origin/main. A losing fetch fails "cannot lock ref" — transient,
+// not a real sync problem — so retry a couple times before giving up.
+const REF_LOCK_RE = /cannot lock ref/i;
+
+export function fetchOriginMain(
+  repo,
+  { retries = 2, sleep = sleepSync, fetch = () => gitTry(["fetch", "origin", `main:${ORIGIN_MAIN_REF}`], repo) } = {},
+) {
   if (!gitTry(["remote", "get-url", "origin"], repo).ok)
     return { ok: false, missingOrigin: true, reason: "no origin remote configured" };
-  const r = gitTry(["fetch", "origin", `main:${ORIGIN_MAIN_REF}`], repo);
-  return r.ok ? { ok: true } : { ok: false, reason: r.out.trim() };
+  for (let attempt = 0; ; attempt++) {
+    const r = fetch();
+    if (r.ok) return { ok: true };
+    const reason = r.out.trim();
+    if (attempt >= retries || !REF_LOCK_RE.test(reason)) return { ok: false, reason };
+    sleep(50 * 2 ** attempt);
+  }
 }
 
 function mainWorktreePath(repo) {

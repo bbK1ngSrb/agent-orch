@@ -28,6 +28,7 @@ import { detectAgents, formatDetection } from "./detect.js";
 import { redact } from "./redact.js";
 import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dashboard.js";
 import { FALLBACK_BIN_DIRS, resolveAgentBin } from "./agent-bin.js";
+import { BASH_COMPLETION, installCompletion } from "./completion.js";
 
 export { slugify };
 export { resolveAgentBin };
@@ -958,6 +959,22 @@ export async function main(argv, deps = {}) {
     return;
   }
 
+  if (command === "completion") {
+    if (rest[0] === "install") {
+      const result = installCompletion();
+      if (result.ok) {
+        console.log(`orch: wrote completion script to ${result.path}`);
+        console.log(`orch: add this line to your ~/.bashrc to enable it:`);
+        console.log(`  source "${result.path}"`);
+      } else {
+        console.log(`orch: could not install completion script (${result.reason})`);
+      }
+      return;
+    }
+    console.log(BASH_COMPLETION);
+    return;
+  }
+
   if (command === "dashboard") {
     const historyLimit = flags.limit ? Number(flags.limit) : 10;
     if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit }), null, 2));
@@ -983,6 +1000,8 @@ Commands:
   review <branch>       Audit an existing branch without merging.
   pr <number>           Review a GitHub PR; add --merge to merge if approved.
   dashboard             Show read-only live status, log tail, and run history.
+  completion [bash]     Print the bash completion script (default: bash).
+  completion install    Write the completion script to ~/.orch/completion.bash.
   help                  Show this help.
 
 Options:

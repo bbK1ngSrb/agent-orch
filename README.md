@@ -7,6 +7,7 @@
 [![npm](https://img.shields.io/npm/v/%40bbk1ng%2Fagent-orch?label=npm&color=cb3837)](https://www.npmjs.com/package/@bbk1ng/agent-orch)
 [![CI](https://github.com/bbk1ng/agent-orch/actions/workflows/ci.yml/badge.svg)](https://github.com/bbk1ng/agent-orch/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-PolyForm%20NC%201.0.0-blue)](LICENSE)
+[![X](https://img.shields.io/badge/X-@agentorchbot-000000?logo=x)](https://x.com/agentorchbot)
 
 > [!WARNING]
 > **License Notice**: `agent-orch` is a **Source-Available, Non-Commercial** project,
@@ -244,10 +245,18 @@ post-merge re-test against the integrated tree.
 - `conflict` — the merge itself fails
 - `post-merge-test-fail` — tests fail after merge into `.orch/integration`
 - `merge-lock timeout` — the lock was never acquired
+- `main-sync-failed` — local `main` couldn't catch up to `origin/main`
 
 With a git remote and `gh` CLI available, the branch is pushed and a PR is
 opened. Without them, `.orch/reviews/<branch>/DECISION.md` is written and the
-branch is kept for manual review.
+branch is kept for manual review. Either way the reason is more than the
+trigger name: it carries round count, the branch's base SHA (plus the
+integration branch's tip once that worktree has been synced — still
+"unknown" for `merge-lock timeout` and `main-sync-failed`, which fire before
+that sync), the branch's changed paths, and trigger-specific detail
+(overlapping paths per peer cycle, the conflicting paths, the sync failure,
+or that the lock timed out) plus a one-line next action, so a human picking
+up the escalation doesn't have to re-derive context orch already had.
 
 **`merge: pr` — per-cycle PR mode.** Set `merge: pr` in `.orch/orch.yml` and an
 agreed + green cycle skips the local integration branch and `merge.lock`; it

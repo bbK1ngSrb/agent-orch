@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, mergeInWorktree, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, mergeInWorktree, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -307,6 +307,62 @@ test("changedSince is empty when the named branch is BEHIND the base sha (no rev
   // integration is now an ancestor of base: nothing landed there since our base,
   // so main-only changes must NOT be reported as overlap candidates.
   assert.deepEqual(changedSince(repo, base, "orch/integration"), []);
+});
+
+test("fetchOriginMain retries and succeeds on transient ref-lock contention", () => {
+  const repo = newRepo();
+  addOrigin(repo);
+  let calls = 0;
+  const sleeps = [];
+  const r = fetchOriginMain(repo, {
+    sleep: (ms) => sleeps.push(ms),
+    fetch: () => {
+      calls++;
+      return calls < 3
+        ? { ok: false, out: "error: cannot lock ref 'refs/remotes/origin/main': is at X but expected Y\n" }
+        : { ok: true, out: "" };
+    },
+  });
+
+  assert.equal(r.ok, true);
+  assert.equal(calls, 3);
+  assert.deepEqual(sleeps, [50, 100]);
+});
+
+test("fetchOriginMain gives up after exhausting retries on persistent ref-lock contention", () => {
+  const repo = newRepo();
+  addOrigin(repo);
+  let calls = 0;
+
+  const r = fetchOriginMain(repo, {
+    sleep: () => {},
+    fetch: () => {
+      calls++;
+      return { ok: false, out: "error: cannot lock ref 'refs/remotes/origin/main': is at X but expected Y\n" };
+    },
+  });
+
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /cannot lock ref/);
+  assert.equal(calls, 3); // initial attempt + 2 retries
+});
+
+test("fetchOriginMain does not retry non-lock fetch failures", () => {
+  const repo = newRepo();
+  addOrigin(repo);
+  let calls = 0;
+
+  const r = fetchOriginMain(repo, {
+    sleep: () => { throw new Error("should not sleep"); },
+    fetch: () => {
+      calls++;
+      return { ok: false, out: "fatal: could not resolve host\n" };
+    },
+  });
+
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /could not resolve host/);
+  assert.equal(calls, 1);
 });
 
 test("syncMainFromOrigin fast-forwards local main before new task bases", () => {
