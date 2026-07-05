@@ -607,6 +607,8 @@ function buildAdapterWorkOrder(name) {
 // orch.yml), so an AGREE+green result opens a PR through the full gate instead.
 export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} }) {
   try { adapters.get(name); return { status: "already-registered" }; } catch { /* proceed to build */ }
+  const resolved = (deps.resolveAgentBin || resolveAgentBin)(name);
+  if (!resolved) throw new Error(`orch: no CLI named "${name}" found on PATH — check for a typo`);
 
   const wo = buildAdapterWorkOrder(name);
   const task = wo.title;

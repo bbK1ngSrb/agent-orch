@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -684,6 +684,22 @@ test("agent build no-ops when the agent is already registered", async () => {
   const d = initGitRepo("orch-agentbuild-known-");
   const logs = await runMainInRepo(d, ["agent", "build", "claude"]);
   assert.match(logs.join("\n"), /already registered/);
+});
+
+test("agent build rejects a missing CLI before starting the pipeline", async () => {
+  let preflightCalled = false;
+  await assert.rejects(
+    () => buildAgent("widget", {
+      repo: "/repo",
+      orchDir: "/repo/.orch",
+      deps: {
+        resolveAgentBin: () => null,
+        preflight() { preflightCalled = true; },
+      },
+    }),
+    /orch: no CLI named "widget" found on PATH .* typo/,
+  );
+  assert.equal(preflightCalled, false);
 });
 
 test("agent add offers to build an unregistered agent; accepting delegates to buildAgent", async () => {
