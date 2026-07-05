@@ -187,6 +187,9 @@ test("AGREE + red gate -> escalated, no merge", async () => {
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "escalated");
   assert.match(r.reason, /tests/i);
+  assert.equal(deps._calls.recorded.verdict, "escalated");
+  assert.equal(deps._calls.recorded.branch, opts.branch);
+  assert.equal(deps._calls.recorded.rounds, 1);
 });
 
 test("merge wipes reviews + records the run; escalation keeps them", async () => {
@@ -290,14 +293,16 @@ test("scope cap exceeded -> escalated before review", async () => {
   assert.match(r.reason, /scope/i);
 });
 
-test("noMerge: AGREE + green -> approved, no merge/record/clean (PR bridge)", async () => {
+test("noMerge: AGREE + green -> approved, recorded, no merge/clean (PR bridge)", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   let merged = false;
   deps.git.mergeIntoMain = () => { merged = true; return { ok: true, reason: "merged" }; };
   const r = await runCycle({ ...opts, mode: "review", noMerge: true }, deps);
   assert.equal(r.status, "approved");
   assert.equal(merged, false);
-  assert.equal(deps._calls.recorded, undefined); // no run recorded
+  assert.equal(deps._calls.recorded.verdict, "approved");
+  assert.equal(deps._calls.recorded.branch, opts.branch);
+  assert.equal(deps._calls.recorded.rounds, 1);
   assert.equal(deps._calls.cleaned, undefined); // reviews kept for the PR comment
 });
 
