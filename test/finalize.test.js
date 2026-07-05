@@ -214,13 +214,25 @@ test("clean merge → version bump runs against the integration worktree", async
   assert.equal(bumpArgs.entry, "pr/claude/x-1");
 });
 
-test("clean merge with closes: version bump entry includes the issue number", async () => {
+test("clean merge with task: version bump entry uses the human title", async () => {
   let bumpArgs;
   const { deps } = baseDeps({
     git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
   });
-  await finalize({ ...ctx(), closes: 53 }, deps);
-  assert.match(bumpArgs.entry, /closes #53/);
+  await finalize({ ...ctx(), task: "Demote escalation output too terse for humans" }, deps);
+  assert.equal(bumpArgs.entry, "Demote escalation output too terse for humans");
+});
+
+test("clean merge with closes: version bump entry links the issue number", async () => {
+  let bumpArgs;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
+  });
+  await finalize({ ...ctx(), task: "Demote escalation output too terse for humans", closes: 53 }, deps);
+  assert.equal(
+    bumpArgs.entry,
+    "Demote escalation output too terse for humans (closes [#53](https://github.com/bbk1ng/agent-orch/issues/53))",
+  );
 });
 
 test("post-merge test failure → version bump never runs (rolled back first)", async () => {

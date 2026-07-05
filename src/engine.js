@@ -189,7 +189,7 @@ export async function runCycle(opts, deps) {
         const noop = changed.length === 0;
         const fin = await finalize({
           repo, orchDir, branch, sid, baseSha, paths: changed,
-          testCmd, cfg, rounds: round, closes: opts.closes || null, runStats,
+          testCmd, cfg, rounds: round, task, closes: opts.closes || null, runStats,
         }, deps);
         const label = fin.status === "merged" ? `merged ${branch}`
           : fin.status === "pr" ? `opened PR for ${branch}`
