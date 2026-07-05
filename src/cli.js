@@ -611,7 +611,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   const wo = buildAdapterWorkOrder(name);
   const task = wo.title;
   const authorPrompt = buildAuthorPrompt(wo);
-  let cfg = load(repo, flags["config-file"]);
+  let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags);
   if (flags.pr) cfg = { ...cfg, merge: "pr" };
   const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
   const preflightFn = deps.preflight || preflight;
