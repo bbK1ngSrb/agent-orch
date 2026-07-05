@@ -17,7 +17,7 @@ jobs:
     # any PR author consume the maintainer's Claude quota.
     if: |
       github.event.pull_request.head.repo.fork == false &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)
 
     runs-on: ubuntu-latest
     permissions:
