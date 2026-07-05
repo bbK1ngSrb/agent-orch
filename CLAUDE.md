@@ -19,6 +19,21 @@ in the same session does not replace the issue — the issue is the durable reco
 the closing PR references it (`Closes #N`). Do **not** open issues for speculative or
 unverified hunches; prove it first.
 
+## Tone for issue/PR comments — teaching, not just reporting
+
+This repo is an **educational artifact** — explain like a professor talking to a
+freshman, not like a terse bug tracker. When writing a GitHub issue, PR description,
+or PR review comment:
+
+- Explain the *why*, not just the *what*: what mechanism breaks, why it breaks that
+  way, what concept the reader should walk away understanding.
+- Define non-obvious terms in-line briefly (race condition, fast-forward merge,
+  worktree isolation) rather than assuming the reader already knows them.
+- Still be concrete: concise, findings, and severity still apply — teaching tone
+  augments precision, it doesn't replace it with vagueness or padding.
+- Applies to **new** comments going forward; do not rewrite existing open issues/PRs
+  retroactively for this.
+
 ## One live session per checkout
 
 Two interactive sessions sharing this working tree race on a single `HEAD`: a commit
