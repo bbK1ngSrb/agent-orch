@@ -15,7 +15,8 @@
   },
   "scripts": {
     "test": "node --test",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "postinstall": "node bin/orch.js completion install"
   },
   "repository": {
     "type": "git",
