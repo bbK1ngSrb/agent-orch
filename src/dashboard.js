@@ -131,7 +131,7 @@ export function render(orchDir, opts = {}) {
   } else {
     for (const c of live) {
       const round = c.round != null ? ` round ${c.round}` : "";
-      lines.push(`  ${c.branch}  [${c.stage}${round}]  pid=${c.pid}  since ${c.startedAt}`);
+      lines.push(`  ${c.branch}  [${c.stage}${round}]  sid=${c.sid}  pid=${c.pid}  since ${c.startedAt}`);
       if (c.log) lines.push(`    log (${c.log.file}): ${c.log.tail.split("\n").pop()}`);
     }
   }

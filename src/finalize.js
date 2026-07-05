@@ -37,7 +37,7 @@ export async function finalize(ctx, deps) {
   if (cfg.merge === "pr") {
     const r = await github.openPr(ctx, deps);
     notify.recordRun(orchDir, {
-      ts: new Date().toISOString(), branch, verdict: r.prUrl ? "pr" : "escalated", rounds,
+      ts: new Date().toISOString(), branch, sid, verdict: r.prUrl ? "pr" : "escalated", rounds,
       ...(usage.tokens ? { tokens: usage.tokens } : {}),
       ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
       ...(r.prUrl ? { prUrl: r.prUrl } : {}),
@@ -143,7 +143,7 @@ export async function finalize(ctx, deps) {
     }
     const shortSha = git.git(["rev-parse", "--short", "HEAD"], integration);
     notify.recordRun(orchDir, {
-      ts: new Date().toISOString(), branch, verdict: "merged", sha: shortSha, rounds,
+      ts: new Date().toISOString(), branch, sid, verdict: "merged", sha: shortSha, rounds,
       ...(pr.prUrl ? { prUrl: pr.prUrl } : {}),
       ...(usage.tokens ? { tokens: usage.tokens } : {}),
       ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
@@ -229,12 +229,12 @@ function oneLine(value = "") {
 }
 
 async function demote(ctx, deps, reason) {
-  const { orchDir, branch, rounds, runStats } = ctx;
+  const { orchDir, branch, sid, rounds, runStats } = ctx;
   const { github, notify } = deps;
   const usage = totalUsage(runStats);
   const r = await github.demote({ ...ctx, reason });
   notify.recordRun(orchDir, {
-    ts: new Date().toISOString(), branch, verdict: "pr-fallback", reason, rounds,
+    ts: new Date().toISOString(), branch, sid, verdict: "pr-fallback", reason, rounds,
     ...(usage.tokens ? { tokens: usage.tokens } : {}),
     ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
     ...(r.prUrl ? { prUrl: r.prUrl } : {}),
