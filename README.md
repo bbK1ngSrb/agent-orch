@@ -244,10 +244,16 @@ post-merge re-test against the integrated tree.
 - `conflict` — the merge itself fails
 - `post-merge-test-fail` — tests fail after merge into `.orch/integration`
 - `merge-lock timeout` — the lock was never acquired
+- `main-sync-failed` — local `main` couldn't catch up to `origin/main`
 
 With a git remote and `gh` CLI available, the branch is pushed and a PR is
 opened. Without them, `.orch/reviews/<branch>/DECISION.md` is written and the
-branch is kept for manual review.
+branch is kept for manual review. Either way the reason is more than the
+trigger name: it carries round count, base/integration SHAs, the branch's
+changed paths, and trigger-specific detail (overlapping paths per peer
+cycle, the conflicting paths, or the sync failure) plus a one-line next
+action, so a human picking up the escalation doesn't have to re-derive
+context orch already had.
 
 **`merge: pr` — per-cycle PR mode.** Set `merge: pr` in `.orch/orch.yml` and an
 agreed + green cycle skips the local integration branch and `merge.lock`; it
