@@ -4,12 +4,22 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { buildArgs as agyArgs } from "../src/adapters/agy.js";
 import { buildArgs as claudeArgs } from "../src/adapters/claude.js";
 import { buildArgs as codexArgs } from "../src/adapters/codex.js";
 import { buildArgs as copilotArgs } from "../src/adapters/copilot.js";
 import { buildArgs as geminiArgs } from "../src/adapters/gemini.js";
 import { get } from "../src/adapters/index.js";
 import { makeCliAdapter, isUsageLimit, parseRunUsage } from "../src/adapters/cli-adapter.js";
+
+test("agy buildArgs uses prompt mode", () => {
+  assert.deepEqual(agyArgs("PROMPT", "/wd"), ["-p", "PROMPT"]);
+});
+
+test("agy buildArgs appends --model when given", () => {
+  assert.deepEqual(agyArgs("PROMPT", "/wd", { model: "agy-model" }),
+    ["-p", "PROMPT", "--model", "agy-model"]);
+});
 
 test("claude buildArgs uses -p with headless write permission", () => {
   assert.deepEqual(claudeArgs("PROMPT", "/wd"),
@@ -48,6 +58,7 @@ test("gemini buildArgs appends --model when given", () => {
 });
 
 test("buildArgs omits model/effort flags when absent (no regression)", () => {
+  assert.deepEqual(agyArgs("P", "/wd", {}), ["-p", "P"]);
   assert.deepEqual(claudeArgs("P", "/wd", {}),
     ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions", "P"]);
   assert.deepEqual(codexArgs("P", "/wd", {}),
@@ -324,6 +335,7 @@ test("codex buildArgs uses exec --cd with headless write permission", () => {
 });
 
 test("registry resolves known adapters and rejects unknown", () => {
+  assert.equal(get("agy").name, "agy");
   assert.equal(get("claude").name, "claude");
   assert.equal(get("codex").name, "codex");
   assert.equal(get("copilot").name, "copilot");
@@ -340,6 +352,7 @@ test("local models register, run via ccr, and select model by flag", () => {
 });
 
 test("adapter exposes bin for preflight", () => {
+  assert.equal(get("agy").bin, "agy");
   assert.equal(get("claude").bin, "claude"); // name === bin for native agents
   assert.equal(get("copilot").bin, "copilot");
   assert.equal(get("gemini").bin, "gemini");

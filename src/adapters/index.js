@@ -1,10 +1,11 @@
+import agy from "./agy.js";
 import claude from "./claude.js";
 import codex from "./codex.js";
 import copilot from "./copilot.js";
 import gemini from "./gemini.js";
 import local from "./local.js";
 
-const REGISTRY = { claude, codex, copilot, gemini, ...local };
+const REGISTRY = { agy, claude, codex, copilot, gemini, ...local };
 
 export function get(name) {
   const a = REGISTRY[name];
