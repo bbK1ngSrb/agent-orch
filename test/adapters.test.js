@@ -297,6 +297,19 @@ test("audit surfaces the agent's actual error in the DISAGREE reason (#31)", asy
   assert.equal(v.agentError, true, "a bare crash is also flagged for fast-escalate (#33)");
 });
 
+test("audit falls back to the command failure text when a nonzero agent prints nothing", async () => {
+  const adapter = makeCliAdapter({
+    name: "silent-boom",
+    bin: "sh",
+    buildArgs: () => ["-c", "exit 9"],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+  assert.equal(v.agentError, true);
+  assert.equal(v.reason, "agent exited nonzero: Command failed: sh");
+  assert.equal(v.raw, "Command failed: sh");
+});
+
 test("audit ignores AGREE printed by a crashed agent (F4 fail-safe)", async () => {
   // A nonzero exit must override any verdict the agent printed before dying.
   const adapter = makeCliAdapter({

@@ -242,7 +242,7 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
       const args = buildArgs(render("review", { branch }), wd, opts);
       const { out, raw, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, { stageTimeoutMs: opts.stageTimeoutMs });
-      const captured = raw ?? out;
+      const captured = raw || out;
       const usage = parseRunUsage(captured, modelFromArgs(args, opts));
       const parsed = parseVerdict(out);
       if (ok && parsed.reason === "unparseable verdict") {
