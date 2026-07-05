@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.13 — 2026-07-05
+- auto-docs mr7tienq0 update documentation to reflect the latest merged changes
+
 ## 0.2.12 — 2026-07-05
 - auto-docs mr7tdwvt0 update documentation to reflect the latest merged changes
 
