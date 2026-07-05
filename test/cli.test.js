@@ -739,6 +739,24 @@ test("init succeeds via the real (unstubbed) preflight regardless of installed a
   }
 });
 
+test("scaffolded orch.yml documents every built-in agent detectAgents() probes", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-init-scaffold-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    const text = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
+    // Keep the "Built-in: ..." doc comment in sync with the CLI names
+    // detectAgents() (src/detect.js) actually probes — it drifted stale for
+    // gemini once already (missing from the scaffold after gemini support shipped).
+    for (const name of ["claude", "codex", "copilot", "gemini"]) {
+      assert.match(text, new RegExp(`Built-in:.*\\b${name}\\b`));
+    }
+  } finally {
+    chdir(prev);
+  }
+});
+
 test("init writes .orch/ORCH.md and prints a link tip (no --link)", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-doc-"));
   const prev = cwd();
