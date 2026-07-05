@@ -18,6 +18,15 @@ function totalUsage(runStats = []) {
   return { tokens, costUsd: hasCost ? costUsd : null };
 }
 
+const ISSUE_URL_BASE = "https://github.com/bbk1ng/agent-orch/issues";
+
+function changelogEntry(ctx) {
+  const title = oneLine(ctx.title || ctx.task || ctx.branch) || ctx.branch;
+  return ctx.closes
+    ? `${title} (closes [#${ctx.closes}](${ISSUE_URL_BASE}/${ctx.closes}))`
+    : title;
+}
+
 export async function finalize(ctx, deps) {
   const { repo, orchDir, branch, sid, paths, testCmd, cfg, rounds, closes, runStats } = ctx;
   const { git, gate, lock, inflight, github, notify } = deps;
@@ -113,7 +122,7 @@ export async function finalize(ctx, deps) {
 
     // Patch-per-merge version bump + CHANGELOG entry, so a merged sha always
     // maps to a bumped `orch --version`. Best-effort: never blocks the merge.
-    git.bumpVersion(integration, closes ? `${branch} (closes #${closes})` : branch);
+    git.bumpVersion(integration, changelogEntry(ctx));
 
     const sha = git.git(["rev-parse", "HEAD"], integration);
     const localIntegration = git.git(["rev-parse", integrationBranch], repo);

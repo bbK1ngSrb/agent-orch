@@ -323,6 +323,7 @@ test("review mode escalates on first DISAGREE without revising (F1)", async () =
 
 test("AGREE + green → finalize lands the merge (status merged)", async () => {
   const calls = [];
+  let finalizeCtx;
   const deps = {
     adapters: { get: () => ({ name: "claude", async author() {}, async audit() { return { decision: "AGREE", reason: "ok" }; } }) },
     git: {
@@ -333,7 +334,7 @@ test("AGREE + green → finalize lands the merge (status merged)", async () => {
     gate: { detect: () => "npm test", run: () => ({ pass: true }) },
     scope: { count: () => 0 },
     inflight: { setPaths: (...a) => calls.push(["setPaths", ...a]) },
-    finalize: async () => ({ status: "merged", reason: "merged", sha: "abc" }),
+    finalize: async (ctx) => { finalizeCtx = ctx; return { status: "merged", reason: "merged", sha: "abc" }; },
     notify: {
       phase() {}, writeRound() { return "p"; },
       buildDecisionBrief: () => "brief", escalate() {},
@@ -348,6 +349,7 @@ test("AGREE + green → finalize lands the merge (status merged)", async () => {
   }, deps);
   assert.equal(res.status, "merged");
   assert.ok(calls.some((c) => c[0] === "setPaths"));
+  assert.equal(finalizeCtx.task, "do x");
 });
 
 test("AGREE + green but finalize demotes → status pr-fallback", async () => {
