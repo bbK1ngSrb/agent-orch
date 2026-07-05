@@ -5,7 +5,7 @@
 **Working name:** `agent-orch` (npm package) / `orch` (command). Rename freely.
 
 **Goal:** A repo-agnostic, open-source tool that runs **two or more locally-installed
-coding agents** (Claude, Codex, …) in a **cross-audit loop** on any local git repo.
+coding agents** (Claude, Codex, Copilot, Gemini, …) in a **cross-audit loop** on any local git repo.
 One agent authors a small change on a branch; the other audits it; on agreement +
 green tests the tool merges to `main` locally; on disagreement it runs a capped
 revise loop; on stalemate it escalates to the human. Install from source
@@ -64,8 +64,9 @@ fence the author treats as reference, not instructions.
   ```
 
 - Ship built-in CLI adapters for `claude` (`claude -p` in the worktree), `codex`
-  (`codex exec --cd <worktree>`), and `copilot` (`copilot -p`). Community can add
-  Gemini/Aider/etc. by dropping a new adapter — documented in `CONTRIBUTING.md`.
+  (`codex exec --cd <worktree>`), `copilot` (`copilot -p`), and `gemini`
+  (`gemini -p`). Community can add Aider/etc. by dropping a new adapter —
+  documented in `CONTRIBUTING.md`.
 - **Roles per cycle:** `author` = the next agent in `agents:`; `reviewer` = the other.
   Author alternates between cycles so neither agent only ever writes or only ever
   reviews. Cross-vendor audit is the point — diversity catches more. Alternation is
@@ -192,7 +193,7 @@ scope:                    # small-PR discipline — OFF by default
 |---|---|---|
 | `cli.js` | parse argv, dispatch `init`/`task`/`review`, preflight (CLIs on PATH) | argv |
 | `engine.js` | the §4 state machine | `run(task, cfg)` |
-| `adapters/claude.js`, `adapters/codex.js`, `adapters/copilot.js` | shell out to each agent CLI | `AgentAdapter` (§3) |
+| `adapters/claude.js`, `adapters/codex.js`, `adapters/copilot.js`, `adapters/gemini.js` | shell out to each agent CLI | `AgentAdapter` (§3) |
 | `adapters/index.js` | registry; resolve names from `agents:` | `get(name)` |
 | `gate.js` | detect + run the repo's test command | `detect(repo)`, `run(wd) → {pass, log}` |
 | `scope.js` | changed-line count vs `main`, honor ignore globs | `count(branch) → n` |
@@ -223,7 +224,7 @@ last such token. Malformed/missing verdict → treated as `DISAGREE` with reason
 
 - Install from source (`npm install -g .`); run via the `orch` bin. Not published
   to npm — the `agent-orch` name there is an unrelated package.
-- Prereq: at least one agent CLI (`claude`, `codex`, or `copilot`) on PATH —
+- Prereq: at least one agent CLI (`claude`, `codex`, `copilot`, or `gemini`) on PATH —
   documented in README, verified at `init` and at `task`/`review` preflight.
 - Repo ships: `README.md` (quickstart), `LICENSE` (MIT), `CONTRIBUTING.md` (adapter
   authoring guide), `orch.example.yml`, and CI that runs the tool's own unit tests.
