@@ -947,6 +947,14 @@ export async function main(argv, deps = {}) {
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
     if (!dry) preflightFn(cfg, orchDir);
+    // A hard-killed prior attempt at this sid can leave its worktree checked out
+    // under .orch/wt with a dead owner pid — reclaim it BEFORE reattaching the
+    // branch, same as `task`/`pr` do at cycle start, or `runCycle`'s worktree
+    // setup collides with the orphaned checkout. liveBranches spares real peers.
+    if (!dry) {
+      const liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
+      resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
+    }
 
     // Checkpoint is authoritative (survives whatever killed the process — stage
     // timeout, adapter crash, hung stdio); inflight is only a fallback for a run

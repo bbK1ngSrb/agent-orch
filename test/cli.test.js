@@ -1362,6 +1362,46 @@ test("orch continue <sid> resumes from checkpoint, past review, without re-autho
   assert.equal(ck, null); // completed run clears its checkpoint
 });
 
+// Regression (codex review): a hard-killed prior `continue` attempt leaves its
+// worktree checked out under .orch/wt with a dead owner pid. Without reclaiming
+// it first, `git.attachExistingBranch` fails with "already checked out" and the
+// resume never reaches review/test/merge. `continue` must reclaim orphans first,
+// same as `task`/`pr` do at cycle start.
+test("orch continue <sid> reclaims an orphaned worktree left by a killed prior attempt", async () => {
+  const repo = initGitRepo("orch-continue-orphan-");
+  const sid = "0ff1ce";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  // Simulate the orphan: a worktree checked out on `branch` at the exact path
+  // `continue` will reattach to, left behind by a process that no longer exists.
+  const worktree = join(repo, ".orch", "wt", branch.replace(/\//g, "_"));
+  gitDep.git(["worktree", "add", "--", worktree, branch], repo);
+
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const finishCalls = [];
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps, finishRun: async (ctx) => { finishCalls.push(ctx); } });
+
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.equal(finishCalls.length, 1);
+});
+
 test("orch continue <sid> throws when no checkpoint or inflight record exists", async () => {
   const repo = initGitRepo("orch-continue-missing-");
   await assert.rejects(
