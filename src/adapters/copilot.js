@@ -1,7 +1,7 @@
 import { makeCliAdapter } from "./cli-adapter.js";
 
 export function buildArgs(prompt, wd, opts = {}) {
-  const args = ["-p", prompt, "--allow-all-tools", "--add-dir", wd];
+  const args = ["-p", prompt, "--allow-all-tools", "--allow-all-paths", "--add-dir", wd];
   if (opts.model) args.push("--model", opts.model);
   return args;
 }

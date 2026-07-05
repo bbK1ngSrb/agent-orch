@@ -38,14 +38,14 @@ test("codex buildArgs appends --model and reasoning-effort config when given", (
       "--model", "gpt-5.1", "-c", 'model_reasoning_effort="medium"', "PROMPT"]);
 });
 
-test("copilot buildArgs uses prompt mode with non-interactive tool permission", () => {
+test("copilot buildArgs uses prompt mode with non-interactive tool and path permission", () => {
   assert.deepEqual(copilotArgs("PROMPT", "/wd"),
-    ["-p", "PROMPT", "--allow-all-tools", "--add-dir", "/wd"]);
+    ["-p", "PROMPT", "--allow-all-tools", "--allow-all-paths", "--add-dir", "/wd"]);
 });
 
 test("copilot buildArgs appends --model when given", () => {
   assert.deepEqual(copilotArgs("PROMPT", "/wd", { model: "gpt-5.1" }),
-    ["-p", "PROMPT", "--allow-all-tools", "--add-dir", "/wd", "--model", "gpt-5.1"]);
+    ["-p", "PROMPT", "--allow-all-tools", "--allow-all-paths", "--add-dir", "/wd", "--model", "gpt-5.1"]);
 });
 
 test("gemini buildArgs uses prompt mode with non-interactive approval", () => {
@@ -64,7 +64,7 @@ test("buildArgs omits model/effort flags when absent (no regression)", () => {
   assert.deepEqual(codexArgs("P", "/wd", {}),
     ["exec", "--cd", "/wd", "--dangerously-bypass-approvals-and-sandbox", "P"]);
   assert.deepEqual(copilotArgs("P", "/wd", {}),
-    ["-p", "P", "--allow-all-tools", "--add-dir", "/wd"]);
+    ["-p", "P", "--allow-all-tools", "--allow-all-paths", "--add-dir", "/wd"]);
   assert.deepEqual(geminiArgs("P", "/wd", {}), ["-p", "P", "--yolo"]);
 });
 
