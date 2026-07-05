@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.12 — 2026-07-05
+- auto-docs mr7tdwvt0 update documentation to reflect the latest merged changes
+
 ## 0.2.11 — 2026-07-05
 - fetchOriginMain has no retry on ref-lock race, demotes cycle to pr-fallback (closes [#112](https://github.com/bbk1ng/agent-orch/issues/112))
 
