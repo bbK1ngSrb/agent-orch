@@ -30,7 +30,7 @@ export function detectAgents(deps = {}) {
   const found = [];
   const missing = [];
 
-  for (const name of ["claude", "codex", "copilot"]) {
+  for (const name of ["claude", "codex", "copilot", "gemini"]) {
     if (resolveAgentBin(name)) found.push(name);
     else missing.push(`${name} (CLI not found: PATH + fallback dirs)`);
   }

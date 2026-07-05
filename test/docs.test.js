@@ -33,9 +33,18 @@ test("docs list the built-in CLI adapters", () => {
     assert.match(doc, /claude/);
     assert.match(doc, /codex/);
     assert.match(doc, /copilot/);
+    assert.match(doc, /gemini/);
   }
   assert.doesNotMatch(design, /Ship two adapters/);
   assert.doesNotMatch(design, /claude` and\/or `codex/);
+  assert.doesNotMatch(design, /Gemini\/Aider/);
+});
+
+test("README documents bash completion install/update behavior", () => {
+  assert.match(pkg.scripts.postinstall, /completion install/);
+  assert.match(readme, /~\/\.orch\/completion\.bash/);
+  assert.match(readme, /orch completion bash/);
+  assert.match(readme, /orch completion install/);
 });
 
 test("design doc reflects the GitHub PR bridge", () => {
