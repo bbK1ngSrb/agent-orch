@@ -657,6 +657,29 @@ test("agent build --pr routes the cycle through merge: pr instead of a local-onl
   assert.match(logs.join("\n"), /agent build widget: pr /);
 });
 
+test("agent build honors --author/--reviewer role overrides instead of the configured/rotated author", async () => {
+  const d = initGitRepo("orch-agentbuild-roles-");
+  const authoredBy = [];
+  const auditedBy = [];
+  const deps = {
+    preflight() {},
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      adapters: {
+        get: (name) => ({
+          name,
+          async author() { authoredBy.push(name); return { usage: { model: "gpt-test-author", tokens: 40 } }; },
+          async audit() { auditedBy.push(name); return { decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-test-review", tokens: 20 } }; },
+        }),
+      },
+    },
+  };
+  const logs = await runMainInRepo(d, ["agent", "build", "widget", "--author", "codex", "--reviewer", "copilot"], deps);
+  assert.deepEqual(authoredBy, ["codex"]);
+  assert.deepEqual(auditedBy, ["copilot"]);
+  assert.match(logs.join("\n"), /on pr\/codex\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/);
+});
+
 test("agent build no-ops when the agent is already registered", async () => {
   const d = initGitRepo("orch-agentbuild-known-");
   const logs = await runMainInRepo(d, ["agent", "build", "claude"]);
