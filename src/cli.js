@@ -560,9 +560,21 @@ export function parseWorkOrderFile(path) {
 // same path as parseWorkOrderFile, but the source is the issue title+body. `gh`
 // is injected so tests stub the fetch with no network/auth. Returns the
 // validated work order or throws.
+// Fails fast with one clear error instead of letting a broken `gh` session
+// surface as a raw, confusing error from whichever gh shell-out happens first
+// (#136 — GitHub App auth 404 fell back to "ambient gh auth" with no check
+// that the fallback was actually usable).
+export function requireGhAuth(gh) {
+  try { gh(["auth", "status"]); }
+  catch (e) {
+    throw new Error(`gh CLI is not authenticated — run \`gh auth login\` (${String(e.message || e).split("\n")[0]})`);
+  }
+}
+
 export function fetchIssueWorkOrder(n, gh) {
   try { gh(["--version"]); }
   catch { throw new Error("gh CLI not found — install https://cli.github.com/ and run `gh auth login`"); }
+  requireGhAuth(gh);
   const issue = JSON.parse(gh(["issue", "view", String(n), "--json", "number,title,body,state"]));
   if (issue.state && issue.state !== "OPEN") throw new Error(`issue #${issue.number} is ${issue.state}, not open`);
   const v = validateWorkOrder(issueToWorkOrder(issue));
@@ -824,6 +836,11 @@ export async function main(argv, deps = {}) {
     // preflight) so the agent CLI it picks is the one preflight actually checks.
     cfg = applyCheapOverride(cfg, flags, workOrder);
     if (!dry) preflightFn(cfg, orchDir); // dry-run never shells out, so don't require CLIs
+    // Only task/review runs that will actually shell out to gh (opening a PR,
+    // auto-merging, or an issue-comment escalation) need a validated session.
+    if (!dry && (cfg.merge === "pr" || cfg.github?.autoMergePr || closes != null)) {
+      requireGhAuth((deps.githubDeps || githubDeps)().gh);
+    }
 
     // Main is a GitHub mirror; task mode fast-forwards it from origin before
     // branches are based on it. Reclaim orphaned
@@ -1134,6 +1151,7 @@ export async function main(argv, deps = {}) {
     const n = rest[0];
     if (!n) throw new Error("usage: orch pr <number> [--merge]");
     preflightFn(cfg, orchDir);
+    requireGhAuth((deps.githubDeps || githubDeps)().gh);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
     if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
     resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir)); // clear orphans from a crashed prior cycle

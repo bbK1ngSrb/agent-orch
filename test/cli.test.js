@@ -319,7 +319,21 @@ test("--file rejects a JSON object that fails work-order shape", async () => {
   await assert.rejects(() => main(["task", "--file", f, "--dry"]), /work order/i);
 });
 
-import { fetchIssueWorkOrder } from "../src/cli.js";
+import { fetchIssueWorkOrder, requireGhAuth } from "../src/cli.js";
+
+test("requireGhAuth fails fast with a clear error when gh is not authenticated", () => {
+  const gh = () => { throw new Error("HTTP 401: Bad credentials"); };
+  assert.throws(() => requireGhAuth(gh), /gh CLI is not authenticated.*gh auth login.*401/);
+});
+
+test("fetchIssueWorkOrder fails fast when gh auth status fails, before shelling out to issue view", () => {
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") throw new Error("not logged in");
+    throw new Error(`unexpected call: ${args.join(" ")}`);
+  };
+  assert.throws(() => fetchIssueWorkOrder(9, gh), /gh CLI is not authenticated/);
+});
 
 test("fetchIssueWorkOrder maps an open issue to a validated work order", () => {
   const gh = (args) => args[0] === "--version" ? "gh 2"
@@ -365,6 +379,7 @@ test("orch issue posts a gh issue comment on escalation", async () => {
   const calls = [];
   const gh = (args, input) => {
     if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
     if (args[0] === "issue" && args[1] === "view") {
       return JSON.stringify({ number: 52, title: "stale base", body: "orch bases cycles on local main", state: "OPEN" });
     }
