@@ -7,7 +7,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v7
@@ -26,7 +26,16 @@ jobs:
             exit 1
           fi
       - run: npm publish --provenance --access public
+  # Separate job: holds the write token but runs no dependency/test code
+  # (checkout only, no npm install) — keeps the write token off the box that
+  # ran authored/third-party code in the publish job (§3g invariant).
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --repo "$GITHUB_REPOSITORY"
