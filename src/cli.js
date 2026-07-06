@@ -68,6 +68,13 @@ function cleanStreakSuffix(orchDir, dry) {
   return `; clean unattended cycles: ${notify.kpi(orchDir).cleanUnattendedCycles}`;
 }
 
+const STATUS_COLOR = { merged: C.ok, escalated: C.fail, "pr-fallback": C.fail, pr: C.warn, demoted: C.warn };
+
+export function summaryLine(result, branch, dry, extra, color = false) {
+  const status = paint(color, STATUS_COLOR[result.status] || "", result.status);
+  return `orch${dry ? " (dry)" : ""}: ${branch}: ${status} (${result.reason}) after ${result.rounds} round(s)${extra}; cost ${result.usageSummary}`;
+}
+
 function resetKpiOnRecovery(orchDir, recovery) {
   if (recovery?.recovered) notify.resetKpi(orchDir);
 }
@@ -884,7 +891,7 @@ export async function main(argv, deps = {}) {
           if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
         }
-        console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${cleanStreakSuffix(orchDir, dry)}; cost ${result.usageSummary}`);
+        console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout)));
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.prUrl) prUrls.push(result.prUrl);
         if (result.status === "escalated" || result.status === "pr-fallback") {
@@ -1069,7 +1076,7 @@ export async function main(argv, deps = {}) {
         // branch instead of authoring fresh.
         resume.clearForBranch(orchDir, branch);
       }
-      console.log(`orch${dry ? " (dry)" : ""}: ${branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s); cost ${result.usageSummary}`);
+      console.log(summaryLine(result, branch, dry, "", colorEnabled(process.stdout)));
       // Codex review (#125 stalemate): `continue` forked its own terminal
       // handling instead of reusing the shared `task`/`issue` tail, and dropped
       // two of its side effects for a resumed cycle — the detached docs-update
