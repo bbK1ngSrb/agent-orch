@@ -642,7 +642,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
 
   if (!dry) {
     const baseSha = git.git(["rev-parse", "main"], repo);
-    inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha });
+    inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList });
     const live = inflight.countLive(orchDir);
     if (live > cfg.concurrency) {
       inflight.deregister(orchDir, sid);

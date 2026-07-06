@@ -682,6 +682,41 @@ test("agent build honors --author/--reviewer role overrides instead of the confi
   assert.match(logs.join("\n"), /on pr\/codex\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/);
 });
 
+// Regression (codex review of #130's persist-roles PR): `orch task`/`orch pr`
+// pass the resolved author/reviewer specs into inflight.register() so a run
+// that dies before its first checkpoint can still be resumed with the exact
+// same agents/models. `orch agent build` runs its own task-mode cycle through
+// the same runCycle()/inflight machinery but was missing this — a died
+// mid-build recovery would silently re-resolve roles from current rotation
+// instead of reusing what actually authored/reviewed the in-progress build.
+test("agent build persists resolved author/reviewer role specs into the inflight record", async () => {
+  const d = initGitRepo("orch-agentbuild-inflight-");
+  const orchDir = join(d, ".orch");
+  let seen = null;
+  const deps = {
+    preflight() {},
+    resolveAgentBin: () => "/usr/bin/widget",
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      adapters: {
+        get: (name) => ({
+          name,
+          async author() {
+            const [f] = readdirSync(join(orchDir, "inflight"));
+            seen = JSON.parse(readFileSync(join(orchDir, "inflight", f), "utf8"));
+            return { usage: { model: "gpt-test-author", tokens: 40 } };
+          },
+          async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+        }),
+      },
+    },
+  };
+  await runMainInRepo(d, ["agent", "build", "widget"], deps);
+  assert.ok(seen, "expected an inflight record to exist while the cycle was running");
+  assert.equal(seen.author.agent, "claude");
+  assert.ok(Array.isArray(seen.reviewers) && seen.reviewers.length > 0);
+});
+
 test("agent build no-ops when the agent is already registered", async () => {
   const d = initGitRepo("orch-agentbuild-known-");
   const logs = await runMainInRepo(d, ["agent", "build", "claude"]);
