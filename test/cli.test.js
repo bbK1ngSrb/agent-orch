@@ -1439,6 +1439,38 @@ test("orch continue <sid> reuses the persisted author/reviewer model+effort by d
   assert.equal(auditOpts[0].model, "gpt-5.1"); // persisted reviewer model, not a re-resolved default
 });
 
+// Codex review: preflight used to validate the FULL current orch.yml (its
+// whole `agents:` pool plus any fixed roles) before a resume ever got to reuse
+// its persisted author/reviewer specs — so an unrelated/unknown agent named
+// elsewhere in orch.yml (one this resume will never invoke) made `continue`
+// fail outright. preflight must only check the agents this resume actually
+// uses: the persisted author/reviewer, not the whole pool.
+test("orch continue <sid> ignores an unknown agent in orch.yml's pool that this resume doesn't use", async () => {
+  const repo = initGitRepo("orch-continue-unrelated-agent-");
+  const sid = "un1kn0wn";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  // "bogus-agent" has no registered adapter — real preflight() throws on it if
+  // it's ever checked. This resume's persisted roles are claude/codex only.
+  writeFileSync(join(repo, ".orch", "orch.yml"), "agents: [claude, codex, bogus-agent]\n");
+
+  checkpointDep.record(join(repo, ".orch"), sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude", model: null, effort: null },
+    reviewers: [{ agent: "codex", model: null, effort: null }],
+  });
+
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { preflight, cycleDeps: fakeCycleDeps(), finishRun: async () => {} });
+
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
 // `--reviewer` on `continue` overrides the persisted reviewer for this resume
 // only — it must not mutate the checkpoint's stored roles.
 test("orch continue <sid> --reviewer overrides the persisted reviewer without rewriting the checkpoint", async () => {

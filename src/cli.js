@@ -334,16 +334,26 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
   };
 }
 
-export function preflight(cfg, orchDir) {
+export function preflight(cfg, orchDir, opts = {}) {
   // Check the rotation pool plus any explicitly pinned roles. Role entries are
   // specs ("<agent> [model] [effort]"); only the agent name needs a CLI on PATH.
-  const roleNames = [
-    cfg.author,
-    cfg.reviewer,
-    ...(cfg.authors || []),
-    ...(cfg.reviewers || []),
-  ].filter(Boolean).map((s) => parseRoleSpec(s).agent);
-  const names = new Set([...cfg.agents, ...roleNames].filter(Boolean));
+  // `opts.only`, when given, restricts the check to exactly those agent names
+  // instead of the full orch.yml pool/roles — used by `orch continue`, which
+  // resumes with a run's already-persisted author/reviewer specs and must not
+  // fail preflight over an unrelated agent named elsewhere in the current
+  // orch.yml that this resume will never touch (issue: resume fails before it
+  // can reuse the stored specs).
+  const names = opts.only
+    ? new Set(opts.only.filter(Boolean))
+    : new Set([
+        ...cfg.agents,
+        ...[
+          cfg.author,
+          cfg.reviewer,
+          ...(cfg.authors || []),
+          ...(cfg.reviewers || []),
+        ].filter(Boolean).map((s) => parseRoleSpec(s).agent),
+      ].filter(Boolean));
   for (const name of names) {
     const a = adapters.get(name); // throws on unknown
     const exe = a.bin || a.name; // local models run via `ccr`, not their own name
@@ -946,7 +956,10 @@ export async function main(argv, deps = {}) {
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
-    if (!dry) preflightFn(cfg, orchDir);
+    // Preflight (adapter registered + CLI on PATH + .orch/ writable) runs below,
+    // once the resume's actual author/reviewer agents are known — see the
+    // `opts.only` comment on preflight() for why this can't run against the
+    // full current orch.yml pool here.
     // A hard-killed prior attempt at this sid can leave its worktree checked out
     // under .orch/wt with a dead owner pid — reclaim it BEFORE reattaching the
     // branch, same as `task`/`pr` do at cycle start, or `runCycle`'s worktree
@@ -1015,6 +1028,7 @@ export async function main(argv, deps = {}) {
         : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
       reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
     }
+    if (!dry) preflightFn(cfg, orchDir, { only: [authorSpec.agent, ...reviewers.map((r) => r.agent)] });
 
     // Codex review (#125 stalemate): an `orch issue <n>` run stamps `Closes #n`
     // at merge time via ctx.closes — reconstruct it here too, or a resumed
