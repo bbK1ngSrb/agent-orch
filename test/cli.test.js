@@ -1512,6 +1512,60 @@ test("orch continue <sid> --reviewer overrides the persisted reviewer without re
   assert.equal(auditCalls[0].name, "copilot"); // overridden for this resume
 });
 
+// Regression (codex review of #126 branch): the test above only proves the
+// override is USED for this run — it never checks what gets left behind if
+// the overridden run itself dies. `continue`'s cleanup (checkpoint.clear) only
+// runs if runCycle RETURNS; a genuine crash (stage-timeout kill, adapter
+// crash) skips it entirely, same as the real scenario `continue` exists for.
+// Simulate that here: finalize throws AFTER engine.js has already written a
+// "reviewed"-stage checkpoint for this round, so cli.js's post-runCycle
+// cleanup never runs. The checkpoint left behind must still hold the
+// ORIGINAL persisted reviewer (codex), not this run's --reviewer override
+// (copilot) — otherwise a later plain `continue` would silently inherit the
+// override forever.
+test("orch continue <sid> --reviewer override does not leak into the checkpoint if the resume itself dies", async () => {
+  const repo = initGitRepo("orch-continue-roles-crash-");
+  const sid = "cra5h0ne";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  const originalReviewers = [{ agent: "codex", model: "gpt-5.1", effort: null }];
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude", model: null, effort: null },
+    reviewers: originalReviewers,
+  });
+
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+      }),
+    },
+    // Throws AFTER engine.js's own checkpoint.record write for this round —
+    // simulating the process dying between "reviewed" and merge, before
+    // cli.js's continue handler ever reaches its own checkpoint.clear().
+    finalize: async () => { throw new Error("simulated crash after checkpoint write"); },
+  };
+  writeFileSync(join(orchDir, "orch.yml"), "agents: [claude, codex, copilot]\n");
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid, "--reviewer", "copilot"], { cycleDeps }),
+    /simulated crash/,
+  );
+
+  const leftBehind = checkpointDep.lookup(orchDir, sid);
+  assert.ok(leftBehind, "checkpoint must survive a crash (cleanup never ran)");
+  assert.deepEqual(leftBehind.reviewers, originalReviewers); // NOT [copilot]
+});
+
 // Regression (codex review): a hard-killed prior `continue` attempt leaves its
 // worktree checked out under .orch/wt with a dead owner pid. Without reclaiming
 // it first, `git.attachExistingBranch` fails with "already checked out" and the

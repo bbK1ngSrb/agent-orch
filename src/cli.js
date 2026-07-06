@@ -1045,7 +1045,17 @@ export async function main(argv, deps = {}) {
       mode: "task", task: branch, branch, sid, resume: true, closes,
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
-      reviewers, cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
+      reviewers,
+      // Codex review (#126 stalemate): `reviewers` above is what this resume
+      // actually audits with — an explicit `--reviewer` override applies for
+      // this run only. `persistReviewers` is what engine.js writes back into
+      // the checkpoint if this run dies before finishing — always the
+      // ORIGINAL persisted roles when one exists, so a killed-mid-override
+      // resume can't quietly make the override permanent (see the persistCase
+      // fallback to `reviewers` in engine.js: only matters when no persisted
+      // record existed yet, in which case there's nothing to protect).
+      persistReviewers: persistedReviewers || reviewers,
+      cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
     };
 
     if (!dry) {

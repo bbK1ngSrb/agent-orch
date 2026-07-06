@@ -30,6 +30,18 @@ export async function runCycle(opts, deps) {
   const reviewers = reviewerSpecs.map((s) => ({
     name: s.agent, adapter: adapters.get(s.agent), opts: { model: s.model, effort: s.effort, stageTimeoutMs },
   }));
+  // Codex review (#126 stalemate): `orch continue --reviewer <x>` is a one-run
+  // override — reviewerSpecs above reflects it so the override actually gets
+  // used. But the checkpoint is what a LATER plain `continue` (no override)
+  // will read back as "the persisted roles". If this run is killed after
+  // writing a checkpoint but before finishing, the checkpoint must still hold
+  // the ORIGINAL roles, not this run's override, or the override quietly
+  // becomes permanent. The caller passes the original roles as
+  // opts.persistAuthor/persistReviewers when they differ from what's actually
+  // running this cycle; other callers (task/issue, no override concept) leave
+  // them unset and get the same value both ways.
+  const persistAuthor = opts.persistAuthor || authorSpec;
+  const persistReviewers = opts.persistReviewers || reviewerSpecs;
   const runStats = [];
   const reviewOutcomes = [];
   const done = (result) => {
@@ -150,7 +162,7 @@ export async function runCycle(opts, deps) {
         notify.writeRound(orchDir, branch, round,
           `# Round ${round}\n\nVerdict: ${verdict.decision}\n\nCost: ${formatUsage(totalUsage(runStats))}\n\n${verdict.reason}\n`);
         notify.writeRoundRaw?.(orchDir, branch, round, roundRawOutput(verdicts));
-        checkpoint?.record(orchDir, sid, { branch, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason, closes: opts.closes || null, author: authorSpec, reviewers: reviewerSpecs });
+        checkpoint?.record(orchDir, sid, { branch, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
 
         // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
         // revising the author would burn the whole loop for nothing. Escalate
@@ -174,7 +186,7 @@ export async function runCycle(opts, deps) {
         } else {
           notify.phase(`running gate: ${testCmd}`);
           ({ pass } = gate.run(testCmd, worktree));
-          if (pass) checkpoint?.record(orchDir, sid, { branch, round, stage: "tested", reason: verdict.reason, closes: opts.closes || null, author: authorSpec, reviewers: reviewerSpecs });
+          if (pass) checkpoint?.record(orchDir, sid, { branch, round, stage: "tested", reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
         }
         if (!pass) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
