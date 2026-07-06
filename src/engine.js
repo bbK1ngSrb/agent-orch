@@ -117,6 +117,18 @@ export async function runCycle(opts, deps) {
     // re-auditing rounds already decided. `stage: "tested"` means AGREE + gate
     // already passed — skip straight past both; `stage: "reviewed"` means the
     // round's verdict is known — skip that round's audit call only.
+    //
+    // Codex review (#126 stalemate, round 3): that shortcut silently defeats
+    // `orch continue --reviewer <x>` — the whole point of the override is to
+    // swap in a working reviewer when the ORIGINAL one crashed/rate-limited
+    // (which is exactly how a "reviewed" checkpoint with a DISAGREE/agentError
+    // verdict gets left behind — engine.js writes the checkpoint before
+    // checking for agentError and escalating). Trusting that cached verdict
+    // means the swapped-in reviewer never actually runs; the resume just
+    // replays the old broken reviewer's failure. When an override was
+    // requested, still resume at the recorded round number (still valid,
+    // still useful), but skip the pendingVerdict shortcut and force a fresh
+    // audit call with the (now-different) reviewers.
     let round = 1;
     let pendingVerdict = null;
     let skipTest = false;
@@ -124,11 +136,13 @@ export async function runCycle(opts, deps) {
       const ck = checkpoint?.lookup(orchDir, sid);
       if (ck && ck.branch === branch) {
         round = ck.round;
-        if (ck.stage === "tested") {
-          pendingVerdict = { decision: "AGREE", reason: ck.reason || "" };
-          skipTest = true;
-        } else if (ck.stage === "reviewed") {
-          pendingVerdict = { decision: ck.decision, reason: ck.reason || "" };
+        if (!opts.reviewerOverride) {
+          if (ck.stage === "tested") {
+            pendingVerdict = { decision: "AGREE", reason: ck.reason || "" };
+            skipTest = true;
+          } else if (ck.stage === "reviewed") {
+            pendingVerdict = { decision: ck.decision, reason: ck.reason || "" };
+          }
         }
       }
     }

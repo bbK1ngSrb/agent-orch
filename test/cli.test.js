@@ -1492,6 +1492,13 @@ test("orch continue <sid> --reviewer overrides the persisted reviewer without re
   const auditCalls = [];
   const cycleDeps = {
     ...fakeCycleDeps(),
+    // Codex review (#126 stalemate, round 3): without wiring the REAL
+    // checkpoint module here, engine.js's `deps.checkpoint` is undefined and
+    // its resume/pendingVerdict shortcut never fires regardless of what's on
+    // disk — so this test would pass even if the override were silently
+    // ignored in production. Wire it for real so the test actually exercises
+    // the code path it claims to.
+    checkpoint: checkpointDep,
     adapters: {
       get: (name) => ({
         name,
@@ -1510,6 +1517,61 @@ test("orch continue <sid> --reviewer overrides the persisted reviewer without re
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
   assert.equal(auditCalls.length, 1);
   assert.equal(auditCalls[0].name, "copilot"); // overridden for this resume
+});
+
+// Regression (codex review of #126 branch, round 3): a "reviewed"-stage
+// checkpoint caches a DECISION, not just a reviewer name. engine.js's resume
+// shortcut trusts that cached decision and skips the audit call entirely for
+// that round — so if the ORIGINAL reviewer crashed/errored (which is exactly
+// how a stale "reviewed" checkpoint with a bad verdict gets left behind:
+// engine.js writes the checkpoint, THEN checks for agentError and escalates),
+// `--reviewer <x>` swaps in a working reviewer that never actually runs. The
+// resume just replays the old broken reviewer's DISAGREE. This test proves
+// the override reviewer's OWN verdict (AGREE) is what determines the
+// outcome, not the stale cached one — it would fail (result stays escalated,
+// override adapter's audit() never called) without engine.js consulting
+// `opts.reviewerOverride` to skip the pendingVerdict shortcut.
+test("orch continue <sid> --reviewer forces a fresh audit even when the checkpoint already cached a verdict", async () => {
+  const repo = initGitRepo("orch-continue-roles-forcereview-");
+  const sid = "f0rce0ne";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  // The cached verdict is DISAGREE — as if the original ("codex") reviewer
+  // errored out and the cycle escalated. `continue --reviewer copilot` is
+  // exactly the recovery move: swap the broken reviewer for a working one.
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "reviewed", decision: "DISAGREE", reason: "codex: agent error: rate limited",
+    author: { agent: "claude", model: null, effort: null },
+    reviewers: [{ agent: "codex", model: "gpt-5.1", effort: null }],
+  });
+
+  const auditCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit(_branch, _worktree, opts) {
+          auditCalls.push({ name, opts });
+          return { decision: "AGREE", reason: "copilot: looks fine", raw: "", usage: {} };
+        },
+      }),
+    },
+  };
+  writeFileSync(join(orchDir, "orch.yml"), "agents: [claude, codex, copilot]\n");
+  const logs = await runMainInRepo(repo, ["continue", sid, "--reviewer", "copilot"],
+    { cycleDeps, finishRun: async () => {} });
+
+  assert.equal(auditCalls.length, 1);
+  assert.equal(auditCalls[0].name, "copilot"); // the override reviewer actually ran
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`)); // its AGREE decided the outcome, not the stale DISAGREE
 });
 
 // Regression (codex review of #126 branch): the test above only proves the

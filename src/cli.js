@@ -1055,6 +1055,11 @@ export async function main(argv, deps = {}) {
       // fallback to `reviewers` in engine.js: only matters when no persisted
       // record existed yet, in which case there's nothing to protect).
       persistReviewers: persistedReviewers || reviewers,
+      // Codex review (#126 stalemate, round 3): a checkpoint already at
+      // "reviewed"/"tested" caches the OLD verdict; without this flag
+      // engine.js would trust that cached verdict and skip the audit call
+      // entirely, so the overridden reviewer would never actually run.
+      reviewerOverride,
       cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
     };
 
