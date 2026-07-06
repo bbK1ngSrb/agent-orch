@@ -951,16 +951,20 @@ export async function main(argv, deps = {}) {
     // under .orch/wt with a dead owner pid — reclaim it BEFORE reattaching the
     // branch, same as `task`/`pr` do at cycle start, or `runCycle`'s worktree
     // setup collides with the orphaned checkout. liveBranches spares real peers.
+    // Checkpoint is authoritative (survives whatever killed the process — stage
+    // timeout, adapter crash, hung stdio); inflight is only a fallback for a run
+    // that died before its first review round wrote a checkpoint. Read both
+    // BEFORE listLive() below: listLive() prunes any inflight record whose owner
+    // pid is dead — exactly the case a died-before-checkpoint resume needs to
+    // read. Reading listLive() first would delete this sid's own inflight record
+    // before inflight.lookup() got a chance to see it (#129).
+    const ck = checkpoint.lookup(orchDir, sid);
+    const inf = ck ? null : inflight.lookup(orchDir, sid);
+
     if (!dry) {
       const liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
       resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
     }
-
-    // Checkpoint is authoritative (survives whatever killed the process — stage
-    // timeout, adapter crash, hung stdio); inflight is only a fallback for a run
-    // that died before its first review round wrote a checkpoint.
-    const ck = checkpoint.lookup(orchDir, sid);
-    const inf = ck ? null : inflight.lookup(orchDir, sid);
     const branch = ck?.branch || inf?.branch;
     if (!branch) throw new Error(`orch: no checkpoint or inflight record for sid ${sid} — nothing to resume`);
     if (!git.branchExists(repo, branch)) throw new Error(`orch: branch ${branch} (sid ${sid}) no longer exists`);
@@ -995,6 +999,11 @@ export async function main(argv, deps = {}) {
     if (!dry) {
       const baseSha = git.git(["rev-parse", "main"], repo);
       inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha });
+      const live = inflight.countLive(orchDir);
+      if (live > cfg.concurrency) {
+        inflight.deregister(orchDir, sid);
+        throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`);
+      }
     }
     try {
       const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));

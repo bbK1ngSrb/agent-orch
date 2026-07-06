@@ -1433,3 +1433,68 @@ test("orch continue <sid> refuses to resume an inflight-only branch with no comm
     /has no committed changes/,
   );
 });
+
+// Regression (#129 bug 1): a run that died BEFORE its first checkpoint has, by
+// definition, a dead owner pid — that's the whole scenario `continue`'s inflight
+// fallback exists for. `listLive()` deletes any inflight file whose pid is dead
+// as a side effect ("doubles as inflight reclaim"). If `continue` called
+// `listLive()` before reading this sid's own inflight record, it would delete
+// the very record it's trying to resume. Use a pid far above any real process
+// (guaranteed ESRCH) to simulate the dead owner.
+test("orch continue <sid> resumes a died-before-checkpoint run via a dead-pid inflight record", async () => {
+  const repo = initGitRepo("orch-continue-deadpid-");
+  const sid = "d3adbeef";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const DEAD_PID = 999999999; // above PID_MAX_LIMIT — process.kill(pid, 0) throws ESRCH
+  inflight.register(join(repo, ".orch"), sid, { branch, pid: DEAD_PID, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+
+  let authorCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { authorCalls++; return { usage: {} }; },
+        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps, finishRun: async () => {} });
+
+  assert.equal(authorCalls, 0); // resumed via the inflight record, not a fresh author round
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+// Regression (#129 bug 2): `task`/`issue` both check `live > cfg.concurrency`
+// before starting a cycle; `continue` re-registered the resumed run in inflight
+// with no equivalent check, letting a resume push the live-cycle count past the
+// configured cap.
+test("orch continue <sid> respects the concurrency cap", async () => {
+  const repo = initGitRepo("orch-continue-cap-");
+  const sid = "cap5eed";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  // Fill the cap with other live (alive-pid) cycles first.
+  writeFileSync(join(repo, ".orch", "orch.yml"), "concurrency: 1\n");
+  inflight.register(join(repo, ".orch"), "otherlive", { branch: "pr/claude/other", pid: process.pid, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid]),
+    /concurrency cap 1 reached/,
+  );
+  // The rejected resume must not leave its own inflight record behind.
+  assert.equal(inflight.lookup(join(repo, ".orch"), sid), null);
+});
