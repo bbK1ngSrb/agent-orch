@@ -443,13 +443,28 @@ test("preflight throws a clear error when .orch/ is read-only", { skip: IS_WINDO
   }
 });
 
-test("resolveAgentBin returns the bare name when the CLI is on PATH", () => {
-  // win32 PATH hits deliberately return the absolute path (see platform.js:
-  // callers need to see the real .cmd/.exe extension to route it correctly).
-  if (IS_WINDOWS) {
-    assert.match(resolveAgentBin("ls"), /ls(\.\w+)?$/i);
-  } else {
-    assert.equal(resolveAgentBin("ls"), "ls"); // PATH hit → spawn by name as before
+test("resolveAgentBin returns the bare name when the CLI is on PATH (default envPath arg)", () => {
+  // A self-created fixture, not a real system binary (e.g. `ls`) — a plain
+  // Windows install has no POSIX tools on PATH at all (only Git for Windows'
+  // bundled CI runner image does, which is what let this test hide behind a
+  // false pass before). Temporarily extend the REAL process.env.PATH so the
+  // default (unpassed) envPath argument is what's actually under test.
+  const d = mkdtempSync(join(tmpdir(), "orch-onpath-"));
+  const p = join(d, "fake-onpath-cli");
+  writeFileSync(p, "#!/bin/sh\n");
+  chmodSync(p, 0o755);
+  const priorPath = process.env.PATH;
+  process.env.PATH = `${d}${delimiter}${priorPath || ""}`;
+  try {
+    // win32 PATH hits deliberately return the absolute path (see platform.js:
+    // callers need to see the real .cmd/.exe extension to route it correctly).
+    if (IS_WINDOWS) {
+      assert.equal(resolveAgentBin("fake-onpath-cli"), p);
+    } else {
+      assert.equal(resolveAgentBin("fake-onpath-cli"), "fake-onpath-cli"); // PATH hit → spawn by name as before
+    }
+  } finally {
+    process.env.PATH = priorPath;
   }
 });
 
