@@ -877,7 +877,7 @@ export async function main(argv, deps = {}) {
     for (const run of runs) {
       if (!dry) {
         const baseSha = git.git(["rev-parse", "main"], repo);
-        inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha });
+        inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null });
         const live = inflight.countLive(orchDir);
         if (live > cfg.concurrency) {
           inflight.deregister(orchDir, run.sid);
@@ -922,7 +922,7 @@ export async function main(argv, deps = {}) {
     // After the cycles: the detached docs-update runs `orch task`, so spawn it
     // outside the loop. maybeSpawnDocs only fires on a real `merged` result.
     let docsPending = false;
-    for (const result of results) docsPending = maybeSpawnDocs(result, cfg, { dry }, orchDir) || docsPending;
+    for (const result of results) docsPending = maybeSpawnDocs(result, cfg, { dry, spawn: deps.spawn }, orchDir) || docsPending;
 
     // #44: a human is at the terminal — tidy up the branches/state orch created and
     // explain it in plain English, instead of dead-ending in an opaque git state.
@@ -936,6 +936,138 @@ export async function main(argv, deps = {}) {
         { repo, orchDir, task, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls },
         { git, io, notify },
       );
+    }
+    return;
+  }
+
+  if (command === "continue") {
+    const sid = rest[0];
+    if (!sid) throw new Error("usage: orch continue <sid>");
+    const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
+    const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
+    if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
+    if (!dry) preflightFn(cfg, orchDir);
+    // A hard-killed prior attempt at this sid can leave its worktree checked out
+    // under .orch/wt with a dead owner pid — reclaim it BEFORE reattaching the
+    // branch, same as `task`/`pr` do at cycle start, or `runCycle`'s worktree
+    // setup collides with the orphaned checkout. liveBranches spares real peers.
+    // Checkpoint is authoritative (survives whatever killed the process — stage
+    // timeout, adapter crash, hung stdio); inflight is only a fallback for a run
+    // that died before its first review round wrote a checkpoint. Read both
+    // BEFORE listLive() below: listLive() prunes any inflight record whose owner
+    // pid is dead — exactly the case a died-before-checkpoint resume needs to
+    // read. Reading listLive() first would delete this sid's own inflight record
+    // before inflight.lookup() got a chance to see it (#129).
+    const ck = checkpoint.lookup(orchDir, sid);
+    const inf = ck ? null : inflight.lookup(orchDir, sid);
+
+    if (!dry) {
+      const liveEntries = inflight.listLive(orchDir);
+      // Codex review (#125 stalemate): a sid that already has a live, alive-pid
+      // inflight entry is genuinely running right now — a second `continue` (or
+      // a `continue` racing the original `task`/`issue` run) would overwrite that
+      // entry's inflight file out from under it and collide on the same worktree
+      // path. Refuse rather than clobber.
+      const stillLive = liveEntries.find((e) => e.sid === sid);
+      if (stillLive) throw new Error(`orch: sid ${sid} already has a live run (pid ${stillLive.pid}) — refusing to attach a second`);
+      const liveBranches = new Set(liveEntries.map((e) => e.branch));
+      resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
+    }
+    const branch = ck?.branch || inf?.branch;
+    if (!branch) throw new Error(`orch: no checkpoint or inflight record for sid ${sid} — nothing to resume`);
+    if (!git.branchExists(repo, branch)) throw new Error(`orch: branch ${branch} (sid ${sid}) no longer exists`);
+    // inflight-only fallback (no checkpoint ever written): the run may have died
+    // before the author committed anything — unlike the checkpoint path, an
+    // inflight record alone doesn't prove there's work to review/merge.
+    if (inf && git.changedFiles(repo, branch).length === 0) {
+      throw new Error(`orch: branch ${branch} (sid ${sid}) has no committed changes — the run died before authoring finished; start a fresh \`orch task\` instead`);
+    }
+
+    // Codex review (#125 stalemate): `cfg.agents` is only the rotation pool —
+    // a branch can legitimately be authored by a fixed `author:`/`--author`
+    // role outside that pool (e.g. `author: qwen3-coder-30b` with
+    // `agents: [claude, codex]`), which existing config/tests already allow.
+    // The real validity check is whether the name has a registered adapter.
+    const authorName = branch.split("/")[1];
+    if (!authorName) throw new Error(`orch: cannot determine an author from branch ${branch}`);
+    try { adapters.get(authorName); }
+    catch { throw new Error(`orch: cannot determine a registered author from branch ${branch}`); }
+    const configured = configuredReviewers(cfg);
+    const reviewerList = configured
+      ? reviewersForAuthor(authorName, configured)
+      : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
+    const reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+
+    // Codex review (#125 stalemate): an `orch issue <n>` run stamps `Closes #n`
+    // at merge time via ctx.closes — reconstruct it here too, or a resumed
+    // issue-bridge cycle merges without ever closing the issue. checkpoint is
+    // authoritative once a round has completed; the inflight fallback covers a
+    // death before that.
+    const closes = ck?.closes ?? inf?.closes ?? null;
+
+    const run = {
+      // No original task text survives in the checkpoint/inflight record, so
+      // `task` falls back to the branch name — changelogEntry() and the
+      // terminal summary both read `task`; the raw "continue <sid>" command
+      // is not a meaningful changelog/summary label.
+      mode: "task", task: branch, branch, sid, resume: true, closes,
+      authorName, author: { agent: authorName, model: null, effort: null },
+      reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
+      reviewers, cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
+    };
+
+    if (!dry) {
+      const baseSha = git.git(["rev-parse", "main"], repo);
+      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, closes });
+      const live = inflight.countLive(orchDir);
+      if (live > cfg.concurrency) {
+        inflight.deregister(orchDir, sid);
+        throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`);
+      }
+    }
+    try {
+      const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
+      if (!dry) {
+        checkpoint.clear(orchDir, sid);
+        // Codex review (#125 stalemate): the original `orch task` run that
+        // authored this branch wrote a resume.js record (task text + author →
+        // branch) BEFORE it ever ran, so a crash mid-cycle leaves it for a retry
+        // to pick up. `continue` doesn't know that original task text, so it
+        // can't call resume.clear() by key — scan by branch instead, or a later
+        // `orch task` with the same text would reattach this already-terminal
+        // branch instead of authoring fresh.
+        resume.clearForBranch(orchDir, branch);
+      }
+      console.log(`orch${dry ? " (dry)" : ""}: ${branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s); cost ${result.usageSummary}`);
+      // Codex review (#125 stalemate): `continue` forked its own terminal
+      // handling instead of reusing the shared `task`/`issue` tail, and dropped
+      // two of its side effects for a resumed cycle — the detached docs-update
+      // spawn on a real merge, and the issue-bridge comment (closes is now
+      // restored, see above) on escalation/PR-fallback. Both restored here,
+      // matching the shared loop at the `task`/`issue` command above.
+      if (!dry) maybeSpawnDocs(result, cfg, { dry, spawn: deps.spawn }, orchDir);
+      if (result.status === "merged" && !dry && !flags["no-tidy"]) {
+        const finishFn = deps.finishRun || finishRun;
+        const io = deps.io || realIo();
+        await finishFn(
+          { repo, orchDir, task: run.task, merged: [branch], interactive: Boolean(process.stdin.isTTY), runStats: result.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: result.prUrl ? [result.prUrl] : [] },
+          { git, io, notify },
+        );
+      }
+      if (result.status === "escalated" || result.status === "pr-fallback") {
+        process.exitCode = 2;
+        if (!dry && closes) {
+          try {
+            const gh = (deps.githubDeps || githubDeps)().gh;
+            const body = redact(buildIssueComment(result, branch));
+            gh(["issue", "comment", String(closes), "--body-file", "-"], body);
+          } catch (e) {
+            console.error(`orch: could not comment on issue #${closes}: ${e.message}`);
+          }
+        }
+      }
+    } finally {
+      if (!dry) inflight.deregister(orchDir, sid);
     }
     return;
   }
@@ -1000,6 +1132,7 @@ Commands:
   task --file <file>    Run a cycle from an untrusted JSON work order.
   issue <number>        Run from a GitHub issue and close it on merge.
   review <branch>       Audit an existing branch without merging.
+  continue <sid>        Resume an interrupted/stalled cycle from its checkpoint.
   pr <number>           Review a GitHub PR; add --merge to merge if approved.
   dashboard             Show read-only live status, log tail, and run history.
   completion [bash]     Print the bash completion script (default: bash).

@@ -1328,3 +1328,378 @@ test("completed review cycle clears its checkpoint (no false interrupted entry)"
   const leftover = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")) : [];
   assert.deepEqual(leftover, []); // ...and the completed run cleared it
 });
+
+test("orch continue <sid> resumes from checkpoint, past review, without re-authoring", async () => {
+  const repo = initGitRepo("orch-continue-");
+  const sid = "deadbeef";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  let authorCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { authorCalls++; return { usage: {} }; },
+        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const finishCalls = [];
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps, finishRun: async (ctx) => { finishCalls.push(ctx); } });
+
+  assert.equal(authorCalls, 0); // resume skips re-authoring — the branch already has the commit
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.equal(finishCalls.length, 1);
+  assert.deepEqual(finishCalls[0].merged, [branch]);
+  const ck = checkpointDep.lookup(join(repo, ".orch"), sid);
+  assert.equal(ck, null); // completed run clears its checkpoint
+});
+
+// Regression (codex review): a hard-killed prior `continue` attempt leaves its
+// worktree checked out under .orch/wt with a dead owner pid. Without reclaiming
+// it first, `git.attachExistingBranch` fails with "already checked out" and the
+// resume never reaches review/test/merge. `continue` must reclaim orphans first,
+// same as `task`/`pr` do at cycle start.
+test("orch continue <sid> reclaims an orphaned worktree left by a killed prior attempt", async () => {
+  const repo = initGitRepo("orch-continue-orphan-");
+  const sid = "0ff1ce";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  // Simulate the orphan: a worktree checked out on `branch` at the exact path
+  // `continue` will reattach to, left behind by a process that no longer exists.
+  const worktree = join(repo, ".orch", "wt", branch.replace(/\//g, "_"));
+  gitDep.git(["worktree", "add", "--", worktree, branch], repo);
+
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const finishCalls = [];
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps, finishRun: async (ctx) => { finishCalls.push(ctx); } });
+
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.equal(finishCalls.length, 1);
+});
+
+test("orch continue <sid> throws when no checkpoint or inflight record exists", async () => {
+  const repo = initGitRepo("orch-continue-missing-");
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", "nosuchsid"]),
+    /no checkpoint or inflight record for sid nosuchsid/,
+  );
+});
+
+test("orch continue <sid> requires the usage argument", async () => {
+  const repo = initGitRepo("orch-continue-usage-");
+  await assert.rejects(runMainInRepo(repo, ["continue"]), /usage: orch continue <sid>/);
+});
+
+test("orch continue <sid> refuses to resume an inflight-only branch with no committed changes", async () => {
+  const repo = initGitRepo("orch-continue-empty-");
+  const sid = "cafebabe";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  // Simulate a death before the author's first commit: an inflight record
+  // exists (registered before authoring starts) but no checkpoint was ever
+  // written (checkpoints only appear once a review round completes), and the
+  // branch carries no committed diff vs. main. A dead pid, not process.pid —
+  // this must simulate the process actually having died, or the still-live
+  // guard (added after #125's stalemate) would refuse it for the wrong reason.
+  inflight.register(join(repo, ".orch"), sid, { branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid]),
+    /has no committed changes/,
+  );
+});
+
+// Regression (#129 bug 1): a run that died BEFORE its first checkpoint has, by
+// definition, a dead owner pid — that's the whole scenario `continue`'s inflight
+// fallback exists for. `listLive()` deletes any inflight file whose pid is dead
+// as a side effect ("doubles as inflight reclaim"). If `continue` called
+// `listLive()` before reading this sid's own inflight record, it would delete
+// the very record it's trying to resume. Use a pid far above any real process
+// (guaranteed ESRCH) to simulate the dead owner.
+test("orch continue <sid> resumes a died-before-checkpoint run via a dead-pid inflight record", async () => {
+  const repo = initGitRepo("orch-continue-deadpid-");
+  const sid = "d3adbeef";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const DEAD_PID = 999999999; // above PID_MAX_LIMIT — process.kill(pid, 0) throws ESRCH
+  inflight.register(join(repo, ".orch"), sid, { branch, pid: DEAD_PID, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+
+  let authorCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { authorCalls++; return { usage: {} }; },
+        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps, finishRun: async () => {} });
+
+  assert.equal(authorCalls, 0); // resumed via the inflight record, not a fresh author round
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+// Regression (#129 bug 2): `task`/`issue` both check `live > cfg.concurrency`
+// before starting a cycle; `continue` re-registered the resumed run in inflight
+// with no equivalent check, letting a resume push the live-cycle count past the
+// configured cap.
+test("orch continue <sid> respects the concurrency cap", async () => {
+  const repo = initGitRepo("orch-continue-cap-");
+  const sid = "cap5eed";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  // Fill the cap with other live (alive-pid) cycles first.
+  writeFileSync(join(repo, ".orch", "orch.yml"), "concurrency: 1\n");
+  inflight.register(join(repo, ".orch"), "otherlive", { branch: "pr/claude/other", pid: process.pid, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid]),
+    /concurrency cap 1 reached/,
+  );
+  // The rejected resume must not leave its own inflight record behind.
+  assert.equal(inflight.lookup(join(repo, ".orch"), sid), null);
+});
+
+// Regression (codex review of #125 branch): a sid with a live (alive-pid)
+// inflight entry is genuinely running right now — either the original
+// `task`/`issue` cycle, or a previous `continue` that hasn't finished. A second
+// `continue` on the same sid must not overwrite that entry's inflight file or
+// attempt a second worktree at the same path.
+test("orch continue <sid> refuses to attach a sid that already has a live run", async () => {
+  const repo = initGitRepo("orch-continue-stilllive-");
+  const sid = "1ive0001";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+  // Simulate the same sid already registered inflight with a genuinely alive pid.
+  inflight.register(join(repo, ".orch"), sid, { branch, pid: process.pid, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+
+  const before = inflight.lookup(join(repo, ".orch"), sid);
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid]),
+    new RegExp(`sid ${sid} already has a live run \\(pid ${process.pid}\\)`),
+  );
+  // The live entry must survive untouched — not overwritten by the refused attempt.
+  assert.deepEqual(inflight.lookup(join(repo, ".orch"), sid), before);
+});
+
+// Regression (codex review of #125 branch): the ORIGINAL `orch task` run that
+// authored this branch wrote a resume.js record (task text + author → branch)
+// before it ever ran, so a crash mid-cycle leaves it for a retry to resume
+// (issue #24). `continue` doesn't know that original task text and so can't
+// clear the record by its (task, author) key — without clearForBranch, the
+// record survives after this branch is already terminal, and a later `orch
+// task` with the same original text would wrongly reattach it.
+test("orch continue <sid> clears the original task's resume.js record on completion", async () => {
+  const repo = initGitRepo("orch-continue-resume-clear-");
+  const sid = "c1eaner1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+  // The record `resolveTaskBranch` would have written before the original run.
+  resume.record(join(repo, ".orch"), "the original task text", "claude", { branch, sid });
+
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps, finishRun: async () => {} });
+
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.deepEqual(resume.lookupForTask(join(repo, ".orch"), "the original task text"), []);
+});
+
+// Regression (codex review of #125 branch): `orch issue <n>` stamps `Closes #n`
+// at merge time via ctx.closes (engine.js reads opts.closes when calling
+// finalize). The checkpoint/inflight records `continue` reads never carried
+// `closes`, so a resumed issue-bridge cycle merged WITHOUT ever closing its
+// source issue. Checkpoint path: closes recovered from a completed round.
+test("orch continue <sid> restores `closes` from the checkpoint so the issue still closes on merge", async () => {
+  const repo = initGitRepo("orch-continue-closes-ck-");
+  const sid = "c105e5c1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good", closes: 125 });
+
+  let capturedCloses;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async (ctx) => { capturedCloses = ctx.closes; return { status: "merged", reason: "test", sha: "abc" }; },
+  };
+  await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  assert.equal(capturedCloses, 125);
+});
+
+// Same recovery, via the inflight fallback (run died before its first
+// checkpoint — the scenario `continue`'s inflight path exists for).
+test("orch continue <sid> restores `closes` from the inflight fallback", async () => {
+  const repo = initGitRepo("orch-continue-closes-inf-");
+  const sid = "c105e5c2";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  inflight.register(join(repo, ".orch"), sid,
+    { branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo), closes: 125 });
+
+  let capturedCloses;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async (ctx) => { capturedCloses = ctx.closes; return { status: "merged", reason: "test", sha: "abc" }; },
+  };
+  await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  assert.equal(capturedCloses, 125);
+});
+
+// Regression (codex review of #125 branch): `cfg.agents` is only the rotation
+// pool. A branch can legitimately be authored by a fixed `author:`/`--author`
+// role outside that pool (e.g. `author: qwen3-coder-30b` with
+// `agents: [claude, codex]`) — existing config/tests already allow this.
+// `continue` must accept any REGISTERED adapter, not just names in cfg.agents.
+test("orch continue <sid> accepts an author outside cfg.agents if it has a registered adapter", async () => {
+  const repo = initGitRepo("orch-continue-fixedauthor-");
+  const sid = "f1xeda01";
+  const branch = `pr/qwen3-coder-30b/some-fix-${sid}`; // "qwen3-coder-30b" is not in the default cfg.agents pool
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps: fakeCycleDeps(), finishRun: async () => {} });
+
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+// Regression (codex review of #125 branch): `continue` forked its own terminal
+// handling instead of reusing the `task`/`issue` tail, dropping the issue-bridge
+// escalation comment. Now that `continue` restores `closes` from the
+// checkpoint/inflight record, it must also post the comment on escalation —
+// same behavior as `orch issue` proper (see the sibling test above it mirrors).
+test("orch continue posts a gh issue comment on escalation, using the restored closes", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-continue-escalate-comment-");
+  const sid = "e5ca1ate";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good", closes: 52 });
+
+  const calls = [];
+  const gh = (args, input) => {
+    if (args[0] === "issue" && args[1] === "comment") { calls.push({ args, input }); return ""; }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const escalating = { ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate after cap", sha: "x" }) };
+  try {
+    await runMainInRepo(repo, ["continue", sid], { cycleDeps: escalating, githubDeps: () => ({ gh }) });
+    assert.equal(process.exitCode, 2);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].args[2], "52");
+    assert.match(calls[0].input, /ESCALATED/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// Regression (codex review of #125 branch): `continue` also dropped the
+// detached docs-update spawn on a real merge — same behavior as `task`/`issue`.
+test("orch continue spawns the docs-update task on a real merge", async () => {
+  const repo = initGitRepo("orch-continue-docs-");
+  const sid = "d0cspawn";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "docs:\n  autoUpdate: true\n");
+
+  const spawnCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async () => ({ status: "merged", reason: "test", sha: "abc", docsOnly: false, noop: false }),
+  };
+  await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps, finishRun: async () => {}, spawn: (...args) => { spawnCalls.push(args); return { unref() {} }; } });
+
+  assert.equal(spawnCalls.length, 1);
+});

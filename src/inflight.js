@@ -4,10 +4,14 @@ import { join } from "node:path";
 const dir = (orchDir) => join(orchDir, "inflight");
 const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
 
-export function register(orchDir, sid, { branch, pid, baseSha }) {
+// `closes` (the GitHub issue number an `orch issue` run will close on merge)
+// is carried here too, not just in checkpoint.js: a run that dies before its
+// first review round has no checkpoint yet, so `orch continue`'s inflight
+// fallback is the only place left to recover it from (#125 review finding).
+export function register(orchDir, sid, { branch, pid, baseSha, closes = null }) {
   mkdirSync(dir(orchDir), { recursive: true });
   writeFileSync(file(orchDir, sid), JSON.stringify({
-    sid, branch, pid, baseSha, paths: [], ts: new Date().toISOString(),
+    sid, branch, pid, baseSha, closes, paths: [], ts: new Date().toISOString(),
   }));
 }
 
@@ -26,6 +30,13 @@ export function setPaths(orchDir, sid, paths, baseSha) {
 
 export function deregister(orchDir, sid) {
   rmSync(file(orchDir, sid), { force: true });
+}
+
+// Raw read, ignoring pid liveness — `orch continue` needs the branch of a sid
+// whose owning process is already dead (that's the whole point of resuming it).
+export function lookup(orchDir, sid) {
+  try { return JSON.parse(readFileSync(file(orchDir, sid), "utf8")); }
+  catch { return null; } // ENOENT / parse error → no record
 }
 
 function pidAlive(pid) {
