@@ -5,8 +5,10 @@ import { runPr, buildComment, demote, openPr, openIntegrationPr } from "../src/g
 function makeDeps({
   status = "approved", state = "OPEN",
   mergedState = "MERGED", mergeCommitOid = "abc123def", ancestorFails = false,
+  fetchLockFailures = 0,
 } = {}) {
   const calls = { gh: [], git: [] };
+  let fetchAttempts = 0;
   const deps = {
     gh(args, input) {
       calls.gh.push({ args, input });
@@ -22,6 +24,10 @@ function makeDeps({
     },
     git(args) {
       calls.git.push(args);
+      if (args[0] === "fetch" && args[2] === "main:refs/remotes/origin/main") {
+        fetchAttempts++;
+        if (fetchAttempts <= fetchLockFailures) throw new Error("fatal: cannot lock ref 'refs/remotes/origin/main'");
+      }
       if (args[0] === "merge-base" && args[1] === "--is-ancestor" && ancestorFails) {
         throw new Error("fatal: not an ancestor");
       }
@@ -93,6 +99,22 @@ test("§140: runPr refuses to report merged if the merge commit isn't an ancesto
   await assert.rejects(
     () => runPr({ ...opts, merge: true }, deps),
     /not yet an ancestor of origin\/main/,
+  );
+});
+
+test("§140: runPr retries the post-merge origin fetch through a transient ref-lock race", async () => {
+  const deps = makeDeps({ fetchLockFailures: 1 });
+  const result = await runPr({ ...opts, merge: true }, deps);
+  assert.equal(result.status, "approved");
+  const fetches = deps._calls.git.filter((a) => a[0] === "fetch" && a[2] === "main:refs/remotes/origin/main");
+  assert.equal(fetches.length, 2, "should retry once after the ref-lock failure, then succeed");
+});
+
+test("§140: runPr gives up after exhausting ref-lock retries", async () => {
+  const deps = makeDeps({ fetchLockFailures: 99 });
+  await assert.rejects(
+    () => runPr({ ...opts, merge: true }, deps),
+    /cannot lock ref/,
   );
 });
 

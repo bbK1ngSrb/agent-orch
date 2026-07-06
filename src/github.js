@@ -5,6 +5,29 @@
 import { join } from "node:path";
 import { parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { redact, publicSummary } from "./redact.js";
+import { sleepSync } from "./lock.js";
+
+const ORIGIN_MAIN_REF = "refs/remotes/origin/main";
+
+// Concurrent orch cycles share one .git and thus one refs/remotes/origin/main —
+// a losing fetch fails "cannot lock ref", which is transient contention, not a
+// real sync problem. Mirrors git.js's fetchOriginMain retry so this new
+// post-merge check doesn't turn that race into a spurious hard failure right
+// after gh has already reported the PR merged.
+const REF_LOCK_RE = /cannot lock ref/i;
+
+function fetchOriginMainRetrying(git, repo, { retries = 2, sleep = sleepSync } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      git(["fetch", "origin", `main:${ORIGIN_MAIN_REF}`], repo);
+      return;
+    } catch (e) {
+      const reason = String(e.message || e);
+      if (attempt >= retries || !REF_LOCK_RE.test(reason)) throw e;
+      sleep(50 * 2 ** attempt);
+    }
+  }
+}
 
 // Build the PR comment body. §3f: `body` is the constrained machine summary
 // (publicSummary), never attacker-influenced reviewer prose — those notes stay
@@ -109,12 +132,7 @@ export async function runPr(opts, deps) {
           `(state: ${merged.state}) — refusing to report a false "merged" success`,
         );
       }
-      // Fully-qualified ref, not the "origin/main" shorthand: git.js's own
-      // verifyOriginContains learned this the hard way (ORIGIN_MAIN_REF) —
-      // the short form can resolve ambiguously depending on repo/worktree
-      // ref state, which defeats the point of a false-success guard.
-      const ORIGIN_MAIN_REF = "refs/remotes/origin/main";
-      git(["fetch", "origin", `main:${ORIGIN_MAIN_REF}`], repo);
+      fetchOriginMainRetrying(git, repo);
       try {
         git(["merge-base", "--is-ancestor", merged.mergeCommit.oid, ORIGIN_MAIN_REF], repo);
       } catch {
