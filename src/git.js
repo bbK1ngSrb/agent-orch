@@ -22,7 +22,12 @@ function ownerPid(markerPath) {
 }
 
 function pidAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; }
+  // Signal 0 either succeeds (process exists, we can signal it) or throws.
+  // EPERM means the process exists but we lack permission — still alive.
+  // Any other code (ESRCH, or Windows' error for an out-of-range/bogus pid)
+  // means dead: treating unrecognized errors as "alive" left huge test pids
+  // (e.g. 999999999) wrongly protected from reclaim on Windows.
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
 }
 
 export function git(args, cwd) {

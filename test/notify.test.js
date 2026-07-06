@@ -8,7 +8,8 @@ import { writeRound, writeRoundRaw, buildDecisionBrief, reviewsDir, recordRun, k
 test("writeRound creates nested round file", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-notify-"));
   const p = writeRound(d, "pr/claude/x", 2, "hello");
-  assert.match(p, /reviews\/pr\/claude\/x\/round-2\.md$/);
+  // Path separator is platform-dependent (join() uses \ on Windows); match either.
+  assert.match(p, /reviews[\\/]pr[\\/]claude[\\/]x[\\/]round-2\.md$/);
   assert.equal(readFileSync(p, "utf8"), "hello");
 });
 
