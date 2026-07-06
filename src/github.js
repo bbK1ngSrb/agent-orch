@@ -151,11 +151,11 @@ export async function runPr(opts, deps) {
   }
 }
 
-function hasRemote(repo, git) {
+export function hasRemote(repo, git) {
   try { return git(["remote"], repo).trim().length > 0; } catch { return false; }
 }
 
-function ghAvailable(gh) {
+export function ghAvailable(gh) {
   try { gh(["--version"]); return true; } catch { return false; }
 }
 

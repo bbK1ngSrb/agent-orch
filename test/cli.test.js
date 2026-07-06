@@ -415,6 +415,40 @@ test("orch task escalation does not touch GitHub (no closes)", async () => {
   }
 });
 
+// #136 round 2 (codex review): the ORIGINAL fix only gated on cfg.merge ===
+// "pr" / autoMergePr / an issue closes-comment — but finalize.js's
+// openIntegrationPr runs on every successful merge in the DEFAULT no-ff/
+// ff-only path too, so a plain `orch task` with a broken gh session could
+// still reach a late gh failure after a full author→review→test→merge cycle.
+// A repo WITH a remote configured must now fail fast before that cycle runs
+// at all, regardless of merge mode.
+test("#136: orch task with a configured remote fails fast on broken gh auth, before running the cycle", async () => {
+  const repo = initGitRepo();
+  gitDep.git(["remote", "add", "origin", "https://example.invalid/x/y.git"], repo);
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") throw new Error("not logged in");
+    throw new Error(`cycle must not run before the auth gate: unexpected gh call ${args.join(" ")}`);
+  };
+  const cycleRan = { called: false };
+  const cycleDeps = { ...fakeCycleDeps(), cycle: async () => { cycleRan.called = true; return { status: "merged" }; } };
+  await assert.rejects(
+    () => runMainInRepo(repo, ["task", "some task"], { cycleDeps, githubDeps: () => ({ gh, git: gitDep.git }) }),
+    /gh CLI is not authenticated/,
+  );
+  assert.equal(cycleRan.called, false, "the author/review/test/merge cycle must not run when gh auth is broken");
+});
+
+// The flip side: no remote configured at all means there's no PR bridge to
+// protect (openIntegrationPr's own hasRemote/ghAvailable guard already skips
+// itself gracefully in this case) — so a fully local repo isn't forced to
+// have a gh session just because it happens to have gh installed.
+test("#136: orch task with no remote configured never calls gh, even if gh is installed", async () => {
+  const repo = initGitRepo();
+  const gh = () => { throw new Error("gh should not be called when no remote is configured"); };
+  await runMainInRepo(repo, ["task", "some task", "--no-tidy"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+});
+
 test("nextAuthor alternates and persists last-author", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
   const cfg = { agents: ["claude", "codex"] };
@@ -1109,7 +1143,16 @@ test("orch task fast-forwards stale local main from origin before branching", as
   gitDep.git(["commit", "-m", "advance remote"], peer);
   gitDep.git(["push", "origin", "main"], peer);
 
-  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
+  // This repo now has a real (local-peer) origin remote, so the new
+  // pre-flight gh-auth gate (added alongside #136's fix — a real merge
+  // in the default no-ff path can reach the gh-backed integration-PR
+  // step regardless of merge mode) will call gh. Stub it instead of
+  // letting the test shell out to whatever gh session happens to exist
+  // on the host — a real network/auth call has no place in a unit test.
+  const gh = (args) => args[0] === "--version" ? "gh 2" : "Logged in to github.com";
+  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"], {
+    githubDeps: () => ({ gh, git: gitDep.git }),
+  });
 
   assert.equal(gitDep.git(["rev-parse", "main"], repo), gitDep.git(["rev-parse", "origin/main"], repo));
   assert.equal(readFileSync(join(repo, "remote.txt"), "utf8"), "remote\n");

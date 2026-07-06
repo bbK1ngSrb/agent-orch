@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runCycle } from "./engine.js";
-import { runPr, demote, openPr, openIntegrationPr, buildIssueComment } from "./github.js";
+import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable } from "./github.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -836,10 +836,19 @@ export async function main(argv, deps = {}) {
     // preflight) so the agent CLI it picks is the one preflight actually checks.
     cfg = applyCheapOverride(cfg, flags, workOrder);
     if (!dry) preflightFn(cfg, orchDir); // dry-run never shells out, so don't require CLIs
-    // Only task/review runs that will actually shell out to gh (opening a PR,
-    // auto-merging, or an issue-comment escalation) need a validated session.
-    if (!dry && (cfg.merge === "pr" || cfg.github?.autoMergePr || closes != null)) {
-      requireGhAuth((deps.githubDeps || githubDeps)().gh);
+    // Any task/review run that lands a merge can still reach a `gh` shell-out:
+    // cfg.merge === "pr" and autoMergePr obviously need it, but so does the
+    // DEFAULT no-ff/ff-only path — finalize.js's openIntegrationPr opens/updates
+    // the persistent integration→main PR after every successful local merge,
+    // not just merge:"pr" runs (codex review round 1 on this fix caught that
+    // the original gate missed this, letting a plain `orch task` still hit a
+    // late gh failure after burning a full cycle). openIntegrationPr itself
+    // only calls gh when a remote AND the gh CLI are both present — mirror
+    // that same guard here so a fully local repo (no remote configured, no
+    // PR bridge intended) isn't forced to have a gh session at all.
+    if (!dry) {
+      const { gh, git: ghGit } = (deps.githubDeps || githubDeps)();
+      if (hasRemote(repo, ghGit) && ghAvailable(gh)) requireGhAuth(gh);
     }
 
     // Main is a GitHub mirror; task mode fast-forwards it from origin before
