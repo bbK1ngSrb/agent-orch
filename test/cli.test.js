@@ -281,6 +281,21 @@ test("run banner prints only on TTY and respects --no-banner", () => {
   assert.equal(out, "");
 });
 
+test("runBanner colors the agents row when color is on", () => {
+  const cfg = { agents: ["claude", "codex"], test: "npm test", merge: "no-ff" };
+  const runs = [{ author: "claude", reviewers: ["codex"] }];
+  const out = runBanner(cfg, runs, { color: true, columns: 80 });
+  assert.match(out, /\x1b\[38;5;214mclaude, codex\x1b\[0m/);
+});
+
+test("runBanner emits no ANSI codes when color is off", () => {
+  const cfg = { agents: ["claude"], test: "npm test", merge: "no-ff" };
+  const runs = [{ author: "claude", reviewers: [] }];
+  const out = runBanner(cfg, runs, { color: false, columns: 80 });
+  assert.doesNotMatch(out, /\x1b\[/);
+  assert.match(out, /agent-orch/);
+});
+
 const WORK_ORDER = JSON.stringify({
   title: "fix the flaky retry",
   problem: "retries double-fire under load",
