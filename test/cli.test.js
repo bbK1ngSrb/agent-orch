@@ -1905,3 +1905,58 @@ test("orch continue spawns the docs-update task on a real merge", async () => {
 
   assert.equal(spawnCalls.length, 1);
 });
+
+// Regression (codex review of #126 branch, round 2): the previous fix
+// protected the CHECKPOINT path but missed that `continue` ALSO re-registers
+// itself in inflight (for its own liveness tracking during the resume) using
+// the same `reviewers` value — which was still the possibly-overridden one,
+// not the protected persistReviewers. If the original run only ever reached
+// an inflight record (died before its first checkpoint — the inflight-only
+// fallback path), that re-registration is the only remaining place a NEXT
+// `continue` reads persisted roles from. inflight.register() runs BEFORE
+// runCycle even starts, so we catch the bug by inspecting the file mid-flight
+// (from inside the audit stub) rather than simulating an unrecoverable crash —
+// a JS-level throw would just let the surrounding `finally` deregister it
+// either way, proving nothing about what was actually written.
+test("orch continue <sid> --reviewer override does not leak into the inflight-only fallback record", async () => {
+  const repo = initGitRepo("orch-continue-roles-inflight-");
+  const sid = "1nfl1ght";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  const originalReviewers = [{ agent: "codex", model: "gpt-5.1", effort: null }];
+  // Dead pid: the original run died before its first review round ever wrote
+  // a checkpoint — inflight is the only record `continue` has to work from.
+  inflight.register(orchDir, sid, {
+    branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo),
+    author: { agent: "claude", model: null, effort: null }, reviewers: originalReviewers,
+  });
+
+  let midFlight = null;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit() {
+          // inflight.register for THIS resume attempt already ran before
+          // runCycle started — check what it actually wrote.
+          midFlight = inflight.lookup(orchDir, sid);
+          return { decision: "AGREE", reason: "still good", raw: "", usage: {} };
+        },
+      }),
+    },
+  };
+  writeFileSync(join(orchDir, "orch.yml"), "agents: [claude, codex, copilot]\n");
+
+  await runMainInRepo(repo, ["continue", sid, "--reviewer", "copilot"],
+    { cycleDeps, finishRun: async () => {} });
+
+  assert.ok(midFlight, "audit stub must have run and captured the inflight record");
+  assert.deepEqual(midFlight.reviewers, originalReviewers); // NOT [copilot]
+});

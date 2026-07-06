@@ -1060,7 +1060,15 @@ export async function main(argv, deps = {}) {
 
     if (!dry) {
       const baseSha = git.git(["rev-parse", "main"], repo);
-      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers });
+      // Codex review (#126 stalemate, round 2): this is `continue`'s OWN
+      // inflight re-registration for the resume attempt itself — if the
+      // original run only ever got as far as an inflight record (died before
+      // its first checkpoint), this is the only remaining place a NEXT
+      // `continue` will read persisted roles from. Must use the protected
+      // persistReviewers here too, not the possibly-overridden `reviewers`,
+      // or the same override-permanence bug just resurfaces via the
+      // inflight-only recovery path instead of the checkpoint path.
+      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers });
       const live = inflight.countLive(orchDir);
       if (live > cfg.concurrency) {
         inflight.deregister(orchDir, sid);
