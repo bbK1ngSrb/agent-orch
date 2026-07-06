@@ -98,7 +98,27 @@ export async function runPr(opts, deps) {
 
     if (result.status === "approved" && merge) {
       gh(["pr", "merge", String(n), `--${cfg.github.mergeMethod}`]);
-      log(`merged PR #${pr.number} via ${cfg.github.mergeMethod}`);
+      // gh reporting exit 0 isn't proof the commit is actually on origin/main —
+      // squash/rebase merges mint a brand-new sha, so we can't just check the
+      // pre-merge branch head; ask GitHub for the merge commit it produced and
+      // confirm THAT sha is really there before calling this a "merged" success.
+      const merged = JSON.parse(gh(["pr", "view", String(n), "--json", "state,mergeCommit"]));
+      if (merged.state !== "MERGED" || !merged.mergeCommit?.oid) {
+        throw new Error(
+          `orch pr #${pr.number}: gh pr merge exited 0 but the PR is not reporting MERGED ` +
+          `(state: ${merged.state}) — refusing to report a false "merged" success`,
+        );
+      }
+      git(["fetch", "origin", "main"], repo);
+      try {
+        git(["merge-base", "--is-ancestor", merged.mergeCommit.oid, "origin/main"], repo);
+      } catch {
+        throw new Error(
+          `orch pr #${pr.number}: gh reports PR merged (commit ${merged.mergeCommit.oid}) but it is ` +
+          `not yet an ancestor of origin/main — refusing to report a false "merged" success`,
+        );
+      }
+      log(`merged PR #${pr.number} via ${cfg.github.mergeMethod}, verified on origin/main`);
     }
     return result;
   } finally {

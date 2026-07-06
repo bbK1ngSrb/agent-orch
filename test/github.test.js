@@ -2,16 +2,31 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runPr, buildComment, demote, openPr, openIntegrationPr } from "../src/github.js";
 
-function makeDeps({ status = "approved", state = "OPEN" } = {}) {
+function makeDeps({
+  status = "approved", state = "OPEN",
+  mergedState = "MERGED", mergeCommitOid = "abc123def", ancestorFails = false,
+} = {}) {
   const calls = { gh: [], git: [] };
   const deps = {
     gh(args, input) {
       calls.gh.push({ args, input });
-      if (args[0] === "pr" && args[1] === "view")
+      if (args[0] === "pr" && args[1] === "view") {
+        // post-merge re-check asks specifically for state+mergeCommit —
+        // distinguish it from the initial open/state check.
+        if (args.includes("state,mergeCommit")) {
+          return JSON.stringify({ state: mergedState, mergeCommit: mergeCommitOid ? { oid: mergeCommitOid } : null });
+        }
         return JSON.stringify({ number: 7, headRefName: "feature/x", state });
+      }
       return "";
     },
-    git(args) { calls.git.push(args); return ""; },
+    git(args) {
+      calls.git.push(args);
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor" && ancestorFails) {
+        throw new Error("fatal: not an ancestor");
+      }
+      return "";
+    },
     async cycle(o) { calls.cycleOpts = o; return { status, reason: "r", rounds: 1 }; },
     readVerdict: () => "reviewer says ok",
     _calls: calls,
@@ -50,6 +65,10 @@ test("runPr merges only with merge flag + approved", async () => {
   const yes = makeDeps();
   await runPr({ ...opts, merge: true }, yes);
   assert.ok(yes._calls.gh.some((c) => c.args[1] === "merge"));
+  // §140: a merge claim must be checked against origin/main, not just gh's exit code
+  assert.ok(yes._calls.gh.some((c) => c.args[1] === "view" && c.args.includes("state,mergeCommit")));
+  assert.ok(yes._calls.git.some((a) => a[0] === "fetch" && a[2] === "main"));
+  assert.ok(yes._calls.git.some((a) => a[0] === "merge-base" && a[1] === "--is-ancestor"));
 
   const no = makeDeps();
   await runPr({ ...opts, merge: false }, no);
@@ -58,6 +77,22 @@ test("runPr merges only with merge flag + approved", async () => {
   const blocked = makeDeps({ status: "escalated" });
   await runPr({ ...opts, merge: true }, blocked);
   assert.ok(!blocked._calls.gh.some((c) => c.args[1] === "merge"));
+});
+
+test("§140: runPr refuses to report merged if gh's post-merge state isn't MERGED", async () => {
+  const deps = makeDeps({ mergedState: "OPEN" });
+  await assert.rejects(
+    () => runPr({ ...opts, merge: true }, deps),
+    /refusing to report a false "merged"/,
+  );
+});
+
+test("§140: runPr refuses to report merged if the merge commit isn't an ancestor of origin/main", async () => {
+  const deps = makeDeps({ ancestorFails: true });
+  await assert.rejects(
+    () => runPr({ ...opts, merge: true }, deps),
+    /not yet an ancestor of origin\/main/,
+  );
 });
 
 test("runPr refuses a non-open PR", async () => {
