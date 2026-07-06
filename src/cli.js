@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runCycle } from "./engine.js";
-import { runPr, demote, openPr, openIntegrationPr, buildIssueComment } from "./github.js";
+import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable } from "./github.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -560,9 +560,21 @@ export function parseWorkOrderFile(path) {
 // same path as parseWorkOrderFile, but the source is the issue title+body. `gh`
 // is injected so tests stub the fetch with no network/auth. Returns the
 // validated work order or throws.
+// Fails fast with one clear error instead of letting a broken `gh` session
+// surface as a raw, confusing error from whichever gh shell-out happens first
+// (#136 — GitHub App auth 404 fell back to "ambient gh auth" with no check
+// that the fallback was actually usable).
+export function requireGhAuth(gh) {
+  try { gh(["auth", "status"]); }
+  catch (e) {
+    throw new Error(`gh CLI is not authenticated — run \`gh auth login\` (${String(e.message || e).split("\n")[0]})`);
+  }
+}
+
 export function fetchIssueWorkOrder(n, gh) {
   try { gh(["--version"]); }
   catch { throw new Error("gh CLI not found — install https://cli.github.com/ and run `gh auth login`"); }
+  requireGhAuth(gh);
   const issue = JSON.parse(gh(["issue", "view", String(n), "--json", "number,title,body,state"]));
   if (issue.state && issue.state !== "OPEN") throw new Error(`issue #${issue.number} is ${issue.state}, not open`);
   const v = validateWorkOrder(issueToWorkOrder(issue));
@@ -824,6 +836,20 @@ export async function main(argv, deps = {}) {
     // preflight) so the agent CLI it picks is the one preflight actually checks.
     cfg = applyCheapOverride(cfg, flags, workOrder);
     if (!dry) preflightFn(cfg, orchDir); // dry-run never shells out, so don't require CLIs
+    // Any task/review run that lands a merge can still reach a `gh` shell-out:
+    // cfg.merge === "pr" and autoMergePr obviously need it, but so does the
+    // DEFAULT no-ff/ff-only path — finalize.js's openIntegrationPr opens/updates
+    // the persistent integration→main PR after every successful local merge,
+    // not just merge:"pr" runs (codex review round 1 on this fix caught that
+    // the original gate missed this, letting a plain `orch task` still hit a
+    // late gh failure after burning a full cycle). openIntegrationPr itself
+    // only calls gh when a remote AND the gh CLI are both present — mirror
+    // that same guard here so a fully local repo (no remote configured, no
+    // PR bridge intended) isn't forced to have a gh session at all.
+    if (!dry) {
+      const { gh, git: ghGit } = (deps.githubDeps || githubDeps)();
+      if (hasRemote(repo, ghGit) && ghAvailable(gh)) requireGhAuth(gh);
+    }
 
     // Main is a GitHub mirror; task mode fast-forwards it from origin before
     // branches are based on it. Reclaim orphaned
@@ -1134,6 +1160,7 @@ export async function main(argv, deps = {}) {
     const n = rest[0];
     if (!n) throw new Error("usage: orch pr <number> [--merge]");
     preflightFn(cfg, orchDir);
+    requireGhAuth((deps.githubDeps || githubDeps)().gh);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
     if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
     resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir)); // clear orphans from a crashed prior cycle
