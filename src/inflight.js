@@ -8,10 +8,14 @@ const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
 // is carried here too, not just in checkpoint.js: a run that dies before its
 // first review round has no checkpoint yet, so `orch continue`'s inflight
 // fallback is the only place left to recover it from (#125 review finding).
-export function register(orchDir, sid, { branch, pid, baseSha, closes = null }) {
+// `author`/`reviewers` (full role specs — agent/model/effort) are carried here
+// too, for the same reason as `closes`: a run that dies before its first review
+// round has no checkpoint yet, so `orch continue` needs this fallback to know
+// which agents/models it should resume with instead of guessing from rotation.
+export function register(orchDir, sid, { branch, pid, baseSha, closes = null, author = null, reviewers = null }) {
   mkdirSync(dir(orchDir), { recursive: true });
   writeFileSync(file(orchDir, sid), JSON.stringify({
-    sid, branch, pid, baseSha, closes, paths: [], ts: new Date().toISOString(),
+    sid, branch, pid, baseSha, closes, author, reviewers, paths: [], ts: new Date().toISOString(),
   }));
 }
 

@@ -877,7 +877,7 @@ export async function main(argv, deps = {}) {
     for (const run of runs) {
       if (!dry) {
         const baseSha = git.git(["rev-parse", "main"], repo);
-        inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null });
+        inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers });
         const live = inflight.countLive(orchDir);
         if (live > cfg.concurrency) {
           inflight.deregister(orchDir, run.sid);
@@ -992,11 +992,29 @@ export async function main(argv, deps = {}) {
     if (!authorName) throw new Error(`orch: cannot determine an author from branch ${branch}`);
     try { adapters.get(authorName); }
     catch { throw new Error(`orch: cannot determine a registered author from branch ${branch}`); }
-    const configured = configuredReviewers(cfg);
-    const reviewerList = configured
-      ? reviewersForAuthor(authorName, configured)
-      : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
-    const reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+    // The original run persisted its resolved author/reviewer role specs (agent
+    // + model + effort, not just names) into the checkpoint/inflight record —
+    // reuse those by default so a resume picks up the same models the original
+    // run used, rather than re-resolving against whatever orch.yml/rotation say
+    // *now* (which may have moved on since the original run started). An
+    // explicit --reviewer(s) on this command overrides for this resume only —
+    // it never rewrites the persisted record. --author is not overridable here:
+    // the branch's commits were already authored by a specific agent.
+    const persistedAuthor = ck?.author || inf?.author;
+    const authorSpec = persistedAuthor && persistedAuthor.agent === authorName
+      ? persistedAuthor : { agent: authorName, model: null, effort: null };
+    const reviewerOverride = flags.reviewers != null || flags.reviewer != null;
+    const persistedReviewers = ck?.reviewers?.length ? ck.reviewers : inf?.reviewers?.length ? inf.reviewers : null;
+    let reviewers;
+    if (!reviewerOverride && persistedReviewers) {
+      reviewers = persistedReviewers;
+    } else {
+      const configured = configuredReviewers(cfg);
+      const reviewerList = configured
+        ? reviewersForAuthor(authorName, configured)
+        : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
+      reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+    }
 
     // Codex review (#125 stalemate): an `orch issue <n>` run stamps `Closes #n`
     // at merge time via ctx.closes — reconstruct it here too, or a resumed
@@ -1011,14 +1029,14 @@ export async function main(argv, deps = {}) {
       // terminal summary both read `task`; the raw "continue <sid>" command
       // is not a meaningful changelog/summary label.
       mode: "task", task: branch, branch, sid, resume: true, closes,
-      authorName, author: { agent: authorName, model: null, effort: null },
+      authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers, cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
     };
 
     if (!dry) {
       const baseSha = git.git(["rev-parse", "main"], repo);
-      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, closes });
+      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers });
       const live = inflight.countLive(orchDir);
       if (live > cfg.concurrency) {
         inflight.deregister(orchDir, sid);
