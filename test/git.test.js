@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, mergeInWorktree, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, mergeInWorktree, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -292,6 +292,49 @@ test("reclaim SWEEPS a worktree with an empty (pre-PID / died-early) marker", ()
   reclaimOrphanWorktrees(repo, orchDir);
 
   assert.equal(branchExists(repo, "pr/claude/empty"), false);
+});
+
+// #134: Windows paths are case-insensitive at the filesystem level, but
+// git.exe's own realpath normalization and Node's realpathSync don't always
+// agree on segment/drive-letter casing for the SAME real directory (e.g. a
+// drive letter reported as `C:` by one and `c:` by the other). A
+// case-sensitive prefix match then silently treats a real orphan as outside
+// wtRoot, so nothing ever gets swept. This fixes that specific case-folding
+// mismatch — it does not address a from-scratch 8.3-short-name-vs-long-name
+// *alias* difference (e.g. "RUNNER~1" vs "runneradmin" are different strings,
+// not just different casing of the same string; if realpathSync fails to
+// expand a short name to long form at all, that's a separate, deeper issue
+// this normalization can't paper over).
+test("normalizePathForCompare: case-insensitive on win32, case-sensitive on POSIX", () => {
+  const mixedCase = "C:/Users/Runner/wt/pr_claude_x";
+  const lower = "c:/users/runner/wt/pr_claude_x";
+  assert.equal(normalizePathForCompare(mixedCase, "win32"), normalizePathForCompare(lower, "win32"));
+  assert.notEqual(normalizePathForCompare(mixedCase, "linux"), normalizePathForCompare(lower, "linux"));
+  // backslashes normalized to forward slashes regardless of platform
+  assert.equal(normalizePathForCompare("C:\\a\\b", "win32"), "c:/a/b");
+  assert.equal(normalizePathForCompare("/a/b", "linux"), "/a/b");
+});
+
+test("#134: reclaim still sweeps an orphan on win32 even when git reports a differently-cased path", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_cased");
+  createTaskBranch(repo, wt, "pr/claude/cased", "main");
+  assert.equal(branchExists(repo, "pr/claude/cased"), true);
+
+  // Simulate the real-world mismatch directly: reclaimOrphanWorktrees's own
+  // wtRoot is derived from realpathSync(orchDir), which on this (POSIX) test
+  // host agrees in case with what `git worktree list` reports — there's no way
+  // to manufacture a genuine case divergence without an actual Windows
+  // filesystem. So this asserts the platform="win32" path takes the SAME
+  // sweep decision as the default POSIX path for a same-case input — i.e. the
+  // win32 branch doesn't accidentally skip or double-remove anything on the
+  // happy path — while normalizePathForCompare (tested above) proves the
+  // actual case-folding logic that fixes the real mismatch.
+  const r = reclaimOrphanWorktrees(repo, orchDir, new Set(), { platform: "win32" });
+
+  assert.equal(r.recovered, true);
+  assert.equal(branchExists(repo, "pr/claude/cased"), false);
 });
 
 test("changedSince lists files merged into the named branch after a base sha", () => {
