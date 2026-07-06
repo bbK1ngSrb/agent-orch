@@ -1566,3 +1566,77 @@ test("orch continue <sid> clears the original task's resume.js record on complet
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
   assert.deepEqual(resume.lookupForTask(join(repo, ".orch"), "the original task text"), []);
 });
+
+// Regression (codex review of #125 branch): `orch issue <n>` stamps `Closes #n`
+// at merge time via ctx.closes (engine.js reads opts.closes when calling
+// finalize). The checkpoint/inflight records `continue` reads never carried
+// `closes`, so a resumed issue-bridge cycle merged WITHOUT ever closing its
+// source issue. Checkpoint path: closes recovered from a completed round.
+test("orch continue <sid> restores `closes` from the checkpoint so the issue still closes on merge", async () => {
+  const repo = initGitRepo("orch-continue-closes-ck-");
+  const sid = "c105e5c1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good", closes: 125 });
+
+  let capturedCloses;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async (ctx) => { capturedCloses = ctx.closes; return { status: "merged", reason: "test", sha: "abc" }; },
+  };
+  await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  assert.equal(capturedCloses, 125);
+});
+
+// Same recovery, via the inflight fallback (run died before its first
+// checkpoint — the scenario `continue`'s inflight path exists for).
+test("orch continue <sid> restores `closes` from the inflight fallback", async () => {
+  const repo = initGitRepo("orch-continue-closes-inf-");
+  const sid = "c105e5c2";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  inflight.register(join(repo, ".orch"), sid,
+    { branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo), closes: 125 });
+
+  let capturedCloses;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async (ctx) => { capturedCloses = ctx.closes; return { status: "merged", reason: "test", sha: "abc" }; },
+  };
+  await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  assert.equal(capturedCloses, 125);
+});
+
+// Regression (codex review of #125 branch): `cfg.agents` is only the rotation
+// pool. A branch can legitimately be authored by a fixed `author:`/`--author`
+// role outside that pool (e.g. `author: qwen3-coder-30b` with
+// `agents: [claude, codex]`) — existing config/tests already allow this.
+// `continue` must accept any REGISTERED adapter, not just names in cfg.agents.
+test("orch continue <sid> accepts an author outside cfg.agents if it has a registered adapter", async () => {
+  const repo = initGitRepo("orch-continue-fixedauthor-");
+  const sid = "f1xeda01";
+  const branch = `pr/qwen3-coder-30b/some-fix-${sid}`; // "qwen3-coder-30b" is not in the default cfg.agents pool
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps: fakeCycleDeps(), finishRun: async () => {} });
+
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});

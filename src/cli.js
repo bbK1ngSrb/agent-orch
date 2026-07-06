@@ -877,7 +877,7 @@ export async function main(argv, deps = {}) {
     for (const run of runs) {
       if (!dry) {
         const baseSha = git.git(["rev-parse", "main"], repo);
-        inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha });
+        inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null });
         const live = inflight.countLive(orchDir);
         if (live > cfg.concurrency) {
           inflight.deregister(orchDir, run.sid);
@@ -983,22 +983,34 @@ export async function main(argv, deps = {}) {
       throw new Error(`orch: branch ${branch} (sid ${sid}) has no committed changes — the run died before authoring finished; start a fresh \`orch task\` instead`);
     }
 
+    // Codex review (#125 stalemate): `cfg.agents` is only the rotation pool —
+    // a branch can legitimately be authored by a fixed `author:`/`--author`
+    // role outside that pool (e.g. `author: qwen3-coder-30b` with
+    // `agents: [claude, codex]`), which existing config/tests already allow.
+    // The real validity check is whether the name has a registered adapter.
     const authorName = branch.split("/")[1];
-    if (!authorName || !cfg.agents.includes(authorName)) {
-      throw new Error(`orch: cannot determine a registered author from branch ${branch}`);
-    }
+    if (!authorName) throw new Error(`orch: cannot determine an author from branch ${branch}`);
+    try { adapters.get(authorName); }
+    catch { throw new Error(`orch: cannot determine a registered author from branch ${branch}`); }
     const configured = configuredReviewers(cfg);
     const reviewerList = configured
       ? reviewersForAuthor(authorName, configured)
       : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
     const reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
 
+    // Codex review (#125 stalemate): an `orch issue <n>` run stamps `Closes #n`
+    // at merge time via ctx.closes — reconstruct it here too, or a resumed
+    // issue-bridge cycle merges without ever closing the issue. checkpoint is
+    // authoritative once a round has completed; the inflight fallback covers a
+    // death before that.
+    const closes = ck?.closes ?? inf?.closes ?? null;
+
     const run = {
       // No original task text survives in the checkpoint/inflight record, so
       // `task` falls back to the branch name — changelogEntry() and the
       // terminal summary both read `task`; the raw "continue <sid>" command
       // is not a meaningful changelog/summary label.
-      mode: "task", task: branch, branch, sid, resume: true,
+      mode: "task", task: branch, branch, sid, resume: true, closes,
       authorName, author: { agent: authorName, model: null, effort: null },
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers, cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
@@ -1006,7 +1018,7 @@ export async function main(argv, deps = {}) {
 
     if (!dry) {
       const baseSha = git.git(["rev-parse", "main"], repo);
-      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha });
+      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, closes });
       const live = inflight.countLive(orchDir);
       if (live > cfg.concurrency) {
         inflight.deregister(orchDir, sid);
