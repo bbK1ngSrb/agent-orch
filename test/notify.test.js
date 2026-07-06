@@ -16,7 +16,7 @@ test("writeRound creates nested round file", () => {
 test("writeRoundRaw creates nested raw round file", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-notify-"));
   const p = writeRoundRaw(d, "pr/claude/x", 2, "raw hello");
-  assert.match(p, /reviews\/pr\/claude\/x\/round-2-raw\.md$/);
+  assert.match(p, /reviews[\\/]pr[\\/]claude[\\/]x[\\/]round-2-raw\.md$/);
   assert.equal(readFileSync(p, "utf8"), "raw hello");
 });
 

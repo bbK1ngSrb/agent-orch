@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent } from "../src/cli.js";
@@ -444,7 +444,13 @@ test("preflight throws a clear error when .orch/ is read-only", { skip: IS_WINDO
 });
 
 test("resolveAgentBin returns the bare name when the CLI is on PATH", () => {
-  assert.equal(resolveAgentBin("ls"), "ls"); // PATH hit → spawn by name as before
+  // win32 PATH hits deliberately return the absolute path (see platform.js:
+  // callers need to see the real .cmd/.exe extension to route it correctly).
+  if (IS_WINDOWS) {
+    assert.match(resolveAgentBin("ls"), /ls(\.\w+)?$/i);
+  } else {
+    assert.equal(resolveAgentBin("ls"), "ls"); // PATH hit → spawn by name as before
+  }
 });
 
 test("resolveAgentBin searches the given PATH itself, without external which", () => {
@@ -454,7 +460,9 @@ test("resolveAgentBin searches the given PATH itself, without external which", (
   chmodSync(p, 0o755);
   // PATH holds only d — a PATH too degraded to find `which` itself. The CLI
   // still resolves by name, and empty PATH entries are skipped, not treated as cwd.
-  assert.equal(resolveAgentBin("fake-path-cli-xyz", [], `:${d}:`), "fake-path-cli-xyz");
+  // Use the platform's own delimiter (";" on Windows) — a hardcoded ":" never
+  // splits a Windows PATH string.
+  assert.equal(resolveAgentBin("fake-path-cli-xyz", [], `${delimiter}${d}${delimiter}`), IS_WINDOWS ? p : "fake-path-cli-xyz");
   assert.equal(resolveAgentBin("fake-path-cli-xyz", [], ""), null); // empty PATH, no fallbacks
 });
 
@@ -933,6 +941,9 @@ function initGitRepo(prefix = "orch-main-") {
   gitDep.git(["init", "-b", "main"], d);
   gitDep.git(["config", "user.email", "t@t"], d);
   gitDep.git(["config", "user.name", "t"], d);
+  // core.autocrlf defaults to true on Windows git and rewrites LF to CRLF on
+  // checkout, which would make file-content assertions platform-dependent.
+  gitDep.git(["config", "core.autocrlf", "false"], d);
   writeFileSync(join(d, "a.txt"), "1\n");
   gitDep.git(["add", "."], d);
   gitDep.git(["commit", "-m", "init"], d);
@@ -949,6 +960,7 @@ function addOriginWithPeer(repo) {
   gitDep.git(["clone", remote, peer], parent);
   gitDep.git(["config", "user.email", "t@t"], peer);
   gitDep.git(["config", "user.name", "t"], peer);
+  gitDep.git(["config", "core.autocrlf", "false"], peer);
   return { remote, peer };
 }
 
