@@ -30,6 +30,18 @@ export async function runCycle(opts, deps) {
   const reviewers = reviewerSpecs.map((s) => ({
     name: s.agent, adapter: adapters.get(s.agent), opts: { model: s.model, effort: s.effort, stageTimeoutMs },
   }));
+  // Codex review (#126 stalemate): `orch continue --reviewer <x>` is a one-run
+  // override — reviewerSpecs above reflects it so the override actually gets
+  // used. But the checkpoint is what a LATER plain `continue` (no override)
+  // will read back as "the persisted roles". If this run is killed after
+  // writing a checkpoint but before finishing, the checkpoint must still hold
+  // the ORIGINAL roles, not this run's override, or the override quietly
+  // becomes permanent. The caller passes the original roles as
+  // opts.persistAuthor/persistReviewers when they differ from what's actually
+  // running this cycle; other callers (task/issue, no override concept) leave
+  // them unset and get the same value both ways.
+  const persistAuthor = opts.persistAuthor || authorSpec;
+  const persistReviewers = opts.persistReviewers || reviewerSpecs;
   const runStats = [];
   const reviewOutcomes = [];
   const done = (result) => {
@@ -105,6 +117,18 @@ export async function runCycle(opts, deps) {
     // re-auditing rounds already decided. `stage: "tested"` means AGREE + gate
     // already passed — skip straight past both; `stage: "reviewed"` means the
     // round's verdict is known — skip that round's audit call only.
+    //
+    // Codex review (#126 stalemate, round 3): that shortcut silently defeats
+    // `orch continue --reviewer <x>` — the whole point of the override is to
+    // swap in a working reviewer when the ORIGINAL one crashed/rate-limited
+    // (which is exactly how a "reviewed" checkpoint with a DISAGREE/agentError
+    // verdict gets left behind — engine.js writes the checkpoint before
+    // checking for agentError and escalating). Trusting that cached verdict
+    // means the swapped-in reviewer never actually runs; the resume just
+    // replays the old broken reviewer's failure. When an override was
+    // requested, still resume at the recorded round number (still valid,
+    // still useful), but skip the pendingVerdict shortcut and force a fresh
+    // audit call with the (now-different) reviewers.
     let round = 1;
     let pendingVerdict = null;
     let skipTest = false;
@@ -112,11 +136,13 @@ export async function runCycle(opts, deps) {
       const ck = checkpoint?.lookup(orchDir, sid);
       if (ck && ck.branch === branch) {
         round = ck.round;
-        if (ck.stage === "tested") {
-          pendingVerdict = { decision: "AGREE", reason: ck.reason || "" };
-          skipTest = true;
-        } else if (ck.stage === "reviewed") {
-          pendingVerdict = { decision: ck.decision, reason: ck.reason || "" };
+        if (!opts.reviewerOverride) {
+          if (ck.stage === "tested") {
+            pendingVerdict = { decision: "AGREE", reason: ck.reason || "" };
+            skipTest = true;
+          } else if (ck.stage === "reviewed") {
+            pendingVerdict = { decision: ck.decision, reason: ck.reason || "" };
+          }
         }
       }
     }
@@ -150,7 +176,7 @@ export async function runCycle(opts, deps) {
         notify.writeRound(orchDir, branch, round,
           `# Round ${round}\n\nVerdict: ${verdict.decision}\n\nCost: ${formatUsage(totalUsage(runStats))}\n\n${verdict.reason}\n`);
         notify.writeRoundRaw?.(orchDir, branch, round, roundRawOutput(verdicts));
-        checkpoint?.record(orchDir, sid, { branch, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason, closes: opts.closes || null });
+        checkpoint?.record(orchDir, sid, { branch, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
 
         // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
         // revising the author would burn the whole loop for nothing. Escalate
@@ -174,7 +200,7 @@ export async function runCycle(opts, deps) {
         } else {
           notify.phase(`running gate: ${testCmd}`);
           ({ pass } = gate.run(testCmd, worktree));
-          if (pass) checkpoint?.record(orchDir, sid, { branch, round, stage: "tested", reason: verdict.reason, closes: opts.closes || null });
+          if (pass) checkpoint?.record(orchDir, sid, { branch, round, stage: "tested", reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
         }
         if (!pass) {
           return recordTerminal(escalate(notify, orchDir, branch, round,

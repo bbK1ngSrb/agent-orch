@@ -682,6 +682,41 @@ test("agent build honors --author/--reviewer role overrides instead of the confi
   assert.match(logs.join("\n"), /on pr\/codex\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/);
 });
 
+// Regression (codex review of #130's persist-roles PR): `orch task`/`orch pr`
+// pass the resolved author/reviewer specs into inflight.register() so a run
+// that dies before its first checkpoint can still be resumed with the exact
+// same agents/models. `orch agent build` runs its own task-mode cycle through
+// the same runCycle()/inflight machinery but was missing this — a died
+// mid-build recovery would silently re-resolve roles from current rotation
+// instead of reusing what actually authored/reviewed the in-progress build.
+test("agent build persists resolved author/reviewer role specs into the inflight record", async () => {
+  const d = initGitRepo("orch-agentbuild-inflight-");
+  const orchDir = join(d, ".orch");
+  let seen = null;
+  const deps = {
+    preflight() {},
+    resolveAgentBin: () => "/usr/bin/widget",
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      adapters: {
+        get: (name) => ({
+          name,
+          async author() {
+            const [f] = readdirSync(join(orchDir, "inflight"));
+            seen = JSON.parse(readFileSync(join(orchDir, "inflight", f), "utf8"));
+            return { usage: { model: "gpt-test-author", tokens: 40 } };
+          },
+          async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+        }),
+      },
+    },
+  };
+  await runMainInRepo(d, ["agent", "build", "widget"], deps);
+  assert.ok(seen, "expected an inflight record to exist while the cycle was running");
+  assert.equal(seen.author.agent, "claude");
+  assert.ok(Array.isArray(seen.reviewers) && seen.reviewers.length > 0);
+});
+
 test("agent build no-ops when the agent is already registered", async () => {
   const d = initGitRepo("orch-agentbuild-known-");
   const logs = await runMainInRepo(d, ["agent", "build", "claude"]);
@@ -1364,6 +1399,243 @@ test("orch continue <sid> resumes from checkpoint, past review, without re-autho
   assert.equal(ck, null); // completed run clears its checkpoint
 });
 
+// The original run's resolved author/reviewer role specs (agent + model +
+// effort) are persisted into the checkpoint record (engine.js) so a resume
+// reuses the exact same models/efforts instead of re-resolving against
+// whatever orch.yml/rotation currently say.
+test("orch continue <sid> reuses the persisted author/reviewer model+effort by default", async () => {
+  const repo = initGitRepo("orch-continue-roles-");
+  const sid = "r01e5eed";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude", model: "claude-opus-4-8", effort: "high" },
+    reviewers: [{ agent: "codex", model: "gpt-5.1", effort: null }],
+  });
+
+  const auditOpts = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit(_branch, _worktree, opts) {
+          auditOpts.push(opts);
+          return { decision: "AGREE", reason: "still good", raw: "", usage: {} };
+        },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.equal(auditOpts.length, 1);
+  assert.equal(auditOpts[0].model, "gpt-5.1"); // persisted reviewer model, not a re-resolved default
+});
+
+// Codex review: preflight used to validate the FULL current orch.yml (its
+// whole `agents:` pool plus any fixed roles) before a resume ever got to reuse
+// its persisted author/reviewer specs — so an unrelated/unknown agent named
+// elsewhere in orch.yml (one this resume will never invoke) made `continue`
+// fail outright. preflight must only check the agents this resume actually
+// uses: the persisted author/reviewer, not the whole pool.
+test("orch continue <sid> ignores an unknown agent in orch.yml's pool that this resume doesn't use", async () => {
+  const repo = initGitRepo("orch-continue-unrelated-agent-");
+  const sid = "un1kn0wn";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  // "bogus-agent" has no registered adapter — real preflight() would throw on
+  // it if it were ever checked. This resume's persisted roles are claude/codex
+  // only. (CI fix: the real preflight() also does a PATH lookup for whatever
+  // agents it DOES check — claude/codex aren't installed on the CI runner, so
+  // this can't call the real preflight() and still be CI-safe. A spy that
+  // records `opts.only` tests the thing this test is actually about — which
+  // names cli.js decided to check — without depending on real CLI binaries.)
+  writeFileSync(join(repo, ".orch", "orch.yml"), "agents: [claude, codex, bogus-agent]\n");
+
+  checkpointDep.record(join(repo, ".orch"), sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude", model: null, effort: null },
+    reviewers: [{ agent: "codex", model: null, effort: null }],
+  });
+
+  let checkedOnly = null;
+  const spyPreflight = (cfg, orchDir, opts = {}) => { checkedOnly = opts.only; };
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { preflight: spyPreflight, cycleDeps: fakeCycleDeps(), finishRun: async () => {} });
+
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.deepEqual(new Set(checkedOnly), new Set(["claude", "codex"])); // NOT bogus-agent
+});
+
+// `--reviewer` on `continue` overrides the persisted reviewer for this resume
+// only — it must not mutate the checkpoint's stored roles.
+test("orch continue <sid> --reviewer overrides the persisted reviewer without rewriting the checkpoint", async () => {
+  const repo = initGitRepo("orch-continue-roles-override-");
+  const sid = "0verr1de";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude", model: null, effort: null },
+    reviewers: [{ agent: "codex", model: "gpt-5.1", effort: null }],
+  });
+
+  const auditCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    // Codex review (#126 stalemate, round 3): without wiring the REAL
+    // checkpoint module here, engine.js's `deps.checkpoint` is undefined and
+    // its resume/pendingVerdict shortcut never fires regardless of what's on
+    // disk — so this test would pass even if the override were silently
+    // ignored in production. Wire it for real so the test actually exercises
+    // the code path it claims to.
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit(_branch, _worktree, opts) {
+          auditCalls.push({ name, opts });
+          return { decision: "AGREE", reason: "still good", raw: "", usage: {} };
+        },
+      }),
+    },
+  };
+  writeFileSync(join(orchDir, "orch.yml"), "agents: [claude, codex, copilot]\n");
+  const logs = await runMainInRepo(repo, ["continue", sid, "--reviewer", "copilot"],
+    { cycleDeps, finishRun: async () => {} });
+
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.equal(auditCalls.length, 1);
+  assert.equal(auditCalls[0].name, "copilot"); // overridden for this resume
+});
+
+// Regression (codex review of #126 branch, round 3): a "reviewed"-stage
+// checkpoint caches a DECISION, not just a reviewer name. engine.js's resume
+// shortcut trusts that cached decision and skips the audit call entirely for
+// that round — so if the ORIGINAL reviewer crashed/errored (which is exactly
+// how a stale "reviewed" checkpoint with a bad verdict gets left behind:
+// engine.js writes the checkpoint, THEN checks for agentError and escalates),
+// `--reviewer <x>` swaps in a working reviewer that never actually runs. The
+// resume just replays the old broken reviewer's DISAGREE. This test proves
+// the override reviewer's OWN verdict (AGREE) is what determines the
+// outcome, not the stale cached one — it would fail (result stays escalated,
+// override adapter's audit() never called) without engine.js consulting
+// `opts.reviewerOverride` to skip the pendingVerdict shortcut.
+test("orch continue <sid> --reviewer forces a fresh audit even when the checkpoint already cached a verdict", async () => {
+  const repo = initGitRepo("orch-continue-roles-forcereview-");
+  const sid = "f0rce0ne";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  // The cached verdict is DISAGREE — as if the original ("codex") reviewer
+  // errored out and the cycle escalated. `continue --reviewer copilot` is
+  // exactly the recovery move: swap the broken reviewer for a working one.
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "reviewed", decision: "DISAGREE", reason: "codex: agent error: rate limited",
+    author: { agent: "claude", model: null, effort: null },
+    reviewers: [{ agent: "codex", model: "gpt-5.1", effort: null }],
+  });
+
+  const auditCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit(_branch, _worktree, opts) {
+          auditCalls.push({ name, opts });
+          return { decision: "AGREE", reason: "copilot: looks fine", raw: "", usage: {} };
+        },
+      }),
+    },
+  };
+  writeFileSync(join(orchDir, "orch.yml"), "agents: [claude, codex, copilot]\n");
+  const logs = await runMainInRepo(repo, ["continue", sid, "--reviewer", "copilot"],
+    { cycleDeps, finishRun: async () => {} });
+
+  assert.equal(auditCalls.length, 1);
+  assert.equal(auditCalls[0].name, "copilot"); // the override reviewer actually ran
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`)); // its AGREE decided the outcome, not the stale DISAGREE
+});
+
+// Regression (codex review of #126 branch): the test above only proves the
+// override is USED for this run — it never checks what gets left behind if
+// the overridden run itself dies. `continue`'s cleanup (checkpoint.clear) only
+// runs if runCycle RETURNS; a genuine crash (stage-timeout kill, adapter
+// crash) skips it entirely, same as the real scenario `continue` exists for.
+// Simulate that here: finalize throws AFTER engine.js has already written a
+// "reviewed"-stage checkpoint for this round, so cli.js's post-runCycle
+// cleanup never runs. The checkpoint left behind must still hold the
+// ORIGINAL persisted reviewer (codex), not this run's --reviewer override
+// (copilot) — otherwise a later plain `continue` would silently inherit the
+// override forever.
+test("orch continue <sid> --reviewer override does not leak into the checkpoint if the resume itself dies", async () => {
+  const repo = initGitRepo("orch-continue-roles-crash-");
+  const sid = "cra5h0ne";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  const originalReviewers = [{ agent: "codex", model: "gpt-5.1", effort: null }];
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude", model: null, effort: null },
+    reviewers: originalReviewers,
+  });
+
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+      }),
+    },
+    // Throws AFTER engine.js's own checkpoint.record write for this round —
+    // simulating the process dying between "reviewed" and merge, before
+    // cli.js's continue handler ever reaches its own checkpoint.clear().
+    finalize: async () => { throw new Error("simulated crash after checkpoint write"); },
+  };
+  writeFileSync(join(orchDir, "orch.yml"), "agents: [claude, codex, copilot]\n");
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid, "--reviewer", "copilot"], { cycleDeps }),
+    /simulated crash/,
+  );
+
+  const leftBehind = checkpointDep.lookup(orchDir, sid);
+  assert.ok(leftBehind, "checkpoint must survive a crash (cleanup never ran)");
+  assert.deepEqual(leftBehind.reviewers, originalReviewers); // NOT [copilot]
+});
+
 // Regression (codex review): a hard-killed prior `continue` attempt leaves its
 // worktree checked out under .orch/wt with a dead owner pid. Without reclaiming
 // it first, `git.attachExistingBranch` fails with "already checked out" and the
@@ -1702,4 +1974,59 @@ test("orch continue spawns the docs-update task on a real merge", async () => {
     { cycleDeps, finishRun: async () => {}, spawn: (...args) => { spawnCalls.push(args); return { unref() {} }; } });
 
   assert.equal(spawnCalls.length, 1);
+});
+
+// Regression (codex review of #126 branch, round 2): the previous fix
+// protected the CHECKPOINT path but missed that `continue` ALSO re-registers
+// itself in inflight (for its own liveness tracking during the resume) using
+// the same `reviewers` value — which was still the possibly-overridden one,
+// not the protected persistReviewers. If the original run only ever reached
+// an inflight record (died before its first checkpoint — the inflight-only
+// fallback path), that re-registration is the only remaining place a NEXT
+// `continue` reads persisted roles from. inflight.register() runs BEFORE
+// runCycle even starts, so we catch the bug by inspecting the file mid-flight
+// (from inside the audit stub) rather than simulating an unrecoverable crash —
+// a JS-level throw would just let the surrounding `finally` deregister it
+// either way, proving nothing about what was actually written.
+test("orch continue <sid> --reviewer override does not leak into the inflight-only fallback record", async () => {
+  const repo = initGitRepo("orch-continue-roles-inflight-");
+  const sid = "1nfl1ght";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  const originalReviewers = [{ agent: "codex", model: "gpt-5.1", effort: null }];
+  // Dead pid: the original run died before its first review round ever wrote
+  // a checkpoint — inflight is the only record `continue` has to work from.
+  inflight.register(orchDir, sid, {
+    branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo),
+    author: { agent: "claude", model: null, effort: null }, reviewers: originalReviewers,
+  });
+
+  let midFlight = null;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit() {
+          // inflight.register for THIS resume attempt already ran before
+          // runCycle started — check what it actually wrote.
+          midFlight = inflight.lookup(orchDir, sid);
+          return { decision: "AGREE", reason: "still good", raw: "", usage: {} };
+        },
+      }),
+    },
+  };
+  writeFileSync(join(orchDir, "orch.yml"), "agents: [claude, codex, copilot]\n");
+
+  await runMainInRepo(repo, ["continue", sid, "--reviewer", "copilot"],
+    { cycleDeps, finishRun: async () => {} });
+
+  assert.ok(midFlight, "audit stub must have run and captured the inflight record");
+  assert.deepEqual(midFlight.reviewers, originalReviewers); // NOT [copilot]
 });

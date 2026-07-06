@@ -334,16 +334,26 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
   };
 }
 
-export function preflight(cfg, orchDir) {
+export function preflight(cfg, orchDir, opts = {}) {
   // Check the rotation pool plus any explicitly pinned roles. Role entries are
   // specs ("<agent> [model] [effort]"); only the agent name needs a CLI on PATH.
-  const roleNames = [
-    cfg.author,
-    cfg.reviewer,
-    ...(cfg.authors || []),
-    ...(cfg.reviewers || []),
-  ].filter(Boolean).map((s) => parseRoleSpec(s).agent);
-  const names = new Set([...cfg.agents, ...roleNames].filter(Boolean));
+  // `opts.only`, when given, restricts the check to exactly those agent names
+  // instead of the full orch.yml pool/roles — used by `orch continue`, which
+  // resumes with a run's already-persisted author/reviewer specs and must not
+  // fail preflight over an unrelated agent named elsewhere in the current
+  // orch.yml that this resume will never touch (issue: resume fails before it
+  // can reuse the stored specs).
+  const names = opts.only
+    ? new Set(opts.only.filter(Boolean))
+    : new Set([
+        ...cfg.agents,
+        ...[
+          cfg.author,
+          cfg.reviewer,
+          ...(cfg.authors || []),
+          ...(cfg.reviewers || []),
+        ].filter(Boolean).map((s) => parseRoleSpec(s).agent),
+      ].filter(Boolean));
   for (const name of names) {
     const a = adapters.get(name); // throws on unknown
     const exe = a.bin || a.name; // local models run via `ccr`, not their own name
@@ -642,7 +652,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
 
   if (!dry) {
     const baseSha = git.git(["rev-parse", "main"], repo);
-    inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha });
+    inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList });
     const live = inflight.countLive(orchDir);
     if (live > cfg.concurrency) {
       inflight.deregister(orchDir, sid);
@@ -877,7 +887,7 @@ export async function main(argv, deps = {}) {
     for (const run of runs) {
       if (!dry) {
         const baseSha = git.git(["rev-parse", "main"], repo);
-        inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null });
+        inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers });
         const live = inflight.countLive(orchDir);
         if (live > cfg.concurrency) {
           inflight.deregister(orchDir, run.sid);
@@ -946,7 +956,10 @@ export async function main(argv, deps = {}) {
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
-    if (!dry) preflightFn(cfg, orchDir);
+    // Preflight (adapter registered + CLI on PATH + .orch/ writable) runs below,
+    // once the resume's actual author/reviewer agents are known — see the
+    // `opts.only` comment on preflight() for why this can't run against the
+    // full current orch.yml pool here.
     // A hard-killed prior attempt at this sid can leave its worktree checked out
     // under .orch/wt with a dead owner pid — reclaim it BEFORE reattaching the
     // branch, same as `task`/`pr` do at cycle start, or `runCycle`'s worktree
@@ -992,11 +1005,30 @@ export async function main(argv, deps = {}) {
     if (!authorName) throw new Error(`orch: cannot determine an author from branch ${branch}`);
     try { adapters.get(authorName); }
     catch { throw new Error(`orch: cannot determine a registered author from branch ${branch}`); }
-    const configured = configuredReviewers(cfg);
-    const reviewerList = configured
-      ? reviewersForAuthor(authorName, configured)
-      : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
-    const reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+    // The original run persisted its resolved author/reviewer role specs (agent
+    // + model + effort, not just names) into the checkpoint/inflight record —
+    // reuse those by default so a resume picks up the same models the original
+    // run used, rather than re-resolving against whatever orch.yml/rotation say
+    // *now* (which may have moved on since the original run started). An
+    // explicit --reviewer(s) on this command overrides for this resume only —
+    // it never rewrites the persisted record. --author is not overridable here:
+    // the branch's commits were already authored by a specific agent.
+    const persistedAuthor = ck?.author || inf?.author;
+    const authorSpec = persistedAuthor && persistedAuthor.agent === authorName
+      ? persistedAuthor : { agent: authorName, model: null, effort: null };
+    const reviewerOverride = flags.reviewers != null || flags.reviewer != null;
+    const persistedReviewers = ck?.reviewers?.length ? ck.reviewers : inf?.reviewers?.length ? inf.reviewers : null;
+    let reviewers;
+    if (!reviewerOverride && persistedReviewers) {
+      reviewers = persistedReviewers;
+    } else {
+      const configured = configuredReviewers(cfg);
+      const reviewerList = configured
+        ? reviewersForAuthor(authorName, configured)
+        : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
+      reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+    }
+    if (!dry) preflightFn(cfg, orchDir, { only: [authorSpec.agent, ...reviewers.map((r) => r.agent)] });
 
     // Codex review (#125 stalemate): an `orch issue <n>` run stamps `Closes #n`
     // at merge time via ctx.closes — reconstruct it here too, or a resumed
@@ -1011,14 +1043,37 @@ export async function main(argv, deps = {}) {
       // terminal summary both read `task`; the raw "continue <sid>" command
       // is not a meaningful changelog/summary label.
       mode: "task", task: branch, branch, sid, resume: true, closes,
-      authorName, author: { agent: authorName, model: null, effort: null },
+      authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
-      reviewers, cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
+      reviewers,
+      // Codex review (#126 stalemate): `reviewers` above is what this resume
+      // actually audits with — an explicit `--reviewer` override applies for
+      // this run only. `persistReviewers` is what engine.js writes back into
+      // the checkpoint if this run dies before finishing — always the
+      // ORIGINAL persisted roles when one exists, so a killed-mid-override
+      // resume can't quietly make the override permanent (see the persistCase
+      // fallback to `reviewers` in engine.js: only matters when no persisted
+      // record existed yet, in which case there's nothing to protect).
+      persistReviewers: persistedReviewers || reviewers,
+      // Codex review (#126 stalemate, round 3): a checkpoint already at
+      // "reviewed"/"tested" caches the OLD verdict; without this flag
+      // engine.js would trust that cached verdict and skip the audit call
+      // entirely, so the overridden reviewer would never actually run.
+      reviewerOverride,
+      cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
     };
 
     if (!dry) {
       const baseSha = git.git(["rev-parse", "main"], repo);
-      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, closes });
+      // Codex review (#126 stalemate, round 2): this is `continue`'s OWN
+      // inflight re-registration for the resume attempt itself — if the
+      // original run only ever got as far as an inflight record (died before
+      // its first checkpoint), this is the only remaining place a NEXT
+      // `continue` will read persisted roles from. Must use the protected
+      // persistReviewers here too, not the possibly-overridden `reviewers`,
+      // or the same override-permanence bug just resurfaces via the
+      // inflight-only recovery path instead of the checkpoint path.
+      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers });
       const live = inflight.countLive(orchDir);
       if (live > cfg.concurrency) {
         inflight.deregister(orchDir, sid);
