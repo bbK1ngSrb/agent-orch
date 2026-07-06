@@ -1640,3 +1640,64 @@ test("orch continue <sid> accepts an author outside cfg.agents if it has a regis
 
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
+
+// Regression (codex review of #125 branch): `continue` forked its own terminal
+// handling instead of reusing the `task`/`issue` tail, dropping the issue-bridge
+// escalation comment. Now that `continue` restores `closes` from the
+// checkpoint/inflight record, it must also post the comment on escalation —
+// same behavior as `orch issue` proper (see the sibling test above it mirrors).
+test("orch continue posts a gh issue comment on escalation, using the restored closes", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-continue-escalate-comment-");
+  const sid = "e5ca1ate";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good", closes: 52 });
+
+  const calls = [];
+  const gh = (args, input) => {
+    if (args[0] === "issue" && args[1] === "comment") { calls.push({ args, input }); return ""; }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const escalating = { ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate after cap", sha: "x" }) };
+  try {
+    await runMainInRepo(repo, ["continue", sid], { cycleDeps: escalating, githubDeps: () => ({ gh }) });
+    assert.equal(process.exitCode, 2);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].args[2], "52");
+    assert.match(calls[0].input, /ESCALATED/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// Regression (codex review of #125 branch): `continue` also dropped the
+// detached docs-update spawn on a real merge — same behavior as `task`/`issue`.
+test("orch continue spawns the docs-update task on a real merge", async () => {
+  const repo = initGitRepo("orch-continue-docs-");
+  const sid = "d0cspawn";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "docs:\n  autoUpdate: true\n");
+
+  const spawnCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async () => ({ status: "merged", reason: "test", sha: "abc", docsOnly: false, noop: false }),
+  };
+  await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps, finishRun: async () => {}, spawn: (...args) => { spawnCalls.push(args); return { unref() {} }; } });
+
+  assert.equal(spawnCalls.length, 1);
+});

@@ -922,7 +922,7 @@ export async function main(argv, deps = {}) {
     // After the cycles: the detached docs-update runs `orch task`, so spawn it
     // outside the loop. maybeSpawnDocs only fires on a real `merged` result.
     let docsPending = false;
-    for (const result of results) docsPending = maybeSpawnDocs(result, cfg, { dry }, orchDir) || docsPending;
+    for (const result of results) docsPending = maybeSpawnDocs(result, cfg, { dry, spawn: deps.spawn }, orchDir) || docsPending;
 
     // #44: a human is at the terminal — tidy up the branches/state orch created and
     // explain it in plain English, instead of dead-ending in an opaque git state.
@@ -1039,6 +1039,13 @@ export async function main(argv, deps = {}) {
         resume.clearForBranch(orchDir, branch);
       }
       console.log(`orch${dry ? " (dry)" : ""}: ${branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s); cost ${result.usageSummary}`);
+      // Codex review (#125 stalemate): `continue` forked its own terminal
+      // handling instead of reusing the shared `task`/`issue` tail, and dropped
+      // two of its side effects for a resumed cycle — the detached docs-update
+      // spawn on a real merge, and the issue-bridge comment (closes is now
+      // restored, see above) on escalation/PR-fallback. Both restored here,
+      // matching the shared loop at the `task`/`issue` command above.
+      if (!dry) maybeSpawnDocs(result, cfg, { dry, spawn: deps.spawn }, orchDir);
       if (result.status === "merged" && !dry && !flags["no-tidy"]) {
         const finishFn = deps.finishRun || finishRun;
         const io = deps.io || realIo();
@@ -1047,7 +1054,18 @@ export async function main(argv, deps = {}) {
           { git, io, notify },
         );
       }
-      if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
+      if (result.status === "escalated" || result.status === "pr-fallback") {
+        process.exitCode = 2;
+        if (!dry && closes) {
+          try {
+            const gh = (deps.githubDeps || githubDeps)().gh;
+            const body = redact(buildIssueComment(result, branch));
+            gh(["issue", "comment", String(closes), "--body-file", "-"], body);
+          } catch (e) {
+            console.error(`orch: could not comment on issue #${closes}: ${e.message}`);
+          }
+        }
+      }
     } finally {
       if (!dry) inflight.deregister(orchDir, sid);
     }
