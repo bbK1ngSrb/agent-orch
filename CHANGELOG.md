@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.16 — 2026-07-06
+- Add `orch continue <sid>` to resume interrupted/stalled runs (closes [#125](https://github.com/bbk1ng/agent-orch/issues/125), [#129](https://github.com/bbk1ng/agent-orch/issues/129))
+- Persist author/reviewer roles per run so `orch continue` can reuse or override them (closes [#126](https://github.com/bbk1ng/agent-orch/issues/126))
+
 ## 0.2.15 — 2026-07-05
 - auto-docs mr806ow00 update documentation to reflect the latest merged changes
 
