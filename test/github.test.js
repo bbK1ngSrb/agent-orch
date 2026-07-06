@@ -67,8 +67,9 @@ test("runPr merges only with merge flag + approved", async () => {
   assert.ok(yes._calls.gh.some((c) => c.args[1] === "merge"));
   // §140: a merge claim must be checked against origin/main, not just gh's exit code
   assert.ok(yes._calls.gh.some((c) => c.args[1] === "view" && c.args.includes("state,mergeCommit")));
-  assert.ok(yes._calls.git.some((a) => a[0] === "fetch" && a[2] === "main"));
-  assert.ok(yes._calls.git.some((a) => a[0] === "merge-base" && a[1] === "--is-ancestor"));
+  assert.ok(yes._calls.git.some((a) => a[0] === "fetch" && a[2] === "main:refs/remotes/origin/main"));
+  assert.ok(yes._calls.git.some((a) =>
+    a[0] === "merge-base" && a[1] === "--is-ancestor" && a[3] === "refs/remotes/origin/main"));
 
   const no = makeDeps();
   await runPr({ ...opts, merge: false }, no);

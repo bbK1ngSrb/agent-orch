@@ -109,9 +109,14 @@ export async function runPr(opts, deps) {
           `(state: ${merged.state}) — refusing to report a false "merged" success`,
         );
       }
-      git(["fetch", "origin", "main"], repo);
+      // Fully-qualified ref, not the "origin/main" shorthand: git.js's own
+      // verifyOriginContains learned this the hard way (ORIGIN_MAIN_REF) —
+      // the short form can resolve ambiguously depending on repo/worktree
+      // ref state, which defeats the point of a false-success guard.
+      const ORIGIN_MAIN_REF = "refs/remotes/origin/main";
+      git(["fetch", "origin", `main:${ORIGIN_MAIN_REF}`], repo);
       try {
-        git(["merge-base", "--is-ancestor", merged.mergeCommit.oid, "origin/main"], repo);
+        git(["merge-base", "--is-ancestor", merged.mergeCommit.oid, ORIGIN_MAIN_REF], repo);
       } catch {
         throw new Error(
           `orch pr #${pr.number}: gh reports PR merged (commit ${merged.mergeCommit.oid}) but it is ` +
