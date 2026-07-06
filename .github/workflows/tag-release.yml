@@ -1,0 +1,26 @@
+name: tag-release
+# main only advances via the orch/integration → main PR (see .orch/ORCH.md).
+# orch bumps package.json on orch/integration but never tags main itself, so
+# without this, released versions silently go untagged/unpublished/unreleased.
+on:
+  push:
+    branches: [main]
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: tag if package.json version is untagged
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v$VERSION"
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists, skipping"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
