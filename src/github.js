@@ -28,16 +28,31 @@ export function buildComment(result, body) {
 // caps, stalemate, protected paths, adapter stderr tail), never attacker prose,
 // but the caller still redacts it before posting.
 export function buildIssueComment(result, branch) {
-  const head = result.status === "pr-fallback"
+  const b = String(branch).replace(/[^\w./-]/g, "");
+  const fallback = result.status === "pr-fallback";
+  const head = fallback
     ? "⚠️ **agent-orch: PR FALLBACK** — could not auto-merge, opened a PR for manual review"
     : "🛑 **agent-orch: ESCALATED** — orch gave up, no merge";
-  return [
+  const lines = [
     head,
     "",
-    `branch: ${String(branch).replace(/[^\w./-]/g, "")}`,
+    `branch: ${b}`,
     `reason: ${result.reason}`,
     `rounds: ${Number(result.rounds) || 0}`,
-  ].join("\n");
+  ];
+  if (!fallback) {
+    // §3f: reviewer prose stays out of the public comment (it can carry
+    // attacker-controlled content from repo/task text); the full disagreement
+    // is already on disk from notify.escalate() — point the maintainer at it.
+    lines.push(
+      "",
+      "next steps:",
+      `- full reviewer disagreement (private, not posted here): .orch/reviews/${b}/DECISION.md`,
+      `- per-round detail: .orch/reviews/${b}/round-N.md`,
+      `- once resolved: push a fix and \`orch review ${b}\` for a fresh audit, or open a PR manually`,
+    );
+  }
+  return lines.join("\n");
 }
 
 export async function runPr(opts, deps) {

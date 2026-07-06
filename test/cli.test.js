@@ -635,7 +635,7 @@ test("agent add rejects an unknown agent", async () => {
 
 test("agent build feeds an adapter work order through the task pipeline (noMerge by default)", async () => {
   const d = initGitRepo("orch-agentbuild-");
-  const logs = await runMainInRepo(d, ["agent", "build", "widget"]);
+  const logs = await runMainInRepo(d, ["agent", "build", "widget"], { resolveAgentBin: () => "/usr/bin/widget" });
   assert.match(
     logs.join("\n"),
     /agent build widget: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/,
@@ -647,6 +647,7 @@ test("agent build --pr routes the cycle through merge: pr instead of a local-onl
   let seenMerge = null;
   const deps = {
     preflight() {},
+    resolveAgentBin: () => "/usr/bin/widget",
     cycleDeps: {
       ...fakeCycleDeps(),
       finalize: async (ctx) => { seenMerge = ctx.cfg.merge; return { status: "pr", reason: "test", prUrl: "https://example/pr/1" }; },
@@ -663,6 +664,7 @@ test("agent build honors --author/--reviewer role overrides instead of the confi
   const auditedBy = [];
   const deps = {
     preflight() {},
+    resolveAgentBin: () => "/usr/bin/widget",
     cycleDeps: {
       ...fakeCycleDeps(),
       adapters: {
