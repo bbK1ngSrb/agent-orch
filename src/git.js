@@ -22,7 +22,12 @@ function ownerPid(markerPath) {
 }
 
 function pidAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; }
+  // Signal 0 either succeeds (process exists, we can signal it) or throws.
+  // EPERM means the process exists but we lack permission — still alive.
+  // Any other code (ESRCH, or Windows' error for an out-of-range/bogus pid)
+  // means dead: treating unrecognized errors as "alive" left huge test pids
+  // (e.g. 999999999) wrongly protected from reclaim on Windows.
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
 }
 
 export function git(args, cwd) {
@@ -229,7 +234,9 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
   // Without this the prefix match silently skips every orphan on the alt path.
   let wtRoot;
   try {
-    wtRoot = join(realpathSync(orchDir), "wt") + "/";
+    // Forward-slash both sides of the prefix match: `git worktree list` prints
+    // /-separated paths even on Windows, while join/realpathSync produce \.
+    wtRoot = join(realpathSync(orchDir), "wt").replace(/\\/g, "/") + "/";
   } catch {
     gitTry(["worktree", "prune"], repo); // no orchDir yet = no orphans to sweep
     return { recovered };
@@ -239,7 +246,7 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
     let path = null;
     let branch = null;
     const flush = () => {
-      if (path && path.startsWith(wtRoot)) {
+      if (path && path.replace(/\\/g, "/").startsWith(wtRoot)) {
         // Belt 1: branch is registered as in-flight (worktree may not have marker yet —
         // this protects the window between `git worktree add` and `writeFileSync(marker)`).
         if (branch && liveBranches.has(branch)) {

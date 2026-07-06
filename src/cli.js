@@ -359,7 +359,9 @@ export function preflight(cfg, orchDir, opts = {}) {
     const exe = a.bin || a.name; // local models run via `ccr`, not their own name
     const resolved = resolveAgentBin(exe);
     if (!resolved) throw new Error(`agent CLI not found on PATH: ${exe} (for agent ${name}; also probed ${FALLBACK_BIN_DIRS.join(", ")})`);
-    if (resolved !== exe) a.bin = resolved; // off-PATH but found: spawn by absolute path
+    // Off-PATH but found (or Windows, where hits resolve to the absolute
+    // .cmd/.exe path so the adapter can unwrap npm shims): spawn by absolute path.
+    if (resolved !== exe) a.bin = resolved;
   }
   // Fail fast with a clear message if .orch/ is read-only (sandbox / RO mount),
   // instead of a raw EACCES/EROFS later from the first last-author write.

@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { IS_WINDOWS, killTree, portableSpawnSpec } from "../platform.js";
 import { render } from "../prompts.js";
 import { parseVerdict } from "../verdict.js";
 import { estimateCostUsd } from "../pricing.js";
@@ -49,19 +50,24 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    // detached: the child leads its own process group, so a stalled agent that
-    // spawns grandchildren (e.g. `node codex exec` → the codex musl binary) can
-    // be reaped as a whole group, not orphaned. #56 observed exactly that pair.
+    // detached (POSIX only): the child leads its own process group, so a stalled
+    // agent that spawns grandchildren (e.g. `node codex exec` → the codex musl
+    // binary) can be reaped as a whole group, not orphaned. #56 observed exactly
+    // that pair. On Windows there are no process groups — killTree uses
+    // `taskkill /t` instead, and detached would pop a new console window.
     // stdin "ignore": the child gets /dev/null (immediate EOF). `codex exec`
     // reads stdin to append to its prompt and blocks forever on an open pipe
     // ('Reading additional input from stdin...') — #58. We never write stdin, and
     // claude takes its prompt from argv, so EOF is safe for every adapter.
-    const child = spawn(bin, args, { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    // portableSpawnSpec: on Windows an npm .cmd shim is unwrapped to its JS
+    // target so the prompt argv never passes through cmd.exe quoting.
+    const spec = portableSpawnSpec(bin, args);
+    const child = spawn(spec.bin, spec.args, { cwd, detached: !IS_WINDOWS, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     const timer = setInterval(() => {
       process.stderr.write(`… ${label} still running (${formatElapsed(Date.now() - started)} elapsed)\n`);
     }, progressIntervalMs());
     timer.unref?.();
-    // #56 watchdog: a hard wall-clock cap. On expiry, SIGKILL the whole group
+    // #56 watchdog: a hard wall-clock cap. On expiry, kill the whole tree
     // (untrappable — a child that ignores SIGTERM still dies) AND resolve ok:false
     // explicitly. We must NOT wait for `close`: the stalled child may exit 0 on a
     // catchable signal (which would let an empty branch advance to audit) or sit
@@ -69,10 +75,10 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     const watchdog = timeoutMs > 0 ? setTimeout(() => {
       const elapsed = Date.now() - started;
       process.stderr.write(`… ${label} TIMED OUT after ${formatElapsed(elapsed)} — killing stalled stage\n`);
-      // Liveness-gated: only signal a still-running child's group. Once settled or
-      // exited the pid may be recycled, and killing a stranger's group is unsafe.
+      // Liveness-gated: only signal a still-running child's tree. Once settled or
+      // exited the pid may be recycled, and killing a stranger's tree is unsafe.
       if (!settled && child.exitCode === null && child.pid != null) {
-        try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+        killTree(child.pid);
       }
       finish({ out: `${stdout}${stderr}\n${label} timed out after ${formatElapsed(elapsed)}`, ok: false });
     }, timeoutMs) : null;

@@ -11,6 +11,10 @@ function newRepo() {
   git(["init", "-b", "main"], d);
   git(["config", "user.email", "t@t"], d);
   git(["config", "user.name", "t"], d);
+  // core.autocrlf defaults to true on Windows git installs and rewrites LF to
+  // CRLF on checkout, which would make file-content assertions below platform-
+  // dependent. Keep content byte-identical to what was written.
+  git(["config", "core.autocrlf", "false"], d);
   writeFileSync(join(d, "a.txt"), "1\n");
   git(["add", "."], d);
   git(["commit", "-m", "init"], d);
@@ -31,6 +35,7 @@ function cloneRemote(remote) {
   git(["clone", remote, peer], parent);
   git(["config", "user.email", "t@t"], peer);
   git(["config", "user.name", "t"], peer);
+  git(["config", "core.autocrlf", "false"], peer);
   return peer;
 }
 

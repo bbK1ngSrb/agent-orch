@@ -2,6 +2,7 @@
 // execution in one job. Pure rule (lintWorkflow) + thin CLI. Residual #5: this
 // lint is load-bearing; a regression silently reopens the exfil hole.
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
 
 const AUTHORED_RUN = /\bnpm\s+test\b|\bnode\s+--test\b|bin\/orch\.js|\borch\s+(task|review|pr)\b|\bgate\.run\b/;
@@ -55,4 +56,6 @@ function main(argv) {
 }
 
 // Run as a CLI only when invoked directly, never on import (keeps the rule pure).
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv);
+// pathToFileURL, not string concat: Windows argv paths (C:\...) need drive/slash
+// normalization before they can equal import.meta.url.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main(process.argv);

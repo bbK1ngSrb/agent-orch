@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detect, run, splitArgs } from "../src/gate.js";
+import { detect, run, spawnSpec, splitArgs } from "../src/gate.js";
 
 function tmp() { return mkdtempSync(join(tmpdir(), "orch-gate-")); }
 
@@ -46,4 +46,25 @@ test("run does not interpret shell metacharacters", () => {
   const r = run("node -e process.exit(1) ; touch pwned", d);
   assert.equal(r.pass, false); // `;` is a literal argv token, not a command chain
   assert.equal(existsSync(join(d, "pwned")), false); // touch never ran
+});
+
+test("spawnSpec on POSIX passes argv through untouched", () => {
+  assert.deepEqual(spawnSpec(["npm", "test"], "linux"), { bin: "npm", args: ["test"] });
+});
+
+test("spawnSpec on Windows unwraps an npm .cmd shim to a direct node spawn", () => {
+  const shim = 'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\npm\\bin\\npm-cli.js" %*';
+  const spec = spawnSpec(["npm", "test"], "win32", {
+    resolve: () => "C:\\Program Files\\nodejs\\npm.cmd",
+    read: () => shim,
+  });
+  // Never cmd.exe: the shim target runs under our own node, so shell
+  // metacharacters in the configured test command stay literal argv.
+  assert.equal(spec.bin, process.execPath);
+  assert.deepEqual(spec.args, ["C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js", "test"]);
+});
+
+test("spawnSpec on Windows passes native exes through when resolution misses", () => {
+  const spec = spawnSpec(["go", "test", "./..."], "win32", { resolve: () => null });
+  assert.deepEqual(spec, { bin: "go", args: ["test", "./..."] });
 });
