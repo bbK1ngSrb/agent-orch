@@ -5,6 +5,29 @@
 import { join } from "node:path";
 import { parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { redact, publicSummary } from "./redact.js";
+import { sleepSync } from "./lock.js";
+
+const ORIGIN_MAIN_REF = "refs/remotes/origin/main";
+
+// Concurrent orch cycles share one .git and thus one refs/remotes/origin/main —
+// a losing fetch fails "cannot lock ref", which is transient contention, not a
+// real sync problem. Mirrors git.js's fetchOriginMain retry so this new
+// post-merge check doesn't turn that race into a spurious hard failure right
+// after gh has already reported the PR merged.
+const REF_LOCK_RE = /cannot lock ref/i;
+
+function fetchOriginMainRetrying(git, repo, { retries = 2, sleep = sleepSync } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      git(["fetch", "origin", `main:${ORIGIN_MAIN_REF}`], repo);
+      return;
+    } catch (e) {
+      const reason = String(e.message || e);
+      if (attempt >= retries || !REF_LOCK_RE.test(reason)) throw e;
+      sleep(50 * 2 ** attempt);
+    }
+  }
+}
 
 // Build the PR comment body. §3f: `body` is the constrained machine summary
 // (publicSummary), never attacker-influenced reviewer prose — those notes stay
@@ -98,7 +121,27 @@ export async function runPr(opts, deps) {
 
     if (result.status === "approved" && merge) {
       gh(["pr", "merge", String(n), `--${cfg.github.mergeMethod}`]);
-      log(`merged PR #${pr.number} via ${cfg.github.mergeMethod}`);
+      // gh reporting exit 0 isn't proof the commit is actually on origin/main —
+      // squash/rebase merges mint a brand-new sha, so we can't just check the
+      // pre-merge branch head; ask GitHub for the merge commit it produced and
+      // confirm THAT sha is really there before calling this a "merged" success.
+      const merged = JSON.parse(gh(["pr", "view", String(n), "--json", "state,mergeCommit"]));
+      if (merged.state !== "MERGED" || !merged.mergeCommit?.oid) {
+        throw new Error(
+          `orch pr #${pr.number}: gh pr merge exited 0 but the PR is not reporting MERGED ` +
+          `(state: ${merged.state}) — refusing to report a false "merged" success`,
+        );
+      }
+      fetchOriginMainRetrying(git, repo);
+      try {
+        git(["merge-base", "--is-ancestor", merged.mergeCommit.oid, ORIGIN_MAIN_REF], repo);
+      } catch {
+        throw new Error(
+          `orch pr #${pr.number}: gh reports PR merged (commit ${merged.mergeCommit.oid}) but it is ` +
+          `not yet an ancestor of origin/main — refusing to report a false "merged" success`,
+        );
+      }
+      log(`merged PR #${pr.number} via ${cfg.github.mergeMethod}, verified on origin/main`);
     }
     return result;
   } finally {
