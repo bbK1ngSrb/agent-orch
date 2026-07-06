@@ -218,6 +218,20 @@ export function pruneWorktree(repo, path) {
   rmSync(taskMarker(canon), { force: true });
 }
 
+// Windows paths are case-insensitive at the filesystem level, but git.exe's
+// own realpath normalization and Node's realpathSync don't always agree on
+// drive-letter/segment casing (e.g. `C:/Users/...` vs `c:/users/...`) — a
+// GitHub Actions windows-latest runner reliably produces this mismatch via
+// its 8.3-short-form %TEMP%. A case-sensitive prefix comparison then silently
+// treats every orphan as outside wtRoot and sweeps nothing. Lower-case both
+// sides of the comparison on Windows only — POSIX paths stay case-sensitive
+// (case IS significant there — lower-casing unconditionally would make two
+// genuinely distinct directories collide).
+export function normalizePathForCompare(p, platform = process.platform) {
+  const s = p.replace(/\\/g, "/");
+  return platform === "win32" ? s.toLowerCase() : s;
+}
+
 // Reclaim worktrees a crashed cycle left under .orch/wt — the engine prunes its
 // own worktree in a finally, so anything still here is from a cycle killed
 // before that ran. Safe to sweep because the caller holds the single-cycle
@@ -227,16 +241,15 @@ export function pruneWorktree(repo, path) {
 // A branch with committed author work (killed AFTER the author commit) is kept so
 // `orch task` can reattach and resume it instead of re-authoring (#27) — losing
 // committed work is the real defect; a stray empty-worktree branch is recoverable.
-export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) {
+export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), { platform = process.platform } = {}) {
   let recovered = false;
+  const normalize = (p) => normalizePathForCompare(p, platform);
   // Canonicalize: git stores worktree paths as realpaths, but orchDir may arrive
   // via a symlink (this repo is reachable through /mnt/... and a ~/...-symlink).
   // Without this the prefix match silently skips every orphan on the alt path.
   let wtRoot;
   try {
-    // Forward-slash both sides of the prefix match: `git worktree list` prints
-    // /-separated paths even on Windows, while join/realpathSync produce \.
-    wtRoot = join(realpathSync(orchDir), "wt").replace(/\\/g, "/") + "/";
+    wtRoot = normalize(join(realpathSync(orchDir), "wt")) + "/";
   } catch {
     gitTry(["worktree", "prune"], repo); // no orchDir yet = no orphans to sweep
     return { recovered };
@@ -246,7 +259,7 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set()) 
     let path = null;
     let branch = null;
     const flush = () => {
-      if (path && path.replace(/\\/g, "/").startsWith(wtRoot)) {
+      if (path && normalize(path).startsWith(wtRoot)) {
         // Belt 1: branch is registered as in-flight (worktree may not have marker yet —
         // this protects the window between `git worktree add` and `writeFileSync(marker)`).
         if (branch && liveBranches.has(branch)) {
