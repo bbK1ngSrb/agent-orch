@@ -1425,8 +1425,10 @@ test("orch continue <sid> refuses to resume an inflight-only branch with no comm
   // Simulate a death before the author's first commit: an inflight record
   // exists (registered before authoring starts) but no checkpoint was ever
   // written (checkpoints only appear once a review round completes), and the
-  // branch carries no committed diff vs. main.
-  inflight.register(join(repo, ".orch"), sid, { branch, pid: process.pid, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+  // branch carries no committed diff vs. main. A dead pid, not process.pid —
+  // this must simulate the process actually having died, or the still-live
+  // guard (added after #125's stalemate) would refuse it for the wrong reason.
+  inflight.register(join(repo, ".orch"), sid, { branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo) });
 
   await assert.rejects(
     runMainInRepo(repo, ["continue", sid]),
@@ -1497,4 +1499,70 @@ test("orch continue <sid> respects the concurrency cap", async () => {
   );
   // The rejected resume must not leave its own inflight record behind.
   assert.equal(inflight.lookup(join(repo, ".orch"), sid), null);
+});
+
+// Regression (codex review of #125 branch): a sid with a live (alive-pid)
+// inflight entry is genuinely running right now — either the original
+// `task`/`issue` cycle, or a previous `continue` that hasn't finished. A second
+// `continue` on the same sid must not overwrite that entry's inflight file or
+// attempt a second worktree at the same path.
+test("orch continue <sid> refuses to attach a sid that already has a live run", async () => {
+  const repo = initGitRepo("orch-continue-stilllive-");
+  const sid = "1ive0001";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+  // Simulate the same sid already registered inflight with a genuinely alive pid.
+  inflight.register(join(repo, ".orch"), sid, { branch, pid: process.pid, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+
+  const before = inflight.lookup(join(repo, ".orch"), sid);
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid]),
+    new RegExp(`sid ${sid} already has a live run \\(pid ${process.pid}\\)`),
+  );
+  // The live entry must survive untouched — not overwritten by the refused attempt.
+  assert.deepEqual(inflight.lookup(join(repo, ".orch"), sid), before);
+});
+
+// Regression (codex review of #125 branch): the ORIGINAL `orch task` run that
+// authored this branch wrote a resume.js record (task text + author → branch)
+// before it ever ran, so a crash mid-cycle leaves it for a retry to resume
+// (issue #24). `continue` doesn't know that original task text and so can't
+// clear the record by its (task, author) key — without clearForBranch, the
+// record survives after this branch is already terminal, and a later `orch
+// task` with the same original text would wrongly reattach it.
+test("orch continue <sid> clears the original task's resume.js record on completion", async () => {
+  const repo = initGitRepo("orch-continue-resume-clear-");
+  const sid = "c1eaner1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+  // The record `resolveTaskBranch` would have written before the original run.
+  resume.record(join(repo, ".orch"), "the original task text", "claude", { branch, sid });
+
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["continue", sid],
+    { cycleDeps, finishRun: async () => {} });
+
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.deepEqual(resume.lookupForTask(join(repo, ".orch"), "the original task text"), []);
 });

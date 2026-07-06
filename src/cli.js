@@ -962,7 +962,15 @@ export async function main(argv, deps = {}) {
     const inf = ck ? null : inflight.lookup(orchDir, sid);
 
     if (!dry) {
-      const liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
+      const liveEntries = inflight.listLive(orchDir);
+      // Codex review (#125 stalemate): a sid that already has a live, alive-pid
+      // inflight entry is genuinely running right now — a second `continue` (or
+      // a `continue` racing the original `task`/`issue` run) would overwrite that
+      // entry's inflight file out from under it and collide on the same worktree
+      // path. Refuse rather than clobber.
+      const stillLive = liveEntries.find((e) => e.sid === sid);
+      if (stillLive) throw new Error(`orch: sid ${sid} already has a live run (pid ${stillLive.pid}) — refusing to attach a second`);
+      const liveBranches = new Set(liveEntries.map((e) => e.branch));
       resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
     }
     const branch = ck?.branch || inf?.branch;
@@ -1007,7 +1015,17 @@ export async function main(argv, deps = {}) {
     }
     try {
       const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
-      if (!dry) checkpoint.clear(orchDir, sid);
+      if (!dry) {
+        checkpoint.clear(orchDir, sid);
+        // Codex review (#125 stalemate): the original `orch task` run that
+        // authored this branch wrote a resume.js record (task text + author →
+        // branch) BEFORE it ever ran, so a crash mid-cycle leaves it for a retry
+        // to pick up. `continue` doesn't know that original task text, so it
+        // can't call resume.clear() by key — scan by branch instead, or a later
+        // `orch task` with the same text would reattach this already-terminal
+        // branch instead of authoring fresh.
+        resume.clearForBranch(orchDir, branch);
+      }
       console.log(`orch${dry ? " (dry)" : ""}: ${branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s); cost ${result.usageSummary}`);
       if (result.status === "merged" && !dry && !flags["no-tidy"]) {
         const finishFn = deps.finishRun || finishRun;

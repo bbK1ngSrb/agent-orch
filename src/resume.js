@@ -47,3 +47,21 @@ export function lookupForTask(orchDir, task) {
 export function clear(orchDir, task, author) {
   rmSync(file(orchDir, task, author), { force: true });
 }
+
+// `orch continue <sid>` resumes a branch without knowing the original task text
+// that keyed its resume.js record (see resolveTaskBranch), so it can't call
+// clear() by (task, author). Scan by branch instead — same directory-scan
+// pattern as lookupForTask, filtering on r.branch rather than r.taskHash.
+export function clearForBranch(orchDir, branch) {
+  let names;
+  try { names = readdirSync(dir(orchDir)); }
+  catch { return; } // no resume dir yet → nothing to clear
+  for (const n of names) {
+    if (!n.endsWith(".json")) continue;
+    const p = join(dir(orchDir), n);
+    try {
+      const r = JSON.parse(readFileSync(p, "utf8"));
+      if (r.branch === branch) rmSync(p, { force: true });
+    } catch { /* unreadable/partial record — leave it, lookupForTask already tolerates this */ }
+  }
+}
