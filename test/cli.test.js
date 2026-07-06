@@ -1455,8 +1455,13 @@ test("orch continue <sid> ignores an unknown agent in orch.yml's pool that this 
   gitDep.git(["checkout", "main"], repo);
 
   mkdirSync(join(repo, ".orch"), { recursive: true });
-  // "bogus-agent" has no registered adapter — real preflight() throws on it if
-  // it's ever checked. This resume's persisted roles are claude/codex only.
+  // "bogus-agent" has no registered adapter — real preflight() would throw on
+  // it if it were ever checked. This resume's persisted roles are claude/codex
+  // only. (CI fix: the real preflight() also does a PATH lookup for whatever
+  // agents it DOES check — claude/codex aren't installed on the CI runner, so
+  // this can't call the real preflight() and still be CI-safe. A spy that
+  // records `opts.only` tests the thing this test is actually about — which
+  // names cli.js decided to check — without depending on real CLI binaries.)
   writeFileSync(join(repo, ".orch", "orch.yml"), "agents: [claude, codex, bogus-agent]\n");
 
   checkpointDep.record(join(repo, ".orch"), sid, {
@@ -1465,10 +1470,13 @@ test("orch continue <sid> ignores an unknown agent in orch.yml's pool that this 
     reviewers: [{ agent: "codex", model: null, effort: null }],
   });
 
+  let checkedOnly = null;
+  const spyPreflight = (cfg, orchDir, opts = {}) => { checkedOnly = opts.only; };
   const logs = await runMainInRepo(repo, ["continue", sid],
-    { preflight, cycleDeps: fakeCycleDeps(), finishRun: async () => {} });
+    { preflight: spyPreflight, cycleDeps: fakeCycleDeps(), finishRun: async () => {} });
 
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.deepEqual(new Set(checkedOnly), new Set(["claude", "codex"])); // NOT bogus-agent
 });
 
 // `--reviewer` on `continue` overrides the persisted reviewer for this resume
