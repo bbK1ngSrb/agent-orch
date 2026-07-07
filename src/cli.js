@@ -29,9 +29,11 @@ import { redact } from "./redact.js";
 import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dashboard.js";
 import { FALLBACK_BIN_DIRS, resolveAgentBin } from "./agent-bin.js";
 import { BASH_COMPLETION, installCompletion } from "./completion.js";
+import { visWidth, paint, C, box, colorEnabled } from "./tui/theme.js";
 
 export { slugify };
 export { resolveAgentBin };
+export { visWidth };
 
 // Fire-and-forget a detached `orch task <prompt>` after a successful merge.
 // Task mode derives the branch name from the prompt slug, so a FIXED prompt
@@ -64,6 +66,13 @@ export function maybeSpawnDocs(res, cfg, deps = {}, orchDir) {
 function cleanStreakSuffix(orchDir, dry) {
   if (dry) return "";
   return `; clean unattended cycles: ${notify.kpi(orchDir).cleanUnattendedCycles}`;
+}
+
+const STATUS_COLOR = { merged: C.ok, escalated: C.fail, "pr-fallback": C.fail, pr: C.warn, demoted: C.warn };
+
+export function summaryLine(result, branch, dry, extra, color = false) {
+  const status = paint(color, STATUS_COLOR[result.status] || "", result.status);
+  return `orch${dry ? " (dry)" : ""}: ${branch}: ${status} (${result.reason}) after ${result.rounds} round(s)${extra}; cost ${result.usageSummary}`;
 }
 
 function resetKpiOnRecovery(orchDir, recovery) {
@@ -437,44 +446,6 @@ function uniqueLabels(specs) {
   return [...new Set(specs.map(roleLabel))].join(", ");
 }
 
-// Display width in terminal columns: U+23F3 (⏳) and other emoji render 2 cols
-// while `.length` counts them as 1, which would misalign the box borders.
-// ANSI color codes are zero-width and stripped first.
-const WIDE_GLYPH = /[⌚-⏿☀-➿\u{1f000}-\u{1faff}]/u;
-export function visWidth(s) {
-  const plain = s.replace(/\x1b\[[0-9;]*m/g, "");
-  let w = 0;
-  for (const ch of plain) w += WIDE_GLYPH.test(ch) ? 2 : 1;
-  return w;
-}
-
-// ANSI palette. paint() no-ops when color is off and always resets the span so
-// color never bleeds into the box border.
-// orch brand orange (256-color): 208 ≈ #ff8700. Banner leans on the orange
-// family, varying brightness per field; 8-color terminals degrade to the
-// nearest base via the 256→16 map, so it stays legible without truecolor.
-const C = { border: "38;5;130", title: "1;38;5;208", label: "2", agents: "38;5;214", author: "1;38;5;208", review: "38;5;179", flag: "38;5;220" };
-const paint = (on, code, s) => (on && code && s ? `\x1b[${code}m${s}\x1b[0m` : s);
-
-// Render one inner row from colored segments [{code,text}], padded to `inner`
-// display columns by visWidth (not .length). Overflow is truncated on the plain
-// text with an ellipsis; that rare case drops color rather than miscount widths.
-function bannerRow(segs, inner, color) {
-  const plain = segs.map((s) => s.text).join("");
-  if (visWidth(plain) > inner) {
-    let out = "", w = 0;
-    for (const ch of plain) {
-      const cw = WIDE_GLYPH.test(ch) ? 2 : 1;
-      if (w + cw > inner - 1) break;
-      out += ch; w += cw;
-    }
-    out += "…";
-    return `${paint(color, C.border, "│")} ${out}${" ".repeat(inner - visWidth(out))} ${paint(color, C.border, "│")}`;
-  }
-  const body = segs.map((s) => paint(color, s.code, s.text)).join("");
-  const pad = " ".repeat(inner - visWidth(plain));
-  return `${paint(color, C.border, "│")} ${body}${pad} ${paint(color, C.border, "│")}`;
-}
 
 export function runBanner(cfg, runs, opts = {}) {
   const { color = false, columns } = opts;
@@ -482,8 +453,6 @@ export function runBanner(cfg, runs, opts = {}) {
   const rows = [
     [lbl("agents"), { code: C.agents, text: cfg.agents.join(", ") }],
   ];
-  // One author row per run so concurrent authors and their resume state are
-  // each visible; a single review row aggregates the distinct reviewers.
   for (const r of runs) {
     const seg = [lbl("author"), { code: C.author, text: roleLabel(r.author) }];
     if (r.resume) seg.push({ code: C.flag, text: "  ⏳ resume pending" });
@@ -495,26 +464,12 @@ export function runBanner(cfg, runs, opts = {}) {
     lbl("test"), { code: 0, text: cfg.test },
     { code: C.label, text: "   merge  " }, { code: 0, text: cfg.merge },
   ]);
-
-  // Responsive: fill the terminal up to a cap, but never narrower than content
-  // and never wider than 96 inner cols; clamp tiny/undefined widths safely.
-  const longest = Math.max(...rows.map((segs) => visWidth(segs.map((s) => s.text).join(""))));
-  const avail = Number.isFinite(columns) ? columns : 76;
-  const inner = Math.max(Math.min(longest, 96), Math.min(96, Math.max(40, avail - 4)));
-
-  const title = ` agent-orch ${VERSION} `;
-  const dashes = inner + 2 - visWidth(title);
-  const left = Math.max(0, Math.floor(dashes / 2)), right = Math.max(0, dashes - left);
-  const top = paint(color, C.border, `╭${"─".repeat(left)}`) +
-    paint(color, C.title, title) +
-    paint(color, C.border, `${"─".repeat(right)}╮`);
-  const bottom = paint(color, C.border, `╰${"─".repeat(inner + 2)}╯`);
-  return [top, ...rows.map((segs) => bannerRow(segs, inner, color)), bottom].join("\n");
+  return box(` agent-orch ${VERSION} `, rows, { color, columns });
 }
 
 export function maybePrintRunBanner(cfg, runs, flags, stdout = process.stdout) {
   if (flags["no-banner"] || !stdout.isTTY) return false;
-  const color = stdout.isTTY && process.env.NO_COLOR == null;
+  const color = colorEnabled(stdout);
   stdout.write(`${runBanner(cfg, runs, { color, columns: stdout.columns })}\n`);
   return true;
 }
@@ -937,7 +892,7 @@ export async function main(argv, deps = {}) {
           if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
         }
-        console.log(`orch${dry ? " (dry)" : ""}: ${run.branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${cleanStreakSuffix(orchDir, dry)}; cost ${result.usageSummary}`);
+        console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout)));
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.prUrl) prUrls.push(result.prUrl);
         if (result.status === "escalated" || result.status === "pr-fallback") {
@@ -1122,7 +1077,7 @@ export async function main(argv, deps = {}) {
         // branch instead of authoring fresh.
         resume.clearForBranch(orchDir, branch);
       }
-      console.log(`orch${dry ? " (dry)" : ""}: ${branch}: ${result.status} (${result.reason}) after ${result.rounds} round(s); cost ${result.usageSummary}`);
+      console.log(summaryLine(result, branch, dry, "", colorEnabled(process.stdout)));
       // Codex review (#125 stalemate): `continue` forked its own terminal
       // handling instead of reusing the shared `task`/`issue` tail, and dropped
       // two of its side effects for a resumed cycle — the detached docs-update
@@ -1197,7 +1152,7 @@ export async function main(argv, deps = {}) {
   if (command === "dashboard") {
     const historyLimit = flags.limit ? Number(flags.limit) : 10;
     if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit }), null, 2));
-    else console.log(renderDashboard(orchDir, { historyLimit }));
+    else console.log(renderDashboard(orchDir, { historyLimit, color: colorEnabled(process.stdout), columns: process.stdout.columns }));
     return;
   }
 

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -279,6 +279,21 @@ test("run banner prints only on TTY and respects --no-banner", () => {
   const notTty = { isTTY: false, write: (chunk) => { out += chunk; } };
   assert.equal(maybePrintRunBanner(cfg, runs, {}, notTty), false);
   assert.equal(out, "");
+});
+
+test("runBanner colors the agents row when color is on", () => {
+  const cfg = { agents: ["claude", "codex"], test: "npm test", merge: "no-ff" };
+  const runs = [{ author: "claude", reviewers: ["codex"] }];
+  const out = runBanner(cfg, runs, { color: true, columns: 80 });
+  assert.match(out, /\x1b\[38;5;214mclaude, codex\x1b\[0m/);
+});
+
+test("runBanner emits no ANSI codes when color is off", () => {
+  const cfg = { agents: ["claude"], test: "npm test", merge: "no-ff" };
+  const runs = [{ author: "claude", reviewers: [] }];
+  const out = runBanner(cfg, runs, { color: false, columns: 80 });
+  assert.doesNotMatch(out, /\x1b\[/);
+  assert.match(out, /agent-orch/);
 });
 
 const WORK_ORDER = JSON.stringify({
@@ -2100,4 +2115,24 @@ test("orch continue <sid> --reviewer override does not leak into the inflight-on
 
   assert.ok(midFlight, "audit stub must have run and captured the inflight record");
   assert.deepEqual(midFlight.reviewers, originalReviewers); // NOT [copilot]
+});
+
+test("summaryLine colors a merged result green when color is on", () => {
+  const result = { status: "merged", reason: "agreed + green", rounds: 2, usageSummary: "128k tok · $0.42" };
+  const out = summaryLine(result, "pr/claude/x", false, "", true);
+  assert.match(out, new RegExp(`\\x1b\\[38;5;71mmerged\\x1b\\[0m`));
+  assert.match(out, /pr\/claude\/x/);
+});
+
+test("summaryLine colors an escalated result red when color is on", () => {
+  const result = { status: "escalated", reason: "stalemate", rounds: 3, usageSummary: "50k tok" };
+  const out = summaryLine(result, "pr/codex/y", false, "", true);
+  assert.match(out, new RegExp(`\\x1b\\[38;5;167mescalated\\x1b\\[0m`));
+});
+
+test("summaryLine emits no ANSI codes when color is off", () => {
+  const result = { status: "merged", reason: "ok", rounds: 1, usageSummary: "$0" };
+  const out = summaryLine(result, "b", true, "", false);
+  assert.doesNotMatch(out, /\x1b\[/);
+  assert.match(out, /^orch \(dry\): b: merged \(ok\) after 1 round\(s\); cost \$0$/);
 });
