@@ -23,6 +23,7 @@ test: auto                # "auto" detects the test command, or set one, e.g. "p
 reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
 stageTimeout: 25          # per-stage wall-clock cap in minutes; 0 disables; default: 25
 concurrency: 4            # max concurrent cycles per repo dir; over-cap launches exit; default: 4
+baseBranch: main          # trunk orch reads from, diffs against, and opens PRs to (e.g. dev if main is deploy-only); default: main
 integrationBranch: orch/integration  # local merge target for no-ff/ff-only; default: orch/integration
 merge: no-ff              # merge into integrationBranch: ff-only | no-ff | pr; default: no-ff (pr = skip local integration and open a per-cycle branch PR)
 
@@ -39,7 +40,7 @@ scope:
   maxLines: 0             # 0 = disabled; >0 rejects oversized author commits
   ignore: ["*.lock", "dist/**", "*.snap"]   # globs excluded from the line count
 
-# === GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> main) ===
+# === GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> baseBranch) ===
 github:
   mergeMethod: squash     # gh pr merge strategy for non-integration PRs; default: squash
   autoMergePr: false      # enable GitHub's native auto-merge on PRs orch opens/updates; default: false
