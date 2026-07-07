@@ -99,12 +99,14 @@ export function cleanupReviews(orchDir, branch) {
   rmSync(reviewsDir(orchDir, branch), { recursive: true, force: true });
 }
 
-export function escalate(orchDir, branch, brief) {
+export function escalate(orchDir, branch, brief, stream = process.stderr) {
   mkdirSync(orchDir, { recursive: true });
   resetKpi(orchDir);
   const p = join(reviewsDir(orchDir, branch), "DECISION.md");
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, brief);
-  process.stderr.write(`\n${brief}\n`);
+  const color = colorEnabled(stream);
+  const heading = paint(color, C.fail, `⚠ Decision needed — ${branch}`);
+  stream.write(`\n${heading}\n\n${brief}\n`);
   return p;
 }

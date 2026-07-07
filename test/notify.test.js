@@ -86,3 +86,22 @@ test("escalate resets the clean unattended cycle streak", () => {
   escalate(d, "pr/claude/x", "# Escalation\n");
   assert.equal(kpi(d).cleanUnattendedCycles, 0);
 });
+
+test("escalate writes plain markdown to DECISION.md but colorizes the stderr echo", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-notify-"));
+  const chunks = [];
+  const fakeStream = { write: (s) => chunks.push(s), isTTY: true };
+  const brief = buildDecisionBrief({
+    branch: "pr/codex/cache-invalidation",
+    reviewerCase: "stampedes the DB",
+    authorCase: "global flush is intentional",
+    diffSummary: "2 files",
+    rounds: 3,
+  });
+  const p = escalate(d, "pr/codex/cache-invalidation", brief, fakeStream);
+  const onDisk = readFileSync(p, "utf8");
+  assert.equal(onDisk, brief); // file stays exactly the plain brief, no ANSI
+  assert.doesNotMatch(onDisk, /\x1b\[/);
+  assert.match(chunks.join(""), /\x1b\[/); // stderr echo is colorized
+  assert.match(chunks.join(""), /pr\/codex\/cache-invalidation/);
+});
