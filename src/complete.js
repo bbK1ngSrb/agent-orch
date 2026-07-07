@@ -29,7 +29,7 @@ export async function finishRun(ctx, deps) {
     if (res.ok) { deleted.push(br); continue; }
     if (res.unmerged && interactive) {
       const ok = await io.confirm(
-        `❗ The branch "${br}" has changes that were never merged into main.\n` +
+        `❗ The branch "${br}" has changes that were never merged into ${integrationBranch}.\n` +
         `   Deleting it permanently removes those changes. This CANNOT be undone.\n` +
         `   Delete "${br}" anyway? [y/N] `,
       );
