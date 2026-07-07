@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -281,6 +281,21 @@ test("run banner prints only on TTY and respects --no-banner", () => {
   assert.equal(out, "");
 });
 
+test("runBanner colors the agents row when color is on", () => {
+  const cfg = { agents: ["claude", "codex"], test: "npm test", merge: "no-ff" };
+  const runs = [{ author: "claude", reviewers: ["codex"] }];
+  const out = runBanner(cfg, runs, { color: true, columns: 80 });
+  assert.match(out, /\x1b\[38;5;214mclaude, codex\x1b\[0m/);
+});
+
+test("runBanner emits no ANSI codes when color is off", () => {
+  const cfg = { agents: ["claude"], test: "npm test", merge: "no-ff" };
+  const runs = [{ author: "claude", reviewers: [] }];
+  const out = runBanner(cfg, runs, { color: false, columns: 80 });
+  assert.doesNotMatch(out, /\x1b\[/);
+  assert.match(out, /agent-orch/);
+});
+
 const WORK_ORDER = JSON.stringify({
   title: "fix the flaky retry",
   problem: "retries double-fire under load",
@@ -319,7 +334,21 @@ test("--file rejects a JSON object that fails work-order shape", async () => {
   await assert.rejects(() => main(["task", "--file", f, "--dry"]), /work order/i);
 });
 
-import { fetchIssueWorkOrder } from "../src/cli.js";
+import { fetchIssueWorkOrder, requireGhAuth } from "../src/cli.js";
+
+test("requireGhAuth fails fast with a clear error when gh is not authenticated", () => {
+  const gh = () => { throw new Error("HTTP 401: Bad credentials"); };
+  assert.throws(() => requireGhAuth(gh), /gh CLI is not authenticated.*gh auth login.*401/);
+});
+
+test("fetchIssueWorkOrder fails fast when gh auth status fails, before shelling out to issue view", () => {
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") throw new Error("not logged in");
+    throw new Error(`unexpected call: ${args.join(" ")}`);
+  };
+  assert.throws(() => fetchIssueWorkOrder(9, gh), /gh CLI is not authenticated/);
+});
 
 test("fetchIssueWorkOrder maps an open issue to a validated work order", () => {
   const gh = (args) => args[0] === "--version" ? "gh 2"
@@ -365,6 +394,7 @@ test("orch issue posts a gh issue comment on escalation", async () => {
   const calls = [];
   const gh = (args, input) => {
     if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
     if (args[0] === "issue" && args[1] === "view") {
       return JSON.stringify({ number: 52, title: "stale base", body: "orch bases cycles on local main", state: "OPEN" });
     }
@@ -398,6 +428,40 @@ test("orch task escalation does not touch GitHub (no closes)", async () => {
   } finally {
     process.exitCode = savedExitCode;
   }
+});
+
+// #136 round 2 (codex review): the ORIGINAL fix only gated on cfg.merge ===
+// "pr" / autoMergePr / an issue closes-comment — but finalize.js's
+// openIntegrationPr runs on every successful merge in the DEFAULT no-ff/
+// ff-only path too, so a plain `orch task` with a broken gh session could
+// still reach a late gh failure after a full author→review→test→merge cycle.
+// A repo WITH a remote configured must now fail fast before that cycle runs
+// at all, regardless of merge mode.
+test("#136: orch task with a configured remote fails fast on broken gh auth, before running the cycle", async () => {
+  const repo = initGitRepo();
+  gitDep.git(["remote", "add", "origin", "https://example.invalid/x/y.git"], repo);
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") throw new Error("not logged in");
+    throw new Error(`cycle must not run before the auth gate: unexpected gh call ${args.join(" ")}`);
+  };
+  const cycleRan = { called: false };
+  const cycleDeps = { ...fakeCycleDeps(), cycle: async () => { cycleRan.called = true; return { status: "merged" }; } };
+  await assert.rejects(
+    () => runMainInRepo(repo, ["task", "some task"], { cycleDeps, githubDeps: () => ({ gh, git: gitDep.git }) }),
+    /gh CLI is not authenticated/,
+  );
+  assert.equal(cycleRan.called, false, "the author/review/test/merge cycle must not run when gh auth is broken");
+});
+
+// The flip side: no remote configured at all means there's no PR bridge to
+// protect (openIntegrationPr's own hasRemote/ghAvailable guard already skips
+// itself gracefully in this case) — so a fully local repo isn't forced to
+// have a gh session just because it happens to have gh installed.
+test("#136: orch task with no remote configured never calls gh, even if gh is installed", async () => {
+  const repo = initGitRepo();
+  const gh = () => { throw new Error("gh should not be called when no remote is configured"); };
+  await runMainInRepo(repo, ["task", "some task", "--no-tidy"], { githubDeps: () => ({ gh, git: gitDep.git }) });
 });
 
 test("nextAuthor alternates and persists last-author", () => {
@@ -1109,7 +1173,16 @@ test("orch task fast-forwards stale local main from origin before branching", as
   gitDep.git(["commit", "-m", "advance remote"], peer);
   gitDep.git(["push", "origin", "main"], peer);
 
-  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
+  // This repo now has a real (local-peer) origin remote, so the new
+  // pre-flight gh-auth gate (added alongside #136's fix — a real merge
+  // in the default no-ff path can reach the gh-backed integration-PR
+  // step regardless of merge mode) will call gh. Stub it instead of
+  // letting the test shell out to whatever gh session happens to exist
+  // on the host — a real network/auth call has no place in a unit test.
+  const gh = (args) => args[0] === "--version" ? "gh 2" : "Logged in to github.com";
+  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"], {
+    githubDeps: () => ({ gh, git: gitDep.git }),
+  });
 
   assert.equal(gitDep.git(["rev-parse", "main"], repo), gitDep.git(["rev-parse", "origin/main"], repo));
   assert.equal(readFileSync(join(repo, "remote.txt"), "utf8"), "remote\n");
@@ -2057,4 +2130,24 @@ test("orch continue <sid> --reviewer override does not leak into the inflight-on
 
   assert.ok(midFlight, "audit stub must have run and captured the inflight record");
   assert.deepEqual(midFlight.reviewers, originalReviewers); // NOT [copilot]
+});
+
+test("summaryLine colors a merged result green when color is on", () => {
+  const result = { status: "merged", reason: "agreed + green", rounds: 2, usageSummary: "128k tok · $0.42" };
+  const out = summaryLine(result, "pr/claude/x", false, "", true);
+  assert.match(out, new RegExp(`\\x1b\\[38;5;71mmerged\\x1b\\[0m`));
+  assert.match(out, /pr\/claude\/x/);
+});
+
+test("summaryLine colors an escalated result red when color is on", () => {
+  const result = { status: "escalated", reason: "stalemate", rounds: 3, usageSummary: "50k tok" };
+  const out = summaryLine(result, "pr/codex/y", false, "", true);
+  assert.match(out, new RegExp(`\\x1b\\[38;5;167mescalated\\x1b\\[0m`));
+});
+
+test("summaryLine emits no ANSI codes when color is off", () => {
+  const result = { status: "merged", reason: "ok", rounds: 1, usageSummary: "$0" };
+  const out = summaryLine(result, "b", true, "", false);
+  assert.doesNotMatch(out, /\x1b\[/);
+  assert.match(out, /^orch \(dry\): b: merged \(ok\) after 1 round\(s\); cost \$0$/);
 });

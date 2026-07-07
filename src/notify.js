@@ -1,8 +1,15 @@
 import { mkdirSync, readFileSync, writeFileSync, rmSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { paint, C, colorEnabled } from "./tui/theme.js";
 
-export function phase(msg) {
-  process.stderr.write(`▶ ${msg}\n`);
+const PHASE_STATUS_COLOR = { ok: C.ok, fail: C.fail };
+
+export function phase(label, detail = "", status = null, stream = process.stderr, color = colorEnabled(stream)) {
+  const bulletColor = status ? PHASE_STATUS_COLOR[status] : C.title;
+  const bullet = paint(color, bulletColor, "▸");
+  const lbl = paint(color, C.label, label);
+  const text = detail ? paint(color, status ? bulletColor : "", detail) : "";
+  stream.write(`${bullet} ${lbl}${text ? `  ${text}` : ""}\n`);
 }
 
 // `branch` reaches us from --branch and from a PR's headRefName (attacker-shaped
@@ -92,12 +99,14 @@ export function cleanupReviews(orchDir, branch) {
   rmSync(reviewsDir(orchDir, branch), { recursive: true, force: true });
 }
 
-export function escalate(orchDir, branch, brief) {
+export function escalate(orchDir, branch, brief, stream = process.stderr) {
   mkdirSync(orchDir, { recursive: true });
   resetKpi(orchDir);
   const p = join(reviewsDir(orchDir, branch), "DECISION.md");
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, brief);
-  process.stderr.write(`\n${brief}\n`);
+  const color = colorEnabled(stream);
+  const heading = paint(color, C.fail, `⚠ Decision needed — ${branch}`);
+  stream.write(`\n${heading}\n\n${brief}\n`);
   return p;
 }

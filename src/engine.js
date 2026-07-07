@@ -74,7 +74,7 @@ export async function runCycle(opts, deps) {
   // F5: task mode owns a fresh branch; review mode requires an existing one.
   // A resumed task (#24) re-attaches the quota-aborted branch — its authored
   // commits are already there, so we skip the initial author step below.
-  notify.phase(`worktree ${branch} (${mode}${resume ? ", resume" : ""})`);
+  notify.phase("worktree", `${branch} (${mode}${resume ? ", resume" : ""})`);
   if (mode === "review" || resume) git.attachExistingBranch(repo, worktree, branch);
   else git.createTaskBranch(repo, worktree, branch, "main", `${process.pid}\n${sid}`);
 
@@ -87,7 +87,7 @@ export async function runCycle(opts, deps) {
       // re-authoring and go straight to audit. The scope gate below still runs,
       // so a too-big resumed diff is caught even if quota aborted before it ran.
       if (!resume) {
-        notify.phase(`${author.name} authoring`);
+        notify.phase("author", `${author.name} authoring`);
         // §3b: for untrusted intake (work order), the author runs against a
         // fenced prompt; free-text tasks pass through unchanged.
         const authored = await author.author(opts.authorPrompt || task, worktree, authorOpts);
@@ -153,7 +153,7 @@ export async function runCycle(opts, deps) {
         verdict = pendingVerdict;
         pendingVerdict = null;
       } else {
-        notify.phase(`${reviewers.map((r) => r.name).join(", ")} auditing (round ${round})`);
+        notify.phase("review", `${reviewers.map((r) => r.name).join(", ")} auditing (round ${round})`);
         const verdicts = await Promise.all(reviewers.map(async (reviewer) => ({
           reviewer: reviewer.name,
           model: reviewer.opts.model,
@@ -173,6 +173,7 @@ export async function runCycle(opts, deps) {
           decision: disagree.length ? "DISAGREE" : "AGREE",
           reason: verdicts.map((v) => `## ${v.reviewer}\n\n${v.decision}: ${v.reason}`).join("\n\n"),
         };
+        notify.phase("review", verdict.decision === "AGREE" ? "AGREE" : "DISAGREE", verdict.decision === "AGREE" ? "ok" : "fail");
         notify.writeRound(orchDir, branch, round,
           `# Round ${round}\n\nVerdict: ${verdict.decision}\n\nCost: ${formatUsage(totalUsage(runStats))}\n\n${verdict.reason}\n`);
         notify.writeRoundRaw?.(orchDir, branch, round, roundRawOutput(verdicts));
@@ -198,8 +199,9 @@ export async function runCycle(opts, deps) {
           pass = true;
           skipTest = false;
         } else {
-          notify.phase(`running gate: ${testCmd}`);
+          notify.phase("gate", `running: ${testCmd}`);
           ({ pass } = gate.run(testCmd, worktree));
+          notify.phase("gate", testCmd, pass ? "ok" : "fail");
           if (pass) checkpoint?.record(orchDir, sid, { branch, round, stage: "tested", reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
         }
         if (!pass) {
@@ -233,7 +235,7 @@ export async function runCycle(opts, deps) {
         const label = fin.status === "merged" ? `merged ${branch}`
           : fin.status === "pr" ? `opened PR for ${branch}`
           : `demoted ${branch} (${fin.reason})`;
-        notify.phase(label);
+        notify.phase("merge", label);
         return done({ status: fin.status, reason: fin.reason, rounds: round, docsOnly, noop });
       }
 
@@ -251,7 +253,7 @@ export async function runCycle(opts, deps) {
         return recordTerminal({ status: "escalated", reason: why, rounds: round });
       }
 
-      notify.phase(`${author.name} revising (round ${round + 1})`);
+      notify.phase("revise", `${author.name} revising (round ${round + 1})`);
       const revised = await author.author(`Revise per review findings:\n${verdict.reason}`, worktree, authorOpts);
       recordUsage("author", author.name, revised, authorOpts.model);
       round += 1;

@@ -1,0 +1,86 @@
+// Shared terminal color/box-drawing helpers, reused by cli.js (banner,
+// merged-summary), notify.js (phase stream, escalation brief), and
+// dashboard.js. Hand-rolled ANSI (no dependency) — see
+// docs/superpowers/specs/2026-07-06-terminal-reskin-design.md for why.
+
+// Some glyphs render 2 columns wide in a terminal (emoji, box-drawing
+// pictographs) while `.length` counts them as 1, which would misalign box
+// borders. ANSI color codes are zero-width and stripped first.
+const WIDE_GLYPH = /[⌚-⏿☀-➿\u{1f000}-\u{1faff}]/u;
+
+export function visWidth(s) {
+  const plain = s.replace(/\x1b\[[0-9;]*m/g, "");
+  let w = 0;
+  for (const ch of plain) w += WIDE_GLYPH.test(ch) ? 2 : 1;
+  return w;
+}
+
+// ANSI palette (256-color). orch brand orange ≈ #ff8700 (208). ok/fail/warn
+// approximate the mockup's green/red/amber; 8-color terminals degrade to the
+// nearest base color via the 256→16 map, so it stays legible without truecolor.
+export const C = {
+  border: "38;5;130", title: "1;38;5;208", label: "2",
+  agents: "38;5;214", author: "1;38;5;208", review: "38;5;179", flag: "38;5;220",
+  ok: "38;5;71", fail: "38;5;167", warn: "38;5;221", muted: "38;5;243",
+};
+
+// paint() no-ops when color is off and always resets the span so color
+// never bleeds into the box border.
+export function paint(on, code, s) {
+  return on && code && s ? `\x1b[${code}m${s}\x1b[0m` : s;
+}
+
+export function colorEnabled(stream) {
+  return Boolean(stream && stream.isTTY) && process.env.NO_COLOR == null;
+}
+
+// Render one bordered row from colored segments [{code,text}], padded to
+// `inner` display columns by visWidth (not .length). Overflow is truncated
+// on the plain text with an ellipsis; that rare case drops color rather
+// than miscount widths.
+export function row(segs, inner, color) {
+  const plain = segs.map((s) => s.text).join("");
+  if (visWidth(plain) > inner) {
+    let out = "", w = 0;
+    for (const ch of plain) {
+      const cw = WIDE_GLYPH.test(ch) ? 2 : 1;
+      if (w + cw > inner - 1) break;
+      out += ch; w += cw;
+    }
+    out += "…";
+    return `${paint(color, C.border, "│")} ${out}${" ".repeat(inner - visWidth(out))} ${paint(color, C.border, "│")}`;
+  }
+  const body = segs.map((s) => paint(color, s.code, s.text)).join("");
+  const pad = " ".repeat(inner - visWidth(plain));
+  return `${paint(color, C.border, "│")} ${body}${pad} ${paint(color, C.border, "│")}`;
+}
+
+// Full bordered box: top border with a centered title, one row per entry in
+// rowsSegs, bottom border. Responsive to `opts.columns` (terminal width) but
+// clamped between minInner and maxInner.
+export function box(title, rowsSegs, opts = {}) {
+  const { color = false, columns, minInner = 40, maxInner = 96 } = opts;
+  const longest = Math.max(0, ...rowsSegs.map((segs) => visWidth(segs.map((s) => s.text).join(""))));
+  const avail = Number.isFinite(columns) ? columns : 76;
+  const inner = Math.max(Math.min(longest, maxInner), Math.min(maxInner, Math.max(minInner, avail - 4)));
+  const dashes = inner + 2 - visWidth(title);
+  const left = Math.max(0, Math.floor(dashes / 2)), right = Math.max(0, dashes - left);
+  const top = paint(color, C.border, `╭${"─".repeat(left)}`) +
+    paint(color, C.title, title) +
+    paint(color, C.border, `${"─".repeat(right)}╮`);
+  const bottom = paint(color, C.border, `╰${"─".repeat(inner + 2)}╯`);
+  return [top, ...rowsSegs.map((segs) => row(segs, inner, color)), bottom].join("\n");
+}
+
+// Column-aligned, unbordered table. `rows` cells are colored as plain text
+// by the caller before being passed in (this helper only handles alignment)
+// EXCEPT verdict-shaped cells, which callers pass pre-painted — table()
+// pads by visWidth so embedded ANSI doesn't break column math.
+export function table(headers, rows, opts = {}) {
+  const cols = headers.length;
+  const widths = Array.from({ length: cols }, (_, i) =>
+    Math.max(visWidth(headers[i]), ...rows.map((r) => visWidth(r[i] ?? ""))));
+  const line = (cells) => cells.map((c, i) =>
+    c + " ".repeat(widths[i] - visWidth(c) + (i < cols - 1 ? 2 : 0))).join("");
+  return [line(headers), ...rows.map(line)].join("\n");
+}

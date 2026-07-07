@@ -2,7 +2,7 @@
 
 # === Agents ===
 # Rotation pool: picks author/reviewer when no explicit roles are set below.
-# Built-in: claude, codex, copilot, gemini. Local llm models (run via ccr): qwen3-coder-30b,
+# Built-in: claude, codex, copilot, gemini, agy. Local llm models (run via ccr): qwen3-coder-30b,
 # deepseek-coder-v2-lite, glm-4.5-air. Append a known agent with `orch agent add <name>`.
 agents: [claude, codex]   # default: [claude, codex]
 
@@ -10,7 +10,8 @@ agents: [claude, codex]   # default: [claude, codex]
 # A role is a spec "<agent> [model] [effort]":
 #   agent  — required; one of the agents above
 #   model  — optional model id, may carry a subversion (e.g. claude-opus-4-8, gpt-5.1)
-#   effort — optional reasoning effort (e.g. low | medium | high)
+#   effort — optional reasoning effort: minimal | low | medium | high | xhigh | max
+#            (which values a given agent CLI actually honors varies by agent)
 # Unset → the agents pool rotates the author; the next agent reviews.
 # author: claude claude-opus-4-8 high      # single author spec
 # reviewer: codex gpt-5.1           # single reviewer spec

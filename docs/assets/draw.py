@@ -1,3 +1,8 @@
+# Legacy generator — superseded by the claude.ai/design "Redesign visual"
+# project (Orch Mark.dc.html / export-avatar.dc.html). docs/assets/orch-avatar.png
+# and orch-avatar-1024.png are exported from that design source now, not from
+# this script; it's kept for history but its output names/pipeline (avatar.png,
+# avatar@1024.png, logo.png) no longer match the committed asset names.
 import cairo, math
 
 def hx(h):

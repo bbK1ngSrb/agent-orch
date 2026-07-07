@@ -34,6 +34,16 @@ or PR review comment:
 - Applies to **new** comments going forward; do not rewrite existing open issues/PRs
   retroactively for this.
 
+## Delegate discrete tasks to fresh subagents
+
+Main session context grows fast toward 300k limit. For each new discrete task
+(bug fix, feature, investigation) that doesn't need prior conversation nuance,
+delegate to a fresh Agent call (not fork) instead of working inline — the
+subagent's exploration/tool-noise stays out of main context, only its summary
+returns. Reserve inline work for quick follow-ups tied to what's already in
+context. `/clear` between unrelated task batches; `/compact` when context
+grows but recent history still matters.
+
 ## One live session per checkout
 
 Two interactive sessions sharing this working tree race on a single `HEAD`: a commit
