@@ -72,7 +72,14 @@ const STATUS_COLOR = { merged: C.ok, escalated: C.fail, "pr-fallback": C.fail, p
 
 export function summaryLine(result, branch, dry, extra, color = false) {
   const status = paint(color, STATUS_COLOR[result.status] || "", result.status);
-  return `orch${dry ? " (dry)" : ""}: ${branch}: ${status} (${result.reason}) after ${result.rounds} round(s)${extra}; cost ${result.usageSummary}`;
+  const reason = result.reason || "";
+  const nl = reason.indexOf("\n");
+  // reason can be a multi-line report (demoteReason()); keep the parenthetical
+  // one-line and print the rest as a trailing indented block instead of
+  // jamming embedded newlines/fences into the single-line summary.
+  const head = nl === -1 ? reason : reason.slice(0, nl);
+  const rest = nl === -1 ? "" : `\n${reason.slice(nl + 1)}`;
+  return `orch${dry ? " (dry)" : ""}: ${branch}: ${status} (${head}) after ${result.rounds} round(s)${extra}; cost ${result.usageSummary}${rest}`;
 }
 
 function resetKpiOnRecovery(orchDir, recovery) {

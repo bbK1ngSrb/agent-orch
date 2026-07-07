@@ -2151,3 +2151,12 @@ test("summaryLine emits no ANSI codes when color is off", () => {
   assert.doesNotMatch(out, /\x1b\[/);
   assert.match(out, /^orch \(dry\): b: merged \(ok\) after 1 round\(s\); cost \$0$/);
 });
+
+test("summaryLine keeps a multi-line reason out of the parenthetical, appended below instead", () => {
+  const reason = "trigger: conflict\nreview: AGREE after 1 round(s)\nmerge result: ```\nCONFLICT (content): Merge conflict in CHANGELOG.md\n```";
+  const result = { status: "pr-fallback", reason, rounds: 1, usageSummary: "$0" };
+  const out = summaryLine(result, "b", true, "", false);
+  const [firstLine, ...restLines] = out.split("\n");
+  assert.match(firstLine, /^orch \(dry\): b: pr-fallback \(trigger: conflict\) after 1 round\(s\); cost \$0$/);
+  assert.equal(restLines.join("\n"), reason.split("\n").slice(1).join("\n"));
+});
