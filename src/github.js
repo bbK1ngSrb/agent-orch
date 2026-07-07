@@ -7,7 +7,9 @@ import { parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { redact, publicSummary } from "./redact.js";
 import { sleepSync } from "./lock.js";
 
-const ORIGIN_MAIN_REF = "refs/remotes/origin/main";
+function originRef(base) {
+  return `refs/remotes/origin/${base}`;
+}
 
 // Concurrent orch cycles share one .git and thus one refs/remotes/origin/main —
 // a losing fetch fails "cannot lock ref", which is transient contention, not a
@@ -16,10 +18,10 @@ const ORIGIN_MAIN_REF = "refs/remotes/origin/main";
 // after gh has already reported the PR merged.
 const REF_LOCK_RE = /cannot lock ref/i;
 
-function fetchOriginMainRetrying(git, repo, { retries = 2, sleep = sleepSync } = {}) {
+function fetchOriginMainRetrying(git, repo, base = "main", { retries = 2, sleep = sleepSync } = {}) {
   for (let attempt = 0; ; attempt++) {
     try {
-      git(["fetch", "origin", `main:${ORIGIN_MAIN_REF}`], repo);
+      git(["fetch", "origin", `${base}:${originRef(base)}`], repo);
       return;
     } catch (e) {
       const reason = String(e.message || e);
@@ -132,16 +134,17 @@ export async function runPr(opts, deps) {
           `(state: ${merged.state}) — refusing to report a false "merged" success`,
         );
       }
-      fetchOriginMainRetrying(git, repo);
+      const base = cfg.baseBranch || "main";
+      fetchOriginMainRetrying(git, repo, base);
       try {
-        git(["merge-base", "--is-ancestor", merged.mergeCommit.oid, ORIGIN_MAIN_REF], repo);
+        git(["merge-base", "--is-ancestor", merged.mergeCommit.oid, originRef(base)], repo);
       } catch {
         throw new Error(
           `orch pr #${pr.number}: gh reports PR merged (commit ${merged.mergeCommit.oid}) but it is ` +
-          `not yet an ancestor of origin/main — refusing to report a false "merged" success`,
+          `not yet an ancestor of origin/${base} — refusing to report a false "merged" success`,
         );
       }
-      log(`merged PR #${pr.number} via ${cfg.github.mergeMethod}, verified on origin/main`);
+      log(`merged PR #${pr.number} via ${cfg.github.mergeMethod}, verified on origin/${base}`);
     }
     return result;
   } finally {
@@ -163,11 +166,12 @@ export function ghAvailable(gh) {
 // real ref so gh finds the branch; the human-readable title is scrubbed (a
 // secret-shaped branch name leaks through publicSummary's \w sanitizer otherwise).
 async function pushAndCreatePr(ctx, deps, title, body) {
-  const { repo, branch } = ctx;
+  const { repo, branch, cfg } = ctx;
   const { gh, git, log = () => {} } = deps;
+  const base = cfg?.baseBranch || "main";
   git(["push", "-u", "origin", branch], repo);
   const url = gh([
-    "pr", "create", "--head", branch, "--base", "main",
+    "pr", "create", "--head", branch, "--base", base,
     "--title", redact(title),
     "--body", body,
   ]).trim();
@@ -229,22 +233,23 @@ export async function openPr(ctx, deps) {
 export async function openIntegrationPr(ctx, deps) {
   const { repo, orchDir, cfg } = ctx;
   const branch = cfg.integrationBranch || "orch/integration";
+  const base = cfg.baseBranch || "main";
   const { git, gh, notify, log = () => {} } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate?.(orchDir, branch,
-      `# Escalation — ${branch}\n\nThe local integration branch is green, but a git remote and the gh CLI are required to open or update the PR to main.\n`);
+      `# Escalation — ${branch}\n\nThe local integration branch is green, but a git remote and the gh CLI are required to open or update the PR to ${base}.\n`);
     return { prUrl: null };
   }
 
   const title = "orch: integrate green local cycles";
   const body = redact(
-    "agent-orch: local integration passed. This persistent PR gates orch/integration into main; main is a GitHub mirror and is not advanced locally.",
+    `agent-orch: local integration passed. This persistent PR gates ${branch} into ${base}; ${base} is a GitHub mirror and is not advanced locally.`,
   );
   git(["push", "-u", "origin", branch], repo);
   const open = JSON.parse(gh([
     "pr", "list",
     "--head", branch,
-    "--base", "main",
+    "--base", base,
     "--state", "open",
     "--json", "number,url",
   ]) || "[]");
@@ -258,7 +263,7 @@ export async function openIntegrationPr(ctx, deps) {
     log(`updated integration PR #${prRef}: ${url}`);
   } else {
     url = gh([
-      "pr", "create", "--head", branch, "--base", "main",
+      "pr", "create", "--head", branch, "--base", base,
       "--title", title,
       "--body", body,
     ]).trim();

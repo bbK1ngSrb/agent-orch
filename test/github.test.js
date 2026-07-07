@@ -86,6 +86,14 @@ test("runPr merges only with merge flag + approved", async () => {
   assert.ok(!blocked._calls.gh.some((c) => c.args[1] === "merge"));
 });
 
+test("runPr verifies a merged PR against cfg.baseBranch", async () => {
+  const deps = makeDeps();
+  await runPr({ ...opts, merge: true, cfg: { ...opts.cfg, baseBranch: "dev" } }, deps);
+  assert.ok(deps._calls.git.some((a) => a[0] === "fetch" && a[2] === "dev:refs/remotes/origin/dev"));
+  assert.ok(deps._calls.git.some((a) =>
+    a[0] === "merge-base" && a[1] === "--is-ancestor" && a[3] === "refs/remotes/origin/dev"));
+});
+
 test("§140: runPr refuses to report merged if gh's post-merge state isn't MERGED", async () => {
   const deps = makeDeps({ mergedState: "OPEN" });
   await assert.rejects(
@@ -230,6 +238,20 @@ test("openPr opens a PR for an agreed+green branch when a remote and gh are pres
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge"), "no auto-merge unless opted in");
 });
 
+test("openPr opens the PR against cfg.baseBranch, not main", async () => {
+  const calls = [];
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/9\n"; };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+  const cfg = { baseBranch: "dev", github: { mergeMethod: "squash", autoMergePr: false } };
+
+  const r = await openPr({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", cfg }, { gh, git, notify: { escalate() {} } });
+
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/9");
+  const create = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create");
+  assert.ok(create.includes("--base"));
+  assert.equal(create[create.indexOf("--base") + 1], "dev");
+});
+
 test("openPr with github.autoMergePr enables GitHub auto-merge on the PR it opens", async () => {
   const calls = [];
   const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/9\n"; };
@@ -295,6 +317,26 @@ test("openIntegrationPr creates the persistent integration PR and enables auto-m
   assert.ok(mergeCall.includes("--auto"));
   assert.ok(mergeCall.includes("--merge"));
   assert.equal(mergeCall.includes("--squash"), false);
+});
+
+test("openIntegrationPr lists and creates the persistent PR against cfg.baseBranch", async () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return "[]";
+    if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/12\n";
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", baseBranch: "dev", github: { mergeMethod: "squash", autoMergePr: false } };
+
+  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+
+  const list = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "list");
+  assert.equal(list[list.indexOf("--base") + 1], "dev");
+  const create = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create");
+  assert.equal(create[create.indexOf("--base") + 1], "dev");
 });
 
 test("openIntegrationPr updates an existing integration PR instead of creating another", async () => {
