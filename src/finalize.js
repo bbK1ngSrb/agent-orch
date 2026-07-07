@@ -197,7 +197,8 @@ function demoteReason(ctx, details) {
     }
     lines.push("next action: inspect the listed overlap, rebase or refresh the branch if needed, then rerun orch review before merging.");
   } else if (details.trigger === "conflict") {
-    lines.push(`merge result: ${oneLine(details.mergeReason) || "merge failed"}`);
+    const mergeReason = String(details.mergeReason || "").trim();
+    lines.push(mergeReason ? `merge result:\n\`\`\`\n${mergeReason}\n\`\`\`` : "merge result: merge failed");
     const conflicts = conflictPaths(details.mergeReason);
     if (conflicts.length) lines.push(`conflicting paths: ${list(conflicts)}`);
     if (details.advice) lines.push(`advice: ${oneLine(details.advice)}`);
