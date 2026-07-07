@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, mergeInWorktree, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, mergeInWorktree, changedFiles, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -224,6 +224,30 @@ test("ensureIntegrationWorktree uses a dedicated branch and leaves main availabl
   assert.equal(r.ok, true);
   assert.match(git(["log", "--oneline", "orch/integration"], repo), /add b/); // integration branch actually advanced
   assert.doesNotMatch(git(["log", "--oneline", "main"], repo), /add b/);
+});
+
+test("changedFiles diffs against a custom base branch", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "dev"], repo);
+  git(["checkout", "-b", "feature"], repo);
+  commitFile(repo, "f.txt", "x\n", "add f");
+  assert.deepEqual(changedFiles(repo, "feature", "dev"), ["f.txt"]);
+
+  git(["checkout", "dev"], repo);
+  git(["merge", "feature"], repo);
+  git(["checkout", "feature"], repo);
+  assert.deepEqual(changedFiles(repo, "feature", "dev"), []);
+});
+
+test("ensureIntegrationWorktree branches the fresh integration branch off a custom base", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "dev"], repo);
+  commitFile(repo, "d.txt", "1\n", "dev-only commit");
+
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"), "orch/integration", "dev");
+
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], integ), "orch/integration");
+  assert.match(git(["log", "--oneline", "orch/integration"], repo), /dev-only commit/);
 });
 
 test("ff-only merge fails when integration moved past the branch base", () => {

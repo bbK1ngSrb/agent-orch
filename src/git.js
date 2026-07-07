@@ -45,9 +45,9 @@ export function gitTry(args, cwd) {
   }
 }
 
-// Files changed on `branch` since its merge-base with main (matches scope.count).
-export function changedFiles(repo, branch) {
-  const out = gitTry(["diff", "--name-only", `main...${branch}`], repo);
+// Files changed on `branch` since its merge-base with the configured base branch.
+export function changedFiles(repo, branch, base = "main") {
+  const out = gitTry(["diff", "--name-only", `${base}...${branch}`], repo);
   return out.ok ? out.out.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 }
 
@@ -243,7 +243,7 @@ export function normalizePathForCompare(p, platform = process.platform) {
 // A branch with committed author work (killed AFTER the author commit) is kept so
 // `orch task` can reattach and resume it instead of re-authoring (#27) — losing
 // committed work is the real defect; a stray empty-worktree branch is recoverable.
-export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), { platform = process.platform } = {}) {
+export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), { platform = process.platform, base = "main" } = {}) {
   let recovered = false;
   const normalize = (p) => normalizePathForCompare(p, platform);
   // Canonicalize: git stores worktree paths as realpaths, but orchDir may arrive
@@ -281,8 +281,8 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), 
         const removed = gitTry(["worktree", "remove", "--force", path], repo);
         if (removed.ok) recovered = true;
         // Delete only a throwaway with no committed work; keep committed branches
-        // so a resume can reattach (#27). changedFiles is `diff main...branch`.
-        if (branch && owned && changedFiles(repo, branch).length === 0)
+        // so a resume can reattach (#27). changedFiles is `diff base...branch`.
+        if (branch && owned && changedFiles(repo, branch, base).length === 0)
           gitTry(["branch", "-D", "--", branch], repo); // never a user branch
         rmSync(marker, { force: true });
       }
@@ -306,16 +306,16 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), 
 // One reused worktree, checked out on the dedicated integration branch where
 // local merges land. `main` stays free for an operator checkout and mirrors
 // GitHub's main via fetch + fast-forward only.
-export function ensureIntegrationWorktree(repo, orchDir, branch = "orch/integration") {
+export function ensureIntegrationWorktree(repo, orchDir, branch = "orch/integration", base = "main") {
   const path = join(orchDir, "integration");
   mkdirSync(orchDir, { recursive: true });
   gitTry(["worktree", "prune"], repo); // clear a stale registration if the dir was removed
   if (!existsSync(path)) {
     if (branchExists(repo, branch)) git(["worktree", "add", path, branch], repo);
-    else git(["worktree", "add", "-b", branch, path, "main"], repo);
+    else git(["worktree", "add", "-b", branch, path, base], repo);
   } else if (git(["rev-parse", "--abbrev-ref", "HEAD"], path) !== branch) {
     if (branchExists(repo, branch)) git(["switch", branch], path);
-    else git(["switch", "-c", branch, "main"], path);
+    else git(["switch", "-c", branch, base], path);
   }
   return path;
 }
