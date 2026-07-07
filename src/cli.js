@@ -487,12 +487,12 @@ export function maybePrintRunBanner(cfg, runs, flags, stdout = process.stdout) {
 // only when its branch still exists, carries committed work, and isn't a live peer —
 // the same staleness guards resolveTaskBranch re-applies before it actually resumes.
 export function pinnedResumeAuthor(ctx, deps = { git, resume }) {
-  const { orchDir, task, repo, dry = false, liveBranches = new Set() } = ctx;
+  const { orchDir, task, repo, dry = false, liveBranches = new Set(), baseBranch = "main" } = ctx;
   const { git: g, resume: r } = deps;
   if (dry) return null;
   const hit = r.lookupForTask(orchDir, task).find((rec) =>
     g.branchExists(repo, rec.branch) &&
-    g.changedFiles(repo, rec.branch).length > 0 &&
+    g.changedFiles(repo, rec.branch, baseBranch).length > 0 &&
     !liveBranches.has(rec.branch));
   return hit ? hit.author : null;
 }
@@ -546,11 +546,11 @@ export function fetchIssueWorkOrder(n, gh) {
 }
 
 export function resolveTaskBranch(ctx, deps = { git, resume }) {
-  const { repo, orchDir, task, authorName, dry = false, liveBranches = new Set() } = ctx;
+  const { repo, orchDir, task, authorName, dry = false, liveBranches = new Set(), baseBranch = "main" } = ctx;
   const { git: g, resume: r } = deps;
   const found = dry ? null : r.lookup(orchDir, task, authorName);
   if (found && !liveBranches.has(found.branch)) {
-    if (g.branchExists(repo, found.branch) && g.changedFiles(repo, found.branch).length > 0) {
+    if (g.branchExists(repo, found.branch) && g.changedFiles(repo, found.branch, baseBranch).length > 0) {
       return { sid: found.sid, branch: found.branch, resume: true };
     }
     r.clear(orchDir, task, authorName); // record points at a vanished/empty branch
@@ -608,17 +608,17 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
 
   let liveBranches = new Set();
   if (!dry) {
-    const sync = git.syncMainFromOrigin(repo);
-    if (!sync.ok) throw new Error(`orch: cannot start from stale main: ${sync.reason}`);
+    const sync = git.syncMainFromOrigin(repo, cfg.baseBranch);
+    if (!sync.ok) throw new Error(`orch: cannot start from stale ${cfg.baseBranch}: ${sync.reason}`);
     liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
-    resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
+    resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches, { base: cfg.baseBranch }));
   }
 
-  const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches });
+  const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch });
   const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned);
   const authorSpec = authors[0];
   const authorName = authorSpec.agent;
-  const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches });
+  const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch });
   const reviewerList = reviewersForAuthor(authorName, reviewers);
   const run = {
     mode: "task", task, authorPrompt, branch, sid, resume: isResume, authorName, author: authorSpec,
@@ -628,7 +628,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   };
 
   if (!dry) {
-    const baseSha = git.git(["rev-parse", "main"], repo);
+    const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
     inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList });
     const live = inflight.countLive(orchDir);
     if (live > cfg.concurrency) {
@@ -822,13 +822,13 @@ export async function main(argv, deps = {}) {
     let liveBranches = new Set();
     if (!dry) {
       if (mode === "task") {
-        const sync = git.syncMainFromOrigin(repo);
-        if (!sync.ok) throw new Error(`orch: cannot start from stale main: ${sync.reason}`);
-        if (sync.updated) console.log("orch: fast-forwarded local main from origin/main");
+        const sync = git.syncMainFromOrigin(repo, cfg.baseBranch);
+        if (!sync.ok) throw new Error(`orch: cannot start from stale ${cfg.baseBranch}: ${sync.reason}`);
+        if (sync.updated) console.log(`orch: fast-forwarded local ${cfg.baseBranch} from origin/${cfg.baseBranch}`);
       }
       liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
       // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers.
-      resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
+      resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches, { base: cfg.baseBranch }));
     }
 
     let runs;
@@ -836,11 +836,11 @@ export async function main(argv, deps = {}) {
       // Pin the author of a surviving committed branch from a prior killed run so the
       // rotation pool resumes it instead of authoring fresh under the next agent (#27).
       // resolveTaskBranch re-validates below; this only steers author selection.
-      const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches });
+      const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch });
       const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned);
       runs = authors.map((authorSpec) => {
         const authorName = authorSpec.agent;
-        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches });
+        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch });
         const reviewerList = reviewersForAuthor(authorName, reviewers);
         return {
           mode, task, authorPrompt, closes, branch, sid, resume, authorName, author: authorSpec,
@@ -877,7 +877,7 @@ export async function main(argv, deps = {}) {
     const prUrls = [];
     for (const run of runs) {
       if (!dry) {
-        const baseSha = git.git(["rev-parse", "main"], repo);
+        const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
         inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers });
         const live = inflight.countLive(orchDir);
         if (live > cfg.concurrency) {
@@ -975,7 +975,7 @@ export async function main(argv, deps = {}) {
       const stillLive = liveEntries.find((e) => e.sid === sid);
       if (stillLive) throw new Error(`orch: sid ${sid} already has a live run (pid ${stillLive.pid}) — refusing to attach a second`);
       const liveBranches = new Set(liveEntries.map((e) => e.branch));
-      resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches));
+      resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches, { base: cfg.baseBranch }));
     }
     const branch = ck?.branch || inf?.branch;
     if (!branch) throw new Error(`orch: no checkpoint or inflight record for sid ${sid} — nothing to resume`);
@@ -983,7 +983,7 @@ export async function main(argv, deps = {}) {
     // inflight-only fallback (no checkpoint ever written): the run may have died
     // before the author committed anything — unlike the checkpoint path, an
     // inflight record alone doesn't prove there's work to review/merge.
-    if (inf && git.changedFiles(repo, branch).length === 0) {
+    if (inf && git.changedFiles(repo, branch, cfg.baseBranch).length === 0) {
       throw new Error(`orch: branch ${branch} (sid ${sid}) has no committed changes — the run died before authoring finished; start a fresh \`orch task\` instead`);
     }
 
@@ -1055,7 +1055,7 @@ export async function main(argv, deps = {}) {
     };
 
     if (!dry) {
-      const baseSha = git.git(["rev-parse", "main"], repo);
+      const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
       // Codex review (#126 stalemate, round 2): this is `continue`'s OWN
       // inflight re-registration for the resume attempt itself — if the
       // original run only ever got as far as an inflight record (died before
@@ -1126,7 +1126,7 @@ export async function main(argv, deps = {}) {
     requireGhAuth((deps.githubDeps || githubDeps)().gh);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
     if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
-    resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir)); // clear orphans from a crashed prior cycle
+    resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, undefined, { base: cfg.baseBranch })); // clear orphans from a crashed prior cycle
     try {
       const result = await runPr(
         { n, repo, orchDir, cfg, merge: Boolean(flags.merge) },
