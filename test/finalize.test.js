@@ -135,18 +135,20 @@ test("overlap with a changeset landed since base → merge attempted, lands when
 });
 
 test("merge conflict → pr-fallback", async () => {
+  const mergeReason = "Auto-merging src/a.js\nCONFLICT (content): Merge conflict in src/a.js\nAutomatic merge failed";
   const { deps } = baseDeps({
     git: {
       ...baseDeps().deps.git,
       mergeInWorktree: () => ({
         ok: false,
-        reason: "CONFLICT (content): Merge conflict in src/a.js\nAutomatic merge failed",
+        reason: mergeReason,
       }),
     },
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "pr-fallback");
   assert.match(r.reason, /trigger: conflict/);
+  assert.ok(r.reason.includes(`merge result:\n\`\`\`\n${mergeReason}\n\`\`\``));
   assert.match(r.reason, /conflicting paths: src\/a\.js/);
   assert.match(r.reason, /next action: resolve the merge conflict/);
 });
