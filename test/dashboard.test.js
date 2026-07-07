@@ -121,6 +121,13 @@ test("render produces a readable text summary with live cycles, history, and met
   assert.match(text, /clean unattended cycles: 1/);
 });
 
+test("render colorizes verdict words when opts.color is true", () => {
+  const d = freshDir();
+  notify.recordRun(d, { ts: "1", branch: "b0", verdict: "merged", rounds: 1, tokens: 10 });
+  const text = dashboard.render(d, { color: true });
+  assert.match(text, /\x1b\[38;5;71mmerged\x1b\[0m/);
+});
+
 test("render handles a fully empty .orch/ without throwing", () => {
   const d = freshDir();
   const text = dashboard.render(d);

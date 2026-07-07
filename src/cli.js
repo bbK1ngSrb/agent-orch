@@ -1151,7 +1151,7 @@ export async function main(argv, deps = {}) {
   if (command === "dashboard") {
     const historyLimit = flags.limit ? Number(flags.limit) : 10;
     if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit }), null, 2));
-    else console.log(renderDashboard(orchDir, { historyLimit }));
+    else console.log(renderDashboard(orchDir, { historyLimit, color: colorEnabled(process.stdout), columns: process.stdout.columns }));
     return;
   }
 

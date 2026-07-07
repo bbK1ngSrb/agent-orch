@@ -1,6 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visWidth, paint, C, colorEnabled, row, box } from "../../src/tui/theme.js";
+import { visWidth, paint, C, colorEnabled, row, box, table } from "../../src/tui/theme.js";
+
+test("table aligns columns and colors specific cells via a colorFn", () => {
+  const out = table(
+    ["TIME", "BRANCH", "VERDICT"],
+    [["14:22", "pr/claude/x", "merged"], ["13:58", "pr/codex/y", "escalated"]],
+    { color: false },
+  );
+  const lines = out.split("\n");
+  assert.equal(lines[0], "TIME   BRANCH       VERDICT  ");
+  assert.match(lines[1], /^14:22  pr\/claude\/x  merged   $/);
+});
 
 test("visWidth counts wide glyphs as 2 columns and ignores ANSI codes", () => {
   assert.equal(visWidth("abc"), 3);

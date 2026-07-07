@@ -8,8 +8,10 @@ import { join } from "node:path";
 import * as inflight from "./inflight.js";
 import * as checkpoint from "./checkpoint.js";
 import { kpi, reviewsDir } from "./notify.js";
+import { paint, C, table } from "./tui/theme.js";
 
 const STAGE_LABELS = { reviewed: "review", tested: "test" };
+const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "pr-fallback": C.fail };
 
 // Live cycles, newest inflight registration first, each annotated with its
 // most recent checkpoint stage (or "authoring" if none was recorded yet —
@@ -121,7 +123,8 @@ function pct(n) { return n == null ? "n/a" : `${Math.round(n * 100)}%`; }
 function usd(n) { return n == null ? "n/a" : `$${n.toFixed(4)}`; }
 
 export function render(orchDir, opts = {}) {
-  const { live, interrupted, history, metrics: m } = snapshot(orchDir, opts);
+  const { historyLimit, color = false } = opts;
+  const { live, interrupted, history, metrics: m } = snapshot(orchDir, { historyLimit });
   const lines = [];
   lines.push(`orch dashboard — ${orchDir}`);
   lines.push("");
@@ -151,10 +154,12 @@ export function render(orchDir, opts = {}) {
   if (!history.length) {
     lines.push("  (none)");
   } else {
-    for (const e of history) {
-      const usage = e.tokens ? `  ${e.tokens}tok${e.costUsd != null ? ` ${usd(e.costUsd)}` : ""}` : "";
-      lines.push(`  ${e.ts}  ${e.branch}  ${e.verdict}  ${e.rounds}rnd${usage}`);
-    }
+    const rows = history.map((e) => {
+      const usage = e.tokens ? `${e.tokens}tok${e.costUsd != null ? ` ${usd(e.costUsd)}` : ""}` : "";
+      const verdict = paint(color, VERDICT_COLOR[e.verdict] || "", e.verdict);
+      return [e.ts, e.branch, verdict, `${e.rounds}rnd`, usage];
+    });
+    lines.push(table(["TIME", "BRANCH", "VERDICT", "ROUNDS", "COST"], rows, { color }));
   }
   lines.push("");
   lines.push("Metrics");

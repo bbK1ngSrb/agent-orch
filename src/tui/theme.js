@@ -71,3 +71,16 @@ export function box(title, rowsSegs, opts = {}) {
   const bottom = paint(color, C.border, `╰${"─".repeat(inner + 2)}╯`);
   return [top, ...rowsSegs.map((segs) => row(segs, inner, color)), bottom].join("\n");
 }
+
+// Column-aligned, unbordered table. `rows` cells are colored as plain text
+// by the caller before being passed in (this helper only handles alignment)
+// EXCEPT verdict-shaped cells, which callers pass pre-painted — table()
+// pads by visWidth so embedded ANSI doesn't break column math.
+export function table(headers, rows, opts = {}) {
+  const cols = headers.length;
+  const widths = Array.from({ length: cols }, (_, i) =>
+    Math.max(visWidth(headers[i]), ...rows.map((r) => visWidth(r[i] ?? ""))));
+  const line = (cells) => cells.map((c, i) =>
+    c + " ".repeat(widths[i] - visWidth(c) + (i < cols - 1 ? 2 : 0))).join("");
+  return [line(headers), ...rows.map(line)].join("\n");
+}
