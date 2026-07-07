@@ -155,6 +155,24 @@ test("integrationBranch defaults to orch/integration; blank value throws", () =>
   assert.throws(() => load(bad), /integrationBranch must be a non-empty string/);
 });
 
+test("load() defaults baseBranch to main", () => {
+  const c = load(tmp());
+  assert.equal(c.baseBranch, "main");
+});
+
+test("load() honors a custom baseBranch", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "baseBranch: dev\n");
+  const c = load(d);
+  assert.equal(c.baseBranch, "dev");
+});
+
+test("validate() rejects an empty baseBranch", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "baseBranch: ''\n");
+  assert.throws(() => load(d), /baseBranch must be a non-empty string/);
+});
+
 test("github.mergeMethod defaults to squash; invalid value throws", () => {
   assert.equal(load(tmp()).github.mergeMethod, "squash");
   const d = tmp();
