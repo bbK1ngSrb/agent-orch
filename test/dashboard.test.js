@@ -76,7 +76,7 @@ test("interruptedCycles keeps every ownerless checkpoint when no repo is given",
   assert.equal(interrupted.length, 1);
 });
 
-test("interruptedCycles drops checkpoints whose branch was already merged and deleted", () => {
+test("interruptedCycles drops checkpoints whose branch is missing from the repo", () => {
   const d = freshDir();
   const repo = freshRepo();
   checkpoint.record(d, "sid-merged", { branch: "already-merged-and-gone", round: 2, stage: "reviewed" });

@@ -66,7 +66,7 @@ function readCheckpoints(orchDir) {
 export function interruptedCycles(orchDir, live = liveCycles(orchDir), repo = null) {
   const liveSids = new Set(live.map((c) => c.sid));
   const orphaned = readCheckpoints(orchDir).filter((c) => !liveSids.has(c.sid));
-  if (!repo) return orphaned;
+  if (!repo || !existsSync(repo) || !existsSync(join(repo, ".git"))) return orphaned;
   return orphaned.filter((c) => branchExists(repo, c.branch));
 }
 
