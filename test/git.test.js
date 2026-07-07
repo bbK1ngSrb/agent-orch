@@ -29,6 +29,14 @@ function addOrigin(repo) {
   return remote;
 }
 
+function addOriginNamed(repo, branch) {
+  const remote = mkdtempSync(join(tmpdir(), "orch-remote-"));
+  git(["init", "--bare", "-b", branch], remote);
+  git(["remote", "add", "origin", remote], repo);
+  git(["push", "-u", "origin", branch], repo);
+  return remote;
+}
+
 function cloneRemote(remote) {
   const parent = mkdtempSync(join(tmpdir(), "orch-peer-"));
   const peer = join(parent, "repo");
@@ -472,6 +480,23 @@ test("syncMainFromOrigin refuses local main ahead of origin/main", () => {
   assert.match(r.reason, /ahead/);
 });
 
+test("syncMainFromOrigin follows a custom base branch, not main", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "dev"], repo);
+  const remote = addOriginNamed(repo, "dev");
+
+  const peer = cloneRemote(remote);
+  git(["checkout", "dev"], peer);
+  commitFile(peer, "c.txt", "3\n", "peer commit on dev");
+  git(["push", "origin", "dev"], peer);
+
+  const r = syncMainFromOrigin(repo, "dev");
+
+  assert.equal(r.ok, true);
+  assert.equal(r.updated, true);
+  assert.match(git(["log", "--oneline", "dev"], repo), /peer commit on dev/);
+});
+
 test("verifyOriginContains checks ancestry against refs/remotes/origin/main", () => {
   const repo = newRepo();
   addOrigin(repo);
@@ -484,6 +509,14 @@ test("verifyOriginContains checks ancestry against refs/remotes/origin/main", ()
 
   git(["push", "origin", "main"], repo);
   assert.deepEqual(verifyOriginContains(repo, local), { ok: true });
+});
+
+test("verifyOriginContains checks the custom base branch's origin ref", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "dev"], repo);
+  addOriginNamed(repo, "dev");
+  const local = git(["rev-parse", "dev"], repo);
+  assert.deepEqual(verifyOriginContains(repo, local, "dev"), { ok: true });
 });
 
 test("reclaim PRESERVES a worktree whose branch is in liveBranches even when marker has dead pid (final-review I3)", () => {
