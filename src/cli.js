@@ -142,6 +142,7 @@ fast-forwarding \`origin/main\`.
 - \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
 - \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\`
 - \`orch review <branch>\`           audit an existing branch (no author)
+- \`orch continue <sid>\`            resume an interrupted/stalled cycle from its checkpoint
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
 - \`orch agent add <name>\`          add an agent to the rotation pool
 - \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
