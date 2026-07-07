@@ -7,6 +7,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import * as inflight from "./inflight.js";
 import * as checkpoint from "./checkpoint.js";
+import { branchExists } from "./git.js";
 import { kpi, reviewsDir } from "./notify.js";
 import { paint, C, table } from "./tui/theme.js";
 
@@ -56,9 +57,17 @@ function readCheckpoints(orchDir) {
   return out.sort((a, b) => ((a.lastUpdate || "") < (b.lastUpdate || "") ? 1 : -1));
 }
 
-export function interruptedCycles(orchDir, live = liveCycles(orchDir)) {
+// A checkpoint with no live owner is normally a crashed/stalled cycle. But if
+// its branch is gone (deleteBranchSafe runs after a clean merge), the cycle
+// actually finished and something upstream just skipped checkpoint.clear —
+// e.g. a manual merge outside orch, or a crash right before cleanup. Repo is
+// optional so callers without a real git checkout (tests, JSON-only reads)
+// keep the old behavior of listing every ownerless checkpoint.
+export function interruptedCycles(orchDir, live = liveCycles(orchDir), repo = null) {
   const liveSids = new Set(live.map((c) => c.sid));
-  return readCheckpoints(orchDir).filter((c) => !liveSids.has(c.sid));
+  const orphaned = readCheckpoints(orchDir).filter((c) => !liveSids.has(c.sid));
+  if (!repo) return orphaned;
+  return orphaned.filter((c) => branchExists(repo, c.branch));
 }
 
 function readJsonl(p) {
@@ -108,9 +117,9 @@ export function latestLog(orchDir, branch, lines = 12) {
   return { file, tail: content.slice(-lines).join("\n") };
 }
 
-export function snapshot(orchDir, { historyLimit = 10 } = {}) {
+export function snapshot(orchDir, { historyLimit = 10, repo = null } = {}) {
   const live = liveCycles(orchDir);
-  const interrupted = interruptedCycles(orchDir, live);
+  const interrupted = interruptedCycles(orchDir, live, repo);
   return {
     live: live.map((c) => ({ ...c, log: latestLog(orchDir, c.branch) })),
     interrupted,
@@ -123,8 +132,8 @@ function pct(n) { return n == null ? "n/a" : `${Math.round(n * 100)}%`; }
 function usd(n) { return n == null ? "n/a" : `$${n.toFixed(4)}`; }
 
 export function render(orchDir, opts = {}) {
-  const { historyLimit, color = false } = opts;
-  const { live, interrupted, history, metrics: m } = snapshot(orchDir, { historyLimit });
+  const { historyLimit, color = false, repo = null } = opts;
+  const { live, interrupted, history, metrics: m } = snapshot(orchDir, { historyLimit, repo });
   const lines = [];
   lines.push(`orch dashboard — ${orchDir}`);
   lines.push("");

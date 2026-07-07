@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as inflight from "../src/inflight.js";
@@ -10,6 +11,19 @@ import * as dashboard from "../src/dashboard.js";
 
 function freshDir() {
   return join(mkdtempSync(join(tmpdir(), "orch-dashboard-")), ".orch");
+}
+
+// Real repo with one branch, so branchExists(repo, ...) has something true
+// and false to say — freshDir()'s .orch dirs aren't git repos at all.
+function freshRepo() {
+  const repo = mkdtempSync(join(tmpdir(), "orch-dashboard-repo-"));
+  const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" });
+  g("init", "-b", "main");
+  g("config", "user.email", "t@t");
+  g("config", "user.name", "t");
+  g("commit", "--allow-empty", "-m", "init");
+  g("branch", "pr/codex/still-here");
+  return repo;
 }
 
 test("liveCycles is empty with no inflight entries", () => {
@@ -53,6 +67,24 @@ test("interruptedCycles reports checkpoints without a live owner", () => {
   assert.equal(interrupted[0].branch, "pr/codex/crashed");
   assert.equal(interrupted[0].stage, "review");
   assert.equal(interrupted[0].round, 2);
+});
+
+test("interruptedCycles keeps every ownerless checkpoint when no repo is given", () => {
+  const d = freshDir();
+  checkpoint.record(d, "sid-dead", { branch: "gone-branch", round: 1, stage: "reviewed" });
+  const interrupted = dashboard.interruptedCycles(d);
+  assert.equal(interrupted.length, 1);
+});
+
+test("interruptedCycles drops checkpoints whose branch was already merged and deleted", () => {
+  const d = freshDir();
+  const repo = freshRepo();
+  checkpoint.record(d, "sid-merged", { branch: "already-merged-and-gone", round: 2, stage: "reviewed" });
+  checkpoint.record(d, "sid-crashed", { branch: "pr/codex/still-here", round: 1, stage: "tested" });
+
+  const interrupted = dashboard.interruptedCycles(d, dashboard.liveCycles(d), repo);
+  assert.equal(interrupted.length, 1);
+  assert.equal(interrupted[0].sid, "sid-crashed");
 });
 
 test("runHistory reads runs.jsonl, newest first, capped at limit", () => {
