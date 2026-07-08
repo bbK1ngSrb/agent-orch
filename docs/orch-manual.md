@@ -276,6 +276,12 @@ Resumes an interrupted or stalled cycle from its checkpoint (see §4.3 on
 crash recovery). You'll be told the `sid` to use when a cycle dies mid-way;
 you don't normally invent one yourself.
 
+If the checkpoint's work branch is gone, `continue` reacts to *why*: when the
+branch exists only on the remote (`origin/<branch>`) it stops and tells you to
+check it out locally first; when it's gone everywhere, there's nothing left to
+resume, so instead of erroring it clears the stale checkpoint/inflight state
+and exits cleanly.
+
 ### 2.9 `orch dashboard [--json] [--limit N]`
 
 Read-only. Shows live cycle status/stage, a streaming log tail, run history,
@@ -512,6 +518,12 @@ next in the rotation — the resuming run pins the original author.
 A finer-grained checkpoint inside a resumed cycle also remembers each
 completed review round's verdict and whether the test gate already passed,
 so a crash mid-review doesn't force a full re-audit or re-test.
+
+If the checkpoint outlives its branch (you deleted it, or it only ever landed
+on the remote), `orch continue` no longer dies with a bare "branch no longer
+exists": it distinguishes a remote-only branch (stop and ask you to check it
+out) from a truly-gone one (clear the orphaned checkpoint/inflight record and
+exit clean), so stale resume state can't wedge later runs.
 
 `--dry` never deletes worktrees or branches, ever.
 
