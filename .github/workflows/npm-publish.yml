@@ -13,11 +13,11 @@ on:
         description: "Tag to publish (e.g. v0.3.11)"
         required: true
 jobs:
-  publish:
+  # Cheap gate ahead of the 3-OS matrix: a bogus workflow_dispatch tag should
+  # fail here, not after burning three checkouts+installs in pack-test.
+  validate:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
+    permissions: {}
     steps:
       - name: validate tag input
         if: github.event_name == 'workflow_dispatch'
@@ -28,6 +28,58 @@ jobs:
             echo "Invalid tag input: $TAG_INPUT (expected vX.Y.Z)"
             exit 1
           fi
+  # Real install/update/uninstall smoke test on all 3 target OSes, run from
+  # the tarball `npm pack` produces — not `npm test` (which only proves the
+  # source works, never that packaging/bin-wiring survives a real `npm
+  # install -g`). Gates publish: a broken tarball never reaches the registry.
+  pack-test:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - run: npm ci || npm install
+      - name: pack tarball
+        shell: bash
+        run: |
+          TGZ="$(npm pack | tail -1)"
+          test -f "$TGZ"
+          echo "TGZ=$TGZ" >> "$GITHUB_ENV"
+      - name: install from tarball
+        shell: bash
+        run: npm install -g "./$TGZ"
+      - name: sanity-run installed CLI
+        shell: bash
+        run: orch --version
+      - name: reinstall (update path)
+        shell: bash
+        run: npm install -g "./$TGZ"
+      - name: uninstall
+        shell: bash
+        run: |
+          npm uninstall -g @bbk1ng/agent-orch
+          hash -r
+          if command -v orch >/dev/null 2>&1; then
+            echo "orch still on PATH after uninstall"
+            exit 1
+          fi
+  publish:
+    needs: pack-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
