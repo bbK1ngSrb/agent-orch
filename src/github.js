@@ -21,6 +21,32 @@ function mergeDirect(gh, prRef, method) {
   gh(["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${prRef}/merge`, "-f", `merge_method=${method}`]);
 }
 
+function prNumberFromUrl(url) {
+  return String(url || "").match(/\/pull\/(\d+)(?:\b|$)/)?.[1] || null;
+}
+
+function fallbackPrBody(reason, closes, method, prNumber = "<PR-number>") {
+  const body = [
+    "Auto-demoted by agent-orch.",
+    "",
+    reason,
+    "",
+    "Manual merge note:",
+    "- Plain `gh pr merge` can be refused by its bypass-blind precheck when a ruleset bypass would allow the merge.",
+    `- If this PR is approved and checks are green, use: \`gh api -X PUT repos/{owner}/{repo}/pulls/${prNumber}/merge -f merge_method=${method}\``,
+  ].join("\n");
+  return redact(body) + (closes ? `\n\nCloses #${closes}` : "");
+}
+
+function refreshFallbackPrBody(gh, prNumber, body) {
+  if (!prNumber) return;
+  try { gh(["pr", "edit", prNumber, "--body", body]); } catch { /* PR is already open with the placeholder body */ }
+}
+
+function tryMergeDirect(gh, prRef, method) {
+  try { mergeDirect(gh, prRef, method); } catch { /* not ready or not mergeable */ }
+}
+
 // Concurrent orch cycles share one .git and thus one refs/remotes/origin/main —
 // a losing fetch fails "cannot lock ref", which is transient contention, not a
 // real sync problem. Mirrors git.js's fetchOriginMain retry so this new
@@ -190,21 +216,25 @@ async function pushAndCreatePr(ctx, deps, title, body) {
 }
 
 // Demote an approved-but-unmergeable branch: open a PR if we can, else escalate
-// locally (keep the branch + write DECISION.md). Never pushes to main.
+// locally (keep the branch + write DECISION.md). Never pushes straight to main.
 export async function demote(ctx, deps) {
-  const { repo, orchDir, branch, reason, closes } = ctx;
+  const { repo, orchDir, branch, reason, closes, cfg } = ctx;
   const { git, gh, notify } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate(orchDir, branch,
       `# Escalation — ${branch}\n\nAuto-merge demoted.\n\n${reason}\n\nNo git remote or gh CLI available to open a PR. The branch is kept for manual review.\n`);
     return { prUrl: null };
   }
-  // A `Closes #N` line (issue bridge) is appended AFTER redact — it's our own
-  // int, and redact would not touch it anyway, but keeping it outside the
-  // scrub guarantees gh sees it intact.
-  const body = redact(`Auto-demoted by agent-orch.\n\n${reason}`)
-    + (closes ? `\n\nCloses #${closes}` : "");
-  const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, body);
+  // `fallbackPrBody()` appends `Closes #N` AFTER redact — it's our own int, and
+  // redact would not touch it anyway, but keeping it outside the scrub
+  // guarantees gh sees it intact.
+  const mergeMethod = cfg?.github?.mergeMethod || "squash";
+  const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, fallbackPrBody(reason, closes, mergeMethod));
+  const prNumber = prNumberFromUrl(url);
+  refreshFallbackPrBody(gh, prNumber, fallbackPrBody(reason, closes, mergeMethod, prNumber || "<PR-number>"));
+  if (cfg?.github?.autoMergePr) {
+    tryMergeDirect(gh, prNumber || branch, mergeMethod);
+  }
   return { prUrl: url };
 }
 
