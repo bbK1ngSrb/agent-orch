@@ -68,13 +68,15 @@ test("gemini buildArgs appends --model when given", () => {
     ["-p", "PROMPT", "--yolo", "--model", "gemini-2.5-pro"]);
 });
 
-test("grok buildArgs uses prompt mode", () => {
-  assert.deepEqual(grokArgs("PROMPT", "/wd"), ["-p", "PROMPT"]);
+test("grok buildArgs uses headless prompt mode with approval bypass", () => {
+  // --always-approve is required: headless -p still gates Edit/Write/Bash on
+  // approval, which would hang/no-op the author stage without it.
+  assert.deepEqual(grokArgs("PROMPT", "/wd"), ["-p", "PROMPT", "--always-approve"]);
 });
 
-test("grok buildArgs appends --model when given", () => {
-  assert.deepEqual(grokArgs("PROMPT", "/wd", { model: "grok-4" }),
-    ["-p", "PROMPT", "--model", "grok-4"]);
+test("grok buildArgs appends --model and --effort when given", () => {
+  assert.deepEqual(grokArgs("PROMPT", "/wd", { model: "grok-4", effort: "high" }),
+    ["-p", "PROMPT", "--always-approve", "--model", "grok-4", "--effort", "high"]);
 });
 
 test("buildArgs omits model/effort flags when absent (no regression)", () => {
