@@ -311,8 +311,11 @@ stands; only the auto-merge step is skipped.
 Every cycle that lands via the local integration path (not `merge: pr`) patch-bumps
 `package.json` right after the post-merge test gate passes: `x.y.z` → `x.y.(z+1)`,
 mirrored into `package-lock.json`'s root version and `src/version.js` (the file
-`orch --version` reads, if the target repo has one), plus a prepended
-`CHANGELOG.md` entry naming the branch (and issue, for `orch issue <n>`), then
+`orch --version` reads, if the target repo has one). If the repo ships a GitHub
+Pages site at `docs/index.html`, the version shown in its header (the `vX.Y.Z`
+span) is rewritten to match — anchored to that one span so nothing else moves.
+Also prepends a `CHANGELOG.md` entry naming the branch (and issue, for `orch
+issue <n>`), then
 commits as `chore(release): vX.Y.Z`. Best-effort: a missing/unparsable
 `package.json` or any write/commit failure is swallowed — it never blocks or
 unwinds a merge that already landed.
