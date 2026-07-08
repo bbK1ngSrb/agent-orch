@@ -522,6 +522,12 @@ A finer-grained checkpoint inside a resumed cycle also remembers each
 completed review round's verdict and whether the test gate already passed,
 so a crash mid-review doesn't force a full re-audit or re-test.
 
+If the checkpoint outlives its branch (you deleted it, or it only ever landed
+on the remote), `orch continue` no longer dies with a bare "branch no longer
+exists": it distinguishes a remote-only branch (stop and ask you to check it
+out) from a truly-gone one (clear the orphaned checkpoint/inflight record and
+exit clean), so stale resume state can't wedge later runs.
+
 `--dry` never deletes worktrees or branches, ever.
 
 ### 4.4 Post-merge tidy
