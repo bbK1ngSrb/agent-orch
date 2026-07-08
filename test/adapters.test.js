@@ -12,6 +12,16 @@ import { buildArgs as geminiArgs } from "../src/adapters/gemini.js";
 import { get } from "../src/adapters/index.js";
 import { makeCliAdapter, isUsageLimit, parseRunUsage } from "../src/adapters/cli-adapter.js";
 
+// Fake-agent fixtures spawn `node -e <script>` instead of `sh -c <script>`.
+// A shell (and printf/cat/trap/exit) is POSIX-only — this repo's own CI
+// runner happened to have Git for Windows' usr/bin on PATH, which masked
+// that these tests hard-depend on `sh` and don't run on a plain Windows
+// install. Node's argv-array spawn (no shell) also means no quoting to get
+// right — each script arg is passed to the child exactly as written here.
+function nodeScript(script) {
+  return ["-e", script];
+}
+
 test("agy buildArgs uses prompt mode", () => {
   assert.deepEqual(agyArgs("PROMPT", "/wd"), ["-p", "PROMPT"]);
 });
@@ -71,8 +81,8 @@ test("buildArgs omits model/effort flags when absent (no regression)", () => {
 test("adapter forwards model/effort opts to buildArgs", async () => {
   let seen;
   const adapter = makeCliAdapter({
-    name: "spy", bin: "true",
-    buildArgs: (_p, _wd, opts) => { seen = opts; return ["--version"]; },
+    name: "spy", bin: process.execPath,
+    buildArgs: (_p, _wd, opts) => { seen = opts; return nodeScript("process.exit(0)"); },
   });
   await adapter.audit("pr/x/y", tmpdir(), { model: "m1", effort: "low" });
   assert.deepEqual(seen, { model: "m1", effort: "low" });
@@ -107,8 +117,9 @@ test("parseRunUsage omits costUsd when only a total token count is known, even f
 test("audit returns parsed model, token usage, and estimated cost from agent output", async () => {
   const adapter = makeCliAdapter({
     name: "metered",
-    bin: "sh",
-    buildArgs: () => ["-c", "printf 'AGREE ok\\nmodel: gpt-5.1\\ninput tokens: 100\\noutput tokens: 25\\n'"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript(
+      "process.stdout.write('AGREE ok\\nmodel: gpt-5.1\\ninput tokens: 100\\noutput tokens: 25\\n')"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
@@ -118,8 +129,8 @@ test("audit returns parsed model, token usage, and estimated cost from agent out
 test("audit captures stderr from successful agent runs", async () => {
   const adapter = makeCliAdapter({
     name: "stderr-reviewer",
-    bin: "sh",
-    buildArgs: () => ["-c", "printf 'AGREE stderr verdict\\n' >&2"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript("process.stderr.write('AGREE stderr verdict\\n')"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
@@ -129,8 +140,9 @@ test("audit captures stderr from successful agent runs", async () => {
 test("audit does not let successful stderr override a parseable stdout verdict", async () => {
   const adapter = makeCliAdapter({
     name: "stderr-warning",
-    bin: "sh",
-    buildArgs: () => ["-c", "printf 'AGREE stdout verdict\\n'; printf 'warning mentions DISAGREE\\n' >&2"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript(
+      "process.stdout.write('AGREE stdout verdict\\n'); process.stderr.write('warning mentions DISAGREE\\n')"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
@@ -149,8 +161,8 @@ test("audit emits elapsed progress while the agent is still running", async () =
   try {
     const adapter = makeCliAdapter({
       name: "slow",
-      bin: "sh",
-      buildArgs: () => ["-c", "sleep 0.06; printf 'AGREE ok\\n'"],
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 60)"),
     });
     const v = await adapter.audit("pr/x/y", tmpdir());
     assert.equal(v.decision, "AGREE");
@@ -170,8 +182,8 @@ test("author fails fast when a stage exceeds stageTimeout, even if the child ign
   // resolve ok:false explicitly rather than trusting the child's exit.
   const adapter = makeCliAdapter({
     name: "staller",
-    bin: "sh",
-    buildArgs: () => ["-c", 'trap "" TERM; sleep 30'],
+    bin: process.execPath,
+    buildArgs: () => nodeScript("setTimeout(() => {}, 30000)"),
   });
   const t0 = Date.now();
   await assert.rejects(
@@ -187,8 +199,8 @@ test("audit fails safe (DISAGREE + agentError) when a reviewer stage stalls (#56
   // hang the loop — it returns a fail-safe DISAGREE flagged for escalation.
   const adapter = makeCliAdapter({
     name: "staller",
-    bin: "sh",
-    buildArgs: () => ["-c", 'trap "" TERM; sleep 30'],
+    bin: process.execPath,
+    buildArgs: () => nodeScript("setTimeout(() => {}, 30000)"),
   });
   const t0 = Date.now();
   const v = await adapter.audit("pr/x/y", tmpdir(), { stageTimeoutMs: 120 });
@@ -208,8 +220,8 @@ test("ORCH_STAGE_TIMEOUT_MS overrides the engine-threaded cfg stageTimeout (#56)
   try {
     const adapter = makeCliAdapter({
       name: "staller",
-      bin: "sh",
-      buildArgs: () => ["-c", 'trap "" TERM; sleep 30'],
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => {}, 30000)"),
     });
     const t0 = Date.now();
     const v = await adapter.audit("pr/x/y", tmpdir(), { stageTimeoutMs: 30_000 });
@@ -227,8 +239,8 @@ test("a stage that finishes within stageTimeout is not killed (no false positive
   // watchdog must not fire on legitimate work.
   const adapter = makeCliAdapter({
     name: "healthy",
-    bin: "sh",
-    buildArgs: () => ["-c", "printf 'AGREE ok\\n'"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript("process.stdout.write('AGREE ok\\n')"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir(), { stageTimeoutMs: 10_000 });
   assert.equal(v.decision, "AGREE");
@@ -242,8 +254,9 @@ test("runAgent closes the child's stdin so codex's exec stdin read sees EOF (#58
   // With stdin closed the child completes in ms; without, this test times out.
   const adapter = makeCliAdapter({
     name: "stdin-reader",
-    bin: "sh",
-    buildArgs: () => ["-c", "cat; echo AGREE"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript(
+      "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('AGREE\\n'))"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
@@ -259,8 +272,10 @@ test("author commits worktree changes the agent left uncommitted", async () => {
   // Fake agent: writes a file but never commits (the real failure mode).
   const adapter = makeCliAdapter({
     name: "writer",
-    bin: "sh",
-    buildArgs: () => ["-c", `printf hi > ${join(wd, "NEWFILE")}`],
+    bin: process.execPath,
+    // Target path passed as its own argv element (not interpolated into the
+    // script string) — spawn is argv-array, no shell, so no quoting to worry about.
+    buildArgs: () => [...nodeScript("require('fs').writeFileSync(process.argv[1], 'hi')"), join(wd, "NEWFILE")],
   });
   await adapter.author("do work", wd);
   const head = g("log", "--oneline").trim().split("\n");
@@ -272,8 +287,8 @@ test("audit is fail-safe DISAGREE when the agent exits nonzero (F4)", async () =
   // Fake agent: prints a partial answer then exits 3. audit() must NOT throw.
   const adapter = makeCliAdapter({
     name: "boom",
-    bin: "sh",
-    buildArgs: () => ["-c", "echo 'thinking...'; exit 3"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript("console.log('thinking...'); process.exit(3)"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "DISAGREE");
@@ -285,8 +300,8 @@ test("audit preserves an explicit DISAGREE from a nonzero agent (not agentError)
   // review finding — keep it and do NOT flag agentError (it's a real review).
   const adapter = makeCliAdapter({
     name: "boom-disagree",
-    bin: "sh",
-    buildArgs: () => ["-c", "echo 'DISAGREE add a regression test'; exit 3"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript("console.log('DISAGREE add a regression test'); process.exit(3)"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "DISAGREE");
@@ -299,8 +314,9 @@ test("audit surfaces the agent's actual error in the DISAGREE reason (#31)", asy
   // reason, not just a generic sentinel — otherwise the escalation is undiagnosable.
   const adapter = makeCliAdapter({
     name: "badmodel",
-    bin: "sh",
-    buildArgs: () => ["-c", "echo \"There's an issue with the selected model (opus-4.8)\" >&2; exit 1"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript(
+      "process.stderr.write(\"There's an issue with the selected model (opus-4.8)\\n\"); process.exit(1)"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "DISAGREE");
@@ -311,22 +327,24 @@ test("audit surfaces the agent's actual error in the DISAGREE reason (#31)", asy
 test("audit falls back to the command failure text when a nonzero agent prints nothing", async () => {
   const adapter = makeCliAdapter({
     name: "silent-boom",
-    bin: "sh",
-    buildArgs: () => ["-c", "exit 9"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript("process.exit(9)"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "DISAGREE");
   assert.equal(v.agentError, true);
-  assert.equal(v.reason, "agent exited nonzero: Command failed: sh");
-  assert.equal(v.raw, "Command failed: sh");
+  // The fallback text embeds `bin` itself, not a fixed string — assert
+  // dynamically rather than hardcoding what used to be "sh".
+  assert.equal(v.reason, `agent exited nonzero: Command failed: ${process.execPath}`);
+  assert.equal(v.raw, `Command failed: ${process.execPath}`);
 });
 
 test("audit ignores AGREE printed by a crashed agent (F4 fail-safe)", async () => {
   // A nonzero exit must override any verdict the agent printed before dying.
   const adapter = makeCliAdapter({
     name: "boom-agree",
-    bin: "sh",
-    buildArgs: () => ["-c", "echo AGREE; exit 3"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript("console.log('AGREE'); process.exit(3)"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "DISAGREE");
@@ -337,8 +355,8 @@ test("audit rethrows on usage limit instead of masking as DISAGREE", async () =>
   // logging a DISAGREE here would silently corrupt the audit verdict.
   const adapter = makeCliAdapter({
     name: "limited",
-    bin: "sh",
-    buildArgs: () => ["-c", "echo 'Claude usage limit reached. resets at 3pm'; exit 1"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript("console.log('Claude usage limit reached. resets at 3pm'); process.exit(1)"),
   });
   await assert.rejects(() => adapter.audit("pr/x/y", tmpdir()), /usage limit/);
 });
@@ -349,8 +367,9 @@ test("audit does not abort when a SUCCESSFUL run merely mentions limits (#85)", 
   // limit error — only failed runs are limit candidates.
   const adapter = makeCliAdapter({
     name: "chatty",
-    bin: "sh",
-    buildArgs: () => ["-c", "echo 'AGREE: the adapter handles usage limit and 429 responses correctly'"],
+    bin: process.execPath,
+    buildArgs: () => nodeScript(
+      "console.log('AGREE: the adapter handles usage limit and 429 responses correctly')"),
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
