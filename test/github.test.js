@@ -172,6 +172,29 @@ test("demote opens a PR when a remote and gh are present", async () => {
   assert.match(body, /Auto-demoted by agent-orch/);
   assert.match(body, /trigger: overlap/);
   assert.match(body, /next action: rerun orch review/);
+  assert.match(body, /Plain `gh pr merge` can be refused by its bypass-blind precheck/);
+  assert.match(body, /gh api -X PUT repos\/\{owner\}\/\{repo\}\/pulls\/<PR-number>\/merge -f merge_method=squash/);
+  const edit = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit");
+  assert.ok(edit, "demote should update the PR body once the PR number is known");
+  assert.match(edit[edit.indexOf("--body") + 1], /gh api -X PUT repos\/\{owner\}\/\{repo\}\/pulls\/7\/merge -f merge_method=squash/);
+});
+
+test("demote with github.autoMergePr directly merges the opened fallback PR", async () => {
+  const calls = [];
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/170\n"; };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
+
+  const r = await demote({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reason: "overlap", cfg },
+    { gh, git, notify: { escalate() {} } });
+
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/170");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge"), "must not use gh pr merge precheck");
+  assert.ok(calls.some((c) =>
+    c[0] === "gh" &&
+    c[1] === "api" &&
+    c.includes("repos/{owner}/{repo}/pulls/170/merge") &&
+    c.includes("merge_method=squash")));
 });
 
 test("issue bridge: demote appends Closes #N to the PR body so the issue auto-closes", async () => {
