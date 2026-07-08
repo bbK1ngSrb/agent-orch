@@ -313,7 +313,10 @@ export async function openIntegrationPr(ctx, deps) {
       "--title", title,
       "--body", body,
     ]).trim();
-    prRef = branch;
+    // mergeDirect() hits the REST endpoint keyed by numeric PR id, so prRef
+    // must be that number, not the head-branch name — else the direct-merge
+    // path 404s (#182). The number is right there in the create URL.
+    prRef = prNumberFromUrl(url) || branch;
     log(`opened integration PR for ${branch}: ${url}`);
   }
 
