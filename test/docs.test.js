@@ -9,6 +9,7 @@ const read = (rel) =>
 const pkg = JSON.parse(read("package.json"));
 const readme = read("README.md");
 const design = read("docs/design.md");
+const landing = read("docs/index.html");
 const manual = read("docs/orch-manual.md");
 const exampleConfig = read("orch.example.yml");
 const coc = read("CODE_OF_CONDUCT.md");
@@ -60,6 +61,28 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /docs.autoUpdate/);
   assert.match(readme, /[Ll]oop guard/);
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
+});
+
+test("landing page has static social and no-JS fallback content", () => {
+  assert.match(landing, /<meta property="og:title" content="orch — agents orchestration tool">/);
+  assert.match(landing, /<meta property="og:description"/);
+  assert.match(landing, /<meta property="og:image"/);
+  assert.match(landing, /<meta name="twitter:card" content="summary_large_image">/);
+  assert.match(landing, /<noscript>[\s\S]*Run local coding agents in a cross-audit loop/);
+  assert.match(landing, /<noscript>[\s\S]*npm install -g @bbk1ng\/agent-orch/);
+  assert.doesNotMatch(landing, /This page requires JavaScript to display/);
+});
+
+test("landing page bundled template includes mobile layout overrides", () => {
+  const template = JSON.parse(
+    landing.match(/<script type="__bundler\/template">\n([\s\S]*?)\n  <\/script>/)[1],
+  );
+
+  assert.match(template, /@media \(max-width: 640px\)/);
+  assert.match(template, /grid-template-columns:repeat\(4, 1fr\).*grid-template-columns:1fr !important/s);
+  assert.match(template, /grid-template-columns:repeat\(3, 1fr\).*grid-template-columns:1fr !important/s);
+  assert.match(template, /grid-template-columns:230px 1fr.*grid-template-columns:1fr !important/s);
+  assert.match(template, /justify-content:center; margin-top:38px.*flex-wrap:wrap !important/s);
 });
 
 test("docs explain stale `orch continue` resume handling", () => {
