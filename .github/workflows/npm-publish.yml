@@ -68,6 +68,7 @@ jobs:
         shell: bash
         run: |
           npm uninstall -g @bbk1ng/agent-orch
+          hash -r
           if command -v orch >/dev/null 2>&1; then
             echo "orch still on PATH after uninstall"
             exit 1
