@@ -44,6 +44,8 @@ scope:
 github:
   mergeMethod: squash     # gh pr merge strategy for non-integration PRs; default: squash
   autoMergePr: false      # enable GitHub's native auto-merge on PRs orch opens/updates; default: false
+                          # (needs "Allow merge commits" on for the integration PR; see docs/orch-manual.md
+                          # for a caveat when review is only satisfied via a ruleset bypass_actors grant)
 
 # === Auto docs-update after a real merge (optional) ===
 docs:

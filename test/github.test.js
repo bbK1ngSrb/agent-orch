@@ -70,7 +70,9 @@ test("runPr fetches PR head, audits with noMerge, comments", async () => {
 test("runPr merges only with merge flag + approved", async () => {
   const yes = makeDeps();
   await runPr({ ...opts, merge: true }, yes);
-  assert.ok(yes._calls.gh.some((c) => c.args[1] === "merge"));
+  // Direct REST merge, not `gh pr merge` — its client-side mergeable precheck
+  // ignores ruleset bypass_actors and can false-refuse an eligible merge.
+  assert.ok(yes._calls.gh.some((c) => c.args[0] === "api" && c.args.some((a) => a.includes("pulls/7/merge"))));
   // §140: a merge claim must be checked against origin/main, not just gh's exit code
   assert.ok(yes._calls.gh.some((c) => c.args[1] === "view" && c.args.includes("state,mergeCommit")));
   assert.ok(yes._calls.git.some((a) => a[0] === "fetch" && a[2] === "main:refs/remotes/origin/main"));
@@ -79,11 +81,11 @@ test("runPr merges only with merge flag + approved", async () => {
 
   const no = makeDeps();
   await runPr({ ...opts, merge: false }, no);
-  assert.ok(!no._calls.gh.some((c) => c.args[1] === "merge"));
+  assert.ok(!no._calls.gh.some((c) => c.args[0] === "api"));
 
   const blocked = makeDeps({ status: "escalated" });
   await runPr({ ...opts, merge: true }, blocked);
-  assert.ok(!blocked._calls.gh.some((c) => c.args[1] === "merge"));
+  assert.ok(!blocked._calls.gh.some((c) => c.args[0] === "api"));
 });
 
 test("runPr verifies a merged PR against cfg.baseBranch", async () => {
@@ -265,6 +267,35 @@ test("openPr with github.autoMergePr enables GitHub auto-merge on the PR it open
   assert.ok(mergeCall.includes("--squash"));
 });
 
+// Native auto-merge silently never completes when the only thing satisfying
+// the review requirement is a ruleset bypass_actor grant, not a real
+// approval — GitHub's mergeStateStatus stays BLOCKED forever even after
+// checks pass. An immediate direct-merge attempt right after enabling
+// auto-merge covers the case where checks already happened to be green.
+test("openPr also attempts a direct merge right after enabling auto-merge", async () => {
+  const calls = [];
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/9\n"; };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
+
+  await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", cfg }, { gh, git, notify: { escalate() {} } });
+  const direct = calls.find((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=squash")));
+  assert.ok(direct, "a direct merge attempt must follow the --auto call");
+});
+
+test("openPr swallows a direct-merge failure (checks still pending is normal)", async () => {
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "api") throw new Error("405 not mergeable yet");
+    return "https://x/9\n";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
+
+  const r = await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://x/9");
+});
+
 // The PR is already open by the time autoMergePr runs — a failure enabling GitHub's
 // native auto-merge (e.g. no branch protection configured) must not be reported as a
 // cycle failure; the PR that was already opened should still come back.
@@ -317,6 +348,11 @@ test("openIntegrationPr creates the persistent integration PR and enables auto-m
   assert.ok(mergeCall.includes("--auto"));
   assert.ok(mergeCall.includes("--merge"));
   assert.equal(mergeCall.includes("--squash"), false);
+  // Same bypass-doesn't-trigger-native-auto-merge caveat as openPr() — this
+  // function re-runs on every cycle, so a failed direct attempt just retries
+  // next time.
+  const direct = calls.find((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge")));
+  assert.ok(direct, "a direct merge attempt must follow the --auto call");
 });
 
 test("openIntegrationPr lists and creates the persistent PR against cfg.baseBranch", async () => {
