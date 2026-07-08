@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.17 — 2026-07-08
+- Landing page v2: mobile-responsive layout + no-JS/crawler content fallback (closes [#141](https://github.com/bbk1ng/agent-orch/issues/141))
+
 ## 0.3.16 — 2026-07-08
 - PR-fallback output is a raw machine dump, not teaching-toned prose (closes [#173](https://github.com/bbk1ng/agent-orch/issues/173))
 
