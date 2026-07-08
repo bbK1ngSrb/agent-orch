@@ -13,6 +13,17 @@ const html = readFileSync(
   "utf8",
 );
 
+function bundledTemplate() {
+  const open = '<script type="__bundler/template">';
+  const start = html.indexOf(open) + open.length;
+  const end = html.lastIndexOf("\n  </script>");
+  return html.slice(start, end).trim();
+}
+
+function decodedBundledTemplate() {
+  return JSON.parse(bundledTemplate());
+}
+
 test("landing page has no unbaked designer-template constructs", () => {
   assert.ok(!html.includes("{{"), "leftover {{ mustache }} binding");
   assert.ok(!html.includes("<sc-"), "leftover <sc-*> template element");
@@ -26,10 +37,7 @@ test("landing page has no dead placeholder links", () => {
 });
 
 test("landing page bundled template survives the browser's script tokenizer", () => {
-  const open = '<script type="__bundler/template">';
-  const start = html.indexOf(open) + open.length;
-  const end = html.lastIndexOf("\n  </script>");
-  const body = html.slice(start, end);
+  const body = bundledTemplate();
 
   assert.doesNotMatch(
     body,
@@ -37,10 +45,22 @@ test("landing page bundled template survives the browser's script tokenizer", ()
     "template body has an unescaped </script>; browser will truncate it",
   );
 
+  const open = '<script type="__bundler/template">';
+  const start = html.indexOf(open) + open.length;
   const firstClose = html.slice(start).search(/<\/script/i);
   const browserText = html.slice(start, start + firstClose).trim();
   const decoded = JSON.parse(browserText);
   assert.match(decoded, /Two agents/);
+});
+
+test("landing page bundled template is baked browser-ready HTML", () => {
+  const template = decodedBundledTemplate();
+
+  assert.doesNotMatch(template, /<sc-/i, "designer conditional element leaked into bundle");
+  assert.doesNotMatch(template, /{{/, "mustache binding leaked into bundle");
+  assert.doesNotMatch(template, /href="#"/, "dead placeholder link leaked into bundle");
+  assert.match(template, /style="[^"]*font-size:64px/, "expected inline hero styles");
+  assert.match(template, /href="https:\/\/github\.com\/bbk1ng\/agent-orch#readme"/);
 });
 
 test("landing page privacy claim is not the inaccurate all-local one", () => {
