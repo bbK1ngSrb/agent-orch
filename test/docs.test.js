@@ -86,35 +86,6 @@ test("landing page bundled template includes mobile layout overrides", () => {
   assert.match(template, /justify-content:center; margin-top:38px.*flex-wrap:wrap !important/s);
 });
 
-test("landing page template survives the browser's HTML tokenizer (no unescaped </script>)", () => {
-  // The bundled template is a JSON string embedded in an inline
-  // <script type="__bundler/template"> block. A browser's HTML tokenizer, once
-  // inside any <script>, ends the element at the FIRST literal `</script>` byte
-  // sequence it sees — it does not understand JSON. If the template's HTML body
-  // contains an unescaped `</script>` (e.g. from a nested `<script src=...></script>`),
-  // the wrapper closes early, textContent is truncated to invalid JSON, and
-  // JSON.parse throws "Unterminated string" — the page never unpacks.
-  // The fix is to escape inner close tags as `<\/script>` (valid JSON, decodes
-  // back to `/`). This models the browser, not a string reader, so it catches
-  // what the string-based extraction above cannot.
-  const open = '<script type="__bundler/template">';
-  const start = landing.indexOf(open) + open.length;
-  const end = landing.lastIndexOf("\n  </script>"); // the wrapper's real close
-  const body = landing.slice(start, end);
-  assert.doesNotMatch(
-    body,
-    /<\/script>/i,
-    "template body has an unescaped </script>; browser will truncate it — escape as <\\/script>",
-  );
-
-  // And prove the browser-visible slice (bytes up to the first literal </script>)
-  // is still valid JSON that decodes the real page.
-  const firstClose = landing.slice(start).search(/<\/script/i);
-  const browserText = landing.slice(start, start + firstClose).trim();
-  const decoded = JSON.parse(browserText);
-  assert.match(decoded, /<!DOCTYPE html>/i);
-});
-
 test("docs explain stale `orch continue` resume handling", () => {
   for (const doc of [readme, manual]) {
     assert.match(doc, /orch continue <sid>/);

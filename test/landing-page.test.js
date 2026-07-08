@@ -25,6 +25,24 @@ test("landing page has no dead placeholder links", () => {
   assert.ok(!html.includes('href=\\"#\\"'), 'dead href="#" placeholder link');
 });
 
+test("landing page bundled template survives the browser's script tokenizer", () => {
+  const open = '<script type="__bundler/template">';
+  const start = html.indexOf(open) + open.length;
+  const end = html.lastIndexOf("\n  </script>");
+  const body = html.slice(start, end);
+
+  assert.doesNotMatch(
+    body,
+    /<\/script>/i,
+    "template body has an unescaped </script>; browser will truncate it",
+  );
+
+  const firstClose = html.slice(start).search(/<\/script/i);
+  const browserText = html.slice(start, start + firstClose).trim();
+  const decoded = JSON.parse(browserText);
+  assert.match(decoded, /Two agents/);
+});
+
 test("landing page privacy claim is not the inaccurate all-local one", () => {
   // Model inference is remote for the default (Claude/Codex/Copilot/Gemini)
   // config; only orch's orchestration is local. The old copy overclaimed.
