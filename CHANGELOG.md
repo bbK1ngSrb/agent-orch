@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.16 — 2026-07-08
+- PR-fallback output is a raw machine dump, not teaching-toned prose (closes [#173](https://github.com/bbk1ng/agent-orch/issues/173))
+
 ## 0.3.15 — 2026-07-08
 - Approved+green PR-fallbacks that are clean vs main are never auto-merged; manual gh pr merge refused by bypass-blind precheck (closes [#171](https://github.com/bbk1ng/agent-orch/issues/171))
 
