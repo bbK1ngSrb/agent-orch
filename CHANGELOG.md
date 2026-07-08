@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.15 — 2026-07-08
+- Approved+green PR-fallbacks that are clean vs main are never auto-merged; manual gh pr merge refused by bypass-blind precheck (closes [#171](https://github.com/bbk1ng/agent-orch/issues/171))
+
 ## 0.3.14 — 2026-07-08
 - auto-docs mrbxg6l80 update documentation to reflect the latest merged changes
 
