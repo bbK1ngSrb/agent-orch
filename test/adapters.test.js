@@ -9,6 +9,7 @@ import { buildArgs as claudeArgs } from "../src/adapters/claude.js";
 import { buildArgs as codexArgs } from "../src/adapters/codex.js";
 import { buildArgs as copilotArgs } from "../src/adapters/copilot.js";
 import { buildArgs as geminiArgs } from "../src/adapters/gemini.js";
+import { buildArgs as grokArgs } from "../src/adapters/grok.js";
 import { get } from "../src/adapters/index.js";
 import { makeCliAdapter, isUsageLimit, parseRunUsage } from "../src/adapters/cli-adapter.js";
 
@@ -65,6 +66,15 @@ test("gemini buildArgs uses prompt mode with non-interactive approval", () => {
 test("gemini buildArgs appends --model when given", () => {
   assert.deepEqual(geminiArgs("PROMPT", "/wd", { model: "gemini-2.5-pro" }),
     ["-p", "PROMPT", "--yolo", "--model", "gemini-2.5-pro"]);
+});
+
+test("grok buildArgs uses prompt mode", () => {
+  assert.deepEqual(grokArgs("PROMPT", "/wd"), ["-p", "PROMPT"]);
+});
+
+test("grok buildArgs appends --model when given", () => {
+  assert.deepEqual(grokArgs("PROMPT", "/wd", { model: "grok-4" }),
+    ["-p", "PROMPT", "--model", "grok-4"]);
 });
 
 test("buildArgs omits model/effort flags when absent (no regression)", () => {
@@ -394,6 +404,7 @@ test("registry resolves known adapters and rejects unknown", () => {
   assert.equal(get("codex").name, "codex");
   assert.equal(get("copilot").name, "copilot");
   assert.equal(get("gemini").name, "gemini");
+  assert.equal(get("grok").name, "grok");
   assert.throws(() => get("nope"), /unknown agent/);
 });
 
@@ -410,4 +421,5 @@ test("adapter exposes bin for preflight", () => {
   assert.equal(get("claude").bin, "claude"); // name === bin for native agents
   assert.equal(get("copilot").bin, "copilot");
   assert.equal(get("gemini").bin, "gemini");
+  assert.equal(get("grok").bin, "grok");
 });

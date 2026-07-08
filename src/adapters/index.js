@@ -3,9 +3,10 @@ import claude from "./claude.js";
 import codex from "./codex.js";
 import copilot from "./copilot.js";
 import gemini from "./gemini.js";
+import grok from "./grok.js";
 import local from "./local.js";
 
-const REGISTRY = { agy, claude, codex, copilot, gemini, ...local };
+const REGISTRY = { agy, claude, codex, copilot, gemini, grok, ...local };
 
 export function get(name) {
   const a = REGISTRY[name];
