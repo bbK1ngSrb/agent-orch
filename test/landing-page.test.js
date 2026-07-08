@@ -36,4 +36,16 @@ test("landing page privacy claim is not the inaccurate all-local one", () => {
     !html.includes("all on your machine"),
     "inaccurate 'all on your machine' meta description",
   );
+  // The body copy overclaimed the same way the meta description did. The agents
+  // (Claude/Codex/Copilot/Gemini) send code to remote model APIs, so orch's
+  // compute is NOT wholly local — only its orchestration is. Guard the two
+  // body phrasings that implied otherwise.
+  assert.ok(
+    !html.includes("No cloud execution"),
+    "inaccurate 'No cloud execution' feature-card claim",
+  );
+  assert.ok(
+    !html.includes("runs entirely on your machine"),
+    "inaccurate 'runs entirely on your machine' hero claim",
+  );
 });
