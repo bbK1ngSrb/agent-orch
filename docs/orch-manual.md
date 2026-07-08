@@ -565,6 +565,7 @@ test: auto                       # or an explicit command, e.g. "pytest -q"
 reviseCap: 3                     # max revise rounds before escalation
 stageTimeout: 25                 # per-stage wall-clock cap, minutes; 0 = off
 concurrency: 4                   # max concurrent cycles per repo dir
+baseBranch: main                 # trunk orch reads/diffs/opens PRs against; e.g. dev if main is deploy-only
 integrationBranch: orch/integration
 merge: no-ff                     # ff-only | no-ff | pr
 

@@ -327,6 +327,25 @@ export function syncWorktreeToIntegration(integrationPath, branch = "orch/integr
   git(["clean", "-fd"], integrationPath);
 }
 
+// If GitHub advanced the base branch after the last integration PR merge,
+// integration can be cleanly behind it. Fast-forward that safe prefix case
+// before landing more local work; never rewrite or discard integration commits.
+export function reconcileIntegrationToBase(integrationPath, base = "main") {
+  const head = git(["rev-parse", "HEAD"], integrationPath);
+  const target = git(["rev-parse", base], integrationPath);
+  if (head === target) return { ok: true, updated: false };
+  if (!gitTry(["merge-base", "--is-ancestor", "HEAD", base], integrationPath).ok) {
+    return { ok: true, updated: false, skipped: "not-fast-forward" };
+  }
+  try {
+    git(["merge", "--ff-only", base], integrationPath);
+    return { ok: true, updated: true, from: head, to: target };
+  } catch (e) {
+    const reason = (e.stderr || e.stdout || e.message || "").toString().trim();
+    return { ok: false, reason: `could not fast-forward integration to ${base}: ${reason}` };
+  }
+}
+
 // Merge `branch` into the worktree's checked-out main. On any failure, abort so
 // the worktree is left clean for the next finalize.
 export function mergeInWorktree(integrationPath, branch, mode, message = null) {

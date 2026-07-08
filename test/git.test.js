@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, mergeInWorktree, changedFiles, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, mergeInWorktree, changedFiles, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -248,6 +248,41 @@ test("ensureIntegrationWorktree branches the fresh integration branch off a cust
 
   assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], integ), "orch/integration");
   assert.match(git(["log", "--oneline", "orch/integration"], repo), /dev-only commit/);
+});
+
+test("reconcileIntegrationToBase fast-forwards integration when it is cleanly behind base", () => {
+  const repo = newRepo();
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "main.txt"), "main\n");
+  git(["add", "main.txt"], repo);
+  git(["commit", "-m", "advance main"], repo);
+  syncWorktreeToIntegration(integ);
+
+  const r = reconcileIntegrationToBase(integ, "main");
+
+  assert.equal(r.ok, true);
+  assert.equal(r.updated, true);
+  assert.equal(git(["rev-parse", "orch/integration"], repo), git(["rev-parse", "main"], repo));
+});
+
+test("reconcileIntegrationToBase never rewrites integration-only commits", () => {
+  const repo = newRepo();
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  commitFile(integ, "integration.txt", "integration\n", "advance integration");
+  git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "main.txt"), "main\n");
+  git(["add", "main.txt"], repo);
+  git(["commit", "-m", "advance main"], repo);
+  syncWorktreeToIntegration(integ);
+  const before = git(["rev-parse", "orch/integration"], repo);
+
+  const r = reconcileIntegrationToBase(integ, "main");
+
+  assert.equal(r.ok, true);
+  assert.equal(r.updated, false);
+  assert.equal(r.skipped, "not-fast-forward");
+  assert.equal(git(["rev-parse", "orch/integration"], repo), before);
 });
 
 test("ff-only merge fails when integration moved past the branch base", () => {

@@ -68,6 +68,13 @@ export async function finalize(ctx, deps) {
     const integrationBranch = cfg.integrationBranch || "orch/integration";
     const integration = git.ensureIntegrationWorktree(repo, orchDir, integrationBranch, baseBranch);
     git.syncWorktreeToIntegration(integration, integrationBranch);
+    const integrationSync = git.reconcileIntegrationToBase(integration, baseBranch);
+    if (!integrationSync.ok) {
+      return demote(ctx, deps, demoteReason(ctx, {
+        trigger: "main-sync-failed",
+        mergeReason: integrationSync.reason,
+      }));
+    }
 
     // Guard 1: file-overlap with live in-flight peers only, read under the lock so it
     // is consistent. A peer hasn't landed yet, so Guard 2 can't see its changes and
