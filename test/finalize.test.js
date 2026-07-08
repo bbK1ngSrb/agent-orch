@@ -16,6 +16,7 @@ function baseDeps(over = {}) {
       reconcileIntegrationToBase: () => ({ ok: true, updated: false }),
       changedSince: () => [],
       mergeInWorktree: () => ({ ok: true, reason: "merged" }),
+      bumpVersion: () => "0.1.1",
       verifyOriginContains: () => ({ ok: true }),
       git: (args) => (args[0] === "rev-parse" ? "deadbee" : ""),
     },
@@ -247,14 +248,36 @@ test("issue bridge: closes #N reaches github.demote when a merge is blocked", as
   assert.equal(capturedCtx.closes, 52);
 });
 
-test("clean merge does not create an integration-only release bump", async () => {
-  let bumped = false;
+test("clean merge → version bump runs against the integration worktree", async () => {
+  let bumpArgs;
   const { deps } = baseDeps({
-    git: { ...baseDeps().deps.git, bumpVersion: () => { bumped = true; } },
+    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merged");
-  assert.equal(bumped, false);
+  assert.equal(bumpArgs.path, "/integ");
+  assert.equal(bumpArgs.entry, "pr/claude/x-1");
+});
+
+test("clean merge with task: version bump entry uses the human title", async () => {
+  let bumpArgs;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
+  });
+  await finalize({ ...ctx(), task: "Demote escalation output too terse for humans" }, deps);
+  assert.equal(bumpArgs.entry, "Demote escalation output too terse for humans");
+});
+
+test("clean merge with closes: version bump entry links the issue number", async () => {
+  let bumpArgs;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
+  });
+  await finalize({ ...ctx(), task: "Demote escalation output too terse for humans", closes: 53 }, deps);
+  assert.equal(
+    bumpArgs.entry,
+    "Demote escalation output too terse for humans (closes [#53](https://github.com/bbk1ng/agent-orch/issues/53))",
+  );
 });
 
 test("post-merge test failure → version bump never runs (rolled back first)", async () => {
