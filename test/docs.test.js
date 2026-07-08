@@ -13,6 +13,7 @@ const landing = read("docs/index.html");
 const manual = read("docs/orch-manual.md");
 const exampleConfig = read("orch.example.yml");
 const coc = read("CODE_OF_CONDUCT.md");
+const changelog = read("CHANGELOG.md");
 
 test("the CLI bin is `orch`", () => {
   assert.deepEqual(Object.keys(pkg.bin), ["orch"]);
@@ -134,4 +135,14 @@ test("the GitHub-merge surface (orch-docs Action) exists and is documented", () 
 test("CODE_OF_CONDUCT gives an actionable private contact for enforcement", () => {
   const enforcement = coc.slice(coc.indexOf("## Enforcement"));
   assert.match(enforcement, /[\w.+-]+@[\w-]+\.[\w.-]+/); // a real email address
+});
+
+test("CHANGELOG documents the latest merged fixes", () => {
+  const unreleased = changelog.slice(
+    changelog.indexOf("## Unreleased"),
+    changelog.indexOf("## 0.3.18"),
+  );
+  assert.match(unreleased, /numeric PR id/);
+  assert.match(unreleased, /designer-template leftovers/);
+  assert.match(unreleased, /escaping nested `<\/script>` close tags/);
 });
