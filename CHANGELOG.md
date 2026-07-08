@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.14 — 2026-07-08
+- auto-docs mrbxg6l80 update documentation to reflect the latest merged changes
+
 ## 0.3.13 — 2026-07-08
 - orch/integration chronically diverges from main, forcing manual reset --hard + force-push (closes [#172](https://github.com/bbk1ng/agent-orch/issues/172))
 
