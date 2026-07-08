@@ -68,6 +68,13 @@ export async function finalize(ctx, deps) {
     const integrationBranch = cfg.integrationBranch || "orch/integration";
     const integration = git.ensureIntegrationWorktree(repo, orchDir, integrationBranch, baseBranch);
     git.syncWorktreeToIntegration(integration, integrationBranch);
+    const integrationSync = git.reconcileIntegrationToBase(integration, baseBranch);
+    if (!integrationSync.ok) {
+      return demote(ctx, deps, demoteReason(ctx, {
+        trigger: "main-sync-failed",
+        mergeReason: integrationSync.reason,
+      }));
+    }
 
     // Guard 1: file-overlap with live in-flight peers only, read under the lock so it
     // is consistent. A peer hasn't landed yet, so Guard 2 can't see its changes and
@@ -178,17 +185,57 @@ function overlapDetails(mine, landedPaths, peerPaths, peerEntries = []) {
   return { any: landed.length > 0 || peer.length > 0, landed, peer, peers };
 }
 
+// The hand-off from robot to human. An operator reading this needs to see at a
+// glance that the change is *approved and green* and merely lost the automatic
+// landing step — so we lead with teaching-toned prose (the repo mandates it),
+// keep every machine fact (trigger, rounds, testCmd, baseSha, paths), and tuck
+// the raw git conflict dump into a collapsed <details> so it informs without
+// burying the signal.
 function demoteReason(ctx, details) {
   const { baseSha, paths, rounds, testCmd } = ctx;
-  const lines = [
-    `trigger: ${details.trigger}`,
-    `review: AGREE after ${rounds} round(s)`,
-    `test gate: passed on branch (${testCmd})`,
-    `branch state: base ${baseSha}; ${details.integrationBranch || "integration"} ${details.integrationTip || "unknown"}`,
-    `branch paths: ${list(paths)}`,
+  const integ = details.integrationBranch || "integration";
+  const out = [
+    "## Why this PR exists",
+    "",
+    "This change is **approved** — the agents agreed after review — and **green**: the test gate " +
+    `(\`${testCmd}\`) passed on the branch. orch could not land it automatically, so it fell back to ` +
+    "opening this pull request. That fallback path (\"PR-fallback\") means the work is sound; it only " +
+    "lost the automatic-landing step, usually to a race with another cycle that landed first.",
+    "",
+    "## What blocked the automatic landing",
+    "",
+    ...blockedSection(details),
+    "",
+    "## Signals",
+    "",
+    "| signal | value |",
+    "| --- | --- |",
+    `| review | AGREE after ${rounds} round(s) |`,
+    `| test gate | passed on branch (${testCmd}) |`,
+    `| trigger | ${details.trigger} |`,
+    `| mergeability vs base | blocked — base ${baseSha}; ${integ} ${details.integrationTip || "unknown"} |`,
+    `| branch paths | ${list(paths)} |`,
+    "",
+    "## Next step",
+    "",
+    nextStep(details.trigger),
   ];
 
+  return out.join("\n");
+}
+
+// Plain-words explanation of the blocker, per trigger. Keeps the machine facts
+// (conflicting paths, peer overlap, the raw merge output) but frames them so a
+// human knows whether they are staring at a mechanical release-churn collision
+// or a real logic conflict.
+function blockedSection(details) {
   if (details.trigger === "overlap") {
+    const lines = [
+      "**Overlap.** Another cycle landed (or is landing) changes to files this branch also touches, so " +
+      "orch can no longer prove the two edits are independent — merging blind could silently clobber the " +
+      "other work, so it demoted instead.",
+      "",
+    ];
     if (details.overlap.landed.length) lines.push(`landed overlap: ${list(details.overlap.landed)}`);
     if (details.landedCommits) lines.push(`landed commits: ${details.landedCommits.split("\n").map(oneLine).join("; ")}`);
     if (details.overlap.peers.length) {
@@ -196,26 +243,73 @@ function demoteReason(ctx, details) {
     } else if (details.overlap.peer.length) {
       lines.push(`peer overlap: ${list(details.overlap.peer)}`);
     }
-    lines.push("next action: inspect the listed overlap, rebase or refresh the branch if needed, then rerun orch review before merging.");
-  } else if (details.trigger === "conflict") {
+    return lines;
+  }
+  if (details.trigger === "conflict") {
     const mergeReason = String(details.mergeReason || "").trim();
-    lines.push(mergeReason ? `merge result:\n\`\`\`\n${mergeReason}\n\`\`\`` : "merge result: merge failed");
     const conflicts = conflictPaths(details.mergeReason);
+    const lines = [
+      "**Merge conflict.** git could not combine this branch with the integration branch on its own, " +
+      "because both sides changed the same lines. Conflicts confined to release-churn files " +
+      "(`CHANGELOG.md`, `package-lock.json`, `src/version.js`) are landing-race collisions and resolve " +
+      "mechanically; conflicts anywhere else are real content overlaps worth a closer read.",
+      "",
+    ];
     if (conflicts.length) lines.push(`conflicting paths: ${list(conflicts)}`);
     if (details.advice) lines.push(`advice: ${oneLine(details.advice)}`);
-    lines.push("next action: resolve the merge conflict, then rerun orch review.");
-  } else if (details.trigger === "post-merge-test-fail") {
-    lines.push("integration gate: failed after merge; integration was reset to the pre-merge tip.");
-    lines.push("next action: fix the integrated test failure, then rerun orch review.");
-  } else if (details.trigger === "merge-lock timeout") {
-    lines.push("merge lock: timed out before touching the integration worktree.");
-    lines.push("next action: retry after the active merge finishes.");
-  } else if (details.trigger === "main-sync-failed") {
-    lines.push(`main sync: ${oneLine(details.mergeReason) || "failed"}`);
-    lines.push("next action: inspect local main versus origin/main, then rerun orch review after main is synchronized.");
+    lines.push(
+      "",
+      "<details><summary>raw merge output</summary>",
+      "",
+      mergeReason ? `merge result:\n\`\`\`\n${mergeReason}\n\`\`\`` : "merge result: merge failed",
+      "",
+      "</details>",
+    );
+    return lines;
   }
+  if (details.trigger === "post-merge-test-fail") {
+    return [
+      "**Post-merge test failure.** The branch merged cleanly, but the test suite went red on the combined " +
+      "tree — the two changes are individually green yet conflict in behaviour. orch reset the integration " +
+      "branch to its pre-merge tip, so nothing was left half-landed.",
+      "",
+      "integration gate: failed after merge; integration was reset to the pre-merge tip.",
+    ];
+  }
+  if (details.trigger === "merge-lock timeout") {
+    return [
+      "**Merge-lock timeout.** Another merge held the lock past the timeout, so this cycle never got to " +
+      "touch the integration worktree. Nothing is wrong with the branch itself.",
+      "",
+      "merge lock: timed out before touching the integration worktree.",
+    ];
+  }
+  if (details.trigger === "main-sync-failed") {
+    return [
+      "**Main out of sync.** orch could not fast-forward local main to origin, so it refused to land " +
+      "against a possibly stale base rather than risk a bad merge.",
+      "",
+      `main sync: ${oneLine(details.mergeReason) || "failed"}`,
+    ];
+  }
+  return [`trigger: ${details.trigger}`];
+}
 
-  return lines.join("\n");
+function nextStep(trigger) {
+  switch (trigger) {
+    case "overlap":
+      return "next action: inspect the listed overlap, rebase or refresh the branch if needed, then rerun orch review before merging.";
+    case "conflict":
+      return "next action: resolve the merge conflict, then rerun orch review.";
+    case "post-merge-test-fail":
+      return "next action: fix the integrated test failure, then rerun orch review.";
+    case "merge-lock timeout":
+      return "next action: retry after the active merge finishes.";
+    case "main-sync-failed":
+      return "next action: inspect local main versus origin/main, then rerun orch review after main is synchronized.";
+    default:
+      return "next action: review the branch manually, then rerun orch review.";
+  }
 }
 
 function conflictPaths(reason = "") {

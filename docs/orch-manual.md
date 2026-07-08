@@ -276,10 +276,14 @@ Resumes an interrupted or stalled cycle from its checkpoint (see §4.3 on
 crash recovery). You'll be told the `sid` to use when a cycle dies mid-way;
 you don't normally invent one yourself.
 
-If the checkpoint points at a branch that no longer exists locally, `orch`
-clears that stale resume state and exits cleanly. If the branch still exists
-as `origin/<branch>`, `orch` refuses to continue until you check it out
-locally, so it never resumes against a branch it cannot inspect.
+If the checkpoint's branch no longer exists **locally**, `orch continue`
+first checks whether it survives on the remote. If it only lives as
+`origin/<branch>` (e.g. the local branch was pruned but the work was pushed),
+you get an error telling you to check it out locally before continuing —
+orch won't silently re-fetch it. If the branch is gone everywhere, the
+checkpoint points at work that no longer exists, so orch clears the stale
+resume state and exits cleanly rather than failing on every subsequent
+`continue` for that dead `sid`.
 
 ### 2.9 `orch dashboard [--json] [--limit N]`
 
@@ -518,11 +522,11 @@ A finer-grained checkpoint inside a resumed cycle also remembers each
 completed review round's verdict and whether the test gate already passed,
 so a crash mid-review doesn't force a full re-audit or re-test.
 
-When `orch continue <sid>` finds that the saved branch has disappeared
-locally, it clears the stale checkpoint/inflight state instead of failing the
-next resume forever. A remote-only `origin/<branch>` is treated differently:
-check it out locally first, then continue, because orch only resumes branches
-it can inspect in the local repo.
+If the checkpoint outlives its branch (you deleted it, or it only ever landed
+on the remote), `orch continue` no longer dies with a bare "branch no longer
+exists": it distinguishes a remote-only branch (stop and ask you to check it
+out) from a truly-gone one (clear the orphaned checkpoint/inflight record and
+exit clean), so stale resume state can't wedge later runs.
 
 `--dry` never deletes worktrees or branches, ever.
 
