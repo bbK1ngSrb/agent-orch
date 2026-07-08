@@ -9,6 +9,7 @@ const read = (rel) =>
 const pkg = JSON.parse(read("package.json"));
 const readme = read("README.md");
 const design = read("docs/design.md");
+const manual = read("docs/orch-manual.md");
 const exampleConfig = read("orch.example.yml");
 const coc = read("CODE_OF_CONDUCT.md");
 
@@ -59,6 +60,15 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /docs.autoUpdate/);
   assert.match(readme, /[Ll]oop guard/);
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
+});
+
+test("docs explain stale `orch continue` resume handling", () => {
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /orch continue <sid>/);
+    assert.match(doc, /stale/);
+    assert.match(doc, /origin\/<branch>/);
+    assert.match(doc, /check it out locally/);
+  }
 });
 
 test("the GitHub-merge surface (orch-docs Action) exists and is documented", () => {
