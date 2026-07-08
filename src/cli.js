@@ -545,6 +545,10 @@ export function fetchIssueWorkOrder(n, gh) {
   return v.workOrder;
 }
 
+function remoteBranchRefExists(repo, branch) {
+  return git.gitTry(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], repo).ok;
+}
+
 export function resolveTaskBranch(ctx, deps = { git, resume }) {
   const { repo, orchDir, task, authorName, dry = false, liveBranches = new Set(), baseBranch = "main" } = ctx;
   const { git: g, resume: r } = deps;
@@ -979,7 +983,16 @@ export async function main(argv, deps = {}) {
     }
     const branch = ck?.branch || inf?.branch;
     if (!branch) throw new Error(`orch: no checkpoint or inflight record for sid ${sid} — nothing to resume`);
-    if (!git.branchExists(repo, branch)) throw new Error(`orch: branch ${branch} (sid ${sid}) no longer exists`);
+    if (!git.branchExists(repo, branch)) {
+      if (remoteBranchRefExists(repo, branch)) throw new Error(`orch: branch ${branch} (sid ${sid}) exists only as origin/${branch}; check it out locally before continuing`);
+      if (!dry) {
+        if (ck) checkpoint.clear(orchDir, sid);
+        if (inf) inflight.deregister(orchDir, sid);
+        console.log(`orch: branch ${branch} (sid ${sid}) no longer exists; cleared stale resume state`);
+        return;
+      }
+      throw new Error(`orch: branch ${branch} (sid ${sid}) no longer exists`);
+    }
     // inflight-only fallback (no checkpoint ever written): the run may have died
     // before the author committed anything — unlike the checkpoint path, an
     // inflight record alone doesn't prove there's work to review/merge.
