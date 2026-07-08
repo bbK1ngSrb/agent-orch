@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { finalize } from "../src/finalize.js";
+import * as gitMod from "../src/git.js";
 
 function baseDeps(over = {}) {
   const recorded = [];
@@ -9,9 +13,9 @@ function baseDeps(over = {}) {
       syncMainFromOrigin: () => ({ ok: true }),
       ensureIntegrationWorktree: () => "/integ",
       syncWorktreeToIntegration: () => {},
+      reconcileIntegrationToBase: () => ({ ok: true, updated: false }),
       changedSince: () => [],
       mergeInWorktree: () => ({ ok: true, reason: "merged" }),
-      bumpVersion: () => "0.1.1",
       verifyOriginContains: () => ({ ok: true }),
       git: (args) => (args[0] === "rev-parse" ? "deadbee" : ""),
     },
@@ -31,6 +35,42 @@ const ctx = () => ({
   repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", sid: "1",
   baseSha: "base", paths: ["src/a.js"], testCmd: "npm test", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1,
 });
+
+function newRepo() {
+  const d = mkdtempSync(join(tmpdir(), "orch-finalize-"));
+  gitMod.git(["init", "-b", "main"], d);
+  gitMod.git(["config", "user.email", "t@t"], d);
+  gitMod.git(["config", "user.name", "t"], d);
+  gitMod.git(["config", "core.autocrlf", "false"], d);
+  writeFileSync(join(d, "README.md"), "init\n");
+  gitMod.git(["add", "."], d);
+  gitMod.git(["commit", "-m", "init"], d);
+  return d;
+}
+
+function addOrigin(repo) {
+  const remote = mkdtempSync(join(tmpdir(), "orch-finalize-remote-"));
+  gitMod.git(["init", "--bare", "-b", "main"], remote);
+  gitMod.git(["remote", "add", "origin", remote], repo);
+  gitMod.git(["push", "-u", "origin", "main"], repo);
+  return remote;
+}
+
+function cloneRemote(remote) {
+  const parent = mkdtempSync(join(tmpdir(), "orch-finalize-peer-"));
+  const peer = join(parent, "repo");
+  gitMod.git(["clone", remote, peer], parent);
+  gitMod.git(["config", "user.email", "t@t"], peer);
+  gitMod.git(["config", "user.name", "t"], peer);
+  gitMod.git(["config", "core.autocrlf", "false"], peer);
+  return peer;
+}
+
+function commitFile(repo, file, text, msg) {
+  writeFileSync(join(repo, file), text);
+  gitMod.git(["add", "."], repo);
+  gitMod.git(["commit", "-m", msg], repo);
+}
 
 test("clean path → merged + recorded", async () => {
   const { deps, recorded } = baseDeps();
@@ -207,36 +247,14 @@ test("issue bridge: closes #N reaches github.demote when a merge is blocked", as
   assert.equal(capturedCtx.closes, 52);
 });
 
-test("clean merge → version bump runs against the integration worktree", async () => {
-  let bumpArgs;
+test("clean merge does not create an integration-only release bump", async () => {
+  let bumped = false;
   const { deps } = baseDeps({
-    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
+    git: { ...baseDeps().deps.git, bumpVersion: () => { bumped = true; } },
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merged");
-  assert.equal(bumpArgs.path, "/integ");
-  assert.equal(bumpArgs.entry, "pr/claude/x-1");
-});
-
-test("clean merge with task: version bump entry uses the human title", async () => {
-  let bumpArgs;
-  const { deps } = baseDeps({
-    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
-  });
-  await finalize({ ...ctx(), task: "Demote escalation output too terse for humans" }, deps);
-  assert.equal(bumpArgs.entry, "Demote escalation output too terse for humans");
-});
-
-test("clean merge with closes: version bump entry links the issue number", async () => {
-  let bumpArgs;
-  const { deps } = baseDeps({
-    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
-  });
-  await finalize({ ...ctx(), task: "Demote escalation output too terse for humans", closes: 53 }, deps);
-  assert.equal(
-    bumpArgs.entry,
-    "Demote escalation output too terse for humans (closes [#53](https://github.com/bbk1ng/agent-orch/issues/53))",
-  );
+  assert.equal(bumped, false);
 });
 
 test("post-merge test failure → version bump never runs (rolled back first)", async () => {
@@ -337,6 +355,50 @@ test("passes cfg.baseBranch into syncMainFromOrigin and ensureIntegrationWorktre
   assert.equal(r.status, "merged");
   assert.deepEqual(calls[0], ["sync", "dev"]);
   assert.deepEqual(calls[1], ["ensure", "orch/integration", "dev"]);
+});
+
+test("direct-to-main advance followed by finalize leaves integration ahead, not diverged", async () => {
+  const repo = newRepo();
+  const remote = addOrigin(repo);
+  const orchDir = join(repo, ".orch");
+
+  gitMod.git(["checkout", "-b", "pr/claude/x"], repo);
+  commitFile(repo, "feature.txt", "feature\n", "feature");
+  gitMod.git(["checkout", "main"], repo);
+  gitMod.ensureIntegrationWorktree(repo, orchDir);
+
+  const peer = cloneRemote(remote);
+  commitFile(peer, "direct.txt", "direct\n", "direct to main");
+  gitMod.git(["push", "origin", "main"], peer);
+
+  const recorded = [];
+  const r = await finalize({
+    repo,
+    orchDir,
+    branch: "pr/claude/x",
+    sid: "direct-main",
+    baseSha: "base",
+    paths: ["feature.txt"],
+    testCmd: "true",
+    cfg: { merge: "no-ff", integrationBranch: "orch/integration" },
+    rounds: 1,
+  }, {
+    git: gitMod,
+    gate: { run: () => ({ pass: true, log: "" }) },
+    lock: { acquireBlocking: () => true, releaseLock: () => {} },
+    inflight: { peerPaths: () => [] },
+    github: { demote: async () => ({ prUrl: null }), openIntegrationPr: async () => ({ prUrl: null }) },
+    notify: { recordRun: (_d, e) => recorded.push(e), cleanupReviews: () => {} },
+  });
+
+  assert.equal(r.status, "merged");
+  assert.equal(recorded[0].verdict, "merged");
+  const counts = gitMod.git(["rev-list", "--left-right", "--count", "origin/main...orch/integration"], repo)
+    .split(/\s+/)
+    .map(Number);
+  assert.equal(counts[0], 0);
+  assert.ok(counts[1] > 0);
+  assert.doesNotThrow(() => gitMod.git(["merge-base", "--is-ancestor", "origin/main", "orch/integration"], repo));
 });
 
 test("main diverged from origin at merge time → pr-fallback (no merge attempted, GitHub main preserved)", async () => {
