@@ -376,6 +376,17 @@ test("openIntegrationPr creates the persistent integration PR and enables auto-m
   // next time.
   const direct = calls.find((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge")));
   assert.ok(direct, "a direct merge attempt must follow the --auto call");
+  // #182: the REST merge endpoint is keyed by numeric PR id. On the create
+  // path the number comes from the create URL, not the head-branch name —
+  // passing "orch/integration" here builds pulls/orch/integration/merge → 404.
+  assert.ok(
+    direct.some((a) => a.includes("pulls/12/merge")),
+    "direct merge must target the numeric PR id, not the branch name",
+  );
+  assert.ok(
+    !direct.some((a) => a.includes("orch/integration/merge")),
+    "direct merge must not use the branch name in the REST path",
+  );
 });
 
 test("openIntegrationPr lists and creates the persistent PR against cfg.baseBranch", async () => {
