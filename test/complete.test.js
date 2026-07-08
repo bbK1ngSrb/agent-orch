@@ -49,9 +49,11 @@ test("unmerged branch + interactive YES: warns with ❗, force-deletes after con
     confirmAnswer: true,
     git: { deleteBranchSafe: (_r, br) => ({ ok: false, unmerged: true }) },
   });
-  const r = await finishRun(ctx({ merged: ["orch/foo"] }), deps);
+  const r = await finishRun(ctx({ merged: ["orch/foo"], integrationBranch: "orch/integration" }), deps);
   assert.equal(calls.confirms.length, 1);
   assert.match(calls.confirms[0], /❗/);
+  assert.match(calls.confirms[0], /merged into orch\/integration/);
+  assert.doesNotMatch(calls.confirms[0], /into main/);
   assert.match(calls.confirms[0], /cannot be undone/i);
   assert.deepEqual(calls.forced, ["orch/foo"]);
   assert.deepEqual(r.deleted, ["orch/foo"]);

@@ -321,6 +321,24 @@ test("re-syncs local main from origin before touching the integration worktree",
   assert.deepEqual(calls, ["sync", "ensure:orch/integration"]);
 });
 
+test("passes cfg.baseBranch into syncMainFromOrigin and ensureIntegrationWorktree", async () => {
+  const calls = [];
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: {
+      ...g,
+      syncMainFromOrigin: (_repo, base) => { calls.push(["sync", base]); return { ok: true }; },
+      ensureIntegrationWorktree: (_repo, _orchDir, branch, base) => { calls.push(["ensure", branch, base]); return "/integ"; },
+    },
+  });
+
+  const r = await finalize({ ...ctx(), cfg: { merge: "no-ff", integrationBranch: "orch/integration", baseBranch: "dev" } }, deps);
+
+  assert.equal(r.status, "merged");
+  assert.deepEqual(calls[0], ["sync", "dev"]);
+  assert.deepEqual(calls[1], ["ensure", "orch/integration", "dev"]);
+});
+
 test("main diverged from origin at merge time → pr-fallback (no merge attempted, GitHub main preserved)", async () => {
   let merged = false;
   const { deps, recorded } = baseDeps({

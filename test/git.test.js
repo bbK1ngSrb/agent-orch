@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, mergeInWorktree, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, mergeInWorktree, changedFiles, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -26,6 +26,14 @@ function addOrigin(repo) {
   git(["init", "--bare", "-b", "main"], remote);
   git(["remote", "add", "origin", remote], repo);
   git(["push", "-u", "origin", "main"], repo);
+  return remote;
+}
+
+function addOriginNamed(repo, branch) {
+  const remote = mkdtempSync(join(tmpdir(), "orch-remote-"));
+  git(["init", "--bare", "-b", branch], remote);
+  git(["remote", "add", "origin", remote], repo);
+  git(["push", "-u", "origin", branch], repo);
   return remote;
 }
 
@@ -216,6 +224,30 @@ test("ensureIntegrationWorktree uses a dedicated branch and leaves main availabl
   assert.equal(r.ok, true);
   assert.match(git(["log", "--oneline", "orch/integration"], repo), /add b/); // integration branch actually advanced
   assert.doesNotMatch(git(["log", "--oneline", "main"], repo), /add b/);
+});
+
+test("changedFiles diffs against a custom base branch", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "dev"], repo);
+  git(["checkout", "-b", "feature"], repo);
+  commitFile(repo, "f.txt", "x\n", "add f");
+  assert.deepEqual(changedFiles(repo, "feature", "dev"), ["f.txt"]);
+
+  git(["checkout", "dev"], repo);
+  git(["merge", "feature"], repo);
+  git(["checkout", "feature"], repo);
+  assert.deepEqual(changedFiles(repo, "feature", "dev"), []);
+});
+
+test("ensureIntegrationWorktree branches the fresh integration branch off a custom base", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "dev"], repo);
+  commitFile(repo, "d.txt", "1\n", "dev-only commit");
+
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"), "orch/integration", "dev");
+
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], integ), "orch/integration");
+  assert.match(git(["log", "--oneline", "orch/integration"], repo), /dev-only commit/);
 });
 
 test("ff-only merge fails when integration moved past the branch base", () => {
@@ -472,6 +504,23 @@ test("syncMainFromOrigin refuses local main ahead of origin/main", () => {
   assert.match(r.reason, /ahead/);
 });
 
+test("syncMainFromOrigin follows a custom base branch, not main", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "dev"], repo);
+  const remote = addOriginNamed(repo, "dev");
+
+  const peer = cloneRemote(remote);
+  git(["checkout", "dev"], peer);
+  commitFile(peer, "c.txt", "3\n", "peer commit on dev");
+  git(["push", "origin", "dev"], peer);
+
+  const r = syncMainFromOrigin(repo, "dev");
+
+  assert.equal(r.ok, true);
+  assert.equal(r.updated, true);
+  assert.match(git(["log", "--oneline", "dev"], repo), /peer commit on dev/);
+});
+
 test("verifyOriginContains checks ancestry against refs/remotes/origin/main", () => {
   const repo = newRepo();
   addOrigin(repo);
@@ -484,6 +533,14 @@ test("verifyOriginContains checks ancestry against refs/remotes/origin/main", ()
 
   git(["push", "origin", "main"], repo);
   assert.deepEqual(verifyOriginContains(repo, local), { ok: true });
+});
+
+test("verifyOriginContains checks the custom base branch's origin ref", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "dev"], repo);
+  addOriginNamed(repo, "dev");
+  const local = git(["rev-parse", "dev"], repo);
+  assert.deepEqual(verifyOriginContains(repo, local, "dev"), { ok: true });
 });
 
 test("reclaim PRESERVES a worktree whose branch is in liveBranches even when marker has dead pid (final-review I3)", () => {

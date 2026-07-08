@@ -13,7 +13,8 @@ const DEFAULTS = {
   stageTimeout: 25, // #56: per-stage wall-clock cap in MINUTES; 0 disables. A stalled
                     // codex/claude stage is killed and the cycle fails (nonzero exit)
                     // instead of hanging forever on an infinite "still running" heartbeat.
-  integrationBranch: "orch/integration", // local merge target; main is advanced only by GitHub PR + ff-only fetch
+  baseBranch: "main", // trunk orch reads from, diffs against, and opens PRs to
+  integrationBranch: "orch/integration", // local merge target; baseBranch is advanced only by GitHub PR + ff-only fetch
   merge: "no-ff", // ff-only | no-ff | pr — "pr" skips local integration: an AGREE+green
                   // cycle opens a per-cycle PR (github.openPr) instead of git.mergeInWorktree
   concurrency: 4, // max concurrent cycles per repo dir; over this, a cycle exits rather than blocks
@@ -50,6 +51,8 @@ function validate(cfg) {
     throw new Error("orch.yml: reviseCap must be a positive integer");
   if (!Number.isInteger(cfg.stageTimeout) || cfg.stageTimeout < 0)
     throw new Error("orch.yml: stageTimeout must be a non-negative integer (minutes; 0 disables)");
+  if (typeof cfg.baseBranch !== "string" || !cfg.baseBranch.trim())
+    throw new Error("orch.yml: baseBranch must be a non-empty string");
   if (typeof cfg.integrationBranch !== "string" || !cfg.integrationBranch.trim())
     throw new Error("orch.yml: integrationBranch must be a non-empty string");
   if (!Number.isInteger(cfg.concurrency) || cfg.concurrency < 1)

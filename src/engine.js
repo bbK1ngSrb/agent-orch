@@ -18,6 +18,7 @@ function roundRawOutput(verdicts) {
 export async function runCycle(opts, deps) {
   const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false, sid, resume = false } = opts;
   const { adapters, git, gate, scope, notify, finalize, inflight, checkpoint } = deps;
+  const baseBranch = cfg.baseBranch || "main";
   // Role specs carry optional model/effort. Fall back to bare names so callers
   // that pass only authorName/reviewerNames (e.g. the PR bridge) keep working.
   const authorSpec = opts.author || { agent: authorName };
@@ -76,9 +77,9 @@ export async function runCycle(opts, deps) {
   // commits are already there, so we skip the initial author step below.
   notify.phase("worktree", `${branch} (${mode}${resume ? ", resume" : ""})`);
   if (mode === "review" || resume) git.attachExistingBranch(repo, worktree, branch);
-  else git.createTaskBranch(repo, worktree, branch, "main", `${process.pid}\n${sid}`);
+  else git.createTaskBranch(repo, worktree, branch, baseBranch, `${process.pid}\n${sid}`);
 
-  const baseSha = git.git(["rev-parse", "main"], repo);
+  const baseSha = git.git(["rev-parse", baseBranch], repo);
 
   try {
     // F1: author step + scope gate only in task mode. Review never writes.
@@ -96,7 +97,7 @@ export async function runCycle(opts, deps) {
 
       // Scope gate (optional).
       if (cfg.scope.maxLines > 0) {
-        const n = scope.count(branch, worktree, cfg.scope.ignore);
+        const n = scope.count(branch, worktree, cfg.scope.ignore, baseBranch);
         if (n > cfg.scope.maxLines) {
           return recordTerminal(escalate(notify, orchDir, branch, 1,
             `scope: ${n} changed lines exceed cap ${cfg.scope.maxLines} — split the PR`));
@@ -105,7 +106,7 @@ export async function runCycle(opts, deps) {
     }
 
     // Publish changed paths for peer overlap checks (best-effort; finalize re-reads at land time).
-    if (inflight) inflight.setPaths(orchDir, sid, git.changedFiles(repo, branch), baseSha);
+    if (inflight) inflight.setPaths(orchDir, sid, git.changedFiles(repo, branch, baseBranch), baseSha);
 
     // Review mode escalates on first DISAGREE; task mode revises up to the cap.
     const cap = mode === "review" ? 1 : cfg.reviseCap;
@@ -215,7 +216,7 @@ export async function runCycle(opts, deps) {
         }
         // Compute the loop-guard signals BEFORE finalize: a ff merge makes
         // main...branch empty, so reading it post-merge always yields [].
-        const changed = git.changedFiles(repo, branch);
+        const changed = git.changedFiles(repo, branch, baseBranch);
         // §3c: protected-path floor at the MERGE boundary. Gating the FINAL diff
         // (not just round 1) covers the initial author, every revise, resume, and
         // an `orch review` merge — the same set CODEOWNERS guards at review time.
@@ -245,7 +246,7 @@ export async function runCycle(opts, deps) {
           branch,
           reviewerCase: verdict.reason,
           authorCase: mode === "review" ? "(review-only; no author)" : "see prior rounds",
-          diffSummary: safeDiff(git, repo, branch),
+          diffSummary: safeDiff(git, repo, branch, baseBranch),
           rounds: round,
         });
         notify.escalate(orchDir, branch, brief);
@@ -268,8 +269,8 @@ function escalate(notify, orchDir, branch, round, reason) {
   return { status: "escalated", reason, rounds: round };
 }
 
-function safeDiff(git, repo, branch) {
-  try { return git.git(["diff", "--stat", `main...${branch}`], repo); }
+function safeDiff(git, repo, branch, base = "main") {
+  try { return git.git(["diff", "--stat", `${base}...${branch}`], repo); }
   catch { return "(diff unavailable)"; }
 }
 

@@ -51,12 +51,13 @@ export async function finalize(ctx, deps) {
     return demote(ctx, deps, demoteReason(ctx, { trigger: "merge-lock timeout" })); // never acquired → don't touch the worktree
   }
   try {
-    // Catch local `main` up to origin BEFORE building from it: `orch task`/`orch issue`
+    const baseBranch = cfg.baseBranch || "main";
+    // Catch the local base branch up to origin BEFORE building from it: `orch task`/`orch issue`
     // only does this once, at the start of the whole invocation. If some other
-    // checkout of this origin merged a PR since then, our local main is stale.
-    // Local main must never be ahead here: orch lands on the integration branch
-    // and lets GitHub advance main through the PR.
-    const sync = git.syncMainFromOrigin(repo);
+    // checkout of this origin merged a PR since then, our local base is stale.
+    // Local base must never be ahead here: orch lands on the integration branch
+    // and lets GitHub advance the base branch through the PR.
+    const sync = git.syncMainFromOrigin(repo, baseBranch);
     if (!sync.ok) {
       return demote(ctx, deps, demoteReason(ctx, {
         trigger: "main-sync-failed",
@@ -65,7 +66,7 @@ export async function finalize(ctx, deps) {
     }
 
     const integrationBranch = cfg.integrationBranch || "orch/integration";
-    const integration = git.ensureIntegrationWorktree(repo, orchDir, integrationBranch);
+    const integration = git.ensureIntegrationWorktree(repo, orchDir, integrationBranch, baseBranch);
     git.syncWorktreeToIntegration(integration, integrationBranch);
 
     // Guard 1: file-overlap with live in-flight peers only, read under the lock so it

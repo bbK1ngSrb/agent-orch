@@ -507,13 +507,28 @@ test("preflight throws a clear error when .orch/ is read-only", { skip: IS_WINDO
   }
 });
 
-test("resolveAgentBin returns the bare name when the CLI is on PATH", () => {
-  // win32 PATH hits deliberately return the absolute path (see platform.js:
-  // callers need to see the real .cmd/.exe extension to route it correctly).
-  if (IS_WINDOWS) {
-    assert.match(resolveAgentBin("ls"), /ls(\.\w+)?$/i);
-  } else {
-    assert.equal(resolveAgentBin("ls"), "ls"); // PATH hit → spawn by name as before
+test("resolveAgentBin returns the bare name when the CLI is on PATH (default envPath arg)", () => {
+  // A self-created fixture, not a real system binary (e.g. `ls`) — a plain
+  // Windows install has no POSIX tools on PATH at all (only Git for Windows'
+  // bundled CI runner image does, which is what let this test hide behind a
+  // false pass before). Temporarily extend the REAL process.env.PATH so the
+  // default (unpassed) envPath argument is what's actually under test.
+  const d = mkdtempSync(join(tmpdir(), "orch-onpath-"));
+  const p = join(d, "fake-onpath-cli");
+  writeFileSync(p, "#!/bin/sh\n");
+  chmodSync(p, 0o755);
+  const priorPath = process.env.PATH;
+  process.env.PATH = `${d}${delimiter}${priorPath || ""}`;
+  try {
+    // win32 PATH hits deliberately return the absolute path (see platform.js:
+    // callers need to see the real .cmd/.exe extension to route it correctly).
+    if (IS_WINDOWS) {
+      assert.equal(resolveAgentBin("fake-onpath-cli"), p);
+    } else {
+      assert.equal(resolveAgentBin("fake-onpath-cli"), "fake-onpath-cli"); // PATH hit → spawn by name as before
+    }
+  } finally {
+    process.env.PATH = priorPath;
   }
 });
 
@@ -1014,6 +1029,18 @@ function initGitRepo(prefix = "orch-main-") {
   return d;
 }
 
+function initGitRepoOn(branch, prefix = "orch-main-") {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  gitDep.git(["init", "-b", branch], d);
+  gitDep.git(["config", "user.email", "t@t"], d);
+  gitDep.git(["config", "user.name", "t"], d);
+  gitDep.git(["config", "core.autocrlf", "false"], d);
+  writeFileSync(join(d, "a.txt"), "1\n");
+  gitDep.git(["add", "."], d);
+  gitDep.git(["commit", "-m", "init"], d);
+  return d;
+}
+
 function addOriginWithPeer(repo) {
   const remote = mkdtempSync(join(tmpdir(), "orch-cli-remote-"));
   gitDep.git(["init", "--bare", "-b", "main"], remote);
@@ -1148,6 +1175,18 @@ test("orch task can run while the operator checkout stays on main", async () => 
   assert.doesNotMatch(logs.join("\n"), /main is reserved/);
   assert.match(logs.join("\n"), /orch: pr\/claude\/some-task-\d+-[0-9a-z]+: merged \(test\)/);
   assert.match(logs.join("\n"), /after 1 round\(s\).*; cost 60 tokens/);
+});
+
+test("orch task uses configured baseBranch in a repo without main", async () => {
+  const repo = initGitRepoOn("dev", "orch-dev-base-");
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "baseBranch: dev\n");
+
+  const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
+
+  assert.throws(() => gitDep.git(["rev-parse", "--verify", "main"], repo), /Needed a single revision|unknown revision|ambiguous argument/);
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "dev");
+  assert.match(logs.join("\n"), /orch: pr\/claude\/some-task-\d+-[0-9a-z]+: merged \(test\)/);
 });
 
 test("orch task fast-forwards stale local main from origin before branching", async () => {
@@ -1483,6 +1522,26 @@ test("orch continue <sid> resumes from checkpoint, past review, without re-autho
   assert.deepEqual(finishCalls[0].merged, [branch]);
   const ck = checkpointDep.lookup(join(repo, ".orch"), sid);
   assert.equal(ck, null); // completed run clears its checkpoint
+});
+
+test("orch continue uses configured baseBranch in a repo without main", async () => {
+  const repo = initGitRepoOn("dev", "orch-continue-dev-base-");
+  const sid = "devb45e";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "dev"], repo);
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "baseBranch: dev\n");
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  const logs = await runMainInRepo(repo, ["continue", sid], { cycleDeps: fakeCycleDeps(), finishRun: async () => {} });
+
+  assert.throws(() => gitDep.git(["rev-parse", "--verify", "main"], repo), /Needed a single revision|unknown revision|ambiguous argument/);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
 // The original run's resolved author/reviewer role specs (agent + model +
