@@ -1,12 +1,10 @@
 name: npm-publish
 on:
-  push:
-    tags:
-      - "v*"
-  # tag-release.yml pushes tags using the default GITHUB_TOKEN, and GitHub
-  # Actions deliberately does not cascade-trigger other workflows from
-  # GITHUB_TOKEN-authored pushes (loop prevention) — so this workflow never
-  # fires for bot-created tags. workflow_dispatch is the recovery path.
+  # Manual-only publish. No `push: tags` trigger by design — publishing is a
+  # deliberate human act, run from a terminal via scripts/orch_release.sh (or
+  # `gh workflow run npm-publish.yml -f tag=vX.Y.Z`). Prior auto-trigger was
+  # already dead for bot tags anyway: GitHub Actions won't cascade-trigger a
+  # workflow from a tag pushed with the default GITHUB_TOKEN (loop prevention).
   workflow_dispatch:
     inputs:
       tag:
