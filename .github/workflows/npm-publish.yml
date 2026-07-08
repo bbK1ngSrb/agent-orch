@@ -3,6 +3,15 @@ on:
   push:
     tags:
       - "v*"
+  # tag-release.yml pushes tags using the default GITHUB_TOKEN, and GitHub
+  # Actions deliberately does not cascade-trigger other workflows from
+  # GITHUB_TOKEN-authored pushes (loop prevention) — so this workflow never
+  # fires for bot-created tags. workflow_dispatch is the recovery path.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.3.11)"
+        required: true
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -10,7 +19,18 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: validate tag input
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG_INPUT: ${{ github.event.inputs.tag }}
+        run: |
+          if ! [[ "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid tag input: $TAG_INPUT (expected vX.Y.Z)"
+            exit 1
+          fi
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
@@ -18,8 +38,10 @@ jobs:
       - run: npm ci || npm install
       - run: npm test
       - name: verify tag matches package.json version
+        env:
+          TAG_REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${TAG_REF#v}"
           PKG_VERSION="$(node -p "require('./package.json').version")"
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "Tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
@@ -38,4 +60,5 @@ jobs:
       - name: create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes --repo "$GITHUB_REPOSITORY"
+          TAG_REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release create "$TAG_REF" --generate-notes --repo "$GITHUB_REPOSITORY"
