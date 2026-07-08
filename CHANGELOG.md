@@ -1,7 +1,9 @@
 # Changelog
 
-## 0.3.19 — 2026-07-08
-- I messed up with landing page index.html, tryed to rollback to PR 181 that should be ok but it didtn wokr. check and try to make it work gpt-5.5 max
+## Unreleased
+- Fix the persistent integration PR auto-merge path to direct-merge the numeric PR id after creating the PR, not the `orch/integration` branch name (fixes [#182](https://github.com/bbk1ng/agent-orch/issues/182)).
+- Clean up the landing page export: remove unbaked designer-template leftovers, replace dead placeholder links, and avoid inaccurate all-local privacy claims.
+- Fix the landing page bundle bootstrap by escaping nested `</script>` close tags inside the embedded template (fixes [#185](https://github.com/bbk1ng/agent-orch/issues/185)).
 
 ## 0.3.18 — 2026-07-08
 - auto-docs mrc8xriq0 update documentation to reflect the latest merged changes
