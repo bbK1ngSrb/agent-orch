@@ -276,11 +276,14 @@ Resumes an interrupted or stalled cycle from its checkpoint (see §4.3 on
 crash recovery). You'll be told the `sid` to use when a cycle dies mid-way;
 you don't normally invent one yourself.
 
-If the checkpoint's work branch is gone, `continue` reacts to *why*: when the
-branch exists only on the remote (`origin/<branch>`) it stops and tells you to
-check it out locally first; when it's gone everywhere, there's nothing left to
-resume, so instead of erroring it clears the stale checkpoint/inflight state
-and exits cleanly.
+If the checkpoint's branch no longer exists **locally**, `orch continue`
+first checks whether it survives on the remote. If it only lives as
+`origin/<branch>` (e.g. the local branch was pruned but the work was pushed),
+you get an error telling you to check it out locally before continuing —
+orch won't silently re-fetch it. If the branch is gone everywhere, the
+checkpoint points at work that no longer exists, so orch clears the stale
+resume state and exits cleanly rather than failing on every subsequent
+`continue` for that dead `sid`.
 
 ### 2.9 `orch dashboard [--json] [--limit N]`
 

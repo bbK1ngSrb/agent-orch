@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.16 — 2026-07-08
+- PR-fallback output is a raw machine dump, not teaching-toned prose (closes [#173](https://github.com/bbk1ng/agent-orch/issues/173))
+
+## 0.3.15 — 2026-07-08
+- Approved+green PR-fallbacks that are clean vs main are never auto-merged; manual gh pr merge refused by bypass-blind precheck (closes [#171](https://github.com/bbk1ng/agent-orch/issues/171))
+
+## 0.3.14 — 2026-07-08
+- auto-docs mrbxg6l80 update documentation to reflect the latest merged changes
+
+## 0.3.13 — 2026-07-08
+- orch/integration chronically diverges from main, forcing manual reset --hard + force-push (closes [#172](https://github.com/bbk1ng/agent-orch/issues/172))
+
 ## 0.3.12 — 2026-07-08
 - Document the configurable `baseBranch` config key (default `main`) across README, `.orch/ORCH.md`, `docs/orch-manual.md`, and the config example — the trunk orch reads from, diffs against, and opens PRs to. The key shipped in [#154](https://github.com/bbk1ng/agent-orch/pull/154) but only reached the example YAML; the prose docs still described `main` as hardcoded. A repo whose `main` is deploy-only can set `baseBranch: dev` and orch tracks `dev` everywhere; `integrationBranch` (the local merge target) is unchanged.
 
