@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.19 — 2026-07-08
+- I messed up with landing page index.html, tryed to rollback to PR 181 that should be ok but it didtn wokr. check and try to make it work gpt-5.5 max
+
 ## 0.3.18 — 2026-07-08
 - auto-docs mrc8xriq0 update documentation to reflect the latest merged changes
 
