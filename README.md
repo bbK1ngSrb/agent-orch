@@ -156,7 +156,7 @@ orch task "fix the flaky login test"
 - `orch review <branch>` — audit an existing branch.
 - `orch pr <n> [--merge]` — audit a GitHub PR, comment the verdict, optionally merge via `gh`.
 - `orch agent build <name> [--pr]` — an unregistered agent name scaffolds `src/adapters/<name>.js` through orch's own author → audit → test pipeline, isolated in its own worktree/branch. Default lands on that local branch only; `--pr` opens a PR instead.
-- `orch continue <sid>` — resume an interrupted or stalled cycle (crash, hard kill, usage-limit abort) from its checkpoint, reattaching the same branch/author instead of re-authoring from scratch. `orch` tells you the `sid` to use when a cycle dies mid-way.
+- `orch continue <sid>` — resume an interrupted or stalled cycle (crash, hard kill, usage-limit abort) from its checkpoint, reattaching the same branch/author instead of re-authoring from scratch. If the saved branch is gone, stale local resume state is cleared; if it exists only as `origin/<branch>`, check it out locally first. `orch` tells you the `sid` to use when a cycle dies mid-way.
 - `orch dashboard [--json] [--limit N]` — read-only view of live cycle status/stage, streaming log tail, run history, and success-rate metrics.
 - `orch completion [bash]` / `orch completion install` — print the bash completion script or rewrite `~/.orch/completion.bash`.
 Add `--reviewer name` or `--reviewers a,b` to override review agents for
@@ -229,6 +229,10 @@ gate has already passed. A crash mid-review or between a green gate and merge do
 re-audit rounds already decided or re-run tests that already passed — the resumed
 cycle picks up at the next undone step. The checkpoint is cleared once the cycle
 reaches a terminal status.
+
+`orch continue <sid>` also cleans up stale local resume state when the saved
+branch no longer exists. If the branch still exists only on `origin/<branch>`,
+orch refuses to guess and asks you to check it out locally before continuing.
 
 ## Concurrent cycles
 
