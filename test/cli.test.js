@@ -1524,6 +1524,54 @@ test("orch continue <sid> resumes from checkpoint, past review, without re-autho
   assert.equal(ck, null); // completed run clears its checkpoint
 });
 
+test("orch continue <sid> clears a stale checkpoint when the branch was merged and deleted", async () => {
+  const repo = initGitRepo("orch-continue-stale-");
+  const sid = "5ta1eck";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  gitDep.git(["merge", "--no-ff", branch, "-m", "merge authored fix"], repo);
+  gitDep.git(["branch", "-D", branch], repo);
+
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  let cycleRan = false;
+  const logs = await runMainInRepo(repo, ["continue", sid], {
+    cycleDeps: { ...fakeCycleDeps(), finalize: async () => { cycleRan = true; return { status: "merged", reason: "test", sha: "abc" }; } },
+  });
+
+  assert.equal(cycleRan, false);
+  assert.equal(checkpointDep.lookup(orchDir, sid), null);
+  assert.match(logs.join("\n"), /cleared stale resume state/);
+});
+
+test("orch continue <sid> keeps the checkpoint when only the remote-tracking branch remains", async () => {
+  const repo = initGitRepo("orch-continue-remote-");
+  addOriginWithPeer(repo);
+  const sid = "0r1g1n";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["push", "-u", "origin", branch], repo);
+  gitDep.git(["checkout", "main"], repo);
+  gitDep.git(["branch", "-D", branch], repo);
+
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid]),
+    new RegExp(`exists only as origin/${branch}`),
+  );
+  assert.equal(checkpointDep.lookup(orchDir, sid).branch, branch);
+});
+
 test("orch continue uses configured baseBranch in a repo without main", async () => {
   const repo = initGitRepoOn("dev", "orch-continue-dev-base-");
   const sid = "devb45e";
