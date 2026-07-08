@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import { join } from "node:path";
 import { sleepSync } from "./lock.js";
 
-const ORIGIN_MAIN_REF = "refs/remotes/origin/main";
+function originRef(base) {
+  return `refs/remotes/origin/${base}`;
+}
 
 // Ownership marker: a sibling file next to an orch-created task worktree. Its
 // presence is the ONLY signal that lets the orphan sweep delete a branch — so
@@ -43,9 +45,9 @@ export function gitTry(args, cwd) {
   }
 }
 
-// Files changed on `branch` since its merge-base with main (matches scope.count).
-export function changedFiles(repo, branch) {
-  const out = gitTry(["diff", "--name-only", `main...${branch}`], repo);
+// Files changed on `branch` since its merge-base with the configured base branch.
+export function changedFiles(repo, branch, base = "main") {
+  const out = gitTry(["diff", "--name-only", `${base}...${branch}`], repo);
   return out.ok ? out.out.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 }
 
@@ -115,13 +117,13 @@ export function forceDeleteBranch(repo, branch) {
   git(["branch", "-D", branch], repo);
 }
 
-export function verifyOriginContains(repo, commit) {
-  const fetched = fetchOriginMain(repo);
+export function verifyOriginContains(repo, commit, base = "main") {
+  const fetched = fetchOriginMain(repo, { base });
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
-  const r = gitTry(["merge-base", "--is-ancestor", commit, ORIGIN_MAIN_REF], repo);
+  const r = gitTry(["merge-base", "--is-ancestor", commit, originRef(base)], repo);
   return r.ok
     ? { ok: true }
-    : { ok: false, reason: `${commit} is not contained in origin/main` };
+    : { ok: false, reason: `${commit} is not contained in origin/${base}` };
 }
 
 // Ref-lock contention: concurrent orch cycles share one .git and thus one
@@ -131,7 +133,7 @@ const REF_LOCK_RE = /cannot lock ref/i;
 
 export function fetchOriginMain(
   repo,
-  { retries = 2, sleep = sleepSync, fetch = () => gitTry(["fetch", "origin", `main:${ORIGIN_MAIN_REF}`], repo) } = {},
+  { base = "main", retries = 2, sleep = sleepSync, fetch = () => gitTry(["fetch", "origin", `${base}:${originRef(base)}`], repo) } = {},
 ) {
   if (!gitTry(["remote", "get-url", "origin"], repo).ok)
     return { ok: false, missingOrigin: true, reason: "no origin remote configured" };
@@ -144,7 +146,7 @@ export function fetchOriginMain(
   }
 }
 
-function mainWorktreePath(repo) {
+function mainWorktreePath(repo, base = "main") {
   const list = gitTry(["worktree", "list", "--porcelain"], repo);
   if (!list.ok) return null;
   let path = null;
@@ -160,54 +162,54 @@ function mainWorktreePath(repo) {
       const hit = flush();
       if (hit) return hit;
       path = line.slice("worktree ".length);
-    } else if (line === "branch refs/heads/main") {
+    } else if (line === `branch refs/heads/${base}`) {
       onMain = true;
     }
   }
   return flush();
 }
 
-function moveMainToOrigin(repo, mode) {
-  const path = mainWorktreePath(repo);
+function moveMainToOrigin(repo, mode, base = "main") {
+  const path = mainWorktreePath(repo, base);
   if (path) {
     if (mode === "reset") {
-      git(["reset", "--hard", ORIGIN_MAIN_REF], path);
+      git(["reset", "--hard", originRef(base)], path);
       git(["clean", "-fd"], path);
     } else {
-      git(["merge", "--ff-only", ORIGIN_MAIN_REF], path);
+      git(["merge", "--ff-only", originRef(base)], path);
     }
     return;
   }
-  git(["branch", "-f", "main", ORIGIN_MAIN_REF], repo);
+  git(["branch", "-f", base, originRef(base)], repo);
 }
 
-export function syncMainFromOrigin(repo) {
-  const fetched = fetchOriginMain(repo);
+export function syncMainFromOrigin(repo, base = "main") {
+  const fetched = fetchOriginMain(repo, { base });
   if (!fetched.ok) {
     if (fetched.missingOrigin) return { ok: true, skipped: true, reason: fetched.reason };
-    return { ok: false, reason: `could not fetch origin/main: ${fetched.reason}` };
+    return { ok: false, reason: `could not fetch origin/${base}: ${fetched.reason}` };
   }
 
-  const local = git(["rev-parse", "main"], repo);
-  const remote = git(["rev-parse", ORIGIN_MAIN_REF], repo);
+  const local = git(["rev-parse", base], repo);
+  const remote = git(["rev-parse", originRef(base)], repo);
   if (local === remote) return { ok: true, updated: false };
 
-  const localBehind = gitTry(["merge-base", "--is-ancestor", "main", ORIGIN_MAIN_REF], repo).ok;
+  const localBehind = gitTry(["merge-base", "--is-ancestor", base, originRef(base)], repo).ok;
   if (localBehind) {
     try {
-      moveMainToOrigin(repo, "merge");
+      moveMainToOrigin(repo, "merge", base);
     } catch (e) {
       const reason = (e.stderr || e.stdout || e.message || "").toString().trim();
-      return { ok: false, reason: `could not fast-forward local main to origin/main: ${reason}` };
+      return { ok: false, reason: `could not fast-forward local ${base} to origin/${base}: ${reason}` };
     }
     return { ok: true, updated: true, from: local, to: remote };
   }
 
-  const remoteBehind = gitTry(["merge-base", "--is-ancestor", ORIGIN_MAIN_REF, "main"], repo).ok;
+  const remoteBehind = gitTry(["merge-base", "--is-ancestor", originRef(base), base], repo).ok;
   if (remoteBehind) {
-    return { ok: false, reason: "local main is ahead of origin/main; reconcile it before running orch" };
+    return { ok: false, reason: `local ${base} is ahead of origin/${base}; reconcile it before running orch` };
   }
-  return { ok: false, reason: "local main has diverged from origin/main; reconcile it before running orch" };
+  return { ok: false, reason: `local ${base} has diverged from origin/${base}; reconcile it before running orch` };
 }
 
 export function pruneWorktree(repo, path) {
@@ -241,7 +243,7 @@ export function normalizePathForCompare(p, platform = process.platform) {
 // A branch with committed author work (killed AFTER the author commit) is kept so
 // `orch task` can reattach and resume it instead of re-authoring (#27) — losing
 // committed work is the real defect; a stray empty-worktree branch is recoverable.
-export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), { platform = process.platform } = {}) {
+export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), { platform = process.platform, base = "main" } = {}) {
   let recovered = false;
   const normalize = (p) => normalizePathForCompare(p, platform);
   // Canonicalize: git stores worktree paths as realpaths, but orchDir may arrive
@@ -279,8 +281,8 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), 
         const removed = gitTry(["worktree", "remove", "--force", path], repo);
         if (removed.ok) recovered = true;
         // Delete only a throwaway with no committed work; keep committed branches
-        // so a resume can reattach (#27). changedFiles is `diff main...branch`.
-        if (branch && owned && changedFiles(repo, branch).length === 0)
+        // so a resume can reattach (#27). changedFiles is `diff base...branch`.
+        if (branch && owned && changedFiles(repo, branch, base).length === 0)
           gitTry(["branch", "-D", "--", branch], repo); // never a user branch
         rmSync(marker, { force: true });
       }
@@ -304,16 +306,16 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), 
 // One reused worktree, checked out on the dedicated integration branch where
 // local merges land. `main` stays free for an operator checkout and mirrors
 // GitHub's main via fetch + fast-forward only.
-export function ensureIntegrationWorktree(repo, orchDir, branch = "orch/integration") {
+export function ensureIntegrationWorktree(repo, orchDir, branch = "orch/integration", base = "main") {
   const path = join(orchDir, "integration");
   mkdirSync(orchDir, { recursive: true });
   gitTry(["worktree", "prune"], repo); // clear a stale registration if the dir was removed
   if (!existsSync(path)) {
     if (branchExists(repo, branch)) git(["worktree", "add", path, branch], repo);
-    else git(["worktree", "add", "-b", branch, path, "main"], repo);
+    else git(["worktree", "add", "-b", branch, path, base], repo);
   } else if (git(["rev-parse", "--abbrev-ref", "HEAD"], path) !== branch) {
     if (branchExists(repo, branch)) git(["switch", branch], path);
-    else git(["switch", "-c", branch, "main"], path);
+    else git(["switch", "-c", branch, base], path);
   }
   return path;
 }

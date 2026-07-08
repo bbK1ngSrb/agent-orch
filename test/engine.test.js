@@ -223,6 +223,15 @@ test("DISAGREE until cap -> escalated after reviseCap rounds", async () => {
   assert.equal(r.rounds, 3);
 });
 
+test("DISAGREE escalation diffs against cfg.baseBranch", async () => {
+  let diffArgs = null;
+  const deps = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "no", raw: "" }] });
+  deps.git.git = (args) => { diffArgs = args; return "diff summary"; };
+  const r = await runCycle({ ...opts, cfg: { ...opts.cfg, baseBranch: "dev", reviseCap: 1 } }, deps);
+  assert.equal(r.status, "escalated");
+  assert.deepEqual(diffArgs, ["diff", "--stat", "dev...pr/auth/x"]);
+});
+
 test("agentError reviewer escalates on round 1 instead of revising (#33)", async () => {
   // A crashed reviewer is not a code defect: escalate immediately, don't burn
   // the revise loop. The reason carries the reviewer + its (#31) stderr tail.
@@ -362,6 +371,44 @@ test("AGREE + green → finalize lands the merge (status merged)", async () => {
   assert.equal(res.status, "merged");
   assert.ok(calls.some((c) => c[0] === "setPaths"));
   assert.equal(finalizeCtx.task, "do x");
+});
+
+test("task mode threads cfg.baseBranch through base-sensitive engine calls", async () => {
+  const calls = [];
+  let finalizeCtx;
+  const deps = {
+    adapters: { get: () => ({ name: "claude", async author() {}, async audit() { return { decision: "AGREE", reason: "ok" }; } }) },
+    git: {
+      createTaskBranch: (_repo, _wt, _branch, base) => calls.push(["createTaskBranch", base]),
+      attachExistingBranch() {},
+      pruneWorktree() {},
+      changedFiles: (_repo, _branch, base) => { calls.push(["changedFiles", base]); return ["src/a.js"]; },
+      git: (args) => { calls.push(["git", ...args]); return args[0] === "rev-parse" ? "base" : "diff summary"; },
+    },
+    gate: { detect: () => "npm test", run: () => ({ pass: true }) },
+    scope: { count: (_branch, _worktree, _ignore, base) => { calls.push(["scope", base]); return 0; } },
+    inflight: { setPaths: (...args) => calls.push(["setPaths", ...args]) },
+    finalize: async (ctx) => { finalizeCtx = ctx; return { status: "merged", reason: "merged", sha: "abc" }; },
+    notify: {
+      phase() {}, writeRound() { return "p"; },
+      buildDecisionBrief: () => "brief", escalate() {},
+      recordRun() {}, cleanupReviews() {},
+    },
+  };
+
+  const res = await runCycle({
+    mode: "task", task: "do x", branch: "pr/claude/x-1", sid: "1",
+    authorName: "claude", reviewerName: "claude",
+    cfg: { reviseCap: 3, baseBranch: "dev", merge: "ff-only", test: "auto", scope: { maxLines: 10, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
+    orchDir: "/o", repo: "/r", worktree: "/o/wt/x",
+  }, deps);
+
+  assert.equal(res.status, "merged");
+  assert.deepEqual(calls.find((c) => c[0] === "createTaskBranch"), ["createTaskBranch", "dev"]);
+  assert.deepEqual(calls.find((c) => c[0] === "git" && c[1] === "rev-parse"), ["git", "rev-parse", "dev"]);
+  assert.deepEqual(calls.find((c) => c[0] === "scope"), ["scope", "dev"]);
+  assert.ok(calls.some((c) => c[0] === "changedFiles" && c[1] === "dev"));
+  assert.equal(finalizeCtx.baseSha, "base");
 });
 
 test("AGREE + green but finalize demotes → status pr-fallback", async () => {

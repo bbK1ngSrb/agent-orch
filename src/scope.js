@@ -30,8 +30,8 @@ export function isDocsOnly(files, globs) {
   return files.every((f) => res.some((re) => re.test(f)));
 }
 
-export function count(branch, cwd, ignore = []) {
-  const out = execFileSync("git", ["diff", "--numstat", `main...${branch}`], {
+export function count(branch, cwd, ignore = [], base = "main") {
+  const out = execFileSync("git", ["diff", "--numstat", `${base}...${branch}`], {
     cwd,
     encoding: "utf8",
   });
