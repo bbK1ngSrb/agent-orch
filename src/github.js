@@ -66,15 +66,14 @@ export function buildIssueComment(result, branch) {
   const b = String(branch).replace(/[^\w./-]/g, "");
   const fallback = result.status === "pr-fallback";
   const head = fallback
-    ? "⚠️ **agent-orch: PR FALLBACK** — could not auto-merge, opened a PR for manual review"
+    ? "⚠️ **agent-orch: PR FALLBACK** — this change is approved and green; orch opened a PR because it could not auto-land it. Details below."
     : "🛑 **agent-orch: ESCALATED** — orch gave up, no merge";
-  const lines = [
-    head,
-    "",
-    `branch: ${b}`,
-    `reason: ${result.reason}`,
-    `rounds: ${Number(result.rounds) || 0}`,
-  ];
+  // On the fallback path result.reason is already teaching-toned markdown (see
+  // demoteReason in finalize.js) — render it as its own block instead of after a
+  // flat `reason:` label, which would jam a markdown heading onto one line.
+  const lines = fallback
+    ? [head, "", `branch: ${b}`, `rounds: ${Number(result.rounds) || 0}`, "", String(result.reason)]
+    : [head, "", `branch: ${b}`, `reason: ${result.reason}`, `rounds: ${Number(result.rounds) || 0}`];
   if (!fallback) {
     // §3f: reviewer prose stays out of the public comment (it can carry
     // attacker-controlled content from repo/task text); the full disagreement
