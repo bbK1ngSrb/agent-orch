@@ -170,6 +170,9 @@ on top of `orch.yml` for one run; `--no-banner` suppresses the startup banner.
 ## Config (`.orch/orch.yml`, all optional)
 See `orch.example.yml`. Most repos need no config. A bare `orch.yml` at the
 repo root is still read for back-compat, but `.orch/orch.yml` wins if both exist.
+The trunk orch reads from, diffs against, and opens PRs to is `baseBranch`
+(default `main`); set it to e.g. `dev` if `main` is deploy-only. Everywhere
+below that says `main`, read "your `baseBranch`".
 
 ## How it decides to merge
 Merge happens only when every reviewer says `AGREE` **and** the repo's tests pass.
@@ -250,6 +253,8 @@ Reduce the cap or wait for a live cycle to finish, then rerun.
 **Launching from `main`.** `main` is no longer reserved by orch. You can keep
 your primary checkout on `main`; orch's permanent worktree checks out the
 dedicated `orch/integration` branch inside `.orch/integration` instead.
+(`main` here is the default `baseBranch`; a repo with a `dev` trunk sets
+`baseBranch: dev` and everything below tracks that branch instead.)
 Uncommitted changes stay in your cwd; orch never stashes, resets, or discards
 them.
 
