@@ -11,6 +11,16 @@ function originRef(base) {
   return `refs/remotes/origin/${base}`;
 }
 
+// `gh pr merge` (without --auto/--admin) runs its own client-side "is this
+// mergeable" precheck before ever calling the merge API, and that precheck
+// doesn't know about GitHub ruleset bypass_actors — it sees "review
+// required, no approval" and refuses, even for an actor the ruleset would
+// actually let merge. Hitting the REST merge endpoint directly skips that
+// broken precheck; GitHub evaluates bypass correctly there.
+function mergeDirect(gh, prRef, method) {
+  gh(["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${prRef}/merge`, "-f", `merge_method=${method}`]);
+}
+
 // Concurrent orch cycles share one .git and thus one refs/remotes/origin/main —
 // a losing fetch fails "cannot lock ref", which is transient contention, not a
 // real sync problem. Mirrors git.js's fetchOriginMain retry so this new
@@ -122,7 +132,7 @@ export async function runPr(opts, deps) {
     log(`commented on PR #${pr.number}: ${result.status}`);
 
     if (result.status === "approved" && merge) {
-      gh(["pr", "merge", String(n), `--${cfg.github.mergeMethod}`]);
+      mergeDirect(gh, String(n), cfg.github.mergeMethod);
       // gh reporting exit 0 isn't proof the commit is actually on origin/main —
       // squash/rebase merges mint a brand-new sha, so we can't just check the
       // pre-merge branch head; ask GitHub for the merge commit it produced and
@@ -220,6 +230,13 @@ export async function openPr(ctx, deps) {
   if (cfg?.github?.autoMergePr) {
     try {
       gh(["pr", "merge", branch, "--auto", `--${cfg.github.mergeMethod}`]);
+      // GitHub's native auto-merge never fires if the only thing satisfying
+      // the review requirement is a ruleset bypass_actor grant rather than a
+      // real approval — mergeStateStatus stays BLOCKED forever even once
+      // checks pass (verified empirically). Try an immediate direct merge
+      // too: a no-op failure (checks still pending) is expected and safe to
+      // swallow — native auto-merge covers the normal real-approval case.
+      try { mergeDirect(gh, branch, cfg.github.mergeMethod); } catch { /* not ready yet */ }
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
     }
@@ -275,7 +292,14 @@ export async function openIntegrationPr(ctx, deps) {
     try {
       // The persistent integration branch must stay in main's ancestry. Squash
       // or rebase would strand orch/integration behind main after the first PR.
+      // Requires the repo to allow merge-commit merges — see docs/ORCH.md.
       gh(["pr", "merge", prRef, "--auto", "--merge"]);
+      // See the matching comment in openPr(): native auto-merge doesn't fire
+      // when review is only satisfied via ruleset bypass, not a real
+      // approval. This function re-runs on every cycle (it updates the same
+      // persistent PR), so a failed attempt here just gets retried next time
+      // checks have had a chance to finish.
+      try { mergeDirect(gh, prRef, "merge"); } catch { /* not ready yet */ }
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
     }

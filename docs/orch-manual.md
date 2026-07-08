@@ -625,12 +625,24 @@ docs:
   merge commit, deliberately, so `orch/integration` stays in `main`'s
   ancestry (a squash or rebase would strand the integration branch outside
   `main`'s history and break the fast-forward mirror model from §1.2). It
-  also doesn't touch how a human merges a PR on GitHub's UI.
+  also doesn't touch how a human merges a PR on GitHub's UI. Because that PR
+  always uses a merge commit, the repo must have "Allow merge commits"
+  enabled in its GitHub merge-button settings — if a repo only allows
+  squash/rebase, this PR can never be merged (by orch or by hand).
 - **`github.autoMergePr`** — enables GitHub's *native* auto-merge on PRs orch
   opens or updates, so they merge themselves once their own required checks
   pass, with no further orch involvement. If GitHub rejects the auto-merge
   request (e.g. branch protection isn't configured to allow it), the PR
   itself is unaffected — only auto-merge silently doesn't get enabled.
+  Caveat: if the branch's review requirement is satisfied only via a GitHub
+  ruleset `bypass_actors` grant (rather than a real human approval), GitHub's
+  native auto-merge does not reliably fire — it can stay enabled with
+  `mergeStateStatus: BLOCKED` indefinitely even after checks pass. orch works
+  around this with an opportunistic direct-merge retry right after enabling
+  auto-merge (a no-op if checks are still pending); the case that can still
+  need a manual nudge is `merge: pr`'s one-shot per-cycle PR, since nothing
+  re-invokes it later the way the persistent integration PR gets re-touched
+  every cycle.
 
 ---
 
