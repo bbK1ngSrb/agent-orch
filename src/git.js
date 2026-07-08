@@ -406,9 +406,27 @@ export function bumpVersion(integrationPath, entry) {
     const prior = existsSync(changelogPath) ? readFileSync(changelogPath, "utf8").replace(/^# Changelog\n+/, "") : "";
     writeFileSync(changelogPath, `# Changelog\n\n${section}${prior}`);
 
+    // The GitHub Pages site (docs/index.html) hard-codes the release version in
+    // its header (left of the GitHub link) as `>vX.Y.Z</span>` (a literal,
+    // escaped </span> inside the inline SPA string — the page is the built
+    // artifact, no generator). Nothing else touches it, so without this it froze
+    // while the package bumped on. Best-effort, span-anchored: only that one
+    // version span is rewritten.
+    const sitePath = join(integrationPath, "docs", "index.html");
+    let siteBumped = false;
+    if (existsSync(sitePath)) {
+      const html = readFileSync(sitePath, "utf8");
+      const next = html.replace(/v\d+\.\d+\.\d+(?=<\\u002Fspan>)/, `v${version}`);
+      if (next !== html) {
+        writeFileSync(sitePath, next);
+        siteBumped = true;
+      }
+    }
+
     const addFiles = ["package.json", "CHANGELOG.md"];
     if (existsSync(versionPath)) addFiles.push("src/version.js");
     if (existsSync(lockPath)) addFiles.push("package-lock.json");
+    if (siteBumped) addFiles.push("docs/index.html");
     git(["add", ...addFiles], integrationPath);
     git(["commit", "-m", `chore(release): v${version}`], integrationPath);
     return version;
