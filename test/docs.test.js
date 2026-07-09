@@ -45,12 +45,18 @@ test("docs list the built-in CLI adapters", () => {
 });
 
 test("docs document the dashboard --check-history flag", () => {
-  // Shipped with `orch dashboard --check-history` (marks stale red history rows
-  // resolved when their branches are gone); guard the prose docs against drift
-  // from the CLI help/completion where the flag already lives.
+  // Shipped with `orch dashboard --check-history`; guard the prose docs against
+  // drift from the CLI help/completion where the flag already lives.
   for (const doc of [readme, manual]) {
     assert.match(doc, /--check-history/);
   }
+  // `--check-history` reconciles history at *display* time only: dashboard.js's
+  // reconcileHistory returns fresh `{ ...e, resolved: true }` objects for the
+  // render and never writes back to runs.jsonl. The docs must not imply an
+  // on-disk rewrite/repair, or users will expect the history file to change.
+  assert.doesNotMatch(manual, /rewrites stale red history/);
+  assert.match(manual, /runs\.jsonl.*(untouched|unchanged)|(untouched|unchanged).*runs\.jsonl/i);
+  assert.match(readme, /view-only|view only/i);
 });
 
 test("the generated per-repo ORCH.md template documents all dashboard flags", () => {

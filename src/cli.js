@@ -165,7 +165,8 @@ fast-forwarding \`origin/main\`.
 - \`orch dashboard [--json] [--limit <n>] [--check-history]\`
                                     live cycle status, log tail, run history, metrics
                                     (\`--limit\` caps history rows; \`--check-history\`
-                                    marks stale red rows resolved when branches are gone)
+                                    shows stale red rows as resolved when branches are gone,
+                                    view only — runs.jsonl is left unchanged)
 
 A role is a spec \`"<agent> [model] [effort]"\`, e.g.
 \`--author "claude claude-opus-4-8 high" --reviewer "codex"\`.
@@ -238,7 +239,7 @@ export function parse(argv) {
       link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
       json: { type: "boolean" }, // dashboard: machine-readable output
       limit: { type: "string" }, // dashboard: run-history entries to show
-      "check-history": { type: "boolean" }, // dashboard: mark stale red rows resolved when branches are gone
+      "check-history": { type: "boolean" }, // dashboard: show stale red rows as resolved (view only) when branches are gone
       pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
 
     },
@@ -1219,7 +1220,7 @@ Options:
   --no-tidy             Leave task branches and checkouts after merge.
   --json                With dashboard, print JSON.
   --limit <n>           With dashboard, limit history rows.
-  --check-history       With dashboard, mark stale red history rows resolved.
+  --check-history       Dashboard: show stale red rows resolved (view only).
   --merge               With pr, merge approved PRs.
   --pr                  With agent build, open a PR instead.
 

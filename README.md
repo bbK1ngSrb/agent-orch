@@ -157,7 +157,7 @@ orch task "fix the flaky login test"
 - `orch pr <n> [--merge]` — audit a GitHub PR, comment the verdict, optionally merge via `gh`.
 - `orch agent build <name> [--pr]` — an unregistered agent name scaffolds `src/adapters/<name>.js` through orch's own author → audit → test pipeline, isolated in its own worktree/branch. Default lands on that local branch only; `--pr` opens a PR instead.
 - `orch continue <sid>` — resume an interrupted or stalled cycle (crash, hard kill, usage-limit abort) from its checkpoint, reattaching the same branch/author instead of re-authoring from scratch. If the saved branch is gone, stale local resume state is cleared; if it exists only as `origin/<branch>`, check it out locally first. `orch` tells you the `sid` to use when a cycle dies mid-way.
-- `orch dashboard [--json] [--limit N] [--check-history]` — read-only view of live cycle status/stage, streaming log tail, run history, and success-rate metrics. `--check-history` marks stale red history rows resolved when their branches are gone.
+- `orch dashboard [--json] [--limit N] [--check-history]` — read-only view of live cycle status/stage, streaming log tail, run history, and success-rate metrics. `--check-history` shows stale red history rows as resolved when their branches are gone — a view-only reconciliation that leaves the run-history file unchanged.
 - `orch completion [bash]` / `orch completion install` — print the bash completion script or rewrite `~/.orch/completion.bash`.
 Add `--reviewer name` or `--reviewers a,b` to override review agents for
 `review`/`pr` runs.

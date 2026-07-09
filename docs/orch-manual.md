@@ -287,13 +287,15 @@ resume state and exits cleanly rather than failing on every subsequent
 
 ### 2.9 `orch dashboard [--json] [--limit N] [--check-history]`
 
-Read-only by default. Shows live cycle status/stage, a streaming log tail, run
-history, and success-rate metrics. Without `--check-history` it never mutates
-anything.
+Read-only. Shows live cycle status/stage, a streaming log tail, run history,
+and success-rate metrics. It never mutates orch state — that holds with
+`--check-history` too.
 
-`--check-history` is the one exception: it rewrites stale red history rows to
-resolved when the branches they refer to are gone, so a long-since-merged cycle
-no longer shows as a lingering failure.
+`--check-history` only changes what this command *displays*. For each red
+history row it asks git whether the row's branch still exists, and any row
+whose branch is gone is shown as `resolved` — so a long-since-merged cycle no
+longer reads as a lingering failure. This reconciliation is recomputed from git
+on every run; the on-disk history (`runs.jsonl`) is left untouched.
 
 ```bash
 orch dashboard
