@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.20 — 2026-07-09
+- refactor pr 190, based on review verdict. DISAGREE: The landing-page rewrite itself appears to remove the broken generated runtime and anchors resolve, but the branch weakens a regression test in the exact area it touches: after moving from escaped bundled HTML to plain HTML, the dead-placeholder-link assertion is stale and would miss the plain regression it claims to prevent.
+
 ## Unreleased
 - Fix the persistent integration PR auto-merge path to direct-merge the numeric PR id after creating the PR, not the `orch/integration` branch name (fixes [#182](https://github.com/bbk1ng/agent-orch/issues/182)).
 - Clean up the landing page export: remove unbaked designer-template leftovers, replace dead placeholder links, and avoid inaccurate all-local privacy claims.
