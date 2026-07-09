@@ -13,6 +13,21 @@ test("table aligns columns and colors specific cells via a colorFn", () => {
   assert.match(lines[1], /^14:22  pr\/claude\/x  merged   $/);
 });
 
+test("table with columns truncates overflow with … and keeps lines within width", () => {
+  const headers = ["TIME", "BRANCH", "VERDICT"];
+  const rows = [["14:22", "pr/claude/very-long-branch-name-that-overflows", "merged"]];
+  // 30 < 40 on purpose: table() has no minimum-width floor, so even very
+  // narrow terminals are honored (regression for the old minInner=40 clamp)
+  const out = table(headers, rows, { columns: 30 });
+  const lines = out.split("\n");
+  assert.match(lines[1], /…$/);
+  for (const l of lines) assert.ok(visWidth(l) <= 30, `line too wide: ${JSON.stringify(l)}`);
+  // columns undefined → byte-identical to the unclamped output
+  assert.equal(table(headers, rows, {}), table(headers, rows, { color: false }));
+  const plain = table(headers, rows, {});
+  assert.ok(plain.split("\n")[1].includes("pr/claude/very-long-branch-name-that-overflows"));
+});
+
 test("visWidth counts wide glyphs as 2 columns and ignores ANSI codes", () => {
   assert.equal(visWidth("abc"), 3);
   assert.equal(visWidth("\x1b[1;38;5;208mabc\x1b[0m"), 3);

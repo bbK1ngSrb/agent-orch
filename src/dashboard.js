@@ -142,7 +142,7 @@ function pct(n) { return n == null ? "n/a" : `${Math.round(n * 100)}%`; }
 function usd(n) { return n == null ? "n/a" : `$${n.toFixed(4)}`; }
 
 export function render(orchDir, opts = {}) {
-  const { historyLimit, color = false, repo = null, checkHistory = false } = opts;
+  const { historyLimit, color = false, columns, repo = null, checkHistory = false } = opts;
   const { live, interrupted, history, metrics: m } = snapshot(orchDir, { historyLimit, repo, checkHistory });
   const lines = [];
   lines.push(`orch dashboard — ${orchDir}`);
@@ -183,7 +183,7 @@ export function render(orchDir, opts = {}) {
     });
     const headers = ["TIME", "BRANCH", "VERDICT", "ROUNDS", "COST"];
     if (checkHistory) headers.push("STATUS");
-    lines.push(table(headers, rows, { color }));
+    lines.push(table(headers, rows, { color, columns }));
   }
   lines.push("");
   lines.push("Metrics");
