@@ -190,6 +190,16 @@ test("github.autoMergePr defaults to false; non-boolean throws", () => {
   assert.throws(() => load(bad), /github.autoMergePr must be a boolean/);
 });
 
+test("main.autoMerge defaults to false; non-boolean throws", () => {
+  assert.equal(load(tmp()).main.autoMerge, false);
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "main:\n  autoMerge: true\n");
+  assert.equal(load(d).main.autoMerge, true);
+  const bad = tmp();
+  writeFileSync(join(bad, "orch.yml"), "main:\n  autoMerge: yes\n");
+  assert.throws(() => load(bad), /main.autoMerge must be a boolean/);
+});
+
 test("docs defaults present; off by default", () => {
   const c = load(tmp());
   assert.equal(c.docs.autoUpdate, false);
