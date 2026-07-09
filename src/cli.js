@@ -146,7 +146,7 @@ docs:
 // "how to use orch here" reference. Generic — no per-repo specifics. Overwritten
 // on every init so it tracks the installed orch version (it is orch's own file,
 // not meant for hand-edits; user customisations belong in their agent file).
-const ORCH_DOC = `# Using orch in this repo
+export const ORCH_DOC = `# Using orch in this repo
 
 This repo is set up for **agent-orch**: it authors a change with one agent,
 cross-audits it with a second, gates on tests, then merges into
@@ -162,7 +162,10 @@ fast-forwarding \`origin/main\`.
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
 - \`orch agent add <name>\`          add an agent to the rotation pool
 - \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
-- \`orch dashboard [--json]\`        live cycle status, log tail, run history, metrics
+- \`orch dashboard [--json] [--limit <n>] [--check-history]\`
+                                    live cycle status, log tail, run history, metrics
+                                    (\`--limit\` caps history rows; \`--check-history\`
+                                    marks stale red rows resolved when branches are gone)
 
 A role is a spec \`"<agent> [model] [effort]"\`, e.g.
 \`--author "claude claude-opus-4-8 high" --reviewer "codex"\`.
