@@ -64,26 +64,23 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
 });
 
-test("landing page has static social and no-JS fallback content", () => {
-  assert.match(landing, /<meta property="og:title" content="orch — agents orchestration tool">/);
+test("landing page is plain static HTML with social metadata", () => {
+  assert.match(landing, /<meta property="og:title" content="orch - agents orchestration tool">/);
   assert.match(landing, /<meta property="og:description"/);
   assert.match(landing, /<meta property="og:image"/);
   assert.match(landing, /<meta name="twitter:card" content="summary_large_image">/);
-  assert.match(landing, /<noscript>[\s\S]*Run local coding agents in a cross-audit loop/);
-  assert.match(landing, /<noscript>[\s\S]*npm install -g @bbk1ng\/agent-orch/);
+  assert.match(landing, /Run local coding agents[\s\S]*cross-audit loop/);
+  assert.match(landing, /npm install -g[\s\S]*@bbk1ng\/agent-orch/);
+  assert.doesNotMatch(landing, /__bundler/);
+  assert.doesNotMatch(landing, /<x-dc/i);
   assert.doesNotMatch(landing, /This page requires JavaScript to display/);
 });
 
-test("landing page bundled template includes mobile layout overrides", () => {
-  const template = JSON.parse(
-    landing.match(/<script type="__bundler\/template">\n([\s\S]*?)\n  <\/script>/)[1],
-  );
-
-  assert.match(template, /@media \(max-width: 640px\)/);
-  assert.match(template, /grid-template-columns:repeat\(4, 1fr\).*grid-template-columns:1fr !important/s);
-  assert.match(template, /grid-template-columns:repeat\(3, 1fr\).*grid-template-columns:1fr !important/s);
-  assert.match(template, /grid-template-columns:230px 1fr.*grid-template-columns:1fr !important/s);
-  assert.match(template, /justify-content:center; margin-top:38px.*flex-wrap:wrap !important/s);
+test("landing page includes mobile layout overrides", () => {
+  assert.match(landing, /@media \(max-width: 640px\)/);
+  assert.match(landing, /\.loop-grid, \.feature-grid \{ grid-template-columns: 1fr; \}/);
+  assert.match(landing, /\.hero-actions \{ flex-direction: column; align-items: stretch; \}/);
+  assert.match(landing, /\.command \{ grid-template-columns: 1fr; gap: 6px; \}/);
 });
 
 test("docs explain stale `orch continue` resume handling", () => {
