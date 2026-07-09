@@ -6,6 +6,7 @@ import { BASH_COMPLETION, installCompletion } from "../src/completion.js";
 test("BASH_COMPLETION registers the completion function for orch", () => {
   assert.match(BASH_COMPLETION, /complete -F _orch_completion orch/);
   assert.match(BASH_COMPLETION, /add build/);
+  assert.match(BASH_COMPLETION, /--check-history/);
 });
 
 test("installCompletion writes the script under <home>/.orch and reports the path", () => {

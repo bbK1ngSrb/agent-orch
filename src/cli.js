@@ -235,6 +235,7 @@ export function parse(argv) {
       link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
       json: { type: "boolean" }, // dashboard: machine-readable output
       limit: { type: "string" }, // dashboard: run-history entries to show
+      "check-history": { type: "boolean" }, // dashboard: mark stale red rows resolved when branches are gone
       pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
 
     },
@@ -1171,8 +1172,9 @@ export async function main(argv, deps = {}) {
 
   if (command === "dashboard") {
     const historyLimit = flags.limit ? Number(flags.limit) : 10;
-    if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit, repo }), null, 2));
-    else console.log(renderDashboard(orchDir, { historyLimit, repo, color: colorEnabled(process.stdout), columns: process.stdout.columns }));
+    const checkHistory = Boolean(flags["check-history"]);
+    if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit, repo, checkHistory }), null, 2));
+    else console.log(renderDashboard(orchDir, { historyLimit, repo, checkHistory, color: colorEnabled(process.stdout), columns: process.stdout.columns }));
     return;
   }
 
@@ -1214,6 +1216,7 @@ Options:
   --no-tidy             Leave task branches and checkouts after merge.
   --json                With dashboard, print JSON.
   --limit <n>           With dashboard, limit history rows.
+  --check-history       With dashboard, mark stale red history rows resolved.
   --merge               With pr, merge approved PRs.
   --pr                  With agent build, open a PR instead.
 
