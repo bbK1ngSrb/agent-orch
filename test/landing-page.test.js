@@ -3,11 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// docs/index.html is a build artifact exported from a visual design tool. The
-// export is supposed to "bake" the template language away (resolve <sc-if>
-// conditionals, substitute {{ mustache }} bindings) into plain HTML. A bad
-// re-export can silently leak those constructs back in — issue: unbaked
-// designer-template leftovers + dead placeholder links. This guards against it.
+// docs/index.html is intentionally plain static HTML. Earlier generated
+// one-file bundles depended on runtime unpacking and custom-element scripts,
+// which could fail in browsers and leave a text-only page.
 const html = readFileSync(
   fileURLToPath(new URL("../docs/index.html", import.meta.url)),
   "utf8",
@@ -20,9 +18,17 @@ test("landing page has no unbaked designer-template constructs", () => {
 });
 
 test("landing page has no dead placeholder links", () => {
-  // href="#" (stored escaped as href=\"#\" inside the exported JS string blob)
-  // navigates to the top of the same page instead of anywhere useful.
-  assert.ok(!html.includes('href=\\"#\\"'), 'dead href="#" placeholder link');
+  // href="#" navigates to the top of the same page instead of anywhere useful.
+  assert.doesNotMatch(html, /\bhref=(["'])#\1/, 'dead href="#" placeholder link');
+});
+
+test("landing page does not depend on generated runtime unpacking", () => {
+  assert.doesNotMatch(html, /__bundler/i);
+  assert.doesNotMatch(html, /DecompressionStream/);
+  assert.doesNotMatch(html, /text\/babel/);
+  assert.doesNotMatch(html, /<x-dc/i);
+  assert.match(html, /<h1>Two agents\./);
+  assert.match(html, /href="https:\/\/github\.com\/bbk1ng\/agent-orch#readme"/);
 });
 
 test("landing page privacy claim is not the inaccurate all-local one", () => {

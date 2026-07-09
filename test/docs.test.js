@@ -13,6 +13,7 @@ const landing = read("docs/index.html");
 const manual = read("docs/orch-manual.md");
 const exampleConfig = read("orch.example.yml");
 const coc = read("CODE_OF_CONDUCT.md");
+const changelog = read("CHANGELOG.md");
 
 test("the CLI bin is `orch`", () => {
   assert.deepEqual(Object.keys(pkg.bin), ["orch"]);
@@ -63,55 +64,23 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
 });
 
-test("landing page has static social and no-JS fallback content", () => {
-  assert.match(landing, /<meta property="og:title" content="orch — agents orchestration tool">/);
+test("landing page is plain static HTML with social metadata", () => {
+  assert.match(landing, /<meta property="og:title" content="orch - agents orchestration tool">/);
   assert.match(landing, /<meta property="og:description"/);
   assert.match(landing, /<meta property="og:image"/);
   assert.match(landing, /<meta name="twitter:card" content="summary_large_image">/);
-  assert.match(landing, /<noscript>[\s\S]*Run local coding agents in a cross-audit loop/);
-  assert.match(landing, /<noscript>[\s\S]*npm install -g @bbk1ng\/agent-orch/);
+  assert.match(landing, /Run local coding agents[\s\S]*cross-audit loop/);
+  assert.match(landing, /npm install -g[\s\S]*@bbk1ng\/agent-orch/);
+  assert.doesNotMatch(landing, /__bundler/);
+  assert.doesNotMatch(landing, /<x-dc/i);
   assert.doesNotMatch(landing, /This page requires JavaScript to display/);
 });
 
-test("landing page bundled template includes mobile layout overrides", () => {
-  const template = JSON.parse(
-    landing.match(/<script type="__bundler\/template">\n([\s\S]*?)\n  <\/script>/)[1],
-  );
-
-  assert.match(template, /@media \(max-width: 640px\)/);
-  assert.match(template, /grid-template-columns:repeat\(4, 1fr\).*grid-template-columns:1fr !important/s);
-  assert.match(template, /grid-template-columns:repeat\(3, 1fr\).*grid-template-columns:1fr !important/s);
-  assert.match(template, /grid-template-columns:230px 1fr.*grid-template-columns:1fr !important/s);
-  assert.match(template, /justify-content:center; margin-top:38px.*flex-wrap:wrap !important/s);
-});
-
-test("landing page template survives the browser's HTML tokenizer (no unescaped </script>)", () => {
-  // The bundled template is a JSON string embedded in an inline
-  // <script type="__bundler/template"> block. A browser's HTML tokenizer, once
-  // inside any <script>, ends the element at the FIRST literal `</script>` byte
-  // sequence it sees — it does not understand JSON. If the template's HTML body
-  // contains an unescaped `</script>` (e.g. from a nested `<script src=...></script>`),
-  // the wrapper closes early, textContent is truncated to invalid JSON, and
-  // JSON.parse throws "Unterminated string" — the page never unpacks.
-  // The fix is to escape inner close tags as `<\/script>` (valid JSON, decodes
-  // back to `/`). This models the browser, not a string reader, so it catches
-  // what the string-based extraction above cannot.
-  const open = '<script type="__bundler/template">';
-  const start = landing.indexOf(open) + open.length;
-  const end = landing.lastIndexOf("\n  </script>"); // the wrapper's real close
-  const body = landing.slice(start, end);
-  assert.doesNotMatch(
-    body,
-    /<\/script>/i,
-    "template body has an unescaped </script>; browser will truncate it — escape as <\\/script>",
-  );
-
-  // And prove the browser-visible slice (bytes up to the first literal </script>)
-  // is still valid JSON that decodes the real page.
-  const firstClose = landing.slice(start).search(/<\/script/i);
-  const browserText = landing.slice(start, start + firstClose).trim();
-  const decoded = JSON.parse(browserText);
-  assert.match(decoded, /<!DOCTYPE html>/i);
+test("landing page includes mobile layout overrides", () => {
+  assert.match(landing, /@media \(max-width: 640px\)/);
+  assert.match(landing, /\.loop-grid, \.feature-grid \{ grid-template-columns: 1fr; \}/);
+  assert.match(landing, /\.hero-actions \{ flex-direction: column; align-items: stretch; \}/);
+  assert.match(landing, /\.command \{ grid-template-columns: 1fr; gap: 6px; \}/);
 });
 
 test("docs explain stale `orch continue` resume handling", () => {
@@ -134,4 +103,24 @@ test("the GitHub-merge surface (orch-docs Action) exists and is documented", () 
 test("CODE_OF_CONDUCT gives an actionable private contact for enforcement", () => {
   const enforcement = coc.slice(coc.indexOf("## Enforcement"));
   assert.match(enforcement, /[\w.+-]+@[\w-]+\.[\w.-]+/); // a real email address
+});
+
+test("landing header version span matches package.json and the bump regex still matches it (#192)", () => {
+  // The site is a built artifact; the release bump rewrites its header version
+  // span in src/git.js. If the design tool re-exports with a different closing-
+  // tag escaping, the bump regex silently no-ops and the version freezes — so
+  // guard both the current value and that the regex actually matches it.
+  assert.match(landing, new RegExp(`>v${pkg.version.replace(/\\./g, "\\.")}</span>`));
+  const bumpRe = /v\d+\.\d+\.\d+(?=<(?:\\u002F|\\\/|\/)span>)/;
+  assert.match(landing, bumpRe);
+});
+
+test("CHANGELOG documents the latest merged fixes", () => {
+  const unreleased = changelog.slice(
+    changelog.indexOf("## Unreleased"),
+    changelog.indexOf("## 0.3.18"),
+  );
+  assert.match(unreleased, /numeric PR id/);
+  assert.match(unreleased, /designer-template leftovers/);
+  assert.match(unreleased, /escaping nested `<\/script>` close tags/);
 });
