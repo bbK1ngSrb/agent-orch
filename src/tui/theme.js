@@ -82,17 +82,19 @@ export function box(title, rowsSegs, opts = {}) {
 // EXCEPT verdict-shaped cells, which callers pass pre-painted — table()
 // pads by visWidth so embedded ANSI doesn't break column math.
 // When `opts.columns` (terminal width) is given, each rendered line is
-// trimmed of trailing padding and clamped to min(maxInner, max(minInner,
-// columns)); overflow is truncated on the plain text with an ellipsis, same
-// tradeoff as row(). With `columns` undefined, output is unchanged.
+// trimmed of trailing padding and clamped to min(maxInner, columns) — unlike
+// box() there is no minimum floor, so the table never exceeds the terminal
+// even below 40 columns; overflow is truncated on the plain text with an
+// ellipsis, same tradeoff as row(). With `columns` undefined, output is
+// unchanged.
 export function table(headers, rows, opts = {}) {
-  const { columns, minInner = 40, maxInner = 96 } = opts;
+  const { columns, maxInner = 96 } = opts;
   const cols = headers.length;
   const widths = Array.from({ length: cols }, (_, i) =>
     Math.max(visWidth(headers[i]), ...rows.map((r) => visWidth(r[i] ?? ""))));
   const line = (cells) => cells.map((c, i) =>
     c + " ".repeat(widths[i] - visWidth(c) + (i < cols - 1 ? 2 : 0))).join("");
-  const limit = Number.isFinite(columns) ? Math.min(maxInner, Math.max(minInner, columns)) : null;
+  const limit = Number.isFinite(columns) ? Math.min(maxInner, columns) : null;
   const clamp = (l) => {
     if (limit == null) return l;
     const t = l.replace(/ +$/, "");

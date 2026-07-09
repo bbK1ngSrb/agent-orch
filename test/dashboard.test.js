@@ -177,12 +177,14 @@ test("render clamps history table lines to opts.columns", () => {
     branch: "pr/claude/extremely-long-branch-name-overflowing-narrow-terminals",
     verdict: "merged", rounds: 1, tokens: 10,
   });
-  const text = dashboard.render(d, { columns: 60 });
-  const lines = text.split("\n");
-  const start = lines.indexOf("Run history (last 1)");
-  const tableLines = lines.slice(start + 1, start + 3);
-  assert.match(tableLines[1], /…$/);
-  for (const l of tableLines) assert.ok(visWidth(l) <= 60, `line too wide: ${JSON.stringify(l)}`);
+  // 30 < 40: regression for the minInner floor that used to override narrow terminals
+  for (const columns of [60, 30]) {
+    const lines = dashboard.render(d, { columns }).split("\n");
+    const start = lines.indexOf("Run history (last 1)");
+    const tableLines = lines.slice(start + 1, start + 3);
+    assert.match(tableLines[1], /…$/);
+    for (const l of tableLines) assert.ok(visWidth(l) <= columns, `line too wide at ${columns}: ${JSON.stringify(l)}`);
+  }
   // without columns the full branch name still renders untruncated
   assert.match(dashboard.render(d), /extremely-long-branch-name-overflowing-narrow-terminals/);
 });

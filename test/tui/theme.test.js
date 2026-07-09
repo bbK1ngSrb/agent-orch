@@ -16,7 +16,9 @@ test("table aligns columns and colors specific cells via a colorFn", () => {
 test("table with columns truncates overflow with … and keeps lines within width", () => {
   const headers = ["TIME", "BRANCH", "VERDICT"];
   const rows = [["14:22", "pr/claude/very-long-branch-name-that-overflows", "merged"]];
-  const out = table(headers, rows, { columns: 30, minInner: 10 });
+  // 30 < 40 on purpose: table() has no minimum-width floor, so even very
+  // narrow terminals are honored (regression for the old minInner=40 clamp)
+  const out = table(headers, rows, { columns: 30 });
   const lines = out.split("\n");
   assert.match(lines[1], /…$/);
   for (const l of lines) assert.ok(visWidth(l) <= 30, `line too wide: ${JSON.stringify(l)}`);
