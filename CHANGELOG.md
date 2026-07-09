@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.24 — 2026-07-09
+- orch: auto-merge own green integration→main PR via App bypass (drop manual --admin step) (closes [#213](https://github.com/bbk1ng/agent-orch/issues/213))
+
 ## 0.3.23 — 2026-07-09
 - docs: live-TUI dashboard design doc (docs/tui-design.md) (closes [#202](https://github.com/bbk1ng/agent-orch/issues/202))
 
