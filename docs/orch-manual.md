@@ -298,6 +298,9 @@ orch dashboard --json --limit 5
 **When to use it:** checking on a long-running or concurrent set of cycles
 without interrupting them.
 
+A live full-screen TUI version of this command is designed in
+[`docs/tui-design.md`](tui-design.md).
+
 ### 2.10 `orch agent add <name>`
 
 Appends an already-known agent to the `agents:` rotation pool in
