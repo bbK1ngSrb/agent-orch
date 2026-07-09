@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.23 — 2026-07-09
+- docs: live-TUI dashboard design doc (docs/tui-design.md) (closes [#202](https://github.com/bbk1ng/agent-orch/issues/202))
+
 ## 0.3.22 — 2026-07-09
 - auto-docs mrdzlaa40 update documentation to reflect the latest merged changes
 
