@@ -1,6 +1,10 @@
 # Changelog
 
+## 0.3.20 — 2026-07-09
+- refactor pr 190, based on review verdict. DISAGREE: The landing-page rewrite itself appears to remove the broken generated runtime and anchors resolve, but the branch weakens a regression test in the exact area it touches: after moving from escaped bundled HTML to plain HTML, the dead-placeholder-link assertion is stale and would miss the plain regression it claims to prevent.
+
 ## Unreleased
+- Fix the landing-page version bump: the release step's span regex expected a `/`-escaped `</span>`, but the re-exported bundle now uses a literal `</span>`, so the header version froze at v0.3.18 while the package bumped on. Broaden the lookahead to accept literal/escaped variants, resync the header to the current version, and add a test so a future format change fails loudly (fixes [#192](https://github.com/bbk1ng/agent-orch/issues/192)).
 - Fix the persistent integration PR auto-merge path to direct-merge the numeric PR id after creating the PR, not the `orch/integration` branch name (fixes [#182](https://github.com/bbk1ng/agent-orch/issues/182)).
 - Clean up the landing page export: remove unbaked designer-template leftovers, replace dead placeholder links, and avoid inaccurate all-local privacy claims.
 - Fix the landing page bundle bootstrap by escaping nested `</script>` close tags inside the embedded template (fixes [#185](https://github.com/bbk1ng/agent-orch/issues/185)).

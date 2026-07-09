@@ -18,9 +18,8 @@ test("landing page has no unbaked designer-template constructs", () => {
 });
 
 test("landing page has no dead placeholder links", () => {
-  // href="#" (stored escaped as href=\"#\" inside the exported JS string blob)
-  // navigates to the top of the same page instead of anywhere useful.
-  assert.ok(!html.includes('href=\\"#\\"'), 'dead href="#" placeholder link');
+  // href="#" navigates to the top of the same page instead of anywhere useful.
+  assert.doesNotMatch(html, /\bhref=(["'])#\1/, 'dead href="#" placeholder link');
 });
 
 test("landing page does not depend on generated runtime unpacking", () => {
