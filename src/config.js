@@ -27,6 +27,9 @@ const DEFAULTS = {
     mergeMethod: "squash", // gh pr merge strategy for orch-owned PR auto-merge
     autoMergePr: false, // enable GitHub auto-merge on PRs orch opens or updates
   },
+  main: {
+    autoMerge: false, // opt-in direct merge of the persistent integration->main PR
+  },
   docs: {
     autoUpdate: false, // opt-in per repo; flip true in .orch/orch.yml
     prompt: "update documentation to reflect the latest merged changes",
@@ -67,6 +70,8 @@ function validate(cfg) {
     throw new Error("orch.yml: github.mergeMethod must be squash, merge, or rebase");
   if (typeof cfg.github.autoMergePr !== "boolean")
     throw new Error("orch.yml: github.autoMergePr must be a boolean");
+  if (typeof cfg.main.autoMerge !== "boolean")
+    throw new Error("orch.yml: main.autoMerge must be a boolean");
   if (typeof cfg.docs.autoUpdate !== "boolean")
     throw new Error("orch.yml: docs.autoUpdate must be a boolean");
   if (typeof cfg.docs.prompt !== "string" || !cfg.docs.prompt.trim())
@@ -131,6 +136,7 @@ export function load(dir, overridePath) {
     cheap: { ...DEFAULTS.cheap, ...(user.cheap || {}), ...(override.cheap || {}) },
     scope: { ...DEFAULTS.scope, ...(user.scope || {}), ...(override.scope || {}) },
     github: { ...DEFAULTS.github, ...(user.github || {}), ...(override.github || {}) },
+    main: { ...DEFAULTS.main, ...(user.main || {}), ...(override.main || {}) },
     docs: { ...DEFAULTS.docs, ...(user.docs || {}), ...(override.docs || {}) },
   };
   validate(cfg);

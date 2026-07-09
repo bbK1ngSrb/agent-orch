@@ -47,6 +47,13 @@ function tryMergeDirect(gh, prRef, method) {
   try { mergeDirect(gh, prRef, method); } catch { /* not ready or not mergeable */ }
 }
 
+function prChecksGreen(gh, prRef) {
+  const data = JSON.parse(gh(["pr", "view", String(prRef), "--json", "statusCheckRollup"]) || "{}");
+  const checks = data.statusCheckRollup || [];
+  return checks.length > 0 && checks.every((check) =>
+    check.state === "SUCCESS" || (check.status === "COMPLETED" && check.conclusion === "SUCCESS"));
+}
+
 // Concurrent orch cycles share one .git and thus one refs/remotes/origin/main —
 // a losing fetch fails "cannot lock ref", which is transient contention, not a
 // real sync problem. Mirrors git.js's fetchOriginMain retry so this new
@@ -326,14 +333,15 @@ export async function openIntegrationPr(ctx, deps) {
       // or rebase would strand orch/integration behind main after the first PR.
       // Requires the repo to allow merge-commit merges — see docs/ORCH.md.
       gh(["pr", "merge", prRef, "--auto", "--merge"]);
-      // See the matching comment in openPr(): native auto-merge doesn't fire
-      // when review is only satisfied via ruleset bypass, not a real
-      // approval. This function re-runs on every cycle (it updates the same
-      // persistent PR), so a failed attempt here just gets retried next time
-      // checks have had a chance to finish.
-      try { mergeDirect(gh, prRef, "merge"); } catch { /* not ready yet */ }
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
+    }
+  }
+  if (cfg?.main?.autoMerge) {
+    try {
+      if (prChecksGreen(gh, prRef)) tryMergeDirect(gh, prRef, "merge");
+    } catch (e) {
+      log(`could not inspect checks for ${branch}: ${e.message}`);
     }
   }
   return { prUrl: url };

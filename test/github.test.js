@@ -371,11 +371,31 @@ test("openIntegrationPr creates the persistent integration PR and enables auto-m
   assert.ok(mergeCall.includes("--auto"));
   assert.ok(mergeCall.includes("--merge"));
   assert.equal(mergeCall.includes("--squash"), false);
-  // Same bypass-doesn't-trigger-native-auto-merge caveat as openPr() — this
-  // function re-runs on every cycle, so a failed direct attempt just retries
-  // next time.
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"), "direct main merge needs main.autoMerge");
+});
+
+test("openIntegrationPr with main.autoMerge directly merges the persistent integration PR", async () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return "[]";
+    if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/12\n";
+    if (args[0] === "pr" && args[1] === "view") {
+      return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }, { status: "COMPLETED", conclusion: "SUCCESS" }] });
+    }
+    return "";
+  };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge"), "must not use gh pr merge precheck");
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "view" && c.includes("statusCheckRollup")));
   const direct = calls.find((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge")));
-  assert.ok(direct, "a direct merge attempt must follow the --auto call");
+  assert.ok(direct, "main.autoMerge must attempt a direct merge");
   // #182: the REST merge endpoint is keyed by numeric PR id. On the create
   // path the number comes from the create URL, not the head-branch name —
   // passing "orch/integration" here builds pulls/orch/integration/merge → 404.
@@ -387,6 +407,38 @@ test("openIntegrationPr creates the persistent integration PR and enables auto-m
     !direct.some((a) => a.includes("orch/integration/merge")),
     "direct merge must not use the branch name in the REST path",
   );
+});
+
+test("openIntegrationPr skips main.autoMerge direct merge until checks are green", async () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "PENDING" }] });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"));
+});
+
+test("openIntegrationPr swallows main.autoMerge direct-merge failures so GitHub refusals retry later", async () => {
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+    if (args[0] === "api") throw new Error("405 not mergeable yet");
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
 });
 
 test("openIntegrationPr lists and creates the persistent PR against cfg.baseBranch", async () => {

@@ -134,6 +134,10 @@ github:
   mergeMethod: squash     # gh pr merge strategy for non-integration PRs; default: squash
   autoMergePr: false      # enable GitHub's native auto-merge on PRs orch opens/updates; default: false
 
+# === Main mirror PR (integrationBranch -> baseBranch) ===
+main:
+  autoMerge: false        # true = directly merge the persistent integration PR when GitHub allows it; default: false
+
 # === Auto docs-update after a real merge (optional) ===
 docs:
   autoUpdate: false       # true = spawn a docs-update task after a merge; default: false
