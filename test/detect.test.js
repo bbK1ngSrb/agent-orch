@@ -5,14 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveAgentBin as resolveBin } from "../src/agent-bin.js";
 import { detectAgents, formatDetection } from "../src/detect.js";
+import { nativeAgents } from "../src/adapters/index.js";
 
 function resolve(found) {
   return (exe) => found.includes(exe) ? exe : null;
 }
 
 test("detectAgents: reports CLI agents found by the shared resolver", () => {
-  const { found, missing } = detectAgents({ resolveAgentBin: resolve(["claude", "codex", "copilot", "gemini"]) });
-  assert.deepEqual(found, ["claude", "codex", "copilot", "gemini"]);
+  // Derive from the registry so this can't drift when a native adapter is added.
+  const { found, missing } = detectAgents({ resolveAgentBin: resolve(nativeAgents) });
+  assert.deepEqual(found, nativeAgents);
   assert.deepEqual(missing, ["local (ccr CLI not found: PATH + fallback dirs)"]);
 });
 
