@@ -43,6 +43,15 @@ test("docs list the built-in CLI adapters", () => {
   assert.doesNotMatch(design, /Gemini\/Aider/);
 });
 
+test("docs document the dashboard --check-history flag", () => {
+  // Shipped with `orch dashboard --check-history` (marks stale red history rows
+  // resolved when their branches are gone); guard the prose docs against drift
+  // from the CLI help/completion where the flag already lives.
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /--check-history/);
+  }
+});
+
 test("README documents bash completion install/update behavior", () => {
   assert.match(pkg.scripts.postinstall, /completion install/);
   assert.match(readme, /~\/\.orch\/completion\.bash/);

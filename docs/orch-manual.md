@@ -285,14 +285,20 @@ checkpoint points at work that no longer exists, so orch clears the stale
 resume state and exits cleanly rather than failing on every subsequent
 `continue` for that dead `sid`.
 
-### 2.9 `orch dashboard [--json] [--limit N]`
+### 2.9 `orch dashboard [--json] [--limit N] [--check-history]`
 
-Read-only. Shows live cycle status/stage, a streaming log tail, run history,
-and success-rate metrics. Never mutates anything.
+Read-only by default. Shows live cycle status/stage, a streaming log tail, run
+history, and success-rate metrics. Without `--check-history` it never mutates
+anything.
+
+`--check-history` is the one exception: it rewrites stale red history rows to
+resolved when the branches they refer to are gone, so a long-since-merged cycle
+no longer shows as a lingering failure.
 
 ```bash
 orch dashboard
 orch dashboard --json --limit 5
+orch dashboard --check-history
 ```
 
 **When to use it:** checking on a long-running or concurrent set of cycles
