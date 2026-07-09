@@ -64,6 +64,14 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
 });
 
+test("docs document main.autoMerge for the persistent integration PR", () => {
+  for (const doc of [readme, manual, exampleConfig]) {
+    assert.match(doc, /main\.autoMerge|autoMerge: false/);
+  }
+  assert.match(manual, /persistent `orch\/integration → main` PR/);
+  assert.match(readme, /direct merge of that\s+persistent PR/);
+});
+
 test("landing page is plain static HTML with social metadata", () => {
   assert.match(landing, /<meta property="og:title" content="orch - agents orchestration tool">/);
   assert.match(landing, /<meta property="og:description"/);

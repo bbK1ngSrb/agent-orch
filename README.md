@@ -269,6 +269,9 @@ test gate and version bump. Orch then pushes `orch/integration` and opens or
 updates one persistent PR from `orch/integration` to `main`; with
 `github.autoMergePr: true`, it also enables GitHub's native auto-merge on that
 PR using a merge commit so `orch/integration` stays in `main`'s ancestry.
+With `main.autoMerge: true`, orch additionally attempts a direct merge of that
+persistent PR after its checks are already green; failed check inspection or a
+not-yet-mergeable PR is logged and leaves the PR open.
 `main` is a mirror of GitHub's `main`: orch does not merge, reset, commit, or
 push it directly. After GitHub merges the PR, local `main` advances only by
 fetching origin and fast-forwarding to `origin/main`.

@@ -47,6 +47,10 @@ github:
                           # (needs "Allow merge commits" on for the integration PR; see docs/orch-manual.md
                           # for a caveat when review is only satisfied via a ruleset bypass_actors grant)
 
+# === Main mirror PR (integrationBranch -> baseBranch) ===
+main:
+  autoMerge: false        # true = directly merge the persistent integration PR once checks are green; default: false
+
 # === Auto docs-update after a real merge (optional) ===
 docs:
   autoUpdate: false       # true = spawn a docs-update task after a merge; default: false
