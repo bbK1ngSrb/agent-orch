@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.22 — 2026-07-09
+- auto-docs mrdzlaa40 update documentation to reflect the latest merged changes
+
 ## 0.3.21 — 2026-07-09
 - dashboard: reconcile stale red history verdicts (orch dashboard --check-history) (closes [#197](https://github.com/bbk1ng/agent-orch/issues/197))
 
