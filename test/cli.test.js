@@ -911,9 +911,13 @@ test("scaffolded orch.yml documents every built-in agent detectAgents() probes",
     await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
     const text = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
     // Keep the "Built-in: ..." doc comment in sync with the CLI names
-    // detectAgents() (src/detect.js) actually probes — it drifted stale for
-    // gemini once already (missing from the scaffold after gemini support shipped).
-    for (const name of ["claude", "codex", "copilot", "gemini"]) {
+    // detectAgents() (src/detect.js) actually probes. Derive the expected set
+    // from the adapter registry (adapters.nativeAgents) rather than a hand-kept
+    // list — a hard-coded loop drifted stale for gemini once, then again for agy
+    // and grok, without failing this test. Sourcing it from the registry means
+    // any newly added native adapter is checked automatically.
+    assert.ok(adapters.nativeAgents.length >= 4, "expected the native adapter set to be non-trivial");
+    for (const name of adapters.nativeAgents) {
       assert.match(text, new RegExp(`Built-in:.*\\b${name}\\b`));
     }
   } finally {
