@@ -3,26 +3,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// docs/index.html is a build artifact exported from a visual design tool. The
-// export is supposed to "bake" the template language away (resolve <sc-if>
-// conditionals, substitute {{ mustache }} bindings) into plain HTML. A bad
-// re-export can silently leak those constructs back in — issue: unbaked
-// designer-template leftovers + dead placeholder links. This guards against it.
+// docs/index.html is intentionally plain static HTML. Earlier generated
+// one-file bundles depended on runtime unpacking and custom-element scripts,
+// which could fail in browsers and leave a text-only page.
 const html = readFileSync(
   fileURLToPath(new URL("../docs/index.html", import.meta.url)),
   "utf8",
 );
-
-function bundledTemplate() {
-  const open = '<script type="__bundler/template">';
-  const start = html.indexOf(open) + open.length;
-  const end = html.lastIndexOf("\n  </script>");
-  return html.slice(start, end).trim();
-}
-
-function decodedBundledTemplate() {
-  return JSON.parse(bundledTemplate());
-}
 
 test("landing page has no unbaked designer-template constructs", () => {
   assert.ok(!html.includes("{{"), "leftover {{ mustache }} binding");
@@ -31,36 +18,17 @@ test("landing page has no unbaked designer-template constructs", () => {
 });
 
 test("landing page has no dead placeholder links", () => {
-  // href="#" (stored escaped as href=\"#\" inside the exported JS string blob)
-  // navigates to the top of the same page instead of anywhere useful.
-  assert.ok(!html.includes('href=\\"#\\"'), 'dead href="#" placeholder link');
+  // href="#" navigates to the top of the same page instead of anywhere useful.
+  assert.doesNotMatch(html, /\bhref=(["'])#\1/, 'dead href="#" placeholder link');
 });
 
-test("landing page bundled template survives the browser's script tokenizer", () => {
-  const body = bundledTemplate();
-
-  assert.doesNotMatch(
-    body,
-    /<\/script>/i,
-    "template body has an unescaped </script>; browser will truncate it",
-  );
-
-  const open = '<script type="__bundler/template">';
-  const start = html.indexOf(open) + open.length;
-  const firstClose = html.slice(start).search(/<\/script/i);
-  const browserText = html.slice(start, start + firstClose).trim();
-  const decoded = JSON.parse(browserText);
-  assert.match(decoded, /Two agents/);
-});
-
-test("landing page bundled template is baked browser-ready HTML", () => {
-  const template = decodedBundledTemplate();
-
-  assert.doesNotMatch(template, /<sc-/i, "designer conditional element leaked into bundle");
-  assert.doesNotMatch(template, /{{/, "mustache binding leaked into bundle");
-  assert.doesNotMatch(template, /href="#"/, "dead placeholder link leaked into bundle");
-  assert.match(template, /style="[^"]*font-size:64px/, "expected inline hero styles");
-  assert.match(template, /href="https:\/\/github\.com\/bbk1ng\/agent-orch#readme"/);
+test("landing page does not depend on generated runtime unpacking", () => {
+  assert.doesNotMatch(html, /__bundler/i);
+  assert.doesNotMatch(html, /DecompressionStream/);
+  assert.doesNotMatch(html, /text\/babel/);
+  assert.doesNotMatch(html, /<x-dc/i);
+  assert.match(html, /<h1>Two agents\./);
+  assert.match(html, /href="https:\/\/github\.com\/bbk1ng\/agent-orch#readme"/);
 });
 
 test("landing page privacy claim is not the inaccurate all-local one", () => {
