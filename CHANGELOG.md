@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.25 — 2026-07-09
+- feat(dashboard): width-aware table() + honor columns in render() (closes [#203](https://github.com/bbk1ng/agent-orch/issues/203))
+
 ## 0.3.24 — 2026-07-09
 - orch: auto-merge own green integration→main PR via App bypass (drop manual --admin step) (closes [#213](https://github.com/bbk1ng/agent-orch/issues/213))
 
