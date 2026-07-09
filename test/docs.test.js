@@ -108,6 +108,16 @@ test("CODE_OF_CONDUCT gives an actionable private contact for enforcement", () =
   assert.match(enforcement, /[\w.+-]+@[\w-]+\.[\w.-]+/); // a real email address
 });
 
+test("landing header version span matches package.json and the bump regex still matches it (#192)", () => {
+  // The site is a built artifact; the release bump rewrites its header version
+  // span in src/git.js. If the design tool re-exports with a different closing-
+  // tag escaping, the bump regex silently no-ops and the version freezes — so
+  // guard both the current value and that the regex actually matches it.
+  assert.match(landing, new RegExp(`>v${pkg.version.replace(/\\./g, "\\.")}</span>`));
+  const bumpRe = /v\d+\.\d+\.\d+(?=<(?:\\u002F|\\\/|\/)span>)/;
+  assert.match(landing, bumpRe);
+});
+
 test("CHANGELOG documents the latest merged fixes", () => {
   const unreleased = changelog.slice(
     changelog.indexOf("## Unreleased"),
