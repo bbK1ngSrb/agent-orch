@@ -8,6 +8,7 @@ import * as inflight from "../src/inflight.js";
 import * as checkpoint from "../src/checkpoint.js";
 import * as notify from "../src/notify.js";
 import * as dashboard from "../src/dashboard.js";
+import { visWidth } from "../src/tui/theme.js";
 
 function freshDir() {
   return join(mkdtempSync(join(tmpdir(), "orch-dashboard-")), ".orch");
@@ -167,6 +168,23 @@ test("render produces a readable text summary with live cycles, history, and met
   assert.match(text, /Metrics/);
   assert.match(text, /success rate: 100%/);
   assert.match(text, /clean unattended cycles: 1/);
+});
+
+test("render clamps history table lines to opts.columns", () => {
+  const d = freshDir();
+  notify.recordRun(d, {
+    ts: "2026-07-10T00:00:00Z",
+    branch: "pr/claude/extremely-long-branch-name-overflowing-narrow-terminals",
+    verdict: "merged", rounds: 1, tokens: 10,
+  });
+  const text = dashboard.render(d, { columns: 60 });
+  const lines = text.split("\n");
+  const start = lines.indexOf("Run history (last 1)");
+  const tableLines = lines.slice(start + 1, start + 3);
+  assert.match(tableLines[1], /…$/);
+  for (const l of tableLines) assert.ok(visWidth(l) <= 60, `line too wide: ${JSON.stringify(l)}`);
+  // without columns the full branch name still renders untruncated
+  assert.match(dashboard.render(d), /extremely-long-branch-name-overflowing-narrow-terminals/);
 });
 
 test("render colorizes verdict words when opts.color is true", () => {
