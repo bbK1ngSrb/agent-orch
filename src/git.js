@@ -407,16 +407,19 @@ export function bumpVersion(integrationPath, entry) {
     writeFileSync(changelogPath, `# Changelog\n\n${section}${prior}`);
 
     // The GitHub Pages site (docs/index.html) hard-codes the release version in
-    // its header (left of the GitHub link) as `>vX.Y.Z</span>` (a literal,
-    // escaped </span> inside the inline SPA string — the page is the built
-    // artifact, no generator). Nothing else touches it, so without this it froze
-    // while the package bumped on. Best-effort, span-anchored: only that one
-    // version span is rewritten.
+    // its header (left of the GitHub link) as `>vX.Y.Z</span>`, inside the
+    // inline-SPA JSON string — the page is the built artifact, no generator.
+    // Nothing else touches it, so without this it froze while the package
+    // bumped on. The closing tag's `/` may be written literally (`</span>`) or
+    // escaped (`<\/span>`, `</span>`) depending on how the design tool
+    // exported the bundle, so the lookahead accepts all three — a re-export
+    // that flips the encoding must not silently freeze the version again (#192).
+    // Best-effort, span-anchored: only that one version span is rewritten.
     const sitePath = join(integrationPath, "docs", "index.html");
     let siteBumped = false;
     if (existsSync(sitePath)) {
       const html = readFileSync(sitePath, "utf8");
-      const next = html.replace(/v\d+\.\d+\.\d+(?=<\\u002Fspan>)/, `v${version}`);
+      const next = html.replace(/v\d+\.\d+\.\d+(?=<(?:\\u002F|\\\/|\/)span>)/, `v${version}`);
       if (next !== html) {
         writeFileSync(sitePath, next);
         siteBumped = true;
