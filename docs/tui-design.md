@@ -1,7 +1,8 @@
 # `orch dashboard` — Live TUI design
 
 Status: accepted (design panel, 2026-07-10). Supersedes the one-shot static print for
-interactive terminals. Basis: `docs/superpowers/specs/2026-07-06-terminal-reskin-design.md`.
+interactive terminals. Basis: the hand-rolled ANSI approach established in
+`src/tui/theme.js` (see its header comment).
 
 ## Goal
 Turn `orch dashboard` from a single static print into a full-screen, live-refreshing terminal
@@ -11,7 +12,8 @@ UI (lazygit/k9s/htop class) **with zero new npm dependencies** — built on Node
 
 ## Non-negotiable constraints
 - **Zero new dependencies.** `package.json`/`package-lock.json` are orch protected-paths and the
-  repo is deliberately dep-free (`theme.js:3-4`). No Ink, no blessed, no node-pty.
+  repo deliberately carries a single runtime dependency (`yaml`); the terminal helpers are
+  hand-rolled ANSI with no dependency (`theme.js:3-4`). No Ink, no blessed, no node-pty.
 - **`snapshot()` is the single data source.** The loop never reads `.orch/` directly.
 - **Scriptable path untouched.** `--json`, piped/redirected, non-TTY, and `--once` output stay
   byte-identical to today's `render()`. The live view activates only on an interactive TTY.
