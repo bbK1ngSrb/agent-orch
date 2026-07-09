@@ -670,13 +670,20 @@ docs:
   that re-touches the persistent `orch/integration → main` PR checks whether
   *all* of that PR's status checks are green and, if so, merges it directly
   via `gh` (a merge commit, same as the mirror model requires). This is the
-  reliable path when native auto-merge (`github.autoMergePr`) stalls at
+  fallback for when native auto-merge (`github.autoMergePr`) stalls at
   `BLOCKED` because the review requirement is satisfied only through a ruleset
-  `bypass_actors` grant rather than a human approval — orch's own App identity
-  carries the bypass, so it can complete the merge without a manual `--admin`
-  nudge. It's a no-op while any check is still pending or failing (it re-runs
-  next cycle), and it does nothing until a real merge lands to re-open/update
-  the PR. Only affects the integration PR, never `merge: pr`'s per-cycle PRs.
+  `bypass_actors` grant rather than a human approval. The direct merge runs as
+  whatever `gh` identity orch is authenticated as — an `orch[bot]` installation
+  token if `ORCH_APP_ID`/`ORCH_APP_PRIVATE_KEY` are set, an explicit `GH_TOKEN`
+  if you export one, otherwise your ambient `gh` login — so it only succeeds if
+  *that* actor is itself in the branch's `bypass_actors` list. The shipped
+  orch-bot App is deliberately label-only with **no** bypass grant (see
+  `docs/orch-bot-github-app.md`), so landing this against a bypass-protected
+  `main` requires granting the merging actor that bypass as an explicit, opt-in
+  step; without it the merge call just fails and orch retries next cycle. It's
+  also a no-op while any check is still pending or failing, and does nothing
+  until a real merge lands to re-open/update the PR. Only affects the
+  integration PR, never `merge: pr`'s per-cycle PRs.
 
 ---
 
