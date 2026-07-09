@@ -602,6 +602,10 @@ github:
   mergeMethod: squash             # squash | merge | rebase
   autoMergePr: false
 
+# === Main mirror PR (integrationBranch -> baseBranch) ===
+main:
+  autoMerge: false                # true = orch itself merges the persistent integration PR once its checks are green
+
 # === Auto docs-update ===
 docs:
   autoUpdate: false
@@ -656,12 +660,23 @@ docs:
   Caveat: if the branch's review requirement is satisfied only via a GitHub
   ruleset `bypass_actors` grant (rather than a real human approval), GitHub's
   native auto-merge does not reliably fire — it can stay enabled with
-  `mergeStateStatus: BLOCKED` indefinitely even after checks pass. orch works
-  around this with an opportunistic direct-merge retry right after enabling
-  auto-merge (a no-op if checks are still pending); the case that can still
-  need a manual nudge is `merge: pr`'s one-shot per-cycle PR, since nothing
+  `mergeStateStatus: BLOCKED` indefinitely even after checks pass. For the
+  persistent `orch/integration → main` PR, set `main.autoMerge: true` (below)
+  to have orch merge it directly instead of relying on native auto-merge; the
+  one-shot `merge: pr` per-cycle PR has no such fallback, since nothing
   re-invokes it later the way the persistent integration PR gets re-touched
   every cycle.
+- **`main.autoMerge`** — opt-in (default `false`). When `true`, every cycle
+  that re-touches the persistent `orch/integration → main` PR checks whether
+  *all* of that PR's status checks are green and, if so, merges it directly
+  via `gh` (a merge commit, same as the mirror model requires). This is the
+  reliable path when native auto-merge (`github.autoMergePr`) stalls at
+  `BLOCKED` because the review requirement is satisfied only through a ruleset
+  `bypass_actors` grant rather than a human approval — orch's own App identity
+  carries the bypass, so it can complete the merge without a manual `--admin`
+  nudge. It's a no-op while any check is still pending or failing (it re-runs
+  next cycle), and it does nothing until a real merge lands to re-open/update
+  the PR. Only affects the integration PR, never `merge: pr`'s per-cycle PRs.
 
 ---
 
