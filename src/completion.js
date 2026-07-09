@@ -13,7 +13,7 @@ _orch_completion() {
   cur="\${COMP_WORDS[COMP_CWORD]}"
 
   local commands="init agent task issue review pr continue dashboard completion version help"
-  local flags="-h --help --version --author --authors --reviewer --reviewers --cheap --config-file --dry --link --no-banner --no-tidy --json --limit --merge --pr"
+  local flags="-h --help --version --author --authors --reviewer --reviewers --cheap --config-file --dry --link --no-banner --no-tidy --json --limit --check-history --merge --pr"
 
   if [[ \${COMP_CWORD} -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "\${commands}" -- "\${cur}") )

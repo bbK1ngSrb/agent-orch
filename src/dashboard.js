@@ -13,6 +13,7 @@ import { paint, C, table } from "./tui/theme.js";
 
 const STAGE_LABELS = { reviewed: "review", tested: "test" };
 const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "pr-fallback": C.fail };
+const RED_VERDICTS = new Set(["escalated", "pr-fallback"]);
 
 // Live cycles, newest inflight registration first, each annotated with its
 // most recent checkpoint stage (or "authoring" if none was recorded yet —
@@ -77,10 +78,19 @@ function readJsonl(p) {
     .filter(Boolean);
 }
 
+function reconcileHistory(entries, repo) {
+  if (!repo || !existsSync(repo) || !existsSync(join(repo, ".git"))) return entries;
+  return entries.map((e) =>
+    RED_VERDICTS.has(e.verdict) && e.branch && !branchExists(repo, e.branch)
+      ? { ...e, resolved: true }
+      : e);
+}
+
 // Most recent entries first.
-export function runHistory(orchDir, limit = 20) {
+export function runHistory(orchDir, limit = 20, { repo = null, checkHistory = false } = {}) {
   const entries = readJsonl(join(orchDir, "runs.jsonl"));
-  return entries.slice(-limit).reverse();
+  const history = entries.slice(-limit).reverse();
+  return checkHistory ? reconcileHistory(history, repo) : history;
 }
 
 // Success-rate + usage totals over the full run-history file.
@@ -117,13 +127,13 @@ export function latestLog(orchDir, branch, lines = 12) {
   return { file, tail: content.slice(-lines).join("\n") };
 }
 
-export function snapshot(orchDir, { historyLimit = 10, repo = null } = {}) {
+export function snapshot(orchDir, { historyLimit = 10, repo = null, checkHistory = false } = {}) {
   const live = liveCycles(orchDir);
   const interrupted = interruptedCycles(orchDir, live, repo);
   return {
     live: live.map((c) => ({ ...c, log: latestLog(orchDir, c.branch) })),
     interrupted,
-    history: runHistory(orchDir, historyLimit),
+    history: runHistory(orchDir, historyLimit, { repo, checkHistory }),
     metrics: metrics(orchDir),
   };
 }
@@ -132,8 +142,8 @@ function pct(n) { return n == null ? "n/a" : `${Math.round(n * 100)}%`; }
 function usd(n) { return n == null ? "n/a" : `$${n.toFixed(4)}`; }
 
 export function render(orchDir, opts = {}) {
-  const { historyLimit, color = false, repo = null } = opts;
-  const { live, interrupted, history, metrics: m } = snapshot(orchDir, { historyLimit, repo });
+  const { historyLimit, color = false, repo = null, checkHistory = false } = opts;
+  const { live, interrupted, history, metrics: m } = snapshot(orchDir, { historyLimit, repo, checkHistory });
   const lines = [];
   lines.push(`orch dashboard — ${orchDir}`);
   lines.push("");
@@ -165,10 +175,15 @@ export function render(orchDir, opts = {}) {
   } else {
     const rows = history.map((e) => {
       const usage = e.tokens ? `${e.tokens}tok${e.costUsd != null ? ` ${usd(e.costUsd)}` : ""}` : "";
-      const verdict = paint(color, VERDICT_COLOR[e.verdict] || "", e.verdict);
-      return [e.ts, e.branch, verdict, `${e.rounds}rnd`, usage];
+      const colorCode = e.resolved ? C.muted : VERDICT_COLOR[e.verdict] || "";
+      const verdict = paint(color, colorCode, e.verdict);
+      const row = [e.ts, e.branch, verdict, `${e.rounds}rnd`, usage];
+      if (checkHistory) row.push(e.resolved ? "resolved" : "");
+      return row;
     });
-    lines.push(table(["TIME", "BRANCH", "VERDICT", "ROUNDS", "COST"], rows, { color }));
+    const headers = ["TIME", "BRANCH", "VERDICT", "ROUNDS", "COST"];
+    if (checkHistory) headers.push("STATUS");
+    lines.push(table(headers, rows, { color }));
   }
   lines.push("");
   lines.push("Metrics");

@@ -100,6 +100,22 @@ test("runHistory reads runs.jsonl, newest first, capped at limit", () => {
   assert.equal(h[1].sid, "sid-2");
 });
 
+test("runHistory can mark stale red verdicts resolved when their branch is gone", () => {
+  const d = freshDir();
+  const repo = freshRepo();
+  notify.recordRun(d, { ts: "1", branch: "already-merged-and-gone", sid: "sid-1", verdict: "escalated", rounds: 3 });
+  notify.recordRun(d, { ts: "2", branch: "pr/codex/still-here", sid: "sid-2", verdict: "pr-fallback", rounds: 2 });
+  notify.recordRun(d, { ts: "3", branch: "done-and-gone", sid: "sid-3", verdict: "merged", rounds: 1 });
+
+  const unchecked = dashboard.runHistory(d, 3, { repo });
+  assert.equal(unchecked[2].resolved, undefined);
+
+  const checked = dashboard.runHistory(d, 3, { repo, checkHistory: true });
+  assert.equal(checked[0].resolved, undefined);
+  assert.equal(checked[1].resolved, undefined);
+  assert.equal(checked[2].resolved, true);
+});
+
 test("metrics computes success rate and usage totals", () => {
   const d = freshDir();
   notify.recordRun(d, { ts: "1", branch: "b1", verdict: "merged", rounds: 1, tokens: 100, costUsd: 0.01 });
@@ -158,6 +174,17 @@ test("render colorizes verdict words when opts.color is true", () => {
   notify.recordRun(d, { ts: "1", branch: "b0", verdict: "merged", rounds: 1, tokens: 10 });
   const text = dashboard.render(d, { color: true });
   assert.match(text, /\x1b\[38;5;71mmerged\x1b\[0m/);
+});
+
+test("render adds status for resolved stale red history rows only when requested", () => {
+  const d = freshDir();
+  const repo = freshRepo();
+  notify.recordRun(d, { ts: "1", branch: "already-merged-and-gone", verdict: "escalated", rounds: 3 });
+
+  assert.doesNotMatch(dashboard.render(d, { repo }), /STATUS|resolved/);
+  const text = dashboard.render(d, { repo, checkHistory: true });
+  assert.match(text, /STATUS/);
+  assert.match(text, /resolved/);
 });
 
 test("render handles a fully empty .orch/ without throwing", () => {

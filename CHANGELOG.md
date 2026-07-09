@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.22 — 2026-07-09
+- auto-docs mrdzlaa40 update documentation to reflect the latest merged changes
+
+## 0.3.21 — 2026-07-09
+- dashboard: reconcile stale red history verdicts (orch dashboard --check-history) (closes [#197](https://github.com/bbk1ng/agent-orch/issues/197))
+
 ## 0.3.20 — 2026-07-09
 - refactor pr 190, based on review verdict. DISAGREE: The landing-page rewrite itself appears to remove the broken generated runtime and anchors resolve, but the branch weakens a regression test in the exact area it touches: after moving from escaped bundled HTML to plain HTML, the dead-placeholder-link assertion is stale and would miss the plain regression it claims to prevent.
 

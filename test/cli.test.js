@@ -185,6 +185,12 @@ test("parse captures --no-banner flag", () => {
   assert.equal(p.flags["no-banner"], true);
 });
 
+test("parse captures dashboard --check-history flag", () => {
+  const p = parse(["dashboard", "--check-history"]);
+  assert.equal(p.command, "dashboard");
+  assert.equal(p.flags["check-history"], true);
+});
+
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 test("runBanner shows version, agents, per-agent model+effort, test, merge", () => {

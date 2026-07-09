@@ -7,7 +7,7 @@
    export function buildArgs(prompt, wd) { return [/* your CLI's args */]; }
    export default makeCliAdapter({ name: "<name>", bin: "<binary>", buildArgs });
    ```
-2. Register it in `src/adapters/index.js` (`REGISTRY`).
+2. Register it in `src/adapters/index.js` (add it to the `NATIVE` map).
 3. Add a `buildArgs` unit test in `test/adapters.test.js`.
 
 The adapter contract: `author(task, wd)` makes commits in the worktree;

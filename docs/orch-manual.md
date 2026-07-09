@@ -268,7 +268,7 @@ orch agent build mynewagent --pr     # opens a PR instead
 
 **When to use it:** adding support for a new CLI coding agent that isn't
 already in the built-in set (`claude`, `codex`, `copilot`, `gemini`, `agy`,
-plus the local-llm models).
+`grok`, plus the local-llm models).
 
 ### 2.8 `orch continue <sid>`
 
@@ -609,7 +609,7 @@ docs:
 ### 5.1 Field-by-field notes
 
 - **`agents`** — the rotation pool used when `author`/`reviewer` aren't set.
-  Built-in agents: `claude`, `codex`, `copilot`, `gemini`, `agy`. Local-llm
+  Built-in agents: `claude`, `codex`, `copilot`, `gemini`, `agy`, `grok`. Local-llm
   models (`qwen3-coder-30b`, `deepseek-coder-v2-lite`, `glm-4.5-air`) run via
   `ccr` and need `~/.claude-code-router/config.json`'s `local` provider
   configured.
