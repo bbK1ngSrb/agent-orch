@@ -52,6 +52,22 @@ function verdictText(verdict, color, colorCode) {
 function seg(text, code = "") { return [{ code, text }]; }
 function plainRows(lines) { return lines.map((text) => seg(text)); }
 
+function ansiIndexForPlainIndex(line, plainIndex) {
+  let plain = 0;
+  for (let i = 0; i < line.length;) {
+    const ansi = line.slice(i).match(/^\x1b\[[0-9;]*m/);
+    if (ansi) {
+      i += ansi[0].length;
+      continue;
+    }
+    if (plain === plainIndex) return i;
+    const width = line.codePointAt(i) > 0xffff ? 2 : 1;
+    i += width;
+    plain += width;
+  }
+  return -1;
+}
+
 function addScrollbar(lines, rect, total, offset, color) {
   if (!rect.focused || total <= rect.bodyRows || rect.bodyRows <= 0 || lines.length < 3) return lines;
   const thumb = Math.max(1, Math.floor((rect.bodyRows / total) * rect.bodyRows));
@@ -61,7 +77,7 @@ function addScrollbar(lines, rect, total, offset, color) {
     const bodyIdx = idx - 1;
     if (bodyIdx < top || bodyIdx >= top + thumb) return line;
     const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
-    const pos = plain.lastIndexOf("│");
+    const pos = ansiIndexForPlainIndex(line, plain.lastIndexOf("│"));
     if (pos < 0) return line;
     const bar = paint(color, C.title, "┃");
     return `${line.slice(0, pos)}${bar}${line.slice(pos + 1)}`;

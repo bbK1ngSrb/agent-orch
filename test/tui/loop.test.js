@@ -43,10 +43,11 @@ function makeInput() {
   return inp;
 }
 
-function makeOut(columns = 80, rows = 24) {
+function makeOut(columns = 80, rows = 24, isTTY = false) {
   const o = new EventEmitter();
   o.columns = columns;
   o.rows = rows;
+  o.isTTY = isTTY;
   o.writes = [];
   o.write = (str) => {
     o.writes.push(str);
@@ -58,7 +59,7 @@ function makeOut(columns = 80, rows = 24) {
 function setup(opts = {}) {
   const screen = makeScreen();
   const input = makeInput();
-  const out = makeOut(opts.columns, opts.rows);
+  const out = makeOut(opts.columns, opts.rows, opts.isTTY);
   const exits = [];
   const exit = (code) => exits.push(code);
   const handle = run(ORCH_DIR, {
@@ -189,6 +190,28 @@ test("structured scroll changes only the focused panel", () => {
   input.onKey({ type: "bottom" });
   assert.ok(handle.state.panelScroll.history >= 0);
   assert.equal(handle.state.panelScroll.interrupted, 0);
+
+  handle.shutdown(0);
+});
+
+test("structured scrollbar replaces the right border when color is enabled", () => {
+  const { screen, handle } = setup({
+    snapshot: () => structuredSnapshot(20),
+    rows: 12,
+    columns: 90,
+    isTTY: true,
+  });
+
+  const frame = screen.painted.at(-1);
+  const scrollbarLines = frame.split("\n")
+    .filter((line) => line.includes("┃"))
+    .map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+
+  assert.ok(scrollbarLines.length > 0, "scrollbar thumb rendered");
+  for (const line of scrollbarLines) {
+    assert.match(line, /┃$/, "thumb replaces the final border");
+    assert.doesNotMatch(line, /┃.*│/, "thumb is not injected into body text");
+  }
 
   handle.shutdown(0);
 });
