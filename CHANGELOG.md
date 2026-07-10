@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.43 — 2026-07-10
+- orch issue: auto-close the work order when it lands on `main` via the integration bridge PR (closes [#253](https://github.com/bbk1ng/agent-orch/issues/253))
+
 ## 0.3.42 — 2026-07-10
 - Format dates/times as human-readable `yyyy-mm-dd HH:mm` in all user-facing output (closes [#244](https://github.com/bbk1ng/agent-orch/issues/244))
 
