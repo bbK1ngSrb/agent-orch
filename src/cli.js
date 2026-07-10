@@ -141,7 +141,9 @@ github:
 # === Main mirror PR (integrationBranch -> baseBranch) ===
 main:
   autoMerge: false        # true = directly merge the persistent integration PR when GitHub allows it; default: false
-  autoResolveConflicts: false  # true = ask Claude to reconcile a dirty persistent PR within autoResolveConflictPaths; default: false
+  conflictResolution: manual   # manual | propose | auto; default: manual
+  conflictResolutionResolvers: [claude]  # role specs; rotate/fail over per conflict
+  autoResolveConflicts: false  # deprecated alias: true = conflictResolution: auto
   autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json", "src/version.js", "version.js"]
 
 # === Auto docs-update after a real merge (optional) ===
@@ -438,56 +440,154 @@ function realIo() {
   };
 }
 
-async function resolveIntegrationConflict(ctx) {
+function conflictResolvers(cfg, orchDir) {
+  const pool = cfg.main.conflictResolutionResolvers || [{ agent: "claude", model: null, effort: null }];
+  if (pool.length < 2 || !orchDir) return pool;
+  mkdirSync(orchDir, { recursive: true });
+  const cursor = join(orchDir, "last-conflict-resolver");
+  const last = existsSync(cursor) ? Number.parseInt(readFileSync(cursor, "utf8"), 10) : -1;
+  const start = Number.isInteger(last) ? (last + 1) % pool.length : 0;
+  writeFileSync(cursor, String(start));
+  return pool.slice(start).concat(pool.slice(0, start));
+}
+
+function roleName(spec) {
+  return [spec.agent, spec.model, spec.effort].filter(Boolean).join(" ");
+}
+
+function conflictReviewerFor(cfg, resolver, resolvers) {
+  return resolvers.find((r) => r.agent !== resolver.agent) ||
+    (cfg.reviewers ? parseRoleSpecs(cfg.reviewers).find((r) => r.agent !== resolver.agent) : null) ||
+    (cfg.agents || []).map((agent) => ({ agent, model: null, effort: null })).find((r) => r.agent !== resolver.agent);
+}
+
+function resetMergeAttempt(gitDep, integration, preSha) {
+  gitDep.gitTry(["reset", "--hard", preSha], integration);
+  gitDep.gitTry(["clean", "-fd"], integration);
+}
+
+function conflictPrompt(branch, base, conflicts, metaOnly) {
+  const rules = metaOnly ? [
+    "- Release metadata only: keep changelog entries in descending version order.",
+    "- Use the highest version string consistently in package metadata and version source files.",
+    "- Preserve both sides' non-duplicate release notes.",
+  ] : [
+    "- Act as a neutral third party; reconstruct both parents' intent from the conflict and surrounding code.",
+    "- Preserve behavior from both sides unless they are truly incompatible.",
+    "- Do not take one side wholesale when the other side added distinct behavior.",
+  ];
+  return [
+    `Resolve this merge conflict on ${branch} after merging origin/${base}.`,
+    "",
+    "Rules:",
+    ...rules,
+    "- Do not edit unrelated files.",
+    "",
+    `Conflicted files: ${conflicts.join(", ")}`,
+  ].join("\n");
+}
+
+function proposalComment({ conflicts, resolver, reviewer, verdict, mode }) {
+  return [
+    "agent-orch: conflict resolution needs human approval.",
+    "",
+    `Mode: ${mode}`,
+    `Conflicted files: ${conflicts.join(", ")}`,
+    `Resolver: ${roleName(resolver)}`,
+    `Reviewer: ${roleName(reviewer)}`,
+    "",
+    "Reviewer result:",
+    `${verdict.decision}: ${verdict.reason || "(no reason)"}`,
+  ].join("\n");
+}
+
+export async function resolveIntegrationConflict(ctx, deps = { git, adapters, gate }) {
   const { repo, orchDir, cfg, branch, base, testCmd } = ctx;
-  const integration = git.ensureIntegrationWorktree(repo, orchDir, branch, base);
-  git.syncWorktreeToIntegration(integration, branch);
-  const fetched = git.fetchOriginMain(repo, { base });
+  const gitDep = deps.git;
+  const adaptersDep = deps.adapters;
+  const gateDep = deps.gate;
+  const mode = cfg.main.conflictResolution || (cfg.main.autoResolveConflicts ? "auto" : "manual");
+  if (mode === "manual") return { ok: false, reason: "conflictResolution is manual" };
+  const integration = gitDep.ensureIntegrationWorktree(repo, orchDir, branch, base);
+  gitDep.syncWorktreeToIntegration(integration, branch);
+  const fetched = gitDep.fetchOriginMain(repo, { base });
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
 
   const target = `refs/remotes/origin/${base}`;
-  const preSha = git.git(["rev-parse", "HEAD"], integration);
-  const fail = (reason) => {
-    git.gitTry(["reset", "--hard", preSha], integration);
-    git.gitTry(["clean", "-fd"], integration);
-    return { ok: false, reason };
+  const preSha = gitDep.git(["rev-parse", "HEAD"], integration);
+  const fail = (reason, comment = null) => {
+    resetMergeAttempt(gitDep, integration, preSha);
+    return { ok: false, reason, comment };
   };
 
   let conflicts = [];
+  const resolvers = conflictResolvers(cfg, orchDir);
+  const allowed = new Set(cfg.main.autoResolveConflictPaths || []);
   try {
-    const merge = git.gitTry(["merge", "--no-edit", target], integration);
-    if (!merge.ok) {
-      conflicts = git.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
-      const allowed = new Set(cfg.main.autoResolveConflictPaths || []);
-      const outside = conflicts.filter((p) => !allowed.has(p));
+    let merge = gitDep.gitTry(["merge", "--no-edit", target], integration);
+    if (merge.ok) {
+      const result = gateDep.run(testCmd, integration);
+      if (!result.pass) return fail("merged tree failed the test gate");
+      gitDep.git(["push", "origin", branch], integration);
+      return { ok: true, summary: `merged origin/${base} cleanly` };
+    }
+
+    for (const resolver of resolvers) {
+      resetMergeAttempt(gitDep, integration, preSha);
+      merge = gitDep.gitTry(["merge", "--no-edit", target], integration);
+      if (merge.ok) {
+        const result = gateDep.run(testCmd, integration);
+        if (!result.pass) continue;
+        gitDep.git(["push", "origin", branch], integration);
+        return { ok: true, summary: `merged origin/${base} cleanly` };
+      }
+      conflicts = gitDep.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
       if (!conflicts.length) return fail((merge.out || "merge failed").trim());
-      if (outside.length) return fail(`conflicts outside auto-resolve scope: ${outside.join(", ")}`);
 
-      const resolver = adapters.get("claude");
-      const prompt = [
-        `Resolve this merge conflict on ${branch} after merging origin/${base}.`,
-        "",
-        "Rules:",
-        "- Release metadata only: keep changelog entries in descending version order.",
-        "- Use the highest version string consistently in package metadata and version source files.",
-        "- Preserve both sides' non-duplicate release notes.",
-        "- Do not edit unrelated files.",
-        "",
-        `Conflicted files: ${conflicts.join(", ")}`,
-      ].join("\n");
-      await resolver.author(prompt, integration, { stageTimeoutMs: cfg.stageTimeout * 60_000 });
+      const metaOnly = conflicts.length > 0 && conflicts.every((p) => allowed.has(p));
+      const reviewer = conflictReviewerFor(cfg, resolver, resolvers);
+      if (!reviewer && (!metaOnly || mode !== "auto")) return fail(`no conflict reviewer configured that differs from ${resolver.agent}`);
+      const stageTimeoutMs = cfg.stageTimeout * 60_000;
+      try {
+        await adaptersDep.get(resolver.agent).author(conflictPrompt(branch, base, conflicts, metaOnly), integration, {
+          model: resolver.model,
+          effort: resolver.effort,
+          stageTimeoutMs,
+        });
+      } catch (e) {
+        continue;
+      }
+
+      const remaining = gitDep.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
+      if (remaining.length) continue;
+      if (gitDep.gitTry(["rev-parse", "-q", "--verify", "MERGE_HEAD"], integration).ok) {
+        gitDep.git(["commit", "--no-edit"], integration);
+      }
+
+      let verdict = { decision: "AGREE", reason: "metadata-only conflict resolved", raw: "" };
+      if (reviewer) {
+        verdict = await adaptersDep.get(reviewer.agent).audit(branch, integration, {
+          model: reviewer.model,
+          effort: reviewer.effort,
+          stageTimeoutMs,
+        });
+      }
+      if (verdict.decision !== "AGREE") {
+        const comment = proposalComment({ conflicts, resolver, reviewer, verdict, mode });
+        return fail(mode === "auto" ? `conflict resolution demoted to propose: ${verdict.reason || "reviewer was not confident"}` : "conflict resolution proposed for human approval", comment);
+      }
+
+      const result = gateDep.run(testCmd, integration);
+      if (!result.pass) continue;
+      const effectiveMode = metaOnly ? mode : "propose";
+      if (effectiveMode === "propose") {
+        return fail("conflict resolution proposed for human approval", proposalComment({ conflicts, resolver, reviewer, verdict, mode: effectiveMode }));
+      }
+      gitDep.git(["push", "origin", branch], integration);
+      return { ok: true, summary: `resolved ${conflicts.join(", ")}` };
     }
 
-    const remaining = git.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
-    if (remaining.length) return fail(`unresolved conflicts remain: ${remaining.join(", ")}`);
-    if (git.gitTry(["rev-parse", "-q", "--verify", "MERGE_HEAD"], integration).ok) {
-      git.git(["commit", "--no-edit"], integration);
-    }
-
-    const result = gate.run(testCmd, integration);
-    if (!result.pass) return fail("resolved tree failed the test gate");
-    git.git(["push", "origin", branch], integration);
-    return { ok: true, summary: conflicts.length ? `resolved ${conflicts.join(", ")}` : `merged origin/${base} cleanly` };
+    return fail("all conflict resolvers failed");
   } catch (e) {
     return fail(e.message || String(e));
   }

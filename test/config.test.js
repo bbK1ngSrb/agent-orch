@@ -203,12 +203,14 @@ test("main.autoMerge defaults to false; non-boolean throws", () => {
 test("main.autoResolveConflicts defaults off and validates its scope", () => {
   const defaults = load(tmp());
   assert.equal(defaults.main.autoResolveConflicts, false);
+  assert.equal(defaults.main.conflictResolution, "manual");
   assert.ok(defaults.main.autoResolveConflictPaths.includes("CHANGELOG.md"));
 
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "main:\n  autoResolveConflicts: true\n  autoResolveConflictPaths: [CHANGELOG.md]\n");
   const c = load(d);
   assert.equal(c.main.autoResolveConflicts, true);
+  assert.equal(c.main.conflictResolution, "auto");
   assert.deepEqual(c.main.autoResolveConflictPaths, ["CHANGELOG.md"]);
 
   const badFlag = tmp();
@@ -218,6 +220,40 @@ test("main.autoResolveConflicts defaults off and validates its scope", () => {
   const badPaths = tmp();
   writeFileSync(join(badPaths, "orch.yml"), "main:\n  autoResolveConflictPaths: CHANGELOG.md\n");
   assert.throws(() => load(badPaths), /main.autoResolveConflictPaths must be an array of strings/);
+});
+
+test("main.conflictResolution overrides the deprecated boolean alias", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "main:\n  autoResolveConflicts: false\n  conflictResolution: propose\n  conflictResolutionResolvers: [claude opus high, codex gpt-5 xhigh]\n");
+  const c = load(d);
+  assert.equal(c.main.conflictResolution, "propose");
+  assert.equal(c.main.autoResolveConflicts, true);
+  assert.deepEqual(c.main.conflictResolutionResolvers, [
+    { agent: "claude", model: "opus", effort: "high" },
+    { agent: "codex", model: "gpt-5", effort: "xhigh" },
+  ]);
+
+  const badMode = tmp();
+  writeFileSync(join(badMode, "orch.yml"), "main:\n  conflictResolution: maybe\n");
+  assert.throws(() => load(badMode), /main.conflictResolution must be manual, propose, or auto/);
+
+  const badResolvers = tmp();
+  writeFileSync(join(badResolvers, "orch.yml"), "main:\n  conflictResolutionResolvers: []\n");
+  assert.throws(() => load(badResolvers), /main.conflictResolutionResolvers must be a non-empty list of role specs/);
+});
+
+test("reviewer-backed conflict resolution requires a distinct reviewer at config load", () => {
+  const propose = tmp();
+  writeFileSync(join(propose, "orch.yml"), "agents: [claude]\nmain:\n  conflictResolution: propose\n  conflictResolutionResolvers: [claude]\n");
+  assert.throws(() => load(propose), /requires a conflict reviewer/);
+
+  const metadataAuto = tmp();
+  writeFileSync(join(metadataAuto, "orch.yml"), "agents: [claude]\nmain:\n  conflictResolution: auto\n  conflictResolutionResolvers: [claude]\n  autoResolveConflictPaths: [CHANGELOG.md]\n");
+  assert.equal(load(metadataAuto).main.conflictResolution, "auto");
+
+  const broadAuto = tmp();
+  writeFileSync(join(broadAuto, "orch.yml"), "agents: [claude]\nmain:\n  conflictResolution: auto\n  conflictResolutionResolvers: [claude]\n  autoResolveConflictPaths: []\n");
+  assert.throws(() => load(broadAuto), /requires a conflict reviewer/);
 });
 
 test("docs defaults present; off by default", () => {

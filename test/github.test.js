@@ -680,6 +680,39 @@ test("openIntegrationPr comments for a human when dirty PR auto-resolve cannot r
   assert.match(comment.join(" "), /no conflict resolver is configured/);
 });
 
+test("openIntegrationPr posts the resolver proposal comment when provided", async () => {
+  const calls = [];
+  const gh = (args, input) => {
+    calls.push(["gh", ...args, input].filter((v) => v !== undefined));
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = {
+    integrationBranch: "orch/integration",
+    github: { mergeMethod: "squash", autoMergePr: false },
+    main: { autoResolveConflicts: true, autoMerge: false },
+  };
+
+  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, {
+    gh,
+    git,
+    notify: { escalate() {} },
+    resolveIntegrationConflict: async () => ({
+      ok: false,
+      reason: "conflict resolution proposed for human approval",
+      comment: "agent-orch: conflict resolution needs human approval.\nReviewer result:\nAGREE",
+    }),
+  });
+
+  const comment = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "comment");
+  assert.ok(comment);
+  assert.match(comment.join(" "), /conflict resolution needs human approval/);
+  assert.match(comment.join(" "), /Reviewer result/);
+});
+
 test("openIntegrationPr swallows a cosmetic 'gh pr edit' failure (Projects-classic GraphQL deprecation) without escalating", async () => {
   // The push and PR already succeeded; the title/body refresh is best-effort
   // boilerplate. A nonzero `gh pr edit` (deprecated projectCards field) must not

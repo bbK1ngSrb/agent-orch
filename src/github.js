@@ -392,7 +392,7 @@ export async function openIntegrationPr(ctx, deps) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
     }
   }
-  if (cfg?.main?.autoResolveConflicts) {
+  if (cfg?.main?.autoResolveConflicts || (cfg?.main?.conflictResolution && cfg.main.conflictResolution !== "manual")) {
     try {
       if (prHasConflicts(gh, prRef)) {
         const resolved = await resolveIntegrationConflict?.({ ...ctx, branch, base, prRef, prUrl: url });
@@ -402,7 +402,7 @@ export async function openIntegrationPr(ctx, deps) {
           const reason = resolved?.reason || "no conflict resolver is configured";
           log(`integration PR #${prRef} conflict auto-resolve skipped: ${reason}`);
           try {
-            gh(["pr", "comment", prRef, "--body", redact(`agent-orch: auto-resolve was enabled, but the integration PR still needs a human: ${reason}`)]);
+            gh(["pr", "comment", prRef, "--body", redact(resolved?.comment || `agent-orch: auto-resolve was enabled, but the integration PR still needs a human: ${reason}`)]);
           } catch (e) {
             log(`could not comment on integration PR #${prRef}: ${e.message}`);
           }
