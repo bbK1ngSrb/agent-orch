@@ -129,6 +129,21 @@ function panelLines(title, rows, rect, { columns, color, borderCode = C.border, 
   return addScrollbar(out, rect, rows.length, scrollOffset, color);
 }
 
+function buildHelpFrame({ color, columns, rows }) {
+  const help = box("HELP", [
+    seg("? / Esc  close help"),
+    seg("Tab      cycle focus"),
+    seg("1/2/3    jump to panel"),
+    seg("j/k      scroll focused panel"),
+    seg("g/G      top / bottom"),
+    seg("Enter    open history detail"),
+    seg("Esc/back close history detail"),
+    seg("r        refresh"),
+    seg("q        quit"),
+  ], { color, columns, minInner: 28, maxInner: Math.max(28, Math.min(52, columns - 4)) });
+  return help.split("\n").slice(0, Math.max(1, rows)).map((line) => clip(line, columns)).join("\n");
+}
+
 function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
   const now = Date.now();
   state.lastHistoryCount = snap.history.length;
@@ -219,9 +234,10 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
   return out.join("\n");
 }
 
-function footerText() {
+function footerText(active = true) {
   const ts = new Date().toTimeString().slice(0, 8);
-  return `q quit · Tab focus · 1/2/3 panel · j/k scroll · r refresh · refreshed ${ts}`;
+  if (!active) return `plain fallback · controls disabled · q quit · r refresh · refreshed ${ts}`;
+  return `q quit · ? help · Tab focus · 1/2/3 panel · j/k scroll · r refresh · refreshed ${ts}`;
 }
 
 // Live dashboard loop: poll the dashboard state, paint a bounded frame, and
@@ -247,6 +263,8 @@ export function run(orchDir, opts = {}) {
   const state = {
     scrollOffset: 0,
     focus: "live",
+    controlsActive: false,
+    helpOpen: false,
     panelScroll: { live: 0, interrupted: 0, history: 0 },
     historySelection: reduceHistorySelection({}, {}, 0),
   };
@@ -275,13 +293,16 @@ export function run(orchDir, opts = {}) {
         );
         structuredFrame = text != null;
       }
+      state.controlsActive = !useStructured || structuredFrame;
+      if (!state.controlsActive) state.helpOpen = false;
+      if (structuredFrame && state.helpOpen) text = buildHelpFrame({ color, columns: width, rows });
       text ??= String(render(orchDir, { color, columns: width, historyLimit, repo, checkHistory }));
       const lines = text.split("\n").map((l) => clip(l, width));
       const bodyRows = Math.max(0, rows - 1); // reserve one row for the footer
       const maxOffset = Math.max(0, lines.length - bodyRows);
       state.scrollOffset = Math.min(Math.max(0, state.scrollOffset), maxOffset);
       const window = lines.slice(state.scrollOffset, state.scrollOffset + bodyRows);
-      const frame = structuredFrame ? lines.join("\n") : [...window, footerText()].join("\n");
+      const frame = structuredFrame ? lines.join("\n") : [...window, footerText(state.controlsActive)].join("\n");
       if (frame === prevFrame) return;
       prevFrame = frame;
       prevLineCount = screen.paintFrame(out, frame, prevLineCount);
@@ -291,6 +312,26 @@ export function run(orchDir, opts = {}) {
   }
 
   function dispatch(ev) {
+    if (ev.type === "quit") {
+      shutdown(0);
+      return;
+    }
+    if (ev.type === "refresh") {
+      tick();
+      return;
+    }
+    if (useStructured && !state.controlsActive) return;
+    if (ev.type === "help") {
+      state.helpOpen = !state.helpOpen;
+      tick();
+      return;
+    }
+    if (state.helpOpen && ev.type === "esc") {
+      state.helpOpen = false;
+      tick();
+      return;
+    }
+    if (state.helpOpen) return;
     const scrollName = state.focus;
     if (useStructured && scrollName === "history" && ["up", "down", "top", "bottom", "enter", "esc", "left", "back"].includes(ev.type)) {
       state.historySelection = reduceHistorySelection(state.historySelection, ev, state.lastHistoryCount || 0);
@@ -331,12 +372,6 @@ export function run(orchDir, opts = {}) {
       case "panel":
         if (PANEL_ORDER[ev.index]) state.focus = PANEL_ORDER[ev.index];
         tick();
-        break;
-      case "refresh":
-        tick();
-        break;
-      case "quit":
-        shutdown(0);
         break;
     }
   }
