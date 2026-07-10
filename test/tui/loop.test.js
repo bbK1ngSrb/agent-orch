@@ -136,7 +136,7 @@ test("tick paints a frame from the injected render, with a footer", () => {
   const frame = screen.painted.at(-1);
   assert.match(frame, /A1/);
   assert.match(frame, /A2/);
-  assert.match(frame, /q quit · Tab focus · 1\/2\/3 panel · j\/k scroll · r refresh · refreshed /);
+  assert.match(frame, /q quit · \? help · Tab focus · 1\/2\/3 panel · j\/k scroll · r refresh · refreshed /);
 
   handle.shutdown(0); // remove process listeners registered by run()
 });
@@ -264,6 +264,53 @@ test("zero pseudo-TTY dimensions still paint the body", () => {
   assert.match(frame, /R1/);
   assert.match(frame, /R2/);
   assert.match(frame, /R3/);
+  handle.shutdown(0);
+});
+
+test("structured help toggles with ? and closes with Esc", () => {
+  const { screen, input, handle } = setup({
+    snapshot: () => structuredSnapshot(),
+    rows: 18,
+    columns: 90,
+  });
+
+  input.onKey({ type: "help" });
+  assert.equal(handle.state.helpOpen, true);
+  assert.match(screen.painted.at(-1), /HELP/);
+  assert.match(screen.painted.at(-1), /Tab +cycle focus/);
+  assert.match(screen.painted.at(-1), /Enter +open history detail/);
+
+  input.onKey({ type: "esc" });
+  assert.equal(handle.state.helpOpen, false);
+  assert.doesNotMatch(screen.painted.at(-1), /HELP/);
+
+  input.onKey({ type: "help" });
+  assert.equal(handle.state.helpOpen, true);
+  input.onKey({ type: "help" });
+  assert.equal(handle.state.helpOpen, false);
+
+  handle.shutdown(0);
+});
+
+test("structured controls are inert when narrow fallback renders plain output", () => {
+  const { screen, input, handle } = setup({
+    snapshot: () => structuredSnapshot(),
+    render: () => "plain dashboard\nline two",
+    rows: 18,
+    columns: 40,
+  });
+  const before = JSON.stringify(handle.state);
+
+  input.onKey({ type: "tab" });
+  input.onKey({ type: "panel", index: 2 });
+  input.onKey({ type: "down" });
+  input.onKey({ type: "help" });
+  input.onKey({ type: "enter" });
+
+  assert.equal(JSON.stringify(handle.state), before);
+  assert.match(screen.painted.at(-1), /plain fallback · controls disabled · q quit · r refresh · refreshed /);
+  assert.doesNotMatch(screen.painted.at(-1), /HELP/);
+
   handle.shutdown(0);
 });
 
