@@ -30,6 +30,7 @@ import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dash
 import { FALLBACK_BIN_DIRS, resolveAgentBin } from "./agent-bin.js";
 import { BASH_COMPLETION, installCompletion } from "./completion.js";
 import { visWidth, paint, C, box, colorEnabled } from "./tui/theme.js";
+import { run as runDashboardTui } from "./tui/loop.js";
 import { maybeNotifyUpdate, runUpdateCheckChild } from "./update-check.js";
 import { runUpgrade } from "./upgrade.js";
 
@@ -246,6 +247,9 @@ export function parse(argv) {
       json: { type: "boolean" }, // dashboard: machine-readable output
       limit: { type: "string" }, // dashboard: run-history entries to show
       "check-history": { type: "boolean" }, // dashboard: show stale red rows as resolved (view only) when branches are gone
+      once: { type: "boolean" }, // dashboard: force one-shot output
+      plain: { type: "boolean" }, // dashboard: alias for --once
+      "refresh-ms": { type: "string" }, // dashboard: live TUI poll interval
       check: { type: "boolean" }, // upgrade: check latest version without installing
       pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
 
@@ -1196,8 +1200,15 @@ export async function main(argv, deps = {}) {
   if (command === "dashboard") {
     const historyLimit = flags.limit ? Number(flags.limit) : 10;
     const checkHistory = Boolean(flags["check-history"]);
+    const stdout = deps.stdout || process.stdout;
+    const stdin = deps.stdin || process.stdin;
+    const once = Boolean(flags.once || flags.plain);
     if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit, repo, checkHistory }), null, 2));
-    else console.log(renderDashboard(orchDir, { historyLimit, repo, checkHistory, color: colorEnabled(process.stdout), columns: process.stdout.columns }));
+    else if (stdout.isTTY && stdin.isTTY && !once) {
+      await (deps.dashboardLoop || runDashboardTui)(orchDir, {
+        historyLimit, repo, checkHistory, refreshMs: flags["refresh-ms"],
+      }, { stdout, stdin });
+    } else console.log(renderDashboard(orchDir, { historyLimit, repo, checkHistory, color: colorEnabled(stdout), columns: stdout.columns }));
     return;
   }
 
@@ -1219,7 +1230,7 @@ Commands:
   review <branch>       Audit an existing branch without merging.
   continue <sid>        Resume an interrupted/stalled cycle from its checkpoint.
   pr <number>           Review a GitHub PR; add --merge to merge if approved.
-  dashboard             Show read-only live status, log tail, and run history.
+  dashboard             Show live TUI on a TTY; use --once for static output.
   upgrade, update       Self-update the global npm install.
   completion [bash]     Print the bash completion script (default: bash).
   completion install    Write the completion script to ~/.orch/completion.bash.
@@ -1240,7 +1251,9 @@ Options:
   --no-banner           Hide the run banner.
   --no-tidy             Leave task branches and checkouts after merge.
   --json                With dashboard, print JSON.
+  --once, --plain       With dashboard, print one static view.
   --limit <n>           With dashboard, limit history rows.
+  --refresh-ms <n>      With dashboard, set live refresh interval.
   --check-history       Dashboard: show stale red rows resolved (view only).
   --merge               With pr, merge approved PRs.
   --pr                  With agent build, open a PR instead.

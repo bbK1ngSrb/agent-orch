@@ -191,6 +191,14 @@ test("parse captures dashboard --check-history flag", () => {
   assert.equal(p.flags["check-history"], true);
 });
 
+test("parse captures dashboard live TUI flags", () => {
+  const p = parse(["dashboard", "--once", "--plain", "--refresh-ms", "250"]);
+  assert.equal(p.command, "dashboard");
+  assert.equal(p.flags.once, true);
+  assert.equal(p.flags.plain, true);
+  assert.equal(p.flags["refresh-ms"], "250");
+});
+
 test("orch upgrade --check routes through the self-update runner", async () => {
   let out = "";
   const calls = [];
@@ -1342,6 +1350,8 @@ test("--help / -h print usage and exit cleanly (no unknown-option error)", async
     assert.match(usage, /Usage: orch <command> \[options\]/);
     assert.match(usage, /\nCommands:\n  init\s+Scaffold \.orch\/orch\.yml/);
     assert.match(usage, /\nOptions:\n  -h, --help\s+Show this help\./);
+    assert.match(usage, /--once, --plain\s+With dashboard/);
+    assert.match(usage, /--refresh-ms <n>\s+With dashboard/);
     assert.match(usage, /\nExamples:\n  orch init --link/);
     assert.match(usage, /Full docs: see \.orch\/ORCH\.md in initialized repos and the README\./);
     assert.doesNotMatch(usage, /\n\s+\(/);
@@ -1349,6 +1359,46 @@ test("--help / -h print usage and exit cleanly (no unknown-option error)", async
       assert.ok(line.length <= 80, `usage line exceeds 80 columns: ${line}`);
     }
   }
+});
+
+test("dashboard uses static render on non-TTY, --once, --plain, and --json", async () => {
+  const repo = initGitRepo("orch-dashboard-cli-");
+  const nonTty = { isTTY: false, columns: 80 };
+  const tty = { isTTY: true, columns: 80, write() {} };
+  const stdin = { isTTY: true };
+  const calls = [];
+  const dashboardLoop = async () => { calls.push("loop"); };
+
+  const nonTtyLogs = await runMainInRepo(repo, ["dashboard"], { stdout: nonTty, stdin, dashboardLoop });
+  const onceLogs = await runMainInRepo(repo, ["dashboard", "--once"], { stdout: tty, stdin, dashboardLoop });
+  const plainLogs = await runMainInRepo(repo, ["dashboard", "--plain"], { stdout: tty, stdin, dashboardLoop });
+  const jsonLogs = await runMainInRepo(repo, ["dashboard", "--json"], { stdout: tty, stdin, dashboardLoop });
+
+  assert.equal(calls.length, 0);
+  assert.equal(nonTtyLogs.join("\n"), onceLogs.join("\n"));
+  assert.equal(nonTtyLogs.join("\n"), plainLogs.join("\n"));
+  assert.match(nonTtyLogs.join("\n"), /Live cycles/);
+  assert.match(jsonLogs.join("\n"), /"live": \[/);
+});
+
+test("dashboard uses live TUI on interactive TTY and passes refresh interval", async () => {
+  const repo = initGitRepo("orch-dashboard-tui-");
+  const stdout = { isTTY: true, columns: 100, write() {} };
+  const stdin = { isTTY: true };
+  const calls = [];
+
+  await runMainInRepo(repo, ["dashboard", "--refresh-ms", "250"], {
+    stdout,
+    stdin,
+    dashboardLoop: async (...args) => { calls.push(args); },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], join(repo, ".orch"));
+  assert.equal(calls[0][1].historyLimit, 10);
+  assert.equal(calls[0][1].refreshMs, "250");
+  assert.equal(calls[0][2].stdout, stdout);
+  assert.equal(calls[0][2].stdin, stdin);
 });
 
 import { resolveTaskBranch } from "../src/cli.js";
