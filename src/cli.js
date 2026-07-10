@@ -525,8 +525,6 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
       return { ok: true, summary: `merged origin/${base} cleanly` };
     }
 
-    conflicts = gitDep.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
-    const metaOnly = conflicts.length > 0 && conflicts.every((p) => allowed.has(p));
     for (const resolver of resolvers) {
       resetMergeAttempt(gitDep, integration, preSha);
       merge = gitDep.gitTry(["merge", "--no-edit", target], integration);
@@ -539,8 +537,9 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
       conflicts = gitDep.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
       if (!conflicts.length) return fail((merge.out || "merge failed").trim());
 
+      const metaOnly = conflicts.length > 0 && conflicts.every((p) => allowed.has(p));
       const reviewer = conflictReviewerFor(cfg, resolver, resolvers);
-      if (!reviewer) return fail(`no conflict reviewer configured that differs from ${resolver.agent}`);
+      if (!reviewer && (!metaOnly || mode !== "auto")) return fail(`no conflict reviewer configured that differs from ${resolver.agent}`);
       const stageTimeoutMs = cfg.stageTimeout * 60_000;
       try {
         await adaptersDep.get(resolver.agent).author(conflictPrompt(branch, base, conflicts, metaOnly), integration, {
@@ -558,11 +557,14 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
         gitDep.git(["commit", "--no-edit"], integration);
       }
 
-      const verdict = await adaptersDep.get(reviewer.agent).audit(branch, integration, {
-        model: reviewer.model,
-        effort: reviewer.effort,
-        stageTimeoutMs,
-      });
+      let verdict = { decision: "AGREE", reason: "metadata-only conflict resolved", raw: "" };
+      if (reviewer) {
+        verdict = await adaptersDep.get(reviewer.agent).audit(branch, integration, {
+          model: reviewer.model,
+          effort: reviewer.effort,
+          stageTimeoutMs,
+        });
+      }
       if (verdict.decision !== "AGREE") {
         const comment = proposalComment({ conflicts, resolver, reviewer, verdict, mode });
         return fail(mode === "auto" ? `conflict resolution demoted to propose: ${verdict.reason || "reviewer was not confident"}` : "conflict resolution proposed for human approval", comment);
@@ -570,8 +572,9 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
 
       const result = gateDep.run(testCmd, integration);
       if (!result.pass) continue;
-      if (mode === "propose") {
-        return fail("conflict resolution proposed for human approval", proposalComment({ conflicts, resolver, reviewer, verdict, mode }));
+      const effectiveMode = metaOnly ? mode : "propose";
+      if (effectiveMode === "propose") {
+        return fail("conflict resolution proposed for human approval", proposalComment({ conflicts, resolver, reviewer, verdict, mode: effectiveMode }));
       }
       gitDep.git(["push", "origin", branch], integration);
       return { ok: true, summary: `resolved ${conflicts.join(", ")}` };

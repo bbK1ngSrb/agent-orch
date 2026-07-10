@@ -242,6 +242,20 @@ test("main.conflictResolution overrides the deprecated boolean alias", () => {
   assert.throws(() => load(badResolvers), /main.conflictResolutionResolvers must be a non-empty list of role specs/);
 });
 
+test("reviewer-backed conflict resolution requires a distinct reviewer at config load", () => {
+  const propose = tmp();
+  writeFileSync(join(propose, "orch.yml"), "agents: [claude]\nmain:\n  conflictResolution: propose\n  conflictResolutionResolvers: [claude]\n");
+  assert.throws(() => load(propose), /requires a conflict reviewer/);
+
+  const metadataAuto = tmp();
+  writeFileSync(join(metadataAuto, "orch.yml"), "agents: [claude]\nmain:\n  conflictResolution: auto\n  conflictResolutionResolvers: [claude]\n  autoResolveConflictPaths: [CHANGELOG.md]\n");
+  assert.equal(load(metadataAuto).main.conflictResolution, "auto");
+
+  const broadAuto = tmp();
+  writeFileSync(join(broadAuto, "orch.yml"), "agents: [claude]\nmain:\n  conflictResolution: auto\n  conflictResolutionResolvers: [claude]\n  autoResolveConflictPaths: []\n");
+  assert.throws(() => load(broadAuto), /requires a conflict reviewer/);
+});
+
 test("docs defaults present; off by default", () => {
   const c = load(tmp());
   assert.equal(c.docs.autoUpdate, false);

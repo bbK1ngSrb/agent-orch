@@ -7,7 +7,7 @@ import { resolveIntegrationConflict } from "../src/cli.js";
 
 function tmp() { return mkdtempSync(join(tmpdir(), "orch-conflict-")); }
 
-function makeDeps({ verdict = { decision: "AGREE", reason: "both intents preserved" }, firstAuthorThrows = false } = {}) {
+function makeDeps({ verdict = { decision: "AGREE", reason: "both intents preserved" }, firstAuthorThrows = false, conflictPath = "src/tui/input.js" } = {}) {
   const calls = [];
   let resolved = false;
   let authorCalls = 0;
@@ -34,14 +34,14 @@ function makeDeps({ verdict = { decision: "AGREE", reason: "both intents preserv
     git(args) {
       calls.push(["git", ...args]);
       if (args[0] === "rev-parse" && args[1] === "HEAD") return "pre";
-      if (args[0] === "diff") return resolved ? "" : "src/tui/input.js\n";
+      if (args[0] === "diff") return resolved ? "" : `${conflictPath}\n`;
       return "";
     },
     gitTry(args) {
       calls.push(["gitTry", ...args]);
       if (args[0] === "merge") {
         resolved = false;
-        return { ok: false, out: "CONFLICT (content): Merge conflict in src/tui/input.js" };
+        return { ok: false, out: `CONFLICT (content): Merge conflict in ${conflictPath}` };
       }
       if (args[0] === "rev-parse") return { ok: true, out: "" };
       return { ok: true, out: "" };
@@ -94,7 +94,7 @@ test("code conflict resolution is rejected when cross-audit catches a green-but-
 });
 
 test("resolver failover starts the next resolver from a reset merge attempt", async () => {
-  const deps = makeDeps({ firstAuthorThrows: true });
+  const deps = makeDeps({ firstAuthorThrows: true, conflictPath: "CHANGELOG.md" });
   const result = await resolveIntegrationConflict({
     repo: "/repo",
     orchDir: tmp(),
@@ -108,5 +108,44 @@ test("resolver failover starts the next resolver from a reset merge attempt", as
   assert.deepEqual(deps.calls.filter((c) => c[0] === "author").map((c) => c[1]), ["claude", "codex"]);
   const resets = deps.calls.filter((c) => c[0] === "gitTry" && c[1] === "reset");
   assert.ok(resets.length >= 2, "each resolver attempt starts after a clean reset");
+  assert.ok(deps.calls.some((c) => c[0] === "git" && c[1] === "push" && c[3] === "orch/integration"));
+});
+
+test("auto conflict resolution proposes non-whitelisted conflicts instead of pushing", async () => {
+  const deps = makeDeps();
+  const result = await resolveIntegrationConflict({
+    repo: "/repo",
+    orchDir: tmp(),
+    cfg: cfg(),
+    branch: "orch/integration",
+    base: "main",
+    testCmd: "npm test",
+  }, deps);
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /proposed for human approval/);
+  assert.match(result.comment, /Mode: propose/);
+  assert.ok(deps.calls.some((c) => c[0] === "audit" && c[1] === "codex"));
+  assert.ok(!deps.calls.some((c) => c[0] === "git" && c[1] === "push"), "auto must not push non-whitelisted conflicts");
+});
+
+test("metadata-only auto resolution can run with a single resolver and no reviewer", async () => {
+  const deps = makeDeps({ conflictPath: "CHANGELOG.md" });
+  const singleAgentCfg = cfg({
+    conflictResolutionResolvers: [{ agent: "claude", model: null, effort: null }],
+  });
+  singleAgentCfg.agents = ["claude"];
+  const result = await resolveIntegrationConflict({
+    repo: "/repo",
+    orchDir: tmp(),
+    cfg: singleAgentCfg,
+    branch: "orch/integration",
+    base: "main",
+    testCmd: "npm test",
+  }, deps);
+
+  assert.equal(result.ok, true);
+  assert.ok(deps.calls.some((c) => c[0] === "author" && c[1] === "claude"));
+  assert.ok(!deps.calls.some((c) => c[0] === "audit"), "metadata-only single-agent path does not require a reviewer");
   assert.ok(deps.calls.some((c) => c[0] === "git" && c[1] === "push" && c[3] === "orch/integration"));
 });

@@ -168,6 +168,15 @@ function normalizeMainConfig(cfg, userMain, overrideMain) {
       throw new Error("orch.yml: main.conflictResolutionResolvers must be a non-empty list of role specs");
     cfg.main.conflictResolutionResolvers = parseRoleSpecs(cfg.main.conflictResolutionResolvers);
   }
+  if (cfg.main.conflictResolution === "propose" ||
+    (cfg.main.conflictResolution === "auto" && cfg.main.autoResolveConflictPaths.length === 0)) {
+    const resolvers = cfg.main.conflictResolutionResolvers || [{ agent: "claude", model: null, effort: null }];
+    const reviewers = cfg.reviewers ? parseRoleSpecs(cfg.reviewers) : [];
+    const agents = (cfg.agents || []).map((agent) => ({ agent, model: null, effort: null }));
+    const hasReviewer = (resolver) => [...resolvers, ...reviewers, ...agents].some((r) => r.agent !== resolver.agent);
+    if (!resolvers.every(hasReviewer))
+      throw new Error("orch.yml: main.conflictResolution requires a conflict reviewer that differs from each resolver");
+  }
 }
 
 export { DEFAULTS };
