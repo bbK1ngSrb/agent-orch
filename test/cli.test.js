@@ -191,6 +191,71 @@ test("parse captures dashboard --check-history flag", () => {
   assert.equal(p.flags["check-history"], true);
 });
 
+test("parse captures dashboard --once/--plain and --refresh-ms flags", () => {
+  assert.equal(parse(["dashboard", "--once"]).flags.once, true);
+  assert.equal(parse(["dashboard", "--plain"]).flags.plain, true);
+  assert.equal(parse(["dashboard", "--refresh-ms", "500"]).flags["refresh-ms"], "500");
+});
+
+test("dashboard enters the live TUI on an interactive TTY", async () => {
+  const calls = [];
+  await main(["dashboard"], {
+    stdout: { isTTY: true, write() {} },
+    stdin: { isTTY: true },
+    tuiRun: (orchDir, opts) => calls.push({ orchDir, opts }),
+  });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].orchDir, /\.orch$/);
+  assert.equal(calls[0].opts.refreshMs, 1000);
+});
+
+test("dashboard --refresh-ms passes the poll interval to the loop", async () => {
+  const calls = [];
+  await main(["dashboard", "--refresh-ms", "250"], {
+    stdout: { isTTY: true, write() {} },
+    stdin: { isTTY: true },
+    tuiRun: (_orchDir, opts) => calls.push(opts),
+  });
+  assert.equal(calls[0].refreshMs, 250);
+});
+
+// Regression guard: --once, --json, and any non-TTY must take the existing
+// static one-shot path — never the live TUI — and produce identical bytes.
+test("dashboard --once and non-TTY take the static path, byte-identical", async () => {
+  const run = async (argv, io) => {
+    let out = "";
+    const prev = console.log;
+    console.log = (c = "") => { out += `${c}\n`; };
+    try {
+      await main(argv, { ...io, tuiRun: () => { throw new Error("TUI must not run on the static path"); } });
+    } finally {
+      console.log = prev;
+    }
+    return out;
+  };
+  const once = await run(["dashboard", "--once"], { stdout: { isTTY: true, write() {} }, stdin: { isTTY: true } });
+  const plain = await run(["dashboard", "--plain"], { stdout: { isTTY: true, write() {} }, stdin: { isTTY: true } });
+  const piped = await run(["dashboard"], { stdout: { isTTY: false, write() {} }, stdin: { isTTY: false } });
+  assert.equal(once, piped);
+  assert.equal(plain, piped);
+});
+
+test("dashboard --json never enters the TUI even on a TTY", async () => {
+  let tui = 0;
+  const prev = console.log;
+  console.log = () => {};
+  try {
+    await main(["dashboard", "--json"], {
+      stdout: { isTTY: true, write() {} },
+      stdin: { isTTY: true },
+      tuiRun: () => { tui++; },
+    });
+  } finally {
+    console.log = prev;
+  }
+  assert.equal(tui, 0);
+});
+
 test("orch upgrade --check routes through the self-update runner", async () => {
   let out = "";
   const calls = [];

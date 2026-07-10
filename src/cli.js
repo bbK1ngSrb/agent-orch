@@ -27,6 +27,7 @@ import { finishRun } from "./complete.js";
 import { detectAgents, formatDetection } from "./detect.js";
 import { redact } from "./redact.js";
 import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dashboard.js";
+import { run as runTui } from "./tui/loop.js";
 import { FALLBACK_BIN_DIRS, resolveAgentBin } from "./agent-bin.js";
 import { BASH_COMPLETION, installCompletion } from "./completion.js";
 import { visWidth, paint, C, box, colorEnabled } from "./tui/theme.js";
@@ -246,6 +247,9 @@ export function parse(argv) {
       json: { type: "boolean" }, // dashboard: machine-readable output
       limit: { type: "string" }, // dashboard: run-history entries to show
       "check-history": { type: "boolean" }, // dashboard: show stale red rows as resolved (view only) when branches are gone
+      once: { type: "boolean" }, // dashboard: force the static one-shot print (never enter the live TUI)
+      plain: { type: "boolean" }, // dashboard: alias of --once
+      "refresh-ms": { type: "string" }, // dashboard: live TUI poll interval in ms (default 1000)
       check: { type: "boolean" }, // upgrade: check latest version without installing
       pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
 
@@ -1196,6 +1200,17 @@ export async function main(argv, deps = {}) {
   if (command === "dashboard") {
     const historyLimit = flags.limit ? Number(flags.limit) : 10;
     const checkHistory = Boolean(flags["check-history"]);
+    const once = Boolean(flags.once || flags.plain);
+    // Live TUI only on a fully interactive terminal; --once/--plain, --json, and
+    // any non-TTY (piped/redirected/CI) take the static one-shot path below,
+    // byte-for-byte unchanged. stdout/stdin are injectable so tests fake a TTY.
+    const outTty = (deps.stdout || process.stdout).isTTY;
+    const inTty = (deps.stdin || process.stdin).isTTY;
+    if (outTty && inTty && !flags.json && !once) {
+      const refreshMs = flags["refresh-ms"] ? Number(flags["refresh-ms"]) : 1000;
+      (deps.tuiRun || runTui)(orchDir, { refreshMs });
+      return;
+    }
     if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit, repo, checkHistory }), null, 2));
     else console.log(renderDashboard(orchDir, { historyLimit, repo, checkHistory, color: colorEnabled(process.stdout), columns: process.stdout.columns }));
     return;
@@ -1219,7 +1234,7 @@ Commands:
   review <branch>       Audit an existing branch without merging.
   continue <sid>        Resume an interrupted/stalled cycle from its checkpoint.
   pr <number>           Review a GitHub PR; add --merge to merge if approved.
-  dashboard             Show read-only live status, log tail, and run history.
+  dashboard             Live TUI on a TTY; --once for a static print.
   upgrade, update       Self-update the global npm install.
   completion [bash]     Print the bash completion script (default: bash).
   completion install    Write the completion script to ~/.orch/completion.bash.
@@ -1242,6 +1257,8 @@ Options:
   --json                With dashboard, print JSON.
   --limit <n>           With dashboard, limit history rows.
   --check-history       Dashboard: show stale red rows resolved (view only).
+  --once, --plain       With dashboard, force the static one-shot print.
+  --refresh-ms <n>      With dashboard, live poll interval in ms (default 1000).
   --merge               With pr, merge approved PRs.
   --pr                  With agent build, open a PR instead.
 
