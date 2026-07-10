@@ -219,6 +219,40 @@ test("dashboard --refresh-ms passes the poll interval to the loop", async () => 
   assert.equal(calls[0].refreshMs, 250);
 });
 
+test("dashboard forwards --limit / --check-history into the live TUI", async () => {
+  const calls = [];
+  await main(["dashboard", "--limit", "3", "--check-history"], {
+    stdout: { isTTY: true, write() {} },
+    stdin: { isTTY: true },
+    tuiRun: (_orchDir, opts) => calls.push(opts),
+  });
+  assert.equal(calls[0].historyLimit, 3);
+  assert.equal(calls[0].checkHistory, true);
+});
+
+test("dashboard rejects a non-integer / sub-100 --refresh-ms instead of busy-polling", async () => {
+  for (const bad of ["abc", "0", "50", "10.5"]) {
+    let tui = 0;
+    let err = "";
+    const prevErr = console.error;
+    console.error = (c = "") => { err += `${c}\n`; };
+    const prevCode = process.exitCode;
+    try {
+      await main(["dashboard", "--refresh-ms", bad], {
+        stdout: { isTTY: true, write() {} },
+        stdin: { isTTY: true },
+        tuiRun: () => { tui++; },
+      });
+      assert.equal(tui, 0, `--refresh-ms ${bad} must not launch the TUI`);
+      assert.match(err, /--refresh-ms must be an integer >= 100/);
+      assert.equal(process.exitCode, 2);
+    } finally {
+      console.error = prevErr;
+      process.exitCode = prevCode;
+    }
+  }
+});
+
 // Regression guard: --once, --json, and any non-TTY must take the existing
 // static one-shot path — never the live TUI — and produce identical bytes.
 test("dashboard --once and non-TTY take the static path, byte-identical", async () => {

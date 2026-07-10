@@ -1207,8 +1207,21 @@ export async function main(argv, deps = {}) {
     const outTty = (deps.stdout || process.stdout).isTTY;
     const inTty = (deps.stdin || process.stdin).isTTY;
     if (outTty && inTty && !flags.json && !once) {
-      const refreshMs = flags["refresh-ms"] ? Number(flags["refresh-ms"]) : 1000;
-      (deps.tuiRun || runTui)(orchDir, { refreshMs });
+      // Validate --refresh-ms: an unchecked Number() lets "abc"/0/-1 through as
+      // NaN/0/negative, which setInterval silently clamps to a ~1ms busy poll.
+      // Require an integer >= 100ms; otherwise error out rather than spin.
+      let refreshMs = 1000;
+      if (flags["refresh-ms"] !== undefined) {
+        refreshMs = Number(flags["refresh-ms"]);
+        if (!Number.isInteger(refreshMs) || refreshMs < 100) {
+          console.error(`orch: --refresh-ms must be an integer >= 100 (got ${JSON.stringify(flags["refresh-ms"])})`);
+          process.exitCode = 2;
+          return;
+        }
+      }
+      // Forward the same history controls the static path honors so the live
+      // TUI reflects --limit / --check-history instead of silently defaulting.
+      (deps.tuiRun || runTui)(orchDir, { refreshMs, historyLimit, checkHistory, repo });
       return;
     }
     if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit, repo, checkHistory }), null, 2));

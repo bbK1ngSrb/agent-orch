@@ -46,6 +46,9 @@ export function run(orchDir, opts = {}) {
     stdin = process.stdin,
     exit = (code) => process.exit(code),
     refreshMs = 1000,
+    historyLimit,
+    checkHistory = false,
+    repo = null,
   } = opts;
   void snapshot;
 
@@ -65,7 +68,7 @@ export function run(orchDir, opts = {}) {
   function tick() {
     try {
       const width = out.columns;
-      const text = String(render(orchDir, { color, columns: width }));
+      const text = String(render(orchDir, { color, columns: width, historyLimit, checkHistory, repo }));
       const lines = text.split("\n").map((l) => clip(l, width));
       const rows = Number.isFinite(out.rows) ? out.rows : lines.length + 1;
       const bodyRows = Math.max(0, rows - 1); // reserve one row for the footer
