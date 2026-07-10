@@ -9,7 +9,7 @@ import * as inflight from "./inflight.js";
 import * as checkpoint from "./checkpoint.js";
 import { branchExists } from "./git.js";
 import { kpi, reviewsDir } from "./notify.js";
-import { paint, C, STAGE_SYMBOL, VERDICT_SYMBOL, table } from "./tui/theme.js";
+import { paint, C, STAGE_SYMBOL, VERDICT_SYMBOL, table, formatTimestamp } from "./tui/theme.js";
 
 const STAGE_LABELS = { reviewed: "review", tested: "test" };
 const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "pr-fallback": C.fail };
@@ -157,7 +157,7 @@ export function render(orchDir, opts = {}) {
   } else {
     for (const c of live) {
       const round = c.round != null ? ` round ${c.round}` : "";
-      lines.push(`  ${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}  pid=${c.pid}  since ${c.startedAt}`);
+      lines.push(`  ${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}  pid=${c.pid}  since ${formatTimestamp(c.startedAt)}`);
       if (c.log) lines.push(`    log (${c.log.file}): ${c.log.tail.split("\n").pop()}`);
     }
   }
@@ -168,7 +168,7 @@ export function render(orchDir, opts = {}) {
   } else {
     for (const c of interrupted) {
       const round = c.round != null ? ` round ${c.round}` : "";
-      const when = c.lastUpdate ? `  last update ${c.lastUpdate}` : "";
+      const when = c.lastUpdate ? `  last update ${formatTimestamp(c.lastUpdate)}` : "";
       lines.push(`  ${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}${when}`);
     }
   }
@@ -181,7 +181,7 @@ export function render(orchDir, opts = {}) {
       const usage = e.tokens ? `${e.tokens}tok${e.costUsd != null ? ` ${usd(e.costUsd)}` : ""}` : "";
       const colorCode = e.resolved ? C.muted : VERDICT_COLOR[e.verdict] || "";
       const verdict = verdictText(e.verdict, color, colorCode);
-      const row = [e.ts, e.branch, verdict, `${e.rounds}rnd`, usage];
+      const row = [formatTimestamp(e.ts), e.branch, verdict, `${e.rounds}rnd`, usage];
       if (checkHistory) row.push(e.resolved ? "resolved" : "");
       return row;
     });

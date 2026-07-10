@@ -73,7 +73,12 @@ author branch ──(AGREE + green tests)──▶ orch/integration ──▶ [p
 3. `orch` pushes `orch/integration` to the remote and opens **or updates**
    one single, persistent PR from `orch/integration → main`. It does not open
    a new PR per cycle — successive cycles pile onto the same PR until it's
-   merged.
+   merged. Keeping that PR *fresh* is automatic: whenever another PR lands on
+   `main`, this one goes stale (`mergeStateStatus: BEHIND`) — clean, but
+   un-mergeable until it absorbs the new commits. Each cycle updates it from
+   `main` for you (the "Update branch" button, no conflict to resolve), so a
+   headless run never freezes on a stale-but-clean PR. A *conflicting* PR is
+   left to the conflict resolver, not blindly updated.
 4. If `github.autoMergePr: true`, that PR auto-merges once its own CI checks
    pass. Otherwise a human merges it on GitHub whenever they're ready.
 5. Local `main` only advances afterward, by fetching and fast-forwarding.
@@ -613,6 +618,9 @@ github:
 # === Main mirror PR (integrationBranch -> baseBranch) ===
 main:
   autoMerge: false                # true = orch itself merges the persistent integration PR once its checks are green
+  conflictResolution: manual      # manual | propose | auto
+  conflictResolutionResolvers: [claude]  # role specs; rotate/fail over per conflict
+  autoResolveConflicts: false     # deprecated alias: true = conflictResolution: auto
 
 # === Auto docs-update ===
 docs:
@@ -684,14 +692,29 @@ docs:
   whatever `gh` identity orch is authenticated as — an `orch[bot]` installation
   token if `ORCH_APP_ID`/`ORCH_APP_PRIVATE_KEY` are set, an explicit `GH_TOKEN`
   if you export one, otherwise your ambient `gh` login — so it only succeeds if
-  *that* actor is itself in the branch's `bypass_actors` list. The shipped
-  orch-bot App is deliberately label-only with **no** bypass grant (see
-  `docs/orch-bot-github-app.md`), so landing this against a bypass-protected
-  `main` requires granting the merging actor that bypass as an explicit, opt-in
-  step; without it the merge call just fails and orch retries next cycle. It's
-  also a no-op while any check is still pending or failing, and does nothing
-  until a real merge lands to re-open/update the PR. Only affects the
-  integration PR, never `merge: pr`'s per-cycle PRs.
+  *that* actor is itself in the branch's `bypass_actors` list. This is required
+  for bot-authored PRs because GitHub rejects self-approval: the same actor that
+  opened the PR cannot approve its own PR to satisfy a required-review rule. A
+  ruleset bypass means the GitHub approval is bypassed, not recorded;
+  orch's internal author → cross-audit → test-gate is the review that governs
+  the merge. Landing this against a bypass-protected `main` therefore requires
+  granting the merging actor that bypass as an explicit, opt-in step; without
+  it the merge call just fails and orch retries next cycle. It's also a no-op
+  while any check is still pending or failing, and does nothing until a real
+  merge lands to re-open/update the PR. Only affects the integration PR, never
+  `merge: pr`'s per-cycle PRs.
+- **`main.conflictResolution`** — controls what happens when the persistent
+  `orch/integration → main` PR is dirty. `manual` comments for a human,
+  `propose` lets a resolver draft a resolution and posts the reviewer summary
+  without pushing, and `auto` pushes only whitelisted metadata conflicts after
+  the configured test gate passes. Non-whitelisted conflicts are proposed for
+  human approval even when a different reviewer agrees.
+  `main.autoResolveConflicts: true` remains a deprecated alias for `auto`;
+  `false` maps to `manual` when no explicit mode is set.
+- **`main.conflictResolutionResolvers`** — optional role-spec pool for conflict
+  resolution, using the same `"<agent> [model] [effort]"` grammar as authors
+  and reviewers. The pool rotates per conflict and failed resolver attempts
+  restart from the pre-merge tree before the next resolver tries.
 
 ---
 

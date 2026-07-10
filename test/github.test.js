@@ -574,6 +574,51 @@ test("openIntegrationPr updates an existing integration PR instead of creating a
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
 });
 
+test("openIntegrationPr updates a BEHIND-but-clean integration PR from base", async () => {
+  // A MERGEABLE PR that is only stale (main advanced under it) must be brought
+  // up to date automatically — the "Update branch" click a headless run cannot
+  // make. That is the gh api PUT .../update-branch call, keyed by numeric PR id.
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 247, url: "https://github.com/o/r/pull/247" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ mergeable: "MERGEABLE", mergeStateStatus: "BEHIND" });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", baseBranch: "main", github: { mergeMethod: "squash", autoMergePr: false } };
+
+  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+
+  assert.ok(
+    calls.some((c) => c[0] === "gh" && c[1] === "api" && c.includes("PUT") && c.includes("repos/{owner}/{repo}/pulls/247/update-branch")),
+    "a BEHIND-clean integration PR must be updated from base",
+  );
+});
+
+test("openIntegrationPr does not update-branch a CONFLICTING integration PR", async () => {
+  // Being behind *and* conflicting belongs to the conflict resolver, not a blind
+  // update — the freshness step must skip CONFLICTING PRs entirely.
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 247, url: "https://github.com/o/r/pull/247" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", baseBranch: "main", github: { mergeMethod: "squash", autoMergePr: false } };
+
+  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+
+  assert.ok(
+    !calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => String(a).includes("update-branch"))),
+    "a CONFLICTING PR must not be blindly updated",
+  );
+});
+
 test("openIntegrationPr auto-resolves a dirty persistent PR when opted in", async () => {
   const calls = [];
   let resolverCtx = null;
@@ -633,6 +678,39 @@ test("openIntegrationPr comments for a human when dirty PR auto-resolve cannot r
   const comment = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "comment");
   assert.ok(comment, "dirty PR should get a human handoff comment when no resolver is wired");
   assert.match(comment.join(" "), /no conflict resolver is configured/);
+});
+
+test("openIntegrationPr posts the resolver proposal comment when provided", async () => {
+  const calls = [];
+  const gh = (args, input) => {
+    calls.push(["gh", ...args, input].filter((v) => v !== undefined));
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = {
+    integrationBranch: "orch/integration",
+    github: { mergeMethod: "squash", autoMergePr: false },
+    main: { autoResolveConflicts: true, autoMerge: false },
+  };
+
+  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, {
+    gh,
+    git,
+    notify: { escalate() {} },
+    resolveIntegrationConflict: async () => ({
+      ok: false,
+      reason: "conflict resolution proposed for human approval",
+      comment: "agent-orch: conflict resolution needs human approval.\nReviewer result:\nAGREE",
+    }),
+  });
+
+  const comment = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "comment");
+  assert.ok(comment);
+  assert.match(comment.join(" "), /conflict resolution needs human approval/);
+  assert.match(comment.join(" "), /Reviewer result/);
 });
 
 test("openIntegrationPr swallows a cosmetic 'gh pr edit' failure (Projects-classic GraphQL deprecation) without escalating", async () => {

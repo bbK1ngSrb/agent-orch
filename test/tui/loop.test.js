@@ -213,11 +213,11 @@ test("structured history selection is visible, opens detail, and returns to the 
   });
 
   input.onKey({ type: "panel", index: 2 });
-  assert.match(screen.painted.at(-1), /> +2026-07-10T10:02:00\.000Z +pr\/done/);
+  assert.match(screen.painted.at(-1), /> +2026-07-10 10:02 +pr\/done/);
 
   input.onKey({ type: "down" });
   assert.equal(handle.state.historySelection.selectedIndex, 1);
-  assert.match(screen.painted.at(-1), /> +2026-07-10T10:03:00\.000Z +pr\/needs-work/);
+  assert.match(screen.painted.at(-1), /> +2026-07-10 10:03 +pr\/needs-work/);
 
   input.onKey({ type: "enter" });
   assert.equal(handle.state.historySelection.detailOpen, true);
@@ -227,7 +227,7 @@ test("structured history selection is visible, opens detail, and returns to the 
 
   input.onKey({ type: "esc" });
   assert.deepEqual(handle.state.historySelection, { selectedIndex: 1, detailOpen: false });
-  assert.match(screen.painted.at(-1), /> +2026-07-10T10:03:00\.000Z +pr\/needs-work/);
+  assert.match(screen.painted.at(-1), /> +2026-07-10 10:03 +pr\/needs-work/);
 
   handle.shutdown(0);
 });

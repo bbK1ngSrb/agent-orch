@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.42 — 2026-07-10
+- Format dates/times as human-readable `yyyy-mm-dd HH:mm` in all user-facing output (closes [#244](https://github.com/bbk1ng/agent-orch/issues/244))
+
+## 0.3.41 — 2026-07-10
+- orch: auto-update BEHIND-but-clean integration PR in the normal loop (no manual 'Update branch') (closes [#249](https://github.com/bbk1ng/agent-orch/issues/249))
+
+## 0.3.40 — 2026-07-10
+- orch: verify headless self-merge works via orch-bot's existing ruleset bypass (no --admin, no 2nd bot) (closes [#250](https://github.com/bbk1ng/agent-orch/issues/250))
+
 ## 0.3.39 — 2026-07-10
 - Headless overnight orch: planner + DAG + diverse-retry (design + tracking) (closes [#231](https://github.com/bbk1ng/agent-orch/issues/231))
 
