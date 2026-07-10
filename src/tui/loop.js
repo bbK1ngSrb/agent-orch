@@ -4,6 +4,7 @@ import * as realInput from "./input.js";
 import { render as realRender, snapshot as realSnapshot } from "../dashboard.js";
 import { computeLayout } from "./layout.js";
 import { reduceHistorySelection } from "./selection.js";
+import { filterHistory } from "./filter.js";
 import { visWidth, colorEnabled, box, table, C, STAGE_SYMBOL, VERDICT_SYMBOL, paint } from "./theme.js";
 
 // Clip one line to `width` display columns (visWidth-aware). Lines that fit
@@ -131,8 +132,11 @@ function panelLines(title, rows, rect, { columns, color, borderCode = C.border, 
 
 function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
   const now = Date.now();
-  state.lastHistoryCount = snap.history.length;
-  state.historySelection = reduceHistorySelection(state.historySelection, { type: "clamp" }, snap.history.length);
+  // Filter narrows the history panel; selection/scroll all clamp to the
+  // filtered set so the visible selection never points off-list.
+  const history = filterHistory(snap.history, state.filter);
+  state.lastHistoryCount = history.length;
+  state.historySelection = reduceHistorySelection(state.historySelection, { type: "clamp" }, history.length);
   const layout = computeLayout({
     columns,
     rows,
@@ -157,11 +161,11 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
     return seg(`${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}${when}`, C.fail);
   }) : [];
 
-  const historyTable = snap.history.length ? table(
+  const historyTable = history.length ? table(
     ["", "TIME", "BRANCH", "VERDICT", "ROUNDS", "COST"],
-    snap.history.map((e) => {
+    history.map((e) => {
       const usage = e.tokens ? `${e.tokens}tok${e.costUsd != null ? ` ${usd(e.costUsd)}` : ""}` : "";
-      const selected = snap.history.indexOf(e) === state.historySelection.selectedIndex ? ">" : "";
+      const selected = history.indexOf(e) === state.historySelection.selectedIndex ? ">" : "";
       return [
         selected,
         e.ts,
@@ -172,15 +176,15 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
       ];
     }),
     { columns, maxInner: Math.max(20, columns - 4) },
-  ).split("\n") : ["(none)"];
+  ).split("\n") : [state.filter ? "(no matches)" : "(none)"];
   const historyRows = state.historySelection.detailOpen
-    ? historyDetailRows(snap.history[state.historySelection.selectedIndex], state.historySelection.selectedIndex, snap.history.length)
+    ? historyDetailRows(history[state.historySelection.selectedIndex], state.historySelection.selectedIndex, history.length)
     : plainRows(historyTable);
   const rowsByPanel = { live: liveRows, interrupted: interruptedRows, history: historyRows };
 
   if (state.historySelection.detailOpen) {
     state.panelScroll.history = 0;
-  } else if (snap.history.length) {
+  } else if (history.length) {
     const rect = layout.panels.history;
     const selectedLine = state.historySelection.selectedIndex + 2; // table header + divider
     const current = state.panelScroll.history || 0;
@@ -207,7 +211,7 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
     const focused = rect.focused ? "*" : " ";
     const warn = name === "interrupted" && snap.interrupted.length ? " ! " : " ";
     const detail = name === "history" && state.historySelection.detailOpen ? " DETAIL" : "";
-    const title = `${focused}${PANEL_TITLE[name]}${detail} ${name === "live" ? snap.live.length : name === "interrupted" ? snap.interrupted.length : snap.history.length}${warn}`;
+    const title = `${focused}${PANEL_TITLE[name]}${detail} ${name === "live" ? snap.live.length : name === "interrupted" ? snap.interrupted.length : history.length}${warn}`;
     out.push(...panelLines(title, rowsByPanel[name], rect, {
       columns,
       color,
@@ -215,13 +219,17 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
       scrollOffset: state.panelScroll[name] || 0,
     }));
   }
-  out.push(footerText());
+  out.push(footerText(state));
   return out.join("\n");
 }
 
-function footerText() {
+function footerText(state) {
   const ts = new Date().toTimeString().slice(0, 8);
-  return `q quit · Tab focus · 1/2/3 panel · j/k scroll · r refresh · refreshed ${ts}`;
+  if (state?.filterMode) return `filter: ${state.filter}_ · Enter apply · Esc clear`;
+  // Non-structured callers pass no state, keeping the classic footer verbatim.
+  const hint = state ? " · / filter" : "";
+  const active = state?.filter ? ` · filter "${state.filter}"` : "";
+  return `q quit · Tab focus · 1/2/3 panel · j/k scroll${hint} · r refresh · refreshed ${ts}${active}`;
 }
 
 // Live dashboard loop: poll the dashboard state, paint a bounded frame, and
@@ -249,6 +257,8 @@ export function run(orchDir, opts = {}) {
     focus: "live",
     panelScroll: { live: 0, interrupted: 0, history: 0 },
     historySelection: reduceHistorySelection({}, {}, 0),
+    filter: "",
+    filterMode: false,
   };
   let prevFrame = null;
   let prevLineCount = 0;
@@ -291,6 +301,20 @@ export function run(orchDir, opts = {}) {
   }
 
   function dispatch(ev) {
+    // Filter input mode: keys type into the query instead of firing shortcuts.
+    // Ctrl-C still quits (it carries no printable value); Enter/`/` apply and
+    // exit, Esc clears and exits, Backspace edits. tick() re-narrows the list
+    // and clamps the selection to the filtered set on every change.
+    if (state.filterMode) {
+      if (ev.type === "quit" && ev.ctrlC) { shutdown(0); return; }
+      if (ev.type === "filter" || ev.type === "enter") state.filterMode = false;
+      else if (ev.type === "esc") { state.filterMode = false; state.filter = ""; }
+      else if (ev.type === "backspace") state.filter = state.filter.slice(0, -1);
+      else if (typeof ev.value === "string" && ev.value.length === 1) state.filter += ev.value;
+      else return; // ignore arrows/tab and other non-printable keys while typing
+      tick();
+      return;
+    }
     const scrollName = state.focus;
     if (useStructured && scrollName === "history" && ["up", "down", "top", "bottom", "enter", "esc", "left", "back"].includes(ev.type)) {
       state.historySelection = reduceHistorySelection(state.historySelection, ev, state.lastHistoryCount || 0);
@@ -330,6 +354,11 @@ export function run(orchDir, opts = {}) {
       }
       case "panel":
         if (PANEL_ORDER[ev.index]) state.focus = PANEL_ORDER[ev.index];
+        tick();
+        break;
+      case "filter":
+        // Enter filter mode on the history panel (the only filtered list).
+        if (useStructured) { state.filterMode = true; state.focus = "history"; }
         tick();
         break;
       case "refresh":
