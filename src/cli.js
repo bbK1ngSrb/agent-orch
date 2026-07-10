@@ -30,6 +30,7 @@ import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dash
 import { FALLBACK_BIN_DIRS, resolveAgentBin } from "./agent-bin.js";
 import { BASH_COMPLETION, installCompletion } from "./completion.js";
 import { visWidth, paint, C, box, colorEnabled } from "./tui/theme.js";
+import { maybeNotifyUpdate, runUpdateCheckChild } from "./update-check.js";
 
 export { slugify };
 export { resolveAgentBin };
@@ -660,11 +661,19 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
 
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
+  if (command === "__update-check-child") {
+    await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
+    return;
+  }
   if (flags.version || command === "version") { console.log(VERSION); return; }
   if (flags.help || command === "help") { printUsage(); return; }
 
   const repo = process.cwd();
   const orchDir = join(repo, ".orch");
+
+  if (!flags.dry && command && command !== "completion") {
+    maybeNotifyUpdate({ current: VERSION, json: Boolean(flags.json) }).catch(() => {});
+  }
 
   // Optional GitHub App auth: if ORCH_APP_ID + ORCH_APP_PRIVATE_KEY are set,
   // mint a short-lived installation token and expose it to every `gh` shell-out
