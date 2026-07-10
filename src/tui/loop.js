@@ -302,12 +302,14 @@ export function run(orchDir, opts = {}) {
 
   function dispatch(ev) {
     // Filter input mode: keys type into the query instead of firing shortcuts.
-    // Ctrl-C still quits (it carries no printable value); Enter/`/` apply and
-    // exit, Esc clears and exits, Backspace edits. tick() re-narrows the list
-    // and clamps the selection to the filtered set on every change.
+    // Ctrl-C still quits (it carries no printable value); Enter applies and
+    // exits, Esc clears and exits, Backspace edits. `/` carries a printable
+    // value, so it appends literally (branch names like `pr/done`). tick()
+    // re-narrows the list and clamps the selection to the filtered set on
+    // every change.
     if (state.filterMode) {
       if (ev.type === "quit" && ev.ctrlC) { shutdown(0); return; }
-      if (ev.type === "filter" || ev.type === "enter") state.filterMode = false;
+      if (ev.type === "enter") state.filterMode = false;
       else if (ev.type === "esc") { state.filterMode = false; state.filter = ""; }
       else if (ev.type === "backspace") state.filter = state.filter.slice(0, -1);
       else if (typeof ev.value === "string" && ev.value.length === 1) state.filter += ev.value;

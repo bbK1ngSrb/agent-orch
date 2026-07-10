@@ -41,7 +41,7 @@ test("normalizeKey maps arrows, vim keys, and controls", () => {
   assert.deepEqual(normalizeKey(null, { name: "return" }), { type: "enter" });
   assert.deepEqual(normalizeKey(null, { name: "escape" }), { type: "esc" });
   assert.deepEqual(normalizeKey(null, { name: "backspace" }), { type: "backspace" });
-  assert.deepEqual(normalizeKey("/", {}), { type: "filter" });
+  assert.deepEqual(normalizeKey("/", {}), { type: "filter", value: "/" });
   assert.deepEqual(normalizeKey("x", {}), { type: "char", value: "x" });
 });
 

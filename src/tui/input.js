@@ -28,7 +28,9 @@ export function normalizeKey(str, key = {}) {
   // mode can type them literally instead of firing the shortcut.
   switch (str) {
     case "/":
-      return { type: "filter" };
+      // Carries its printable char so filter mode can type it literally (branch
+      // names like `pr/done`); only fires the shortcut outside filter mode.
+      return { type: "filter", value: "/" };
     case "j":
       return { type: "down", value: "j" };
     case "k":
