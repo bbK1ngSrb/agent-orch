@@ -362,6 +362,26 @@ export async function openIntegrationPr(ctx, deps) {
     log(`opened integration PR for ${branch}: ${url}`);
   }
 
+  // Keep the persistent integration PR fresh. After any *other* PR merges into
+  // `base`, this PR goes mergeStateStatus:BEHIND — clean (no conflict), but
+  // un-mergeable until its branch absorbs those new base commits. GitHub exposes
+  // that as the "Update branch" button; it is a pure fast-forward-style merge of
+  // `base` into the head with no conflict to resolve, so orch does it itself
+  // rather than waiting for a human — otherwise an unattended run freezes every
+  // time anything else lands on `base`. Skip it when CONFLICTING: that state
+  // routes to the conflict resolver below, not to a blind update. `gh` has no
+  // first-class subcommand for this, so hit the REST endpoint (keyed by numeric
+  // PR id, like mergeDirect) directly. A failure here is never fatal to a
+  // green+merged+pushed cycle — the next cycle retries.
+  try {
+    const state = JSON.parse(gh(["pr", "view", prRef, "--json", "mergeable,mergeStateStatus"]) || "{}");
+    if (state.mergeStateStatus === "BEHIND" && state.mergeable !== "CONFLICTING") {
+      gh(["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${prRef}/update-branch`]);
+      log(`updated stale integration PR #${prRef} from ${base}`);
+    }
+  } catch (e) {
+    log(`could not update-branch integration PR #${prRef} (non-fatal): ${e.message}`);
+  }
   if (cfg?.github?.autoMergePr) {
     try {
       // The persistent integration branch must stay in main's ancestry. Squash
