@@ -409,6 +409,50 @@ test("openIntegrationPr with main.autoMerge directly merges the persistent integ
   );
 });
 
+test("openIntegrationPr defers to native auto-merge and skips the racing direct merge", async () => {
+  // Both knobs on: native auto-merge is armed, so GitHub lands the PR once its
+  // required checks pass. orch must NOT also fire an immediate direct merge —
+  // that races async CI and returns a misleading HTTP 405 while a required
+  // check is still IN_PROGRESS. It should never even inspect the checks here.
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: true }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
+  assert.ok(mergeCall && mergeCall.includes("--auto"), "native auto-merge must be armed");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"), "must not fire its own direct merge while auto-merge is armed");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "view"), "must not inspect checks once deferring to auto-merge");
+});
+
+test("openIntegrationPr falls back to the direct merge when arming auto-merge fails", async () => {
+  // Auto-merge could not be armed (e.g. no branch protection / merge queue on
+  // the repo, so `gh pr merge --auto` errors). The direct-merge fallback must
+  // still run so main.autoMerge keeps landing the PR.
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "merge") throw new Error("auto-merge not available");
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: true }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge"))), "direct merge must run when auto-merge could not be armed");
+});
+
 test("openIntegrationPr skips main.autoMerge direct merge until checks are green", async () => {
   const calls = [];
   const gh = (args) => {
