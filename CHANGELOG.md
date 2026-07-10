@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.28 — 2026-07-10
+- orch: wait for required CI checks before attempting merge (avoid racing 405) (closes [#212](https://github.com/bbk1ng/agent-orch/issues/212))
+
 ## 0.3.27 — 2026-07-10
 - test/notify.test.js escalate colorization test fails when NO_COLOR is set in the environment (closes [#219](https://github.com/bbk1ng/agent-orch/issues/219))
 
