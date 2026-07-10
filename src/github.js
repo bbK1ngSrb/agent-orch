@@ -75,6 +75,11 @@ function prChecksGreen(gh, prRef) {
   return checks.length > 0 && checks.every(checkPassed);
 }
 
+function prHasConflicts(gh, prRef) {
+  const data = JSON.parse(gh(["pr", "view", String(prRef), "--json", "mergeable,mergeStateStatus"]) || "{}");
+  return data.mergeable === "CONFLICTING" || data.mergeStateStatus === "DIRTY";
+}
+
 // Concurrent orch cycles share one .git and thus one refs/remotes/origin/main —
 // a losing fetch fails "cannot lock ref", which is transient contention, not a
 // real sync problem. Mirrors git.js's fetchOriginMain retry so this new
@@ -308,7 +313,7 @@ export async function openIntegrationPr(ctx, deps) {
   const { repo, orchDir, cfg } = ctx;
   const branch = cfg.integrationBranch || "orch/integration";
   const base = cfg.baseBranch || "main";
-  const { git, gh, notify, log = () => {} } = deps;
+  const { git, gh, notify, log = () => {}, resolveIntegrationConflict } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate?.(orchDir, branch,
       `# Escalation — ${branch}\n\nThe local integration branch is green, but a git remote and the gh CLI are required to open or update the PR to ${base}.\n`);
@@ -365,6 +370,26 @@ export async function openIntegrationPr(ctx, deps) {
       gh(["pr", "merge", prRef, "--auto", "--merge"]);
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
+    }
+  }
+  if (cfg?.main?.autoResolveConflicts) {
+    try {
+      if (prHasConflicts(gh, prRef)) {
+        const resolved = await resolveIntegrationConflict?.({ ...ctx, branch, base, prRef, prUrl: url });
+        if (resolved?.ok) {
+          log(`auto-resolved integration PR #${prRef}: ${resolved.summary || "resolved and pushed"}`);
+        } else {
+          const reason = resolved?.reason || "no conflict resolver is configured";
+          log(`integration PR #${prRef} conflict auto-resolve skipped: ${reason}`);
+          try {
+            gh(["pr", "comment", prRef, "--body", redact(`agent-orch: auto-resolve was enabled, but the integration PR still needs a human: ${reason}`)]);
+          } catch (e) {
+            log(`could not comment on integration PR #${prRef}: ${e.message}`);
+          }
+        }
+      }
+    } catch (e) {
+      log(`could not inspect or auto-resolve integration PR #${prRef}: ${e.message}`);
     }
   }
   // main.autoMerge runs alongside native auto-merge, not as an either/or. It is
