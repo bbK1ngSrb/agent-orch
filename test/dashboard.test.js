@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as inflight from "../src/inflight.js";
@@ -216,4 +217,58 @@ test("snapshot includes sid for live, interrupted, and history entries", () => {
   assert.equal(snap.live[0].sid, "sid-live");
   assert.equal(snap.interrupted[0].sid, "sid-dead");
   assert.equal(snap.history[0].sid, "sid-hist");
+});
+
+// watch(): the live-view loop behind `orch dashboard --watch`. Timers and
+// streams are injected so the test drives ticks and keypresses by hand.
+test("watch paints on start/interval/refresh and resolves on quit", async () => {
+  const d = freshDir();
+  const stdin = new EventEmitter();
+  stdin.isTTY = true;
+  stdin.rawModeCalls = [];
+  stdin.setRawMode = (v) => stdin.rawModeCalls.push(v);
+  stdin.resume = () => {};
+  stdin.paused = false;
+  stdin.pause = () => { stdin.paused = true; };
+  let out = "";
+  const stdout = { write: (s) => { out += s; }, columns: 80 };
+  let tick = null;
+  let cleared = false;
+  const done = dashboard.watch(d, {}, {
+    stdin,
+    stdout,
+    setTimer: (fn) => { tick = fn; return "t"; },
+    clearTimer: (id) => { cleared = id === "t"; },
+  });
+  const frames = () => out.split("\x1b[H\x1b[2J").length - 1;
+  assert.equal(frames(), 1); // initial paint
+  tick();
+  assert.equal(frames(), 2); // interval repaint
+  stdin.emit("keypress", "r", { name: "r" });
+  assert.equal(frames(), 3); // manual refresh
+  stdin.emit("keypress", "x", { name: "x" });
+  assert.equal(frames(), 3); // other keys ignored
+  stdin.emit("keypress", "q", { name: "q" });
+  await done;
+  assert.equal(cleared, true); // timer stopped
+  assert.deepEqual(stdin.rawModeCalls, [true, false]); // cooked mode restored
+  assert.equal(stdin.paused, true);
+  assert.match(out, /orch dashboard/);
+});
+
+test("watch quits on Ctrl-C too (raw mode swallows SIGINT)", async () => {
+  const d = freshDir();
+  const stdin = new EventEmitter();
+  stdin.isTTY = true;
+  stdin.setRawMode = () => {};
+  stdin.resume = () => {};
+  stdin.pause = () => {};
+  const done = dashboard.watch(d, {}, {
+    stdin,
+    stdout: { write: () => {}, columns: 80 },
+    setTimer: () => "t",
+    clearTimer: () => {},
+  });
+  stdin.emit("keypress", "\x03", { name: "c", ctrl: true });
+  await done; // resolving at all is the assertion
 });

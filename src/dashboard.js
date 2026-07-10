@@ -10,6 +10,7 @@ import * as checkpoint from "./checkpoint.js";
 import { branchExists } from "./git.js";
 import { kpi, reviewsDir } from "./notify.js";
 import { paint, C, table } from "./tui/theme.js";
+import { start as startInput } from "./tui/input.js";
 
 const STAGE_LABELS = { reviewed: "review", tested: "test" };
 const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "pr-fallback": C.fail };
@@ -191,4 +192,33 @@ export function render(orchDir, opts = {}) {
   lines.push(`  clean unattended cycles: ${m.cleanUnattendedCycles}`);
   lines.push(`  tokens: ${m.totalTokens}  cost: ${usd(m.totalCostUsd)}`);
   return lines.join("\n");
+}
+
+// Live view: repaint render() on an interval; `r` repaints now, `q`/Ctrl-C
+// resolves after restoring cooked mode. Callers gate on a real TTY — with a
+// non-TTY stdin startInput() is a no-op and no quit key could ever arrive.
+// ponytail: full-clear repaint, no alt-screen; upgrade path is src/tui/loop.js
+// composing screen.js/layout.js per docs/tui-design.md.
+export function watch(orchDir, opts = {}, io = {}) {
+  const {
+    stdin = process.stdin,
+    stdout = process.stdout,
+    intervalMs = 1000,
+    setTimer = setInterval,
+    clearTimer = clearInterval,
+  } = io;
+  const frame = () => stdout.write("\x1b[H\x1b[2J" + render(orchDir, { ...opts, columns: stdout.columns }) + "\n");
+  return new Promise((resolve) => {
+    const timer = setTimer(frame, intervalMs);
+    const stop = startInput(stdin, (ev) => {
+      if (ev.type === "quit") {
+        clearTimer(timer);
+        stop();
+        resolve();
+      } else if (ev.type === "refresh") {
+        frame();
+      }
+    });
+    frame();
+  });
 }

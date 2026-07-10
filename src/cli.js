@@ -26,7 +26,7 @@ import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.
 import { finishRun } from "./complete.js";
 import { detectAgents, formatDetection } from "./detect.js";
 import { redact } from "./redact.js";
-import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dashboard.js";
+import { render as renderDashboard, snapshot as dashboardSnapshot, watch as watchDashboard } from "./dashboard.js";
 import { FALLBACK_BIN_DIRS, resolveAgentBin } from "./agent-bin.js";
 import { BASH_COMPLETION, installCompletion } from "./completion.js";
 import { visWidth, paint, C, box, colorEnabled } from "./tui/theme.js";
@@ -166,7 +166,7 @@ fast-forwarding \`origin/main\`.
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
 - \`orch agent add <name>\`          add an agent to the rotation pool
 - \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
-- \`orch dashboard [--json]\`        live cycle status, log tail, run history, metrics
+- \`orch dashboard [--json] [--watch]\` live cycle status, log tail, run history, metrics
 
 A role is a spec \`"<agent> [model] [effort]"\`, e.g.
 \`--author "claude claude-opus-4-8 high" --reviewer "codex"\`.
@@ -240,6 +240,7 @@ export function parse(argv) {
       json: { type: "boolean" }, // dashboard: machine-readable output
       limit: { type: "string" }, // dashboard: run-history entries to show
       "check-history": { type: "boolean" }, // dashboard: mark stale red rows resolved when branches are gone
+      watch: { type: "boolean" }, // dashboard: live-refresh on a TTY until q/Ctrl-C
       pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
 
     },
@@ -1178,6 +1179,10 @@ export async function main(argv, deps = {}) {
     const historyLimit = flags.limit ? Number(flags.limit) : 10;
     const checkHistory = Boolean(flags["check-history"]);
     if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit, repo, checkHistory }), null, 2));
+    // Live view only on a real interactive terminal — piped/redirected/--json
+    // output stays byte-identical to the one-shot render (docs/tui-design.md).
+    else if (flags.watch && process.stdin.isTTY && process.stdout.isTTY)
+      await watchDashboard(orchDir, { historyLimit, repo, checkHistory, color: colorEnabled(process.stdout) });
     else console.log(renderDashboard(orchDir, { historyLimit, repo, checkHistory, color: colorEnabled(process.stdout), columns: process.stdout.columns }));
     return;
   }
@@ -1221,6 +1226,7 @@ Options:
   --json                With dashboard, print JSON.
   --limit <n>           With dashboard, limit history rows.
   --check-history       With dashboard, mark stale red history rows resolved.
+  --watch               With dashboard, live-refresh on a TTY until q/Ctrl-C.
   --merge               With pr, merge approved PRs.
   --pr                  With agent build, open a PR instead.
 
