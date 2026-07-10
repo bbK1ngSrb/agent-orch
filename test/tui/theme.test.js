@@ -61,6 +61,21 @@ test("row pads to inner width and truncates overflow with an ellipsis", () => {
   assert.equal(visWidth(tooLong.replace(/^│ | │$/g, "")), 10);
 });
 
+test("row with embedded ANSI never truncates mid-escape (history verdict cells)", () => {
+  // History rows carry pre-painted verdict codes inside seg.text. If row()
+  // truncated the raw string, the cut could land inside an SGR escape and emit
+  // a dangling "\x1b[38;5;…" that the terminal parses through the right border,
+  // corrupting it. Overflow must drop color cleanly instead.
+  const pre = "x".repeat(88) + paint(true, C.ok, "OK") + "-tail-tail-tail";
+  const line = row([{ code: "", text: pre }], 96, true);
+  // no incomplete SGR sequence survives (every \x1b[ must be closed by m)
+  assert.ok(!/\x1b\[[0-9;]*(?![0-9;]*m)/.test(line.replace(/\x1b\[[0-9;]*m/g, "")),
+    `dangling escape in ${JSON.stringify(line)}`);
+  // right border still lands exactly inner+4 columns out
+  assert.equal(visWidth(line), 100);
+  assert.ok(line.replace(/\x1b\[[0-9;]*m/g, "").endsWith("│"));
+});
+
 test("box renders a centered title between top/bottom borders around each row", () => {
   const out = box(" title ", [[{ code: C.label, text: "x" }]], { color: false, columns: 20 });
   const lines = out.split("\n");

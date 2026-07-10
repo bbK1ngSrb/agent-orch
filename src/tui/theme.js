@@ -55,7 +55,10 @@ function truncate(plain, width) {
 export function row(segs, inner, color) {
   const plain = segs.map((s) => s.text).join("");
   if (visWidth(plain) > inner) {
-    const out = truncate(plain, inner);
+    // Strip ANSI first: history rows carry pre-painted verdict codes inside
+    // s.text, and truncate() counts escape bytes as columns otherwise (misaligns
+    // the right border). Overflow drops color — same tradeoff as table()'s clamp.
+    const out = truncate(plain.replace(/\x1b\[[0-9;]*m/g, ""), inner);
     return `${paint(color, C.border, "│")} ${out}${" ".repeat(inner - visWidth(out))} ${paint(color, C.border, "│")}`;
   }
   const body = segs.map((s) => paint(color, s.code, s.text)).join("");
