@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.27 — 2026-07-10
+- test/notify.test.js escalate colorization test fails when NO_COLOR is set in the environment (closes [#219](https://github.com/bbk1ng/agent-orch/issues/219))
+
 ## 0.3.26 — 2026-07-09
 - auto-docs mre4m7tb0 update documentation to reflect the latest merged changes
 
