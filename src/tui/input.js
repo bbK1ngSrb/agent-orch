@@ -33,6 +33,8 @@ export function normalizeKey(str, key = {}) {
       return { type: "bottom" };
     case "r":
       return { type: "refresh" };
+    case "?":
+      return { type: "help" };
     case "q":
       return { type: "quit" };
   }
