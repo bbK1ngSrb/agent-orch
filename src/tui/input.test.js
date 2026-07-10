@@ -34,6 +34,7 @@ test("normalizeKey maps arrows, vim keys, and controls", () => {
   assert.deepEqual(normalizeKey("g", {}), { type: "top", value: "g" });
   assert.deepEqual(normalizeKey("G", {}), { type: "bottom", value: "G" });
   assert.deepEqual(normalizeKey("r", {}), { type: "refresh", value: "r" });
+  assert.deepEqual(normalizeKey("?", {}), { type: "help" });
   assert.deepEqual(normalizeKey("q", {}), { type: "quit", value: "q" });
   assert.deepEqual(normalizeKey("2", {}), { type: "panel", index: 1, value: "2" });
   assert.deepEqual(normalizeKey(null, { name: "tab" }), { type: "tab" });

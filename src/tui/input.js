@@ -41,6 +41,8 @@ export function normalizeKey(str, key = {}) {
       return { type: "bottom", value: "G" };
     case "r":
       return { type: "refresh", value: "r" };
+    case "?":
+      return { type: "help" };
     case "q":
       return { type: "quit", value: "q" };
   }
