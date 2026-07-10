@@ -36,6 +36,7 @@ export function normalizeKey(str, key = {}) {
     case "q":
       return { type: "quit" };
   }
+  if (/^[123]$/.test(str)) return { type: "panel", index: Number(str) - 1 };
   if (str) return { type: "char", value: str };
   return null;
 }

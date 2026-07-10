@@ -43,10 +43,11 @@ function makeInput() {
   return inp;
 }
 
-function makeOut(columns = 80, rows = 24) {
+function makeOut(columns = 80, rows = 24, isTTY = false) {
   const o = new EventEmitter();
   o.columns = columns;
   o.rows = rows;
+  o.isTTY = isTTY;
   o.writes = [];
   o.write = (str) => {
     o.writes.push(str);
@@ -58,7 +59,7 @@ function makeOut(columns = 80, rows = 24) {
 function setup(opts = {}) {
   const screen = makeScreen();
   const input = makeInput();
-  const out = makeOut(opts.columns, opts.rows);
+  const out = makeOut(opts.columns, opts.rows, opts.isTTY);
   const exits = [];
   const exit = (code) => exits.push(code);
   const handle = run(ORCH_DIR, {
@@ -69,8 +70,48 @@ function setup(opts = {}) {
     exit,
     refreshMs: 1_000_000, // effectively no interval firing during the test
     render: opts.render,
+    snapshot: opts.snapshot,
   });
   return { screen, input, out, exits, handle };
+}
+
+function structuredSnapshot(liveCount = 8) {
+  const live = Array.from({ length: liveCount }, (_, i) => ({
+    sid: `sid-${i}`,
+    branch: `pr/live-${i}`,
+    pid: 100 + i,
+    startedAt: "2026-07-10T10:00:00.000Z",
+    stage: "authoring",
+    round: null,
+    lastUpdate: "2026-07-10T10:00:00.000Z",
+    log: null,
+  }));
+  return {
+    live,
+    interrupted: [{
+      sid: "halted",
+      branch: "pr/interrupted",
+      stage: "review",
+      round: 2,
+      lastUpdate: "2026-07-10T10:01:00.000Z",
+    }],
+    history: [{
+      ts: "2026-07-10T10:02:00.000Z",
+      branch: "pr/done",
+      verdict: "merged",
+      rounds: 1,
+      tokens: 100,
+      costUsd: 0.01,
+    }],
+    metrics: {
+      total: 1,
+      merged: 1,
+      successRate: 1,
+      totalTokens: 100,
+      totalCostUsd: 0.01,
+      cleanUnattendedCycles: 1,
+    },
+  };
 }
 
 test("tick paints a frame from the injected render, with a footer", () => {
@@ -84,7 +125,7 @@ test("tick paints a frame from the injected render, with a footer", () => {
   const frame = screen.painted.at(-1);
   assert.match(frame, /A1/);
   assert.match(frame, /A2/);
-  assert.match(frame, /q quit · ↑↓ scroll · r refresh · refreshed /);
+  assert.match(frame, /q quit · Tab focus · 1\/2\/3 panel · j\/k scroll · r refresh · refreshed /);
 
   handle.shutdown(0); // remove process listeners registered by run()
 });
@@ -112,6 +153,65 @@ test("a down key raises scrollOffset (clamped to content)", () => {
   assert.equal(handle.state.scrollOffset, 1);
   input.onKey({ type: "down" });
   assert.equal(handle.state.scrollOffset, 2);
+
+  handle.shutdown(0);
+});
+
+test("structured loop cycles focus with Tab and jumps to interrupted with 2", () => {
+  const { input, handle } = setup({
+    snapshot: () => structuredSnapshot(),
+    rows: 18,
+    columns: 90,
+  });
+
+  assert.equal(handle.state.focus, "live");
+  input.onKey({ type: "tab" });
+  assert.equal(handle.state.focus, "interrupted");
+  input.onKey({ type: "shift-tab" });
+  assert.equal(handle.state.focus, "live");
+  input.onKey({ type: "panel", index: 1 });
+  assert.equal(handle.state.focus, "interrupted");
+
+  handle.shutdown(0);
+});
+
+test("structured scroll changes only the focused panel", () => {
+  const { input, handle } = setup({
+    snapshot: () => structuredSnapshot(20),
+    rows: 12,
+    columns: 90,
+  });
+
+  input.onKey({ type: "down" });
+  assert.equal(handle.state.panelScroll.live, 1);
+  assert.equal(handle.state.panelScroll.interrupted, 0);
+
+  input.onKey({ type: "panel", index: 2 });
+  input.onKey({ type: "bottom" });
+  assert.ok(handle.state.panelScroll.history >= 0);
+  assert.equal(handle.state.panelScroll.interrupted, 0);
+
+  handle.shutdown(0);
+});
+
+test("structured scrollbar replaces the right border when color is enabled", () => {
+  const { screen, handle } = setup({
+    snapshot: () => structuredSnapshot(20),
+    rows: 12,
+    columns: 90,
+    isTTY: true,
+  });
+
+  const frame = screen.painted.at(-1);
+  const scrollbarLines = frame.split("\n")
+    .filter((line) => line.includes("┃"))
+    .map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+
+  assert.ok(scrollbarLines.length > 0, "scrollbar thumb rendered");
+  for (const line of scrollbarLines) {
+    assert.match(line, /┃$/, "thumb replaces the final border");
+    assert.doesNotMatch(line, /┃.*│/, "thumb is not injected into body text");
+  }
 
   handle.shutdown(0);
 });
