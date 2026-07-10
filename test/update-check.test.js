@@ -35,6 +35,7 @@ test("newer latest notifies", async () => {
     env: {},
   });
   assert.match(err.text(), /agent-orch 1\.0\.1 available \(you have 1\.0\.0\)/);
+  assert.match(err.text(), /run `npm install -g @bbk1ng\/agent-orch`/);
 });
 
 test("equal or older latest is silent", async () => {

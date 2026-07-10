@@ -89,7 +89,7 @@ function shouldSkip({ env, stdout, json }) {
 
 function notice({ current, latest, stderr }) {
   const color = colorEnabled(stderr);
-  stderr.write(`${paint(color, C.warn, "^")} agent-orch ${latest} available (you have ${current}) - run \`orch upgrade\`\n`);
+  stderr.write(`${paint(color, C.warn, "^")} agent-orch ${latest} available (you have ${current}) - run \`npm install -g @bbk1ng/agent-orch\`\n`);
 }
 
 function spawnChecker({ current, cacheDir, spawnFn, env }) {
