@@ -333,8 +333,17 @@ export async function openIntegrationPr(ctx, deps) {
   if (open[0]) {
     prRef = String(open[0].number);
     url = open[0].url;
-    gh(["pr", "edit", prRef, "--title", title, "--body", body]);
-    log(`updated integration PR #${prRef}: ${url}`);
+    // Best-effort cosmetic refresh: title/body are static boilerplate, already
+    // correct from when this persistent PR was first opened, so a failed edit
+    // changes nothing that lands. `gh pr edit` still selects the deprecated
+    // `repository.pullRequest.projectCards` GraphQL field and now exits nonzero
+    // on that alone — must never escalate a green+merged+pushed cycle (#212).
+    try {
+      gh(["pr", "edit", prRef, "--title", title, "--body", body]);
+      log(`updated integration PR #${prRef}: ${url}`);
+    } catch (e) {
+      log(`integration PR #${prRef} metadata refresh skipped (non-fatal): ${e.message}`);
+    }
   } else {
     url = gh([
       "pr", "create", "--head", branch, "--base", base,

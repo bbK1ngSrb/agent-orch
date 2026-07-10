@@ -10,6 +10,10 @@ export function normalizeKey(str, key = {}) {
       return { type: "up" };
     case "down":
       return { type: "down" };
+    case "left":
+      return { type: "left" };
+    case "right":
+      return { type: "right" };
     case "tab":
       return { type: key.shift ? "shift-tab" : "tab" };
     case "return":
