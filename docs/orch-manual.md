@@ -73,7 +73,12 @@ author branch ──(AGREE + green tests)──▶ orch/integration ──▶ [p
 3. `orch` pushes `orch/integration` to the remote and opens **or updates**
    one single, persistent PR from `orch/integration → main`. It does not open
    a new PR per cycle — successive cycles pile onto the same PR until it's
-   merged.
+   merged. Keeping that PR *fresh* is automatic: whenever another PR lands on
+   `main`, this one goes stale (`mergeStateStatus: BEHIND`) — clean, but
+   un-mergeable until it absorbs the new commits. Each cycle updates it from
+   `main` for you (the "Update branch" button, no conflict to resolve), so a
+   headless run never freezes on a stale-but-clean PR. A *conflicting* PR is
+   left to the conflict resolver, not blindly updated.
 4. If `github.autoMergePr: true`, that PR auto-merges once its own CI checks
    pass. Otherwise a human merges it on GitHub whenever they're ready.
 5. Local `main` only advances afterward, by fetching and fast-forwarding.
