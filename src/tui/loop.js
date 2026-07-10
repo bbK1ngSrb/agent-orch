@@ -3,6 +3,7 @@ import * as realScreen from "./screen.js";
 import * as realInput from "./input.js";
 import { render as realRender, snapshot as realSnapshot } from "../dashboard.js";
 import { computeLayout } from "./layout.js";
+import { reduceHistorySelection } from "./selection.js";
 import { visWidth, colorEnabled, box, table, C, STAGE_SYMBOL, VERDICT_SYMBOL, paint } from "./theme.js";
 
 // Clip one line to `width` display columns (visWidth-aware). Lines that fit
@@ -52,6 +53,36 @@ function verdictText(verdict, color, colorCode) {
 function seg(text, code = "") { return [{ code, text }]; }
 function plainRows(lines) { return lines.map((text) => seg(text)); }
 
+function valueText(value) {
+  if (value == null || value === "") return "n/a";
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function historyDetailRows(entry, index, count) {
+  if (!entry) return [seg("(none)", C.muted)];
+  const rows = [
+    seg(`> selected row ${index + 1} of ${count}`),
+    seg(`branch ${valueText(entry.branch)}`),
+    seg(`time ${valueText(entry.ts)}`),
+    seg(`sid ${valueText(entry.sid)}`),
+    seg(`verdict ${valueText(entry.verdict)}${entry.resolved ? " (resolved)" : ""}`),
+    seg(`rounds ${valueText(entry.rounds)}`),
+    seg(`usage ${entry.tokens ? `${entry.tokens} tokens` : "n/a"}${entry.costUsd != null ? ` ${usd(entry.costUsd)}` : ""}`),
+    seg("log tail", C.title),
+  ];
+  const logTail = entry.logTail || entry.log?.tail || entry.reason || "";
+  rows.push(...String(logTail || "(not recorded in run history)").split("\n").slice(-6).map((line) => seg(line, logTail ? "" : C.muted)));
+  rows.push(
+    seg("stage breakdown", C.title),
+    seg(`review ${valueText(entry.verdict)} after ${valueText(entry.rounds)} round(s)`),
+    seg(`terminal ${entry.resolved ? "resolved stale red row" : valueText(entry.verdict)}`),
+    seg("Esc/back returns", C.muted),
+  );
+  return rows;
+}
+
 function ansiIndexForPlainIndex(line, plainIndex) {
   let plain = 0;
   for (let i = 0; i < line.length;) {
@@ -100,6 +131,8 @@ function panelLines(title, rows, rect, { columns, color, borderCode = C.border, 
 
 function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
   const now = Date.now();
+  state.lastHistoryCount = snap.history.length;
+  state.historySelection = reduceHistorySelection(state.historySelection, { type: "clamp" }, snap.history.length);
   const layout = computeLayout({
     columns,
     rows,
@@ -125,10 +158,12 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
   }) : [];
 
   const historyTable = snap.history.length ? table(
-    ["TIME", "BRANCH", "VERDICT", "ROUNDS", "COST"],
+    ["", "TIME", "BRANCH", "VERDICT", "ROUNDS", "COST"],
     snap.history.map((e) => {
       const usage = e.tokens ? `${e.tokens}tok${e.costUsd != null ? ` ${usd(e.costUsd)}` : ""}` : "";
+      const selected = snap.history.indexOf(e) === state.historySelection.selectedIndex ? ">" : "";
       return [
+        selected,
         e.ts,
         e.branch,
         verdictText(e.verdict, color, e.resolved ? C.muted : VERDICT_COLOR[e.verdict] || ""),
@@ -138,8 +173,22 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
     }),
     { columns, maxInner: Math.max(20, columns - 4) },
   ).split("\n") : ["(none)"];
-  const historyRows = plainRows(historyTable);
+  const historyRows = state.historySelection.detailOpen
+    ? historyDetailRows(snap.history[state.historySelection.selectedIndex], state.historySelection.selectedIndex, snap.history.length)
+    : plainRows(historyTable);
   const rowsByPanel = { live: liveRows, interrupted: interruptedRows, history: historyRows };
+
+  if (state.historySelection.detailOpen) {
+    state.panelScroll.history = 0;
+  } else if (snap.history.length) {
+    const rect = layout.panels.history;
+    const selectedLine = state.historySelection.selectedIndex + 2; // table header + divider
+    const current = state.panelScroll.history || 0;
+    if (selectedLine < current) state.panelScroll.history = selectedLine;
+    else if (rect.bodyRows > 0 && selectedLine >= current + rect.bodyRows) {
+      state.panelScroll.history = selectedLine - rect.bodyRows + 1;
+    }
+  }
 
   for (const name of PANEL_ORDER) {
     const rect = layout.panels[name];
@@ -157,7 +206,8 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
     const rect = layout.panels[name];
     const focused = rect.focused ? "*" : " ";
     const warn = name === "interrupted" && snap.interrupted.length ? " ! " : " ";
-    const title = `${focused}${PANEL_TITLE[name]} ${name === "live" ? snap.live.length : name === "interrupted" ? snap.interrupted.length : snap.history.length}${warn}`;
+    const detail = name === "history" && state.historySelection.detailOpen ? " DETAIL" : "";
+    const title = `${focused}${PANEL_TITLE[name]}${detail} ${name === "live" ? snap.live.length : name === "interrupted" ? snap.interrupted.length : snap.history.length}${warn}`;
     out.push(...panelLines(title, rowsByPanel[name], rect, {
       columns,
       color,
@@ -194,7 +244,12 @@ export function run(orchDir, opts = {}) {
   } = opts;
   const color = colorEnabled(out);
   const useStructured = render === realRender || snapshot !== realSnapshot;
-  const state = { scrollOffset: 0, focus: "live", panelScroll: { live: 0, interrupted: 0, history: 0 } };
+  const state = {
+    scrollOffset: 0,
+    focus: "live",
+    panelScroll: { live: 0, interrupted: 0, history: 0 },
+    historySelection: reduceHistorySelection({}, {}, 0),
+  };
   let prevFrame = null;
   let prevLineCount = 0;
 
@@ -237,6 +292,13 @@ export function run(orchDir, opts = {}) {
 
   function dispatch(ev) {
     const scrollName = state.focus;
+    if (useStructured && scrollName === "history" && ["up", "down", "top", "bottom", "enter", "esc", "left", "back"].includes(ev.type)) {
+      state.historySelection = reduceHistorySelection(state.historySelection, ev, state.lastHistoryCount || 0);
+      if (state.historySelection.detailOpen) state.panelScroll.history = 0;
+      else if (["up", "down", "top", "bottom"].includes(ev.type)) state.panelScroll.history = state.historySelection.selectedIndex;
+      tick();
+      return;
+    }
     switch (ev.type) {
       case "up":
         if (useStructured) state.panelScroll[scrollName] -= 1;
