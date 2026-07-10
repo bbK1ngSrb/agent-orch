@@ -7,6 +7,7 @@ node_modules/
 # reach origin. To publish a specific doc, add an explicit un-ignore (!) below.
 docs/*.md
 !docs/orch-manual.md
+!docs/headless-overnight-design.md
 # subdir markdown isn't matched by docs/*.md, so ignore internal doc dirs wholesale
 docs/superpowers/
 tasks/
