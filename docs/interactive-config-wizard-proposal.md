@@ -28,18 +28,27 @@ scaffolds** — it fills or edits that file, it does not invent a second config 
 
 These pieces are already in the tree and should be **reused, not rebuilt**:
 
-- **`orch init` scaffold path** — `configPath(dir)` in `src/config.js` resolves the
-  canonical config file (`.orch/orch.yml`), and `orch init` writes it. The wizard writes
-  **the same file**, so `orch init` and `orch config` stay two views of one artifact
-  (scaffold vs. guided edit) rather than competing writers.
+- **`orch init` scaffold path** — `orch init` writes the canonical `.orch/orch.yml`.
+  Mind the subtlety: `configPath(dir)` in `src/config.js` is a **read resolver**, not a
+  write-path helper. It returns `.orch/orch.yml` only when that file **already exists**,
+  and otherwise falls back to a bare `orch.yml` at the repo root (back-compat). So the
+  wizard must **locate** an existing config with `configPath(dir)` but **write a new file
+  to the explicit `.orch/orch.yml`** (`join(dir, ".orch", "orch.yml")`) — writing to
+  `configPath()` on a fresh repo would scatter a root-level `orch.yml` that diverges from
+  where `orch init` puts it. With that read-vs-write split, `orch init` and `orch config`
+  stay two views of one artifact (scaffold vs. guided edit) rather than competing writers.
 - **Raw-mode keypress engine** — `src/tui/input.js` (shipped in #222). `normalizeKey()`
   already turns Node readline keypress events into `{type:"up"|"down"|"enter"|"esc"|...}`,
   handles arrows, Enter, Esc, Ctrl-C, and is a **no-op on non-TTY**. `start(stdin, onKey)`
   enters/leaves raw mode and returns a `stop()`. This is exactly the arrow-key + Enter
   primitive the task asks for — it exists but is **not yet wired to any command**. The
   wizard is its first real consumer.
-- **`validate(cfg)`** — `src/config.js`. The error gate. The wizard must run every
-  candidate config through it before writing, so an invalid file can never be saved.
+- **`validate(cfg)`** — `src/config.js`. The error gate. Today it is **private** — only
+  `load()` calls it internally, and it is *not* in the module's exports — so v1 must
+  first **export it** (a one-line change: add `validate` to the `export {…}` list) before
+  the wizard can call it. Once exported, the wizard runs every candidate config through
+  the *same* `validate` the runtime uses, so an invalid file can never be saved and the
+  wizard and engine can never disagree about what "valid" means.
 - **theme** — `src/tui/theme.js` (`paint`, `C`, `box`) for consistent coloring, and
   `yaml`'s `stringify` (already a dep) to serialize the result.
 
@@ -51,7 +60,7 @@ New command: **`orch config`**. It is a sibling of `orch init`, not an alias:
 `init` writes the defaulted scaffold once; `config` interactively edits that same file.
 
 ```
-orch config [--out <path>]   # default path: the canonical .orch/orch.yml (configPath)
+orch config [--out <path>]   # default: edit existing config (configPath) else create .orch/orch.yml
 ```
 
 **Flag-contract note.** `orch config` deliberately does **not** reuse `--config-file` as
@@ -113,7 +122,9 @@ never disagree about what "valid" means.
 ## 5. Save
 
 - Serialize with `yaml.stringify(cfg)`.
-- Write to the canonical `configPath(dir)` (`.orch/orch.yml`), or `--out <path>` if given.
+- Write target: if a config already exists, `configPath(dir)` locates it (edit in place);
+  if none exists, write the explicit `.orch/orch.yml` (`join(dir, ".orch", "orch.yml")`),
+  **not** `configPath()`'s bare-`orch.yml` fallback. `--out <path>` overrides both.
 - If the target exists (the common case — `orch init` already wrote it), **load it first**
   so the wizard pre-selects the user's current values (edit, don't clobber), and confirm
   before overwrite. This is why the wizard shares `orch init`'s file rather than a new one:
