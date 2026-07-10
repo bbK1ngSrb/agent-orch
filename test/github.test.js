@@ -374,6 +374,33 @@ test("openIntegrationPr creates the persistent integration PR and enables auto-m
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"), "direct main merge needs main.autoMerge");
 });
 
+test("openIntegrationPr puts pending issue closes on the bridge PR body", async () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return "[]";
+    if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/12\n";
+    return "";
+  };
+  const git = (args) => {
+    calls.push(["git", ...args]);
+    if (args[0] === "remote") return "origin\n";
+    if (args[0] === "log") return "Merge pr/a\n\nCloses #53\n\nMerge pr/b\n\nFixes #54\n\nCloses #53\n";
+    return "";
+  };
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false } };
+
+  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+
+  const create = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create");
+  const body = create[create.indexOf("--body") + 1];
+  assert.match(body, /Closes #53/);
+  assert.match(body, /Closes #54/);
+  assert.equal((body.match(/Closes #53/g) || []).length, 1);
+  assert.ok(calls.some((c) => c[0] === "git" && c[1] === "log" && c.includes("main..orch/integration")));
+});
+
 test("openIntegrationPr with main.autoMerge directly merges the persistent integration PR", async () => {
   const calls = [];
   const gh = (args) => {
@@ -572,6 +599,27 @@ test("openIntegrationPr updates an existing integration PR instead of creating a
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
   assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit" && c[3] === "12"));
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
+});
+
+test("openIntegrationPr refreshes an existing bridge PR with pending issue closes", async () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    return "";
+  };
+  const git = (args) => {
+    if (args[0] === "remote") return "origin\n";
+    if (args[0] === "log") return "Merge pr/issue\n\nResolves #99\n";
+    return "";
+  };
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false } };
+
+  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+
+  const edit = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit" && c[3] === "12");
+  assert.match(edit[edit.indexOf("--body") + 1], /Closes #99/);
 });
 
 test("openIntegrationPr updates a BEHIND-but-clean integration PR from base", async () => {
