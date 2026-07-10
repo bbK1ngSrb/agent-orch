@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.33 — 2026-07-10
+- orch: PR-bridge escalates on non-fatal 'gh pr edit' failure (Projects-classic GraphQL deprecation) (closes [#225](https://github.com/bbk1ng/agent-orch/issues/225))
+
 ## 0.3.32 — 2026-07-10
 - feat(tui): loop.js — v1 live poll loop (flat scroll, clean shutdown) (closes [#207](https://github.com/bbk1ng/agent-orch/issues/207))
 
