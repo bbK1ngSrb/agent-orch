@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.37 — 2026-07-10
+- feat(tui): dashboard drill-down detail view (split from #210) (closes [#238](https://github.com/bbk1ng/agent-orch/issues/238))
+
 ## 0.3.36 — 2026-07-10
 - feat(tui): structured panels + status strip + focus/scroll (closes [#209](https://github.com/bbk1ng/agent-orch/issues/209))
 
