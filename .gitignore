@@ -2,16 +2,13 @@
 modules/
 node_modules/
 
-# generated orch run artifacts
-docs/task*-run*.md
-docs/task*-audit*.md
-docs/task*-complete.md
-
-# internal working docs — not for the public repo (leak homelab paths/IPs)
+# docs/: whitelist-only. Every markdown doc under docs/ is ignored by default —
+# design notes, discussion, run artifacts, red-team reports stay local and never
+# reach origin. To publish a specific doc, add an explicit un-ignore (!) below.
+docs/*.md
+!docs/orch-manual.md
+# subdir markdown isn't matched by docs/*.md, so ignore internal doc dirs wholesale
 docs/superpowers/
-docs/2026-06-23-cross-audit-pr-orchestration.md
-docs/2026-06-23-cross-audit-pr-orchestration-design.md
-docs/audit-findings.md
 tasks/
 
 # stray multi-tool config files (this project is npm-only)
