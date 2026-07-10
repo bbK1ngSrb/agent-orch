@@ -5,7 +5,7 @@ import { render as realRender, snapshot as realSnapshot } from "../dashboard.js"
 import { computeLayout } from "./layout.js";
 import { reduceHistorySelection } from "./selection.js";
 import { filterHistory } from "./filter.js";
-import { visWidth, colorEnabled, box, table, C, STAGE_SYMBOL, VERDICT_SYMBOL, paint } from "./theme.js";
+import { visWidth, colorEnabled, box, table, C, STAGE_SYMBOL, VERDICT_SYMBOL, paint, formatTimestamp } from "./theme.js";
 
 // Clip one line to `width` display columns (visWidth-aware). Lines that fit
 // pass through untouched so color survives; the rare overflow strips ANSI and
@@ -66,7 +66,7 @@ function historyDetailRows(entry, index, count) {
   const rows = [
     seg(`> selected row ${index + 1} of ${count}`),
     seg(`branch ${valueText(entry.branch)}`),
-    seg(`time ${valueText(entry.ts)}`),
+    seg(`time ${entry.ts ? formatTimestamp(entry.ts) : valueText(entry.ts)}`),
     seg(`sid ${valueText(entry.sid)}`),
     seg(`verdict ${valueText(entry.verdict)}${entry.resolved ? " (resolved)" : ""}`),
     seg(`rounds ${valueText(entry.rounds)}`),
@@ -172,7 +172,7 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
 
   const interruptedRows = snap.interrupted.length ? snap.interrupted.map((c) => {
     const round = c.round != null ? ` r${c.round}` : "";
-    const when = c.lastUpdate ? `  ${c.lastUpdate}` : "";
+    const when = c.lastUpdate ? `  ${formatTimestamp(c.lastUpdate)}` : "";
     return seg(`${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}${when}`, C.fail);
   }) : [];
 
@@ -183,7 +183,7 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
       const selected = history.indexOf(e) === state.historySelection.selectedIndex ? ">" : "";
       return [
         selected,
-        e.ts,
+        formatTimestamp(e.ts),
         e.branch,
         verdictText(e.verdict, color, e.resolved ? C.muted : VERDICT_COLOR[e.verdict] || ""),
         `${e.rounds}rnd`,

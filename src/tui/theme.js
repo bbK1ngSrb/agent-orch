@@ -37,6 +37,19 @@ export function colorEnabled(stream) {
   return Boolean(stream && stream.isTTY) && process.env.NO_COLOR == null;
 }
 
+// Human-facing timestamp: Date or ISO string → "yyyy-mm-dd HH:mm" (UTC, to the
+// minute). Only strings a person reads route through here; machine-facing
+// timestamps (runs.jsonl, checkpoints, inflight) stay raw ISO. UTC so the
+// displayed minute matches the stored `Z` value and tests stay timezone-free.
+// Unparseable input passes through unchanged rather than showing "Invalid Date".
+export function formatTimestamp(dateOrIso) {
+  if (dateOrIso == null || dateOrIso === "") return "";
+  const d = dateOrIso instanceof Date ? dateOrIso : new Date(dateOrIso);
+  return Number.isNaN(d.getTime())
+    ? String(dateOrIso)
+    : d.toISOString().slice(0, 16).replace("T", " ");
+}
+
 // Truncate plain (ANSI-free) text to `width` display columns, ellipsis last.
 function truncate(plain, width) {
   let out = "", w = 0;

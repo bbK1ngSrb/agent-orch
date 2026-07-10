@@ -1,6 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visWidth, paint, C, colorEnabled, row, box, table } from "../../src/tui/theme.js";
+import { visWidth, paint, C, colorEnabled, row, box, table, formatTimestamp } from "../../src/tui/theme.js";
+
+test("formatTimestamp renders yyyy-mm-dd HH:mm in UTC from a known instant", () => {
+  // Drops the T separator, sub-second .927, and the trailing Z; minute precision.
+  assert.equal(formatTimestamp("2026-07-10T11:23:37.927Z"), "2026-07-10 11:23");
+  assert.equal(formatTimestamp(new Date("2026-07-10T11:23:37.927Z")), "2026-07-10 11:23");
+  // Unparseable input passes through rather than showing "Invalid Date".
+  assert.equal(formatTimestamp("not-a-date"), "not-a-date");
+  assert.equal(formatTimestamp(null), "");
+});
 
 test("table aligns columns and colors specific cells via a colorFn", () => {
   const out = table(
