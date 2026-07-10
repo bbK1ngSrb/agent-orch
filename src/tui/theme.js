@@ -34,6 +34,17 @@ export function colorEnabled(stream) {
   return Boolean(stream && stream.isTTY) && process.env.NO_COLOR == null;
 }
 
+// Truncate plain (ANSI-free) text to `width` display columns, ellipsis last.
+function truncate(plain, width) {
+  let out = "", w = 0;
+  for (const ch of plain) {
+    const cw = WIDE_GLYPH.test(ch) ? 2 : 1;
+    if (w + cw > width - 1) break;
+    out += ch; w += cw;
+  }
+  return out + "…";
+}
+
 // Render one bordered row from colored segments [{code,text}], padded to
 // `inner` display columns by visWidth (not .length). Overflow is truncated
 // on the plain text with an ellipsis; that rare case drops color rather
@@ -41,13 +52,7 @@ export function colorEnabled(stream) {
 export function row(segs, inner, color) {
   const plain = segs.map((s) => s.text).join("");
   if (visWidth(plain) > inner) {
-    let out = "", w = 0;
-    for (const ch of plain) {
-      const cw = WIDE_GLYPH.test(ch) ? 2 : 1;
-      if (w + cw > inner - 1) break;
-      out += ch; w += cw;
-    }
-    out += "…";
+    const out = truncate(plain, inner);
     return `${paint(color, C.border, "│")} ${out}${" ".repeat(inner - visWidth(out))} ${paint(color, C.border, "│")}`;
   }
   const body = segs.map((s) => paint(color, s.code, s.text)).join("");
@@ -76,11 +81,24 @@ export function box(title, rowsSegs, opts = {}) {
 // by the caller before being passed in (this helper only handles alignment)
 // EXCEPT verdict-shaped cells, which callers pass pre-painted — table()
 // pads by visWidth so embedded ANSI doesn't break column math.
+// When `opts.columns` (terminal width) is given, each rendered line is
+// trimmed of trailing padding and clamped to min(maxInner, columns) — unlike
+// box() there is no minimum floor, so the table never exceeds the terminal
+// even below 40 columns; overflow is truncated on the plain text with an
+// ellipsis, same tradeoff as row(). With `columns` undefined, output is
+// unchanged.
 export function table(headers, rows, opts = {}) {
+  const { columns, maxInner = 96 } = opts;
   const cols = headers.length;
   const widths = Array.from({ length: cols }, (_, i) =>
     Math.max(visWidth(headers[i]), ...rows.map((r) => visWidth(r[i] ?? ""))));
   const line = (cells) => cells.map((c, i) =>
     c + " ".repeat(widths[i] - visWidth(c) + (i < cols - 1 ? 2 : 0))).join("");
-  return [line(headers), ...rows.map(line)].join("\n");
+  const limit = Number.isFinite(columns) ? Math.min(maxInner, columns) : null;
+  const clamp = (l) => {
+    if (limit == null) return l;
+    const t = l.replace(/ +$/, "");
+    return visWidth(t) <= limit ? t : truncate(t.replace(/\x1b\[[0-9;]*m/g, ""), limit);
+  };
+  return [line(headers), ...rows.map(line)].map(clamp).join("\n");
 }
