@@ -43,6 +43,23 @@ function refreshFallbackPrBody(gh, prNumber, body) {
   try { gh(["pr", "edit", prNumber, "--body", body]); } catch { /* PR is already open with the placeholder body */ }
 }
 
+function closingLinesFromIntegration(git, repo, base, branch) {
+  let body;
+  try {
+    body = git(["log", "--format=%B", `${base}..${branch}`], repo);
+  } catch {
+    return "";
+  }
+  const seen = new Set();
+  const lines = [];
+  for (const match of String(body || "").matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi)) {
+    if (seen.has(match[1])) continue;
+    seen.add(match[1]);
+    lines.push(`Closes #${match[1]}`);
+  }
+  return lines.length ? `\n\n${lines.join("\n")}` : "";
+}
+
 function tryMergeDirect(gh, prRef, method) {
   try { mergeDirect(gh, prRef, method); } catch { /* not ready or not mergeable */ }
 }
@@ -323,7 +340,7 @@ export async function openIntegrationPr(ctx, deps) {
   const title = "orch: integrate green local cycles";
   const body = redact(
     `agent-orch: local integration passed. This persistent PR gates ${branch} into ${base}; ${base} is a GitHub mirror and is not advanced locally.`,
-  );
+  ) + closingLinesFromIntegration(git, repo, base, branch);
   git(["push", "-u", "origin", branch], repo);
   const open = JSON.parse(gh([
     "pr", "list",
