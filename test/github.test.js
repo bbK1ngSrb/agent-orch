@@ -574,6 +574,30 @@ test("openIntegrationPr updates an existing integration PR instead of creating a
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
 });
 
+test("openIntegrationPr swallows a cosmetic 'gh pr edit' failure (Projects-classic GraphQL deprecation) without escalating", async () => {
+  // The push and PR already succeeded; the title/body refresh is best-effort
+  // boilerplate. A nonzero `gh pr edit` (deprecated projectCards field) must not
+  // raise "Decision needed" for a green+merged+pushed cycle (#212).
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "edit") {
+      throw new Error("GraphQL: Projects (classic) is being deprecated (repository.pullRequest.projectCards)");
+    }
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { autoMergePr: false } };
+  let escalated = false;
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, {
+    gh, git, notify: { escalate() { escalated = true; } },
+  });
+
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.equal(escalated, false);
+});
+
 test("§3f: runPr comment passes through redact (no raw secret in the body)", async () => {
   // publicSummary is machine-only, so redact is the belt: prove the posted body is redact()'d.
   const deps = makeDeps();
