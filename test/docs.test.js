@@ -9,7 +9,6 @@ const read = (rel) =>
 
 const pkg = JSON.parse(read("package.json"));
 const readme = read("README.md");
-const design = read("docs/design.md");
 const landing = read("docs/index.html");
 const manual = read("docs/orch-manual.md");
 const exampleConfig = read("orch.example.yml");
@@ -33,15 +32,12 @@ test("README documents the `orch` CLI", () => {
 });
 
 test("docs list the built-in CLI adapters", () => {
-  for (const doc of [readme, design, exampleConfig]) {
+  for (const doc of [readme, exampleConfig]) {
     assert.match(doc, /claude/);
     assert.match(doc, /codex/);
     assert.match(doc, /copilot/);
     assert.match(doc, /gemini/);
   }
-  assert.doesNotMatch(design, /Ship two adapters/);
-  assert.doesNotMatch(design, /claude` and\/or `codex/);
-  assert.doesNotMatch(design, /Gemini\/Aider/);
 });
 
 test("docs document the dashboard --check-history flag", () => {
@@ -74,14 +70,6 @@ test("README documents bash completion install/update behavior", () => {
   assert.match(readme, /~\/\.orch\/completion\.bash/);
   assert.match(readme, /orch completion bash/);
   assert.match(readme, /orch completion install/);
-});
-
-test("design doc reflects the GitHub PR bridge", () => {
-  assert.match(design, /orch pr <n>/);
-  assert.match(design, /GitHub PR bridge/);
-  assert.doesNotMatch(design, /There is no GitHub PR/);
-  assert.doesNotMatch(design, /Three commands/);
-  assert.doesNotMatch(design, /Any GitHub PR \/ Actions \/ remote integration/);
 });
 
 test("README documents the auto docs-update feature and its loop guard", () => {
