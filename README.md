@@ -269,8 +269,8 @@ test gate and version bump. Orch then pushes `orch/integration` and opens or
 updates one persistent PR from `orch/integration` to `main`; with
 `github.autoMergePr: true`, it also enables GitHub's native auto-merge on that
 PR using a merge commit so `orch/integration` stays in `main`'s ancestry.
-Alternatively, `main.autoMerge: true` has orch merge that persistent PR itself
-(via `gh`, a merge commit) once all of its checks are green — a fallback for
+Alternatively, `main.autoMerge: true` triggers a direct merge of that
+persistent PR once all of its checks are green — a fallback for
 when native auto-merge stalls at `BLOCKED` because review is satisfied via a
 ruleset bypass grant rather than a human approval. The merge runs as whatever
 `gh` identity orch is authenticated as, so it only lands if that identity is
