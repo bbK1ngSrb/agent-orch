@@ -21,24 +21,32 @@ export function normalizeKey(str, key = {}) {
       return { type: "enter" };
     case "escape":
       return { type: "esc" };
+    case "backspace":
+      return { type: "backspace" };
   }
+  // Shortcut keys carry their printable char as `value` too, so a filter/input
+  // mode can type them literally instead of firing the shortcut.
   switch (str) {
+    case "/":
+      // Carries its printable char so filter mode can type it literally (branch
+      // names like `pr/done`); only fires the shortcut outside filter mode.
+      return { type: "filter", value: "/" };
     case "j":
-      return { type: "down" };
+      return { type: "down", value: "j" };
     case "k":
-      return { type: "up" };
+      return { type: "up", value: "k" };
     case "g":
-      return { type: "top" };
+      return { type: "top", value: "g" };
     case "G":
-      return { type: "bottom" };
+      return { type: "bottom", value: "G" };
     case "r":
-      return { type: "refresh" };
+      return { type: "refresh", value: "r" };
     case "?":
       return { type: "help" };
     case "q":
-      return { type: "quit" };
+      return { type: "quit", value: "q" };
   }
-  if (/^[123]$/.test(str)) return { type: "panel", index: Number(str) - 1 };
+  if (/^[123]$/.test(str)) return { type: "panel", index: Number(str) - 1, value: str };
   if (str) return { type: "char", value: str };
   return null;
 }
