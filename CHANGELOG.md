@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.39 — 2026-07-10
+- Headless overnight orch: planner + DAG + diverse-retry (design + tracking) (closes [#231](https://github.com/bbk1ng/agent-orch/issues/231))
+
 ## 0.3.38 — 2026-07-10
 - feat(tui): help overlay + narrow-terminal control guard (split from #210) (closes [#240](https://github.com/bbk1ng/agent-orch/issues/240))
 
