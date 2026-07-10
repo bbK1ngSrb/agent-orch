@@ -473,6 +473,54 @@ test("openIntegrationPr skips main.autoMerge direct merge until checks are green
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"));
 });
 
+test("openIntegrationPr waits when a required check is still EXPECTED (not yet reported)", async () => {
+  // A required status context GitHub is still waiting on appears in the rollup as
+  // state:"EXPECTED" — the check exists in branch protection but no status has
+  // been posted yet. That is exactly the "wait for required CI checks" case: the
+  // direct merge must hold, not fire early against a not-yet-satisfied required
+  // context (which would 405). The other reported check being green must not be
+  // enough on its own.
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }, { state: "EXPECTED" }] });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"), "a still-EXPECTED required check is not green — the direct merge must wait");
+});
+
+test("openIntegrationPr treats SKIPPED and NEUTRAL required checks as green", async () => {
+  // GitHub counts a SKIPPED (path-filtered) or NEUTRAL required check as
+  // satisfied for merge purposes. prChecksGreen must too — otherwise the direct
+  // merge would stall forever on any repo whose required checks include a
+  // skippable job (COMPLETED, but conclusion !== SUCCESS).
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [
+      { status: "COMPLETED", conclusion: "SUCCESS" },
+      { status: "COMPLETED", conclusion: "SKIPPED" },
+      { status: "COMPLETED", conclusion: "NEUTRAL" },
+    ] });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge"))), "skipped/neutral required checks are green — direct merge must run");
+});
+
 test("openIntegrationPr swallows main.autoMerge direct-merge failures so GitHub refusals retry later", async () => {
   const gh = (args) => {
     if (args[0] === "--version") return "gh 2";
