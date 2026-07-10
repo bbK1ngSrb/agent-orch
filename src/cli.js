@@ -140,6 +140,8 @@ github:
 # === Main mirror PR (integrationBranch -> baseBranch) ===
 main:
   autoMerge: false        # true = directly merge the persistent integration PR when GitHub allows it; default: false
+  autoResolveConflicts: false  # true = ask Claude to reconcile a dirty persistent PR within autoResolveConflictPaths; default: false
+  autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json", "src/version.js", "version.js"]
 
 # === Auto docs-update after a real merge (optional) ===
 docs:
@@ -424,9 +426,71 @@ function realIo() {
     },
   };
 }
+
+async function resolveIntegrationConflict(ctx) {
+  const { repo, orchDir, cfg, branch, base, testCmd } = ctx;
+  const integration = git.ensureIntegrationWorktree(repo, orchDir, branch, base);
+  git.syncWorktreeToIntegration(integration, branch);
+  const fetched = git.fetchOriginMain(repo, { base });
+  if (!fetched.ok) return { ok: false, reason: fetched.reason };
+
+  const target = `refs/remotes/origin/${base}`;
+  const preSha = git.git(["rev-parse", "HEAD"], integration);
+  const fail = (reason) => {
+    git.gitTry(["reset", "--hard", preSha], integration);
+    git.gitTry(["clean", "-fd"], integration);
+    return { ok: false, reason };
+  };
+
+  let conflicts = [];
+  try {
+    const merge = git.gitTry(["merge", "--no-edit", target], integration);
+    if (!merge.ok) {
+      conflicts = git.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
+      const allowed = new Set(cfg.main.autoResolveConflictPaths || []);
+      const outside = conflicts.filter((p) => !allowed.has(p));
+      if (!conflicts.length) return fail((merge.out || "merge failed").trim());
+      if (outside.length) return fail(`conflicts outside auto-resolve scope: ${outside.join(", ")}`);
+
+      const resolver = adapters.get("claude");
+      const prompt = [
+        `Resolve this merge conflict on ${branch} after merging origin/${base}.`,
+        "",
+        "Rules:",
+        "- Release metadata only: keep changelog entries in descending version order.",
+        "- Use the highest version string consistently in package metadata and version source files.",
+        "- Preserve both sides' non-duplicate release notes.",
+        "- Do not edit unrelated files.",
+        "",
+        `Conflicted files: ${conflicts.join(", ")}`,
+      ].join("\n");
+      await resolver.author(prompt, integration, { stageTimeoutMs: cfg.stageTimeout * 60_000 });
+    }
+
+    const remaining = git.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
+    if (remaining.length) return fail(`unresolved conflicts remain: ${remaining.join(", ")}`);
+    if (git.gitTry(["rev-parse", "-q", "--verify", "MERGE_HEAD"], integration).ok) {
+      git.git(["commit", "--no-edit"], integration);
+    }
+
+    const result = gate.run(testCmd, integration);
+    if (!result.pass) return fail("resolved tree failed the test gate");
+    git.git(["push", "origin", branch], integration);
+    return { ok: true, summary: conflicts.length ? `resolved ${conflicts.join(", ")}` : `merged origin/${base} cleanly` };
+  } catch (e) {
+    return fail(e.message || String(e));
+  }
+}
+
 export function realDeps() {
   const ghShell = (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString();
-  const ghDeps = { gh: ghShell, git: git.git, notify, log: (m) => process.stderr.write(`▶ ${m}\n`) };
+  const ghDeps = {
+    gh: ghShell,
+    git: git.git,
+    notify,
+    log: (m) => process.stderr.write(`▶ ${m}\n`),
+    resolveIntegrationConflict,
+  };
   const githubDep = {
     demote: (ctx) => demote(ctx, ghDeps),
     openPr: (ctx) => openPr(ctx, ghDeps),
