@@ -610,6 +610,10 @@ github:
   mergeMethod: squash             # squash | merge | rebase
   autoMergePr: false
 
+# === Main mirror PR ===
+main:
+  autoMerge: false                # direct-merge persistent PR once checks are green
+
 # === Auto docs-update ===
 docs:
   autoUpdate: false
@@ -670,6 +674,12 @@ docs:
   need a manual nudge is `merge: pr`'s one-shot per-cycle PR, since nothing
   re-invokes it later the way the persistent integration PR gets re-touched
   every cycle.
+- **`main.autoMerge`** — after the persistent `orch/integration → main` PR is
+  open or updated, orch checks that PR's status checks. If they are already
+  green, it directly merges the PR with a merge commit. If checks are pending,
+  red, or GitHub refuses the merge, orch logs the issue and leaves the PR open.
+  This only applies to the persistent integration PR, not `merge: pr`
+  per-cycle PRs.
 
 ---
 
