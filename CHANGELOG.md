@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.36 — 2026-07-10
+- feat(tui): structured panels + status strip + focus/scroll (closes [#209](https://github.com/bbk1ng/agent-orch/issues/209))
+
 ## 0.3.35 — 2026-07-10
 - feat(cli): live TUI default for orch dashboard on interactive TTY (closes [#208](https://github.com/bbk1ng/agent-orch/issues/208))
 
