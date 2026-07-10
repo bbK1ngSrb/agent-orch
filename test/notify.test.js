@@ -87,7 +87,14 @@ test("escalate resets the clean unattended cycle streak", () => {
   assert.equal(kpi(d).cleanUnattendedCycles, 0);
 });
 
-test("escalate writes plain markdown to DECISION.md but colorizes the stderr echo", () => {
+test("escalate writes plain markdown to DECISION.md but colorizes the stderr echo", (t) => {
+  const oldNoColor = process.env.NO_COLOR;
+  delete process.env.NO_COLOR;
+  t.after(() => {
+    if (oldNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = oldNoColor;
+  });
+
   const d = mkdtempSync(join(tmpdir(), "orch-notify-"));
   const chunks = [];
   const fakeStream = { write: (s) => chunks.push(s), isTTY: true };
