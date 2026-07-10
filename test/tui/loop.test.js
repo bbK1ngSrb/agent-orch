@@ -95,18 +95,29 @@ function structuredSnapshot(liveCount = 8) {
       round: 2,
       lastUpdate: "2026-07-10T10:01:00.000Z",
     }],
-    history: [{
-      ts: "2026-07-10T10:02:00.000Z",
-      branch: "pr/done",
-      verdict: "merged",
-      rounds: 1,
-      tokens: 100,
-      costUsd: 0.01,
-    }],
+    history: [
+      {
+        ts: "2026-07-10T10:02:00.000Z",
+        branch: "pr/done",
+        sid: "sid-done",
+        verdict: "merged",
+        rounds: 1,
+        tokens: 100,
+        costUsd: 0.01,
+      },
+      {
+        ts: "2026-07-10T10:03:00.000Z",
+        branch: "pr/needs-work",
+        sid: "sid-work",
+        verdict: "escalated",
+        rounds: 3,
+        reason: "reviewer found a defect",
+      },
+    ],
     metrics: {
-      total: 1,
+      total: 2,
       merged: 1,
-      successRate: 1,
+      successRate: 0.5,
       totalTokens: 100,
       totalCostUsd: 0.01,
       cleanUnattendedCycles: 1,
@@ -190,6 +201,33 @@ test("structured scroll changes only the focused panel", () => {
   input.onKey({ type: "bottom" });
   assert.ok(handle.state.panelScroll.history >= 0);
   assert.equal(handle.state.panelScroll.interrupted, 0);
+
+  handle.shutdown(0);
+});
+
+test("structured history selection is visible, opens detail, and returns to the same row", () => {
+  const { screen, input, handle } = setup({
+    snapshot: () => structuredSnapshot(),
+    rows: 24,
+    columns: 100,
+  });
+
+  input.onKey({ type: "panel", index: 2 });
+  assert.match(screen.painted.at(-1), /> +2026-07-10T10:02:00\.000Z +pr\/done/);
+
+  input.onKey({ type: "down" });
+  assert.equal(handle.state.historySelection.selectedIndex, 1);
+  assert.match(screen.painted.at(-1), /> +2026-07-10T10:03:00\.000Z +pr\/needs-work/);
+
+  input.onKey({ type: "enter" });
+  assert.equal(handle.state.historySelection.detailOpen, true);
+  assert.match(screen.painted.at(-1), /HISTORY DETAIL/);
+  assert.match(screen.painted.at(-1), /> selected row 2 of 2/);
+  assert.match(screen.painted.at(-1), /reviewer found a defect/);
+
+  input.onKey({ type: "esc" });
+  assert.deepEqual(handle.state.historySelection, { selectedIndex: 1, detailOpen: false });
+  assert.match(screen.painted.at(-1), /> +2026-07-10T10:03:00\.000Z +pr\/needs-work/);
 
   handle.shutdown(0);
 });
