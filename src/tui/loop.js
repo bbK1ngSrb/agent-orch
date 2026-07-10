@@ -67,10 +67,14 @@ export function run(orchDir, opts = {}) {
   // so the terminal is never left in raw-mode/alt-screen.
   function tick() {
     try {
-      const width = out.columns;
+      // Real pseudo-TTYs (pty spawned without a winsize ioctl) report columns/rows
+      // as 0 or undefined. Treat any non-positive dimension as "unknown" and fall
+      // back — else width 0 clips every line away and rows 0 makes bodyRows 0,
+      // both of which paint a blank body. 80 cols is the classic terminal default.
+      const width = Number.isFinite(out.columns) && out.columns > 0 ? out.columns : 80;
       const text = String(render(orchDir, { color, columns: width, historyLimit, repo, checkHistory }));
       const lines = text.split("\n").map((l) => clip(l, width));
-      const rows = Number.isFinite(out.rows) ? out.rows : lines.length + 1;
+      const rows = Number.isFinite(out.rows) && out.rows > 0 ? out.rows : lines.length + 1;
       const bodyRows = Math.max(0, rows - 1); // reserve one row for the footer
       const maxOffset = Math.max(0, lines.length - bodyRows);
       state.scrollOffset = Math.min(Math.max(0, state.scrollOffset), maxOffset);

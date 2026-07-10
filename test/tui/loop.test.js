@@ -116,6 +116,19 @@ test("a down key raises scrollOffset (clamped to content)", () => {
   handle.shutdown(0);
 });
 
+test("zero pseudo-TTY dimensions still paint the body", () => {
+  // A pty spawned without a winsize ioctl reports columns/rows as 0. Before the
+  // dimension guard this made bodyRows 0 (and clipped every line to width 0),
+  // painting a blank body — worse than the old one-shot default.
+  const render = () => "R1\nR2\nR3";
+  const { screen, handle } = setup({ render, columns: 0, rows: 0 });
+  const frame = screen.painted.at(-1);
+  assert.match(frame, /R1/);
+  assert.match(frame, /R2/);
+  assert.match(frame, /R3/);
+  handle.shutdown(0);
+});
+
 test("a quit key leaves the screen and then exits 0", () => {
   const { screen, input, exits } = setup({ render: () => "x", rows: 24, columns: 80 });
 
