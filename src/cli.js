@@ -1221,7 +1221,7 @@ export async function main(argv, deps = {}) {
     if (stdout.isTTY && stdin.isTTY && !flags.json && !once) {
       const run = deps.tuiRun || runTui;
       const refreshMs = flags["refresh-ms"] ? Number(flags["refresh-ms"]) : 1000;
-      run(orchDir, { refreshMs });
+      run(orchDir, { refreshMs, historyLimit, checkHistory, repo });
       return;
     }
     if (flags.json) console.log(JSON.stringify(dashboardSnapshot(orchDir, { historyLimit, repo, checkHistory }), null, 2));

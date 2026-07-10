@@ -89,6 +89,20 @@ test("tick paints a frame from the injected render, with a footer", () => {
   handle.shutdown(0); // remove process listeners registered by run()
 });
 
+test("run forwards historyLimit/repo/checkHistory into render", () => {
+  let seen = null;
+  const render = (_dir, o) => { seen = o; return "x"; };
+  const handle = run(ORCH_DIR, {
+    screen: makeScreen(), input: makeInput(), out: makeOut(80, 24),
+    stdin: {}, exit: () => {}, refreshMs: 1_000_000, render,
+    historyLimit: 5, repo: "/some/repo", checkHistory: true,
+  });
+  assert.equal(seen.historyLimit, 5);
+  assert.equal(seen.repo, "/some/repo");
+  assert.equal(seen.checkHistory, true);
+  handle.shutdown(0);
+});
+
 test("a down key raises scrollOffset (clamped to content)", () => {
   const render = () => "l0\nl1\nl2\nl3\nl4"; // 5 content lines
   const { input, handle } = setup({ render, rows: 3, columns: 80 }); // bodyRows = 2

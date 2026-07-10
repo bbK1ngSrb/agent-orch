@@ -1157,6 +1157,16 @@ test("dashboard --refresh-ms passes the poll interval to the live loop", async (
   assert.equal(opts.refreshMs, 250);
 });
 
+test("dashboard forwards --limit/--check-history to the live loop", async () => {
+  let opts = null;
+  await runMainCapture(["dashboard", "--limit", "5", "--check-history"], {
+    stdout: { isTTY: true }, stdin: { isTTY: true },
+    tuiRun: (_orchDir, o) => { opts = o; },
+  });
+  assert.equal(opts.historyLimit, 5);
+  assert.equal(opts.checkHistory, true);
+});
+
 test("dashboard stays one-shot for a non-TTY stdout", async () => {
   const logs = await runMainCapture(["dashboard"], {
     stdout: { isTTY: false }, stdin: { isTTY: true }, tuiRun: failIfLive,
