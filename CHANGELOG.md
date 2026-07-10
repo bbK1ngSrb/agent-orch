@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.30 — 2026-07-10
+- feat: check npm for newer version on each run (cached, non-blocking) (closes [#200](https://github.com/bbk1ng/agent-orch/issues/200))
+
 ## 0.3.29 — 2026-07-10
 - feat(dashboard): no-color-safe verdict/stage symbols (closes [#204](https://github.com/bbk1ng/agent-orch/issues/204))
 
