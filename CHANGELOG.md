@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.35 — 2026-07-10
+- feat(cli): live TUI default for orch dashboard on interactive TTY (closes [#208](https://github.com/bbk1ng/agent-orch/issues/208))
+
 ## 0.3.34 — 2026-07-10
 - Interactive `orch config` wizard: arrow-key config builder with per-option explanations and validate() gate (closes [#226](https://github.com/bbk1ng/agent-orch/issues/226))
 
