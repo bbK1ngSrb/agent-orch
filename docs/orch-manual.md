@@ -684,14 +684,17 @@ docs:
   whatever `gh` identity orch is authenticated as — an `orch[bot]` installation
   token if `ORCH_APP_ID`/`ORCH_APP_PRIVATE_KEY` are set, an explicit `GH_TOKEN`
   if you export one, otherwise your ambient `gh` login — so it only succeeds if
-  *that* actor is itself in the branch's `bypass_actors` list. The shipped
-  orch-bot App is deliberately label-only with **no** bypass grant (see
-  `docs/orch-bot-github-app.md`), so landing this against a bypass-protected
-  `main` requires granting the merging actor that bypass as an explicit, opt-in
-  step; without it the merge call just fails and orch retries next cycle. It's
-  also a no-op while any check is still pending or failing, and does nothing
-  until a real merge lands to re-open/update the PR. Only affects the
-  integration PR, never `merge: pr`'s per-cycle PRs.
+  *that* actor is itself in the branch's `bypass_actors` list. This is required
+  for bot-authored PRs because GitHub rejects self-approval: the same actor that
+  opened the PR cannot approve its own PR to satisfy a required-review rule. A
+  ruleset bypass means the GitHub approval is bypassed, not recorded;
+  orch's internal author → cross-audit → test-gate is the review that governs
+  the merge. Landing this against a bypass-protected `main` therefore requires
+  granting the merging actor that bypass as an explicit, opt-in step; without
+  it the merge call just fails and orch retries next cycle. It's also a no-op
+  while any check is still pending or failing, and does nothing until a real
+  merge lands to re-open/update the PR. Only affects the integration PR, never
+  `merge: pr`'s per-cycle PRs.
 
 ---
 

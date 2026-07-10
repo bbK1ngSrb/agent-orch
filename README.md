@@ -274,10 +274,12 @@ persistent PR once all of its checks are green — a fallback for
 when native auto-merge stalls at `BLOCKED` because review is satisfied via a
 ruleset bypass grant rather than a human approval. The merge runs as whatever
 `gh` identity orch is authenticated as, so it only lands if that identity is
-itself in the branch's ruleset bypass list; the shipped orch-bot App is
-label-only with no such grant, so this
-requires granting the merging actor that bypass yourself. Without it the merge
-call simply fails and retries next cycle.
+itself in the branch's ruleset `bypass_actors` list. This is necessary because GitHub
+does not allow an actor to approve its own PR, so an orch-authored PR cannot
+satisfy a required-review rule with an approval from the same bot. If you use
+this path, the GitHub review is bypassed by ruleset configuration; orch's
+author -> cross-audit -> test-gate remains the governing review. Without the
+bypass grant, the merge call simply fails and retries next cycle.
 `main` is a mirror of GitHub's `main`: orch does not merge, reset, commit, or
 push it directly. After GitHub merges the PR, local `main` advances only by
 fetching origin and fast-forwarding to `origin/main`.
