@@ -1,31 +1,37 @@
-# Proposal: interactive `orch config` wizard (`--config-file <file.yml>`)
+# Proposal: interactive `orch config` wizard
 
 > Status: **proposal / issue spec** — no implementation in this change. This file is
 > the body of the tracking issue so the design has a durable, reviewable home in-repo.
 
 ## 1. Problem
 
-Today the only way to create an `orch.yml` is to hand-write it. A new user has to
-read `docs/orch-manual.md`, copy `orch.example.yml`, and remember which of ~22 keys
-are enums (and what the legal values are), which are booleans, which pair up
-(`author`+`reviewer`, `authors`+`reviewers`), and what each default means. Get one
-value wrong and the *only* feedback is a hard error at run time from `validate()` in
-`src/config.js` (`Error("orch.yml: ...")`), which aborts the whole run.
+`orch init` already **creates** the file: it writes a fully-defaulted, commented
+`.orch/orch.yml` from the `SCAFFOLD` template in `src/cli.js` (every key listed with its
+default and legal values). So first-creation is a solved problem — the wizard is **not**
+needed to bootstrap the file, and this proposal does not replace `orch init`.
 
-That is a poor first-run experience for an educational tool whose whole point is to be
+The gap is **changing** those values. To move off a default today you hand-edit the YAML
+and have to remember which of ~22 keys are enums (and what the legal values are), which
+are booleans, which pair up (`author`+`reviewer`, `authors`+`reviewers`), and what each
+default means. Get one value wrong and the *only* feedback is a hard error at run time
+from `validate()` in `src/config.js` (`Error("orch.yml: ...")`), which aborts the whole
+run — the scaffold's inline comments help, but nothing stops you saving an invalid file.
+
+That is a poor experience for an educational tool whose whole point is to be
 approachable. We want the same "just answer the prompts" feel that `claude`'s own
 setup flow has: an arrow-key picker where each choice is explained as you land on it,
-and you commit with Enter.
+you commit with Enter, and the file can never be saved in a state `validate()` rejects.
+The wizard is a **guided create/edit over the same `.orch/orch.yml` that `orch init`
+scaffolds** — it fills or edits that file, it does not invent a second config path.
 
 ## 2. What already exists (so we build the *minimum*)
 
-Three pieces are already in the tree and should be **reused, not rebuilt**:
+These pieces are already in the tree and should be **reused, not rebuilt**:
 
-- **`--config-file <file.yml>` flag** — already parsed in `src/cli.js` (`parseArgs`,
-  `"config-file": { type: "string" }`). Today it is *passive*: it layers an existing
-  YAML file on top of `orch.yml` for one run. The wizard should use this same flag to
-  name the file it **writes**, so the surface stays consistent: the flag always means
-  "the config file this invocation is about."
+- **`orch init` scaffold path** — `configPath(dir)` in `src/config.js` resolves the
+  canonical config file (`.orch/orch.yml`), and `orch init` writes it. The wizard writes
+  **the same file**, so `orch init` and `orch config` stay two views of one artifact
+  (scaffold vs. guided edit) rather than competing writers.
 - **Raw-mode keypress engine** — `src/tui/input.js` (shipped in #222). `normalizeKey()`
   already turns Node readline keypress events into `{type:"up"|"down"|"enter"|"esc"|...}`,
   handles arrows, Enter, Esc, Ctrl-C, and is a **no-op on non-TTY**. `start(stdin, onKey)`
@@ -41,11 +47,22 @@ Nothing new needs adding to `package.json` (single dep `yaml` stays single).
 
 ## 3. Proposed UX
 
-New command: **`orch config`** (alias verb; `orch init` may map to the same wizard).
+New command: **`orch config`**. It is a sibling of `orch init`, not an alias:
+`init` writes the defaulted scaffold once; `config` interactively edits that same file.
 
 ```
-orch config [--config-file <path>]   # default path: .orch/orch.yml
+orch config [--out <path>]   # default path: the canonical .orch/orch.yml (configPath)
 ```
+
+**Flag-contract note.** `orch config` deliberately does **not** reuse `--config-file` as
+its write target. `--config-file` is a *read-only overlay* flag: `load()` in
+`src/config.js` layers that file on top of `orch.yml` for one run and **throws if the
+path does not exist** (`--config-file not found`). Giving it write semantics would fork
+one flag into two contradictory meanings ("must already exist, read-only" vs. "may not
+exist, will be written"). If a caller ever needs to write somewhere other than the
+canonical path, a *separate* `--out <path>` names the write target and leaves
+`--config-file`'s read/layering contract untouched. For v1, `--out` is optional and the
+default (write the canonical `.orch/orch.yml`) is expected to cover every real use.
 
 Flow, one option per screen, Claude-Code style:
 
@@ -96,9 +113,11 @@ never disagree about what "valid" means.
 ## 5. Save
 
 - Serialize with `yaml.stringify(cfg)`.
-- Write to `--config-file` path, default `.orch/orch.yml`.
-- If the target exists, **load it first** so the wizard pre-selects the user's current
-  values (edit, don't clobber), and confirm before overwrite.
+- Write to the canonical `configPath(dir)` (`.orch/orch.yml`), or `--out <path>` if given.
+- If the target exists (the common case — `orch init` already wrote it), **load it first**
+  so the wizard pre-selects the user's current values (edit, don't clobber), and confirm
+  before overwrite. This is why the wizard shares `orch init`'s file rather than a new one:
+  a second run is an edit of the same config, not a fresh scaffold.
 - Emit only keys that differ from `DEFAULTS`, so the saved file stays small and readable
   (optional nicety; full-dump is acceptable for v1).
 
@@ -146,12 +165,13 @@ require a TTY and exit non-zero with a clear message otherwise.
 
 **In scope (v1):** the `orch config` command; enum + boolean arrow pickers wired to
 `src/tui/input.js`; text/list fallbacks; live per-option explanations; `validate()` gate;
-write to `--config-file`/`.orch/orch.yml`; edit-existing pre-fill; non-TTY guard.
+write to the canonical `.orch/orch.yml` (optional `--out`); edit-existing pre-fill;
+non-TTY guard.
 
 **Out of scope:** editing role-spec model/effort with its own sub-picker (plain text is
 fine); a full-screen TUI with scrolling/mouse; validating `agents` element types beyond
 non-empty (matches current `validate` behavior); changing what `--config-file` does for
-normal runs.
+normal runs (it stays a read-only overlay); replacing or altering `orch init`.
 
 ## 9. Acceptance criteria
 
