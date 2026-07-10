@@ -27,17 +27,22 @@ test("normalizeKey maps arrows, vim keys, and controls", () => {
   assert.deepEqual(normalizeKey(null, { name: "up" }), { type: "up" });
   assert.deepEqual(normalizeKey(null, { name: "left" }), { type: "left" });
   assert.deepEqual(normalizeKey(null, { name: "right" }), { type: "right" });
-  assert.deepEqual(normalizeKey("j", {}), { type: "down" });
-  assert.deepEqual(normalizeKey("k", {}), { type: "up" });
-  assert.deepEqual(normalizeKey("g", {}), { type: "top" });
-  assert.deepEqual(normalizeKey("G", {}), { type: "bottom" });
-  assert.deepEqual(normalizeKey("r", {}), { type: "refresh" });
-  assert.deepEqual(normalizeKey("q", {}), { type: "quit" });
-  assert.deepEqual(normalizeKey("2", {}), { type: "panel", index: 1 });
+  // Shortcut keys carry their printable `value` so a filter/input mode can type
+  // them literally instead of firing the shortcut.
+  assert.deepEqual(normalizeKey("j", {}), { type: "down", value: "j" });
+  assert.deepEqual(normalizeKey("k", {}), { type: "up", value: "k" });
+  assert.deepEqual(normalizeKey("g", {}), { type: "top", value: "g" });
+  assert.deepEqual(normalizeKey("G", {}), { type: "bottom", value: "G" });
+  assert.deepEqual(normalizeKey("r", {}), { type: "refresh", value: "r" });
+  assert.deepEqual(normalizeKey("?", {}), { type: "help" });
+  assert.deepEqual(normalizeKey("q", {}), { type: "quit", value: "q" });
+  assert.deepEqual(normalizeKey("2", {}), { type: "panel", index: 1, value: "2" });
   assert.deepEqual(normalizeKey(null, { name: "tab" }), { type: "tab" });
   assert.deepEqual(normalizeKey(null, { name: "tab", shift: true }), { type: "shift-tab" });
   assert.deepEqual(normalizeKey(null, { name: "return" }), { type: "enter" });
   assert.deepEqual(normalizeKey(null, { name: "escape" }), { type: "esc" });
+  assert.deepEqual(normalizeKey(null, { name: "backspace" }), { type: "backspace" });
+  assert.deepEqual(normalizeKey("/", {}), { type: "filter", value: "/" });
   assert.deepEqual(normalizeKey("x", {}), { type: "char", value: "x" });
 });
 
@@ -62,9 +67,9 @@ test("start streams normalized keypresses and enters raw mode", () => {
   stdin.emit("keypress", null, { ctrl: true, name: "c" });
 
   assert.deepEqual(events, [
-    { type: "down" },
+    { type: "down", value: "j" },
     { type: "up" },
-    { type: "quit" },
+    { type: "quit", value: "q" },
     { type: "quit", ctrlC: true },
   ]);
 
