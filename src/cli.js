@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
+import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable } from "./github.js";
 import * as adapters from "./adapters/index.js";
@@ -734,6 +735,17 @@ export async function main(argv, deps = {}) {
     return;
   }
 
+  if (command === "config") {
+    await runConfigWizard({
+      repo,
+      configFile: flags["config-file"],
+      stdin: deps.stdin || process.stdin,
+      stdout: deps.stdout || process.stdout,
+      inputStart: deps.inputStart,
+    });
+    return;
+  }
+
   if (command === "agent") {
     if (rest[0] === "build") {
       const name = rest[1];
@@ -1211,6 +1223,7 @@ Usage: orch <command> [options]
 
 Commands:
   init                  Scaffold .orch/orch.yml and .orch/ORCH.md.
+  config                Interactively create or edit an orch YAML config.
   agent add <name>      Add a registered agent to the rotation pool.
   agent build <name>    Scaffold an adapter via orch's author/audit/test loop.
   task "change"         Run a cycle and update orch/integration on merge.
@@ -1233,7 +1246,7 @@ Options:
   --reviewer <role>     Set reviewer as "<agent> [model] [effort]".
   --reviewers <roles>   Set comma-separated reviewers.
   --cheap               Use cheap.role; cheap.paths can auto-route work orders.
-  --config-file <file>  Layer YAML config over orch.yml for this run.
+  --config-file <file>  Config YAML path; with config, write there.
   --dry                 Plan without shelling out or changing git.
   --check               With upgrade, check latest version without installing.
   --link                With init, link .orch/ORCH.md from agent docs.

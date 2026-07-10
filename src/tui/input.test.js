@@ -25,6 +25,8 @@ function fakeStdin() {
 test("normalizeKey maps arrows, vim keys, and controls", () => {
   assert.deepEqual(normalizeKey(null, { name: "down" }), { type: "down" });
   assert.deepEqual(normalizeKey(null, { name: "up" }), { type: "up" });
+  assert.deepEqual(normalizeKey(null, { name: "left" }), { type: "left" });
+  assert.deepEqual(normalizeKey(null, { name: "right" }), { type: "right" });
   assert.deepEqual(normalizeKey("j", {}), { type: "down" });
   assert.deepEqual(normalizeKey("k", {}), { type: "up" });
   assert.deepEqual(normalizeKey("g", {}), { type: "top" });
