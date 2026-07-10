@@ -179,7 +179,7 @@ Merge happens only when every reviewer says `AGREE` **and** the repo's tests pas
 No test command detected → it refuses to auto-merge and tells you.
 
 ## Merge honesty and cost/catch-rate reporting
-Prompted by a [red-team report](docs/red-team-report-2026-07-02.md) that found orch could
+Prompted by a red-team report that found orch could
 print `merged` for a cycle whose commit never reached `origin/main`:
 
 - **Verified merge claims.** Before printing `merged`, orch checks the merged commit is
@@ -275,7 +275,7 @@ when native auto-merge stalls at `BLOCKED` because review is satisfied via a
 ruleset bypass grant rather than a human approval. The merge runs as whatever
 `gh` identity orch is authenticated as, so it only lands if that identity is
 itself in the branch's ruleset bypass list; the shipped orch-bot App is
-label-only with no such grant (see `docs/orch-bot-github-app.md`), so this
+label-only with no such grant, so this
 requires granting the merging actor that bypass yourself. Without it the merge
 call simply fails and retries next cycle.
 `main` is a mirror of GitHub's `main`: orch does not merge, reset, commit, or
