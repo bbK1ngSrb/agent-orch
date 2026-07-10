@@ -191,6 +191,37 @@ test("parse captures dashboard --check-history flag", () => {
   assert.equal(p.flags["check-history"], true);
 });
 
+test("orch upgrade --check routes through the self-update runner", async () => {
+  let out = "";
+  const calls = [];
+  await main(["upgrade", "--check"], {
+    stdout: { isTTY: false, write: (chunk) => { out += chunk; } },
+    upgradeDeps: {
+      current: "1.0.0",
+      resolveInstall: () => ({ type: "registry" }),
+      exec: (cmd, args = []) => {
+        calls.push([cmd, ...args]);
+        return "1.1.0";
+      },
+    },
+  });
+  assert.deepEqual(calls, [["npm", "view", "@bbk1ng/agent-orch", "version"]]);
+  assert.match(out, /upgrade available/);
+});
+
+test("help documents upgrade command and check flag", async () => {
+  const prevLog = console.log;
+  let out = "";
+  console.log = (chunk = "") => { out += `${chunk}\n`; };
+  try {
+    await main(["help"]);
+  } finally {
+    console.log = prevLog;
+  }
+  assert.match(out, /upgrade, update/);
+  assert.match(out, /--check\s+With upgrade/);
+});
+
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 test("runBanner shows version, agents, per-agent model+effort, test, merge", () => {
