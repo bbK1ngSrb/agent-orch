@@ -89,6 +89,20 @@ test("tick paints a frame from the injected render, with a footer", () => {
   handle.shutdown(0); // remove process listeners registered by run()
 });
 
+test("run forwards historyLimit/repo/checkHistory into render", () => {
+  let seen = null;
+  const render = (_dir, o) => { seen = o; return "x"; };
+  const handle = run(ORCH_DIR, {
+    screen: makeScreen(), input: makeInput(), out: makeOut(80, 24),
+    stdin: {}, exit: () => {}, refreshMs: 1_000_000, render,
+    historyLimit: 5, repo: "/some/repo", checkHistory: true,
+  });
+  assert.equal(seen.historyLimit, 5);
+  assert.equal(seen.repo, "/some/repo");
+  assert.equal(seen.checkHistory, true);
+  handle.shutdown(0);
+});
+
 test("a down key raises scrollOffset (clamped to content)", () => {
   const render = () => "l0\nl1\nl2\nl3\nl4"; // 5 content lines
   const { input, handle } = setup({ render, rows: 3, columns: 80 }); // bodyRows = 2
@@ -99,6 +113,19 @@ test("a down key raises scrollOffset (clamped to content)", () => {
   input.onKey({ type: "down" });
   assert.equal(handle.state.scrollOffset, 2);
 
+  handle.shutdown(0);
+});
+
+test("zero pseudo-TTY dimensions still paint the body", () => {
+  // A pty spawned without a winsize ioctl reports columns/rows as 0. Before the
+  // dimension guard this made bodyRows 0 (and clipped every line to width 0),
+  // painting a blank body — worse than the old one-shot default.
+  const render = () => "R1\nR2\nR3";
+  const { screen, handle } = setup({ render, columns: 0, rows: 0 });
+  const frame = screen.painted.at(-1);
+  assert.match(frame, /R1/);
+  assert.match(frame, /R2/);
+  assert.match(frame, /R3/);
   handle.shutdown(0);
 });
 
