@@ -17,11 +17,13 @@ only makes sense once you see the one problem it is built around.
 Today a single `orch` cycle is `author → cross-audit → test-gate → merge`
 (see `docs/orch-manual.md` for the full mental model). It has exactly one way
 to *not* finish cleanly: it stops and waits for a human. Reviewer disagreement
-past `reviseCap` and red tests **escalate** — the cycle writes a local
-`DECISION.md` and halts (it does *not* open a PR). A merge conflict or file
-overlap instead **demotes** to a PR fallback (or the same decision file when
-there is no remote). The two mechanisms differ in how they record the stop, but
-the effect is identical: nothing is discarded, but nothing proceeds either.
+past `reviseCap` and a red *in-cycle* test gate **escalate** — the cycle writes
+a local `DECISION.md` and halts (it does *not* open a PR). A merge conflict, a
+file overlap, or a red *post-merge integration re-test* instead **demotes** to a
+PR fallback (or the same decision file when there is no remote): the merged diff
+never lands on the integration branch, and the branch is offered to the human as
+a PR to resolve. The two mechanisms differ in how they record the stop, but the
+effect is identical: nothing is discarded, but nothing proceeds either.
 
 For a person sitting at the keyboard that is the right default: one stop, one
 glance, one decision. For an *overnight* run it is fatal. A single blocked
@@ -44,7 +46,7 @@ human reads a queue at breakfast."
 ## 2. The design in one breath
 
 Two new stages wrap the existing cycle, and one new terminal state joins
-`escalate`:
+today's `escalate` and `demote`:
 
 1. **Planner** — turns a raw task (or an existing issue `#N`) into a **DAG** of
    single-purpose sub-issues plus explicit dependency **edges**.
@@ -104,8 +106,10 @@ while `merge: pr` mode instead gives each cycle its own PR straight to `main`.
 
 ### 3.4 Park + cascade — a new terminal state
 
-Today a cycle has one non-merge exit: `escalate`. This design adds a second:
-**park**. Parking is escalation that does **not** stop the run. When a unit
+Today a cycle has two non-merge exits — `escalate` (halt with a `DECISION.md`)
+and `demote` (fall back to a PR) — but both stop the run for that cycle. This
+design adds a third that does **not**: **park**. Parking is escalation that does
+**not** stop the run. When a unit
 cannot land, it parks; its edge-**children** wait (their dependency was never
 satisfied), but every unit *not* downstream of it keeps going. One park never
 stops the whole run — that single property is what makes an overnight run
@@ -153,8 +157,9 @@ least:
 - **≥ 2 convergent** failures (same assertion, diverse attempts) → park
   `convergent`, recording the contradiction (the assertion the spec cannot
   satisfy);
-- retry **cap** reached (~4, mirroring today's `reviseCap` ceiling) without
-  convergence → park `inconclusive`.
+- retry **cap** reached (a small budget, in the spirit of today's `reviseCap`
+  default of 3 — this detector carries its own knob, distinct from `reviseCap`)
+  without convergence → park `inconclusive`.
 
 `convergent` and `inconclusive` are distinct park reasons on purpose: the first
 says "your spec is self-contradictory, here is the assertion that proves it";
