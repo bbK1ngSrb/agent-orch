@@ -409,16 +409,20 @@ test("openIntegrationPr with main.autoMerge directly merges the persistent integ
   );
 });
 
-test("openIntegrationPr defers to native auto-merge and skips the racing direct merge", async () => {
-  // Both knobs on: native auto-merge is armed, so GitHub lands the PR once its
-  // required checks pass. orch must NOT also fire an immediate direct merge —
-  // that races async CI and returns a misleading HTTP 405 while a required
-  // check is still IN_PROGRESS. It should never even inspect the checks here.
+test("openIntegrationPr arms native auto-merge and still runs the green-gated direct merge", async () => {
+  // Both knobs on. Native auto-merge is armed for the normal real-approval case,
+  // but main.autoMerge must ALSO run its green-gated direct merge: when the
+  // review requirement is satisfied by a ruleset bypass_actor grant rather than a
+  // real approval, GitHub's native auto-merge stays BLOCKED forever even after
+  // checks pass, so the direct merge is the only thing that lands the PR. It is
+  // gated on prChecksGreen, so it only fires once checks are green — never an
+  // early racing 405.
   const calls = [];
   const gh = (args) => {
     calls.push(["gh", ...args]);
     if (args[0] === "--version") return "gh 2";
     if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
     return "";
   };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
@@ -428,8 +432,7 @@ test("openIntegrationPr defers to native auto-merge and skips the racing direct 
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
   const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
   assert.ok(mergeCall && mergeCall.includes("--auto"), "native auto-merge must be armed");
-  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"), "must not fire its own direct merge while auto-merge is armed");
-  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "view"), "must not inspect checks once deferring to auto-merge");
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge"))), "green-gated direct merge must still run so the BLOCKED-bypass PR lands");
 });
 
 test("openIntegrationPr falls back to the direct merge when arming auto-merge fails", async () => {

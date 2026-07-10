@@ -327,27 +327,27 @@ export async function openIntegrationPr(ctx, deps) {
     log(`opened integration PR for ${branch}: ${url}`);
   }
 
-  let autoMerging = false;
   if (cfg?.github?.autoMergePr) {
     try {
       // The persistent integration branch must stay in main's ancestry. Squash
       // or rebase would strand orch/integration behind main after the first PR.
       // Requires the repo to allow merge-commit merges — see docs/ORCH.md.
       gh(["pr", "merge", prRef, "--auto", "--merge"]);
-      autoMerging = true;
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
     }
   }
-  // With native auto-merge armed, GitHub lands this PR itself the moment the
-  // required checks pass. Firing our own immediate merge here only races that
-  // async CI: while a required check is still IN_PROGRESS (e.g. a slow
-  // windows-latest leg) the PR is not mergeable yet, so the direct call comes
-  // back HTTP 405 — a scary-looking but expected log-noise 405 for a PR that
-  // will auto-merge minutes later. Defer to auto-merge and skip the redundant
-  // direct merge; only fall back to it when auto-merge is off or couldn't be
-  // armed (e.g. no branch protection / merge queue on the repo).
-  if (!autoMerging && cfg?.main?.autoMerge) {
+  // main.autoMerge runs alongside native auto-merge, not as an either/or. It is
+  // gated on prChecksGreen, which is false while any required check is still
+  // IN_PROGRESS, so it never fires an early HTTP 405 — it only lands the PR once
+  // checks are actually green. That direct merge is the fallback that matters
+  // when native auto-merge stays stuck at BLOCKED forever: if the review
+  // requirement is satisfied by a ruleset bypass_actor grant rather than a real
+  // approval, GitHub never auto-merges even after checks pass (verified
+  // empirically), and this green-gated direct merge is the only thing that lands
+  // it. When native auto-merge does work, the direct call is a harmless no-op
+  // (already merged), swallowed by tryMergeDirect.
+  if (cfg?.main?.autoMerge) {
     try {
       if (prChecksGreen(gh, prRef)) tryMergeDirect(gh, prRef, "merge");
     } catch (e) {
