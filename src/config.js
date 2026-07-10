@@ -37,7 +37,7 @@ const DEFAULTS = {
   },
 };
 
-function validate(cfg) {
+export function validate(cfg) {
   if (!Array.isArray(cfg.agents) || cfg.agents.length < 1)
     throw new Error("orch.yml: agents must be a non-empty list");
   if ((cfg.author == null) !== (cfg.reviewer == null))
