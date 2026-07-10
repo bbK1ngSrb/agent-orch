@@ -164,6 +164,13 @@ cross-audits it with a second, gates on tests, then merges into
 \`main\` is a GitHub mirror; update it locally only by fetching and
 fast-forwarding \`origin/main\`.
 
+If \`main\` requires PR review and orch opens the PR with the same bot identity
+that later merges it, GitHub will not let that bot approve its own PR. Headless
+self-merge therefore needs either a distinct reviewer identity that records an
+approval, or a ruleset \`bypass_actors\` grant for the merging actor. With the
+bypass path, GitHub review is bypassed; orch's author -> cross-audit ->
+test-gate is the governing review.
+
 ## Commands
 - \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
 - \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\`

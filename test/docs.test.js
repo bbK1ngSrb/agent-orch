@@ -86,6 +86,15 @@ test("docs document main.autoMerge for the persistent integration PR", () => {
   assert.match(readme, /direct merge of that\s+persistent PR/);
 });
 
+test("docs explain headless self-merge needs bypass or a second reviewer identity", () => {
+  for (const doc of [readme, manual, ORCH_DOC]) {
+    assert.match(doc, /approve its own PR|self-approval/);
+    assert.match(doc, /bypass_actors/);
+    assert.match(doc, /cross-audit/);
+  }
+  assert.match(manual, /GitHub approval is bypassed, not recorded/);
+});
+
 test("landing page is plain static HTML with social metadata", () => {
   assert.match(landing, /<meta property="og:title" content="orch - agents orchestration tool">/);
   assert.match(landing, /<meta property="og:description"/);

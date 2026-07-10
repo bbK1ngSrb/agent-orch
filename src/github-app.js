@@ -8,7 +8,7 @@
 //
 // Design: label-only bot — the App is granted issues:RW, pull_requests:RW,
 // contents:RW (no branch-protection bypass). orch opens/labels/comments; a
-// human merges. See docs/orch-bot-github-app.md.
+// human or explicit ruleset bypass merges. See docs/orch-manual.md.
 import crypto from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 
