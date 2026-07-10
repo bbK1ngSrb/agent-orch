@@ -232,6 +232,88 @@ test("structured history selection is visible, opens detail, and returns to the 
   handle.shutdown(0);
 });
 
+test("filter mode narrows history live and clamps the selection to the subset", () => {
+  const { screen, input, handle } = setup({
+    snapshot: () => structuredSnapshot(),
+    rows: 24,
+    columns: 100,
+  });
+
+  // Select the last history row, then enter filter mode via `/`.
+  input.onKey({ type: "panel", index: 2 });
+  input.onKey({ type: "down" });
+  assert.equal(handle.state.historySelection.selectedIndex, 1);
+
+  input.onKey({ type: "filter" });
+  assert.equal(handle.state.filterMode, true);
+  assert.equal(handle.state.focus, "history");
+
+  // Type "done": only pr/done matches, so the selection clamps 1 → 0.
+  for (const ch of "done") input.onKey({ type: "char", value: ch });
+  assert.equal(handle.state.filter, "done");
+  assert.equal(handle.state.historySelection.selectedIndex, 0);
+  const frame = screen.painted.at(-1);
+  assert.match(frame, /pr\/done/);
+  assert.doesNotMatch(frame, /pr\/needs-work/);
+  assert.match(frame, /filter: done_/);
+
+  handle.shutdown(0);
+});
+
+test("filter with no matches shows a no-matches state; Esc clears it", () => {
+  const { screen, input, handle } = setup({
+    snapshot: () => structuredSnapshot(),
+    rows: 24,
+    columns: 100,
+  });
+
+  input.onKey({ type: "filter" });
+  for (const ch of "zzz") input.onKey({ type: "char", value: ch });
+  assert.match(screen.painted.at(-1), /\(no matches\)/);
+
+  input.onKey({ type: "esc" });
+  assert.equal(handle.state.filter, "");
+  assert.equal(handle.state.filterMode, false);
+  assert.match(screen.painted.at(-1), /pr\/needs-work/);
+
+  handle.shutdown(0);
+});
+
+test("in filter mode shortcut letters type literally but Ctrl-C still quits", () => {
+  const { input, handle, exits } = setup({
+    snapshot: () => structuredSnapshot(),
+    rows: 24,
+    columns: 100,
+  });
+
+  input.onKey({ type: "filter" });
+  // 'r' normally refreshes; carrying a printable value, it must append instead.
+  input.onKey({ type: "refresh", value: "r" });
+  assert.equal(handle.state.filter, "r");
+
+  input.onKey({ type: "quit", ctrlC: true });
+  assert.deepEqual(exits, [0]);
+});
+
+test("in filter mode `/` types literally instead of exiting (branch names like pr/done)", () => {
+  const { input, handle } = setup({
+    snapshot: () => structuredSnapshot(),
+    rows: 24,
+    columns: 100,
+  });
+
+  input.onKey({ type: "filter" });
+  // `/` enters as a filter event carrying a printable value; inside filter mode
+  // it must append rather than apply-and-exit, so `pr/done` is typeable.
+  for (const ch of "pr") input.onKey({ type: "char", value: ch });
+  input.onKey({ type: "filter", value: "/" });
+  for (const ch of "done") input.onKey({ type: "char", value: ch });
+  assert.equal(handle.state.filter, "pr/done");
+  assert.equal(handle.state.filterMode, true);
+
+  handle.shutdown(0);
+});
+
 test("structured scrollbar replaces the right border when color is enabled", () => {
   const { screen, handle } = setup({
     snapshot: () => structuredSnapshot(20),
