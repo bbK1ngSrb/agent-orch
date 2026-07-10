@@ -191,6 +191,13 @@ test("parse captures dashboard --check-history flag", () => {
   assert.equal(p.flags["check-history"], true);
 });
 
+test("parse captures dashboard --once/--plain/--refresh-ms flags", () => {
+  const p = parse(["dashboard", "--once", "--refresh-ms", "500"]);
+  assert.equal(p.flags.once, true);
+  assert.equal(p.flags["refresh-ms"], "500");
+  assert.equal(parse(["dashboard", "--plain"]).flags.plain, true);
+});
+
 test("orch upgrade --check routes through the self-update runner", async () => {
   let out = "";
   const calls = [];
@@ -1123,6 +1130,68 @@ async function runMainInRepo(repo, argv, deps = {}) {
     chdir(prev);
   }
 }
+
+// The live TUI gate (task 6 of docs/tui-design.md): the loop runs ONLY on a
+// genuine interactive terminal; every scriptable path stays the byte-identical
+// one-shot render(). tuiRun is injected so node:test never touches a real TTY.
+const failIfLive = () => { throw new Error("live TUI must not run for scriptable paths"); };
+
+test("dashboard enters the live TUI on an interactive terminal", async () => {
+  let called = null;
+  const logs = await runMainCapture(["dashboard"], {
+    stdout: { isTTY: true }, stdin: { isTTY: true },
+    tuiRun: (orchDir, opts) => { called = { orchDir, opts }; },
+  });
+  assert.ok(called, "run() should be invoked");
+  assert.match(called.orchDir, /\.orch$/);
+  assert.equal(called.opts.refreshMs, 1000);
+  assert.deepEqual(logs, []); // no static print when the TUI takes over
+});
+
+test("dashboard --refresh-ms passes the poll interval to the live loop", async () => {
+  let opts = null;
+  await runMainCapture(["dashboard", "--refresh-ms", "250"], {
+    stdout: { isTTY: true }, stdin: { isTTY: true },
+    tuiRun: (_orchDir, o) => { opts = o; },
+  });
+  assert.equal(opts.refreshMs, 250);
+});
+
+test("dashboard stays one-shot for a non-TTY stdout", async () => {
+  const logs = await runMainCapture(["dashboard"], {
+    stdout: { isTTY: false }, stdin: { isTTY: true }, tuiRun: failIfLive,
+  });
+  assert.ok(logs.length >= 1); // static render printed, TUI never ran
+});
+
+test("dashboard --once forces the static print even on a TTY", async () => {
+  const logs = await runMainCapture(["dashboard", "--once"], {
+    stdout: { isTTY: true }, stdin: { isTTY: true }, tuiRun: failIfLive,
+  });
+  assert.ok(logs.length >= 1);
+});
+
+test("dashboard --plain aliases --once", async () => {
+  const logs = await runMainCapture(["dashboard", "--plain"], {
+    stdout: { isTTY: true }, stdin: { isTTY: true }, tuiRun: failIfLive,
+  });
+  assert.ok(logs.length >= 1);
+});
+
+test("dashboard --json stays one-shot on a TTY", async () => {
+  const logs = await runMainCapture(["dashboard", "--json"], {
+    stdout: { isTTY: true }, stdin: { isTTY: true }, tuiRun: failIfLive,
+  });
+  assert.doesNotThrow(() => JSON.parse(logs.join("\n")));
+});
+
+test("dashboard --once reproduces the non-TTY static output byte-for-byte", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-dash-"));
+  const plain = await runMainInRepo(d, ["dashboard"], { stdout: { isTTY: false }, stdin: { isTTY: false }, tuiRun: failIfLive });
+  const once = await runMainInRepo(d, ["dashboard", "--once"], { stdout: { isTTY: true }, stdin: { isTTY: true }, tuiRun: failIfLive });
+  assert.deepEqual(once, plain);
+  assert.ok(plain.length >= 1);
+});
 
 test("task branch includes a sid suffix", async () => {
   const logs = await runMainCapture(["task", "do a thing", "--dry"]);
