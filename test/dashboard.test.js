@@ -161,7 +161,7 @@ test("render produces a readable text summary with live cycles, history, and met
   const text = dashboard.render(d);
   assert.match(text, /Live cycles \(1\)/);
   assert.match(text, /b1/);
-  assert.match(text, /\[test round 1\]/);
+  assert.match(text, /\[● test round 1\]/);
   assert.match(text, /sid=sid-1/);
   assert.match(text, /Interrupted cycles \(0\)/);
   assert.match(text, /Run history/);
@@ -196,6 +196,15 @@ test("render colorizes verdict words when opts.color is true", () => {
   assert.match(text, /\x1b\[38;5;71mmerged\x1b\[0m/);
 });
 
+test("render prefixes no-color verdicts with distinct symbols and words", () => {
+  const d = freshDir();
+  notify.recordRun(d, { ts: "1", branch: "b0", verdict: "escalated", rounds: 1 });
+  notify.recordRun(d, { ts: "2", branch: "b1", verdict: "pr-fallback", rounds: 1 });
+  const text = dashboard.render(d, { color: false });
+  assert.match(text, /✗ escalated/);
+  assert.match(text, /▲ pr-fallback/);
+});
+
 test("render adds status for resolved stale red history rows only when requested", () => {
   const d = freshDir();
   const repo = freshRepo();
@@ -221,7 +230,7 @@ test("render surfaces checkpoint-only interrupted cycles", () => {
   const text = dashboard.render(d);
   assert.match(text, /Interrupted cycles \(1\)/);
   assert.match(text, /pr\/codex\/crashed/);
-  assert.match(text, /\[review round 1\]/);
+  assert.match(text, /\[● review round 1\]/);
   assert.match(text, /sid=sid-crash/);
 });
 

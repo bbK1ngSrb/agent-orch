@@ -409,6 +409,53 @@ test("openIntegrationPr with main.autoMerge directly merges the persistent integ
   );
 });
 
+test("openIntegrationPr arms native auto-merge and still runs the green-gated direct merge", async () => {
+  // Both knobs on. Native auto-merge is armed for the normal real-approval case,
+  // but main.autoMerge must ALSO run its green-gated direct merge: when the
+  // review requirement is satisfied by a ruleset bypass_actor grant rather than a
+  // real approval, GitHub's native auto-merge stays BLOCKED forever even after
+  // checks pass, so the direct merge is the only thing that lands the PR. It is
+  // gated on prChecksGreen, so it only fires once checks are green — never an
+  // early racing 405.
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: true }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
+  assert.ok(mergeCall && mergeCall.includes("--auto"), "native auto-merge must be armed");
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge"))), "green-gated direct merge must still run so the BLOCKED-bypass PR lands");
+});
+
+test("openIntegrationPr falls back to the direct merge when arming auto-merge fails", async () => {
+  // Auto-merge could not be armed (e.g. no branch protection / merge queue on
+  // the repo, so `gh pr merge --auto` errors). The direct-merge fallback must
+  // still run so main.autoMerge keeps landing the PR.
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "merge") throw new Error("auto-merge not available");
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: true }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge"))), "direct merge must run when auto-merge could not be armed");
+});
+
 test("openIntegrationPr skips main.autoMerge direct merge until checks are green", async () => {
   const calls = [];
   const gh = (args) => {
@@ -424,6 +471,54 @@ test("openIntegrationPr skips main.autoMerge direct merge until checks are green
   const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"));
+});
+
+test("openIntegrationPr waits when a required check is still EXPECTED (not yet reported)", async () => {
+  // A required status context GitHub is still waiting on appears in the rollup as
+  // state:"EXPECTED" — the check exists in branch protection but no status has
+  // been posted yet. That is exactly the "wait for required CI checks" case: the
+  // direct merge must hold, not fire early against a not-yet-satisfied required
+  // context (which would 405). The other reported check being green must not be
+  // enough on its own.
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }, { state: "EXPECTED" }] });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"), "a still-EXPECTED required check is not green — the direct merge must wait");
+});
+
+test("openIntegrationPr treats SKIPPED and NEUTRAL required checks as green", async () => {
+  // GitHub counts a SKIPPED (path-filtered) or NEUTRAL required check as
+  // satisfied for merge purposes. prChecksGreen must too — otherwise the direct
+  // merge would stall forever on any repo whose required checks include a
+  // skippable job (COMPLETED, but conclusion !== SUCCESS).
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [
+      { status: "COMPLETED", conclusion: "SUCCESS" },
+      { status: "COMPLETED", conclusion: "SKIPPED" },
+      { status: "COMPLETED", conclusion: "NEUTRAL" },
+    ] });
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge"))), "skipped/neutral required checks are green — direct merge must run");
 });
 
 test("openIntegrationPr swallows main.autoMerge direct-merge failures so GitHub refusals retry later", async () => {

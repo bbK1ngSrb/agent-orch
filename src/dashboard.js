@@ -9,7 +9,7 @@ import * as inflight from "./inflight.js";
 import * as checkpoint from "./checkpoint.js";
 import { branchExists } from "./git.js";
 import { kpi, reviewsDir } from "./notify.js";
-import { paint, C, table } from "./tui/theme.js";
+import { paint, C, STAGE_SYMBOL, VERDICT_SYMBOL, table } from "./tui/theme.js";
 
 const STAGE_LABELS = { reviewed: "review", tested: "test" };
 const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "pr-fallback": C.fail };
@@ -140,6 +140,10 @@ export function snapshot(orchDir, { historyLimit = 10, repo = null, checkHistory
 
 function pct(n) { return n == null ? "n/a" : `${Math.round(n * 100)}%`; }
 function usd(n) { return n == null ? "n/a" : `$${n.toFixed(4)}`; }
+function stageText(stage) { return `${STAGE_SYMBOL[stage] || ""} ${stage}`.trim(); }
+function verdictText(verdict, color, colorCode) {
+  return `${VERDICT_SYMBOL[verdict] || ""} ${paint(color, colorCode, verdict)}`.trim();
+}
 
 export function render(orchDir, opts = {}) {
   const { historyLimit, color = false, columns, repo = null, checkHistory = false } = opts;
@@ -153,7 +157,7 @@ export function render(orchDir, opts = {}) {
   } else {
     for (const c of live) {
       const round = c.round != null ? ` round ${c.round}` : "";
-      lines.push(`  ${c.branch}  [${c.stage}${round}]  sid=${c.sid}  pid=${c.pid}  since ${c.startedAt}`);
+      lines.push(`  ${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}  pid=${c.pid}  since ${c.startedAt}`);
       if (c.log) lines.push(`    log (${c.log.file}): ${c.log.tail.split("\n").pop()}`);
     }
   }
@@ -165,7 +169,7 @@ export function render(orchDir, opts = {}) {
     for (const c of interrupted) {
       const round = c.round != null ? ` round ${c.round}` : "";
       const when = c.lastUpdate ? `  last update ${c.lastUpdate}` : "";
-      lines.push(`  ${c.branch}  [${c.stage}${round}]  sid=${c.sid}${when}`);
+      lines.push(`  ${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}${when}`);
     }
   }
   lines.push("");
@@ -176,7 +180,7 @@ export function render(orchDir, opts = {}) {
     const rows = history.map((e) => {
       const usage = e.tokens ? `${e.tokens}tok${e.costUsd != null ? ` ${usd(e.costUsd)}` : ""}` : "";
       const colorCode = e.resolved ? C.muted : VERDICT_COLOR[e.verdict] || "";
-      const verdict = paint(color, colorCode, e.verdict);
+      const verdict = verdictText(e.verdict, color, colorCode);
       const row = [e.ts, e.branch, verdict, `${e.rounds}rnd`, usage];
       if (checkHistory) row.push(e.resolved ? "resolved" : "");
       return row;

@@ -47,11 +47,32 @@ function tryMergeDirect(gh, prRef, method) {
   try { mergeDirect(gh, prRef, method); } catch { /* not ready or not mergeable */ }
 }
 
+// A statusCheckRollup entry is one of two shapes: a CheckRun (GitHub Actions /
+// check-suite apps — has `status` + `conclusion`) or a StatusContext (the older
+// commit-status API — has `state`). "Green" means every entry has reached a
+// terminal, success-equivalent result:
+//   - CheckRun: COMPLETED with SUCCESS, SKIPPED, or NEUTRAL. SKIPPED/NEUTRAL
+//     count as passing because GitHub treats a skipped or neutral *required*
+//     check as satisfied — dropping them would stall this direct merge forever
+//     on any repo whose required checks include a path-filtered (skippable) job.
+//   - StatusContext: SUCCESS only. PENDING and EXPECTED (a required context
+//     GitHub is still waiting on) both keep us waiting — that "wait on a
+//     not-yet-reported required context" is what makes this a "wait for required
+//     checks" gate rather than a "whatever has reported so far is green" gate.
+// Anything non-terminal (QUEUED / IN_PROGRESS) or failing (FAILURE / ERROR /
+// CANCELLED / TIMED_OUT / ACTION_REQUIRED) makes the whole rollup not-green, so
+// the direct merge holds until the checks settle.
+const PASSING_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
+
+function checkPassed(check) {
+  if (check.status) return check.status === "COMPLETED" && PASSING_CONCLUSIONS.has(check.conclusion);
+  return check.state === "SUCCESS";
+}
+
 function prChecksGreen(gh, prRef) {
   const data = JSON.parse(gh(["pr", "view", String(prRef), "--json", "statusCheckRollup"]) || "{}");
   const checks = data.statusCheckRollup || [];
-  return checks.length > 0 && checks.every((check) =>
-    check.state === "SUCCESS" || (check.status === "COMPLETED" && check.conclusion === "SUCCESS"));
+  return checks.length > 0 && checks.every(checkPassed);
 }
 
 // Concurrent orch cycles share one .git and thus one refs/remotes/origin/main —
@@ -337,6 +358,19 @@ export async function openIntegrationPr(ctx, deps) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
     }
   }
+  // main.autoMerge runs alongside native auto-merge, not as an either/or. It is
+  // gated on prChecksGreen, so it holds until every reported check — including a
+  // required context GitHub still lists as EXPECTED — is terminal and green,
+  // rather than racing the merge while a check is still IN_PROGRESS. (A required
+  // check GitHub never surfaces in the rollup at all could still make the direct
+  // call 405; that failure is swallowed by tryMergeDirect and simply retried the
+  // next cycle.) This direct merge is the fallback that matters when native
+  // auto-merge stays stuck at BLOCKED forever: if the review requirement is
+  // satisfied by a ruleset bypass_actor grant rather than a real approval, GitHub
+  // never auto-merges even after checks pass (verified empirically), and this
+  // green-gated direct merge is the only thing that lands it. When native
+  // auto-merge does work, the direct call is a harmless no-op (already merged),
+  // swallowed by tryMergeDirect.
   if (cfg?.main?.autoMerge) {
     try {
       if (prChecksGreen(gh, prRef)) tryMergeDirect(gh, prRef, "merge");
