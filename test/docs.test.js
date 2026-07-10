@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { ORCH_DOC } from "../src/cli.js";
 
 const read = (rel) =>
   readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), "utf8");
@@ -41,6 +42,31 @@ test("docs list the built-in CLI adapters", () => {
   assert.doesNotMatch(design, /Ship two adapters/);
   assert.doesNotMatch(design, /claude` and\/or `codex/);
   assert.doesNotMatch(design, /Gemini\/Aider/);
+});
+
+test("docs document the dashboard --check-history flag", () => {
+  // Shipped with `orch dashboard --check-history`; guard the prose docs against
+  // drift from the CLI help/completion where the flag already lives.
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /--check-history/);
+  }
+  // `--check-history` reconciles history at *display* time only: dashboard.js's
+  // reconcileHistory returns fresh `{ ...e, resolved: true }` objects for the
+  // render and never writes back to runs.jsonl. The docs must not imply an
+  // on-disk rewrite/repair, or users will expect the history file to change.
+  assert.doesNotMatch(manual, /rewrites stale red history/);
+  assert.match(manual, /runs\.jsonl.*(untouched|unchanged)|(untouched|unchanged).*runs\.jsonl/i);
+  assert.match(readme, /view-only|view only/i);
+});
+
+test("the generated per-repo ORCH.md template documents all dashboard flags", () => {
+  // `orch init` writes ORCH_DOC verbatim to .orch/ORCH.md and overwrites it on
+  // every init, so it must track the CLI. The prose-docs test above only covers
+  // README/manual and would miss the template drifting out of sync (it once
+  // advertised only `--json`).
+  assert.match(ORCH_DOC, /--json/);
+  assert.match(ORCH_DOC, /--limit/);
+  assert.match(ORCH_DOC, /--check-history/);
 });
 
 test("README documents bash completion install/update behavior", () => {
