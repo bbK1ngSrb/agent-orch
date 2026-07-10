@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.32 — 2026-07-10
+- feat(tui): loop.js — v1 live poll loop (flat scroll, clean shutdown) (closes [#207](https://github.com/bbk1ng/agent-orch/issues/207))
+
 ## 0.3.31 — 2026-07-10
 - file enhancement. To have orch config [--config--file <file.yml] that will interactevly fulfill and save yml with options. need to have error gate, and to load possible options to be pircked by left, right arrow, and confiremd by enter. like it is in claude code. each option change need to have explantion. just detailed issue. no implementation
 
