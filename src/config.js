@@ -29,6 +29,8 @@ const DEFAULTS = {
   },
   main: {
     autoMerge: false, // opt-in direct merge of the persistent integration->main PR
+    autoResolveConflicts: false, // opt-in Claude reconciliation when the persistent PR is dirty
+    autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json", "src/version.js", "version.js"],
   },
   docs: {
     autoUpdate: false, // opt-in per repo; flip true in .orch/orch.yml
@@ -72,6 +74,10 @@ export function validate(cfg) {
     throw new Error("orch.yml: github.autoMergePr must be a boolean");
   if (typeof cfg.main.autoMerge !== "boolean")
     throw new Error("orch.yml: main.autoMerge must be a boolean");
+  if (typeof cfg.main.autoResolveConflicts !== "boolean")
+    throw new Error("orch.yml: main.autoResolveConflicts must be a boolean");
+  if (!Array.isArray(cfg.main.autoResolveConflictPaths) || !cfg.main.autoResolveConflictPaths.every((p) => typeof p === "string"))
+    throw new Error("orch.yml: main.autoResolveConflictPaths must be an array of strings");
   if (typeof cfg.docs.autoUpdate !== "boolean")
     throw new Error("orch.yml: docs.autoUpdate must be a boolean");
   if (typeof cfg.docs.prompt !== "string" || !cfg.docs.prompt.trim())

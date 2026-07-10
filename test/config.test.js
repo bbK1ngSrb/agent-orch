@@ -200,6 +200,26 @@ test("main.autoMerge defaults to false; non-boolean throws", () => {
   assert.throws(() => load(bad), /main.autoMerge must be a boolean/);
 });
 
+test("main.autoResolveConflicts defaults off and validates its scope", () => {
+  const defaults = load(tmp());
+  assert.equal(defaults.main.autoResolveConflicts, false);
+  assert.ok(defaults.main.autoResolveConflictPaths.includes("CHANGELOG.md"));
+
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "main:\n  autoResolveConflicts: true\n  autoResolveConflictPaths: [CHANGELOG.md]\n");
+  const c = load(d);
+  assert.equal(c.main.autoResolveConflicts, true);
+  assert.deepEqual(c.main.autoResolveConflictPaths, ["CHANGELOG.md"]);
+
+  const badFlag = tmp();
+  writeFileSync(join(badFlag, "orch.yml"), "main:\n  autoResolveConflicts: yes\n");
+  assert.throws(() => load(badFlag), /main.autoResolveConflicts must be a boolean/);
+
+  const badPaths = tmp();
+  writeFileSync(join(badPaths, "orch.yml"), "main:\n  autoResolveConflictPaths: CHANGELOG.md\n");
+  assert.throws(() => load(badPaths), /main.autoResolveConflictPaths must be an array of strings/);
+});
+
 test("docs defaults present; off by default", () => {
   const c = load(tmp());
   assert.equal(c.docs.autoUpdate, false);

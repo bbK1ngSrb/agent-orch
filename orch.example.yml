@@ -50,6 +50,8 @@ github:
 # === Main mirror PR (integrationBranch -> baseBranch) ===
 main:
   autoMerge: false        # true = directly merge the persistent integration PR once checks are green; default: false
+  autoResolveConflicts: false  # true = ask Claude to reconcile a dirty persistent PR within autoResolveConflictPaths; default: false
+  autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json", "src/version.js", "version.js"]
 
 # === Auto docs-update after a real merge (optional) ===
 docs:
