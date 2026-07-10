@@ -16,10 +16,12 @@ only makes sense once you see the one problem it is built around.
 
 Today a single `orch` cycle is `author → cross-audit → test-gate → merge`
 (see `docs/orch-manual.md` for the full mental model). It has exactly one way
-to *not* finish cleanly: it **escalates**. Escalation is the catch-all exit —
-reviewer disagreement past `reviseCap`, red tests, or a merge conflict all end
-the same way: the cycle stops, opens a PR or writes a local decision file, and
-waits for a human. Nothing is discarded, but nothing proceeds either.
+to *not* finish cleanly: it stops and waits for a human. Reviewer disagreement
+past `reviseCap` and red tests **escalate** — the cycle writes a local
+`DECISION.md` and halts (it does *not* open a PR). A merge conflict or file
+overlap instead **demotes** to a PR fallback (or the same decision file when
+there is no remote). The two mechanisms differ in how they record the stop, but
+the effect is identical: nothing is discarded, but nothing proceeds either.
 
 For a person sitting at the keyboard that is the right default: one stop, one
 glance, one decision. For an *overnight* run it is fatal. A single blocked
@@ -49,7 +51,7 @@ Two new stages wrap the existing cycle, and one new terminal state joins
 2. **Plan audit** — a second agent adversarially audits that DAG *before any
    code is written*.
 3. **Parallel authoring** — edge-free sub-issues author in parallel; edged ones
-   wait on their upstreams. Each sub-issue becomes its own cycle and its own PR.
+   wait on their upstreams. Each sub-issue becomes its own orch cycle.
 4. **Park + cascade** — a sub-issue that cannot land **parks** (the new terminal
    state) instead of halting the run; its dependents wait, everything off that
    subtree keeps going, and a diagnosis note is appended to a **breakfast
@@ -94,7 +96,11 @@ Each sub-issue runs as an ordinary orch cycle — same author, cross-audit,
 test-gate, merge — so this reuses everything that already exists. The only new
 scheduling rule is the DAG: a unit starts once all its upstream edges have
 landed; edge-free units all start at once, bounded by the existing
-`concurrency` cap. Each unit gets its own branch and PR, exactly as today.
+`concurrency` cap. Each unit gets its own author branch, exactly as today; how
+its result reaches `main` then follows orch's existing merge modes unchanged —
+by default (`merge: no-ff`) successful cycles merge into the shared
+`orch/integration` branch and pile onto one persistent integration→`main` PR,
+while `merge: pr` mode instead gives each cycle its own PR straight to `main`.
 
 ### 3.4 Park + cascade — a new terminal state
 
