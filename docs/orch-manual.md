@@ -613,6 +613,9 @@ github:
 # === Main mirror PR (integrationBranch -> baseBranch) ===
 main:
   autoMerge: false                # true = orch itself merges the persistent integration PR once its checks are green
+  conflictResolution: manual      # manual | propose | auto
+  conflictResolutionResolvers: [claude]  # role specs; rotate/fail over per conflict
+  autoResolveConflicts: false     # deprecated alias: true = conflictResolution: auto
 
 # === Auto docs-update ===
 docs:
@@ -692,6 +695,17 @@ docs:
   also a no-op while any check is still pending or failing, and does nothing
   until a real merge lands to re-open/update the PR. Only affects the
   integration PR, never `merge: pr`'s per-cycle PRs.
+- **`main.conflictResolution`** — controls what happens when the persistent
+  `orch/integration → main` PR is dirty. `manual` comments for a human,
+  `propose` lets a resolver draft a resolution and posts the reviewer summary
+  without pushing, and `auto` pushes only after a different reviewer agrees and
+  the configured test gate passes. `main.autoResolveConflicts: true` remains a
+  deprecated alias for `auto`; `false` maps to `manual` when no explicit mode is
+  set.
+- **`main.conflictResolutionResolvers`** — optional role-spec pool for conflict
+  resolution, using the same `"<agent> [model] [effort]"` grammar as authors
+  and reviewers. The pool rotates per conflict and failed resolver attempts
+  restart from the pre-merge tree before the next resolver tries.
 
 ---
 

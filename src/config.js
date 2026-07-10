@@ -30,6 +30,8 @@ const DEFAULTS = {
   main: {
     autoMerge: false, // opt-in direct merge of the persistent integration->main PR
     autoResolveConflicts: false, // opt-in Claude reconciliation when the persistent PR is dirty
+    conflictResolution: "manual", // manual | propose | auto; autoResolveConflicts is a deprecated alias
+    conflictResolutionResolvers: null, // null = fallback to the historical single claude resolver
     autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json", "src/version.js", "version.js"],
   },
   docs: {
@@ -76,6 +78,10 @@ export function validate(cfg) {
     throw new Error("orch.yml: main.autoMerge must be a boolean");
   if (typeof cfg.main.autoResolveConflicts !== "boolean")
     throw new Error("orch.yml: main.autoResolveConflicts must be a boolean");
+  if (!["manual", "propose", "auto"].includes(cfg.main.conflictResolution))
+    throw new Error("orch.yml: main.conflictResolution must be manual, propose, or auto");
+  if (cfg.main.conflictResolutionResolvers != null && (!Array.isArray(cfg.main.conflictResolutionResolvers) || cfg.main.conflictResolutionResolvers.length < 1))
+    throw new Error("orch.yml: main.conflictResolutionResolvers must be a non-empty list of role specs");
   if (!Array.isArray(cfg.main.autoResolveConflictPaths) || !cfg.main.autoResolveConflictPaths.every((p) => typeof p === "string"))
     throw new Error("orch.yml: main.autoResolveConflictPaths must be an array of strings");
   if (typeof cfg.docs.autoUpdate !== "boolean")
@@ -145,8 +151,23 @@ export function load(dir, overridePath) {
     main: { ...DEFAULTS.main, ...(user.main || {}), ...(override.main || {}) },
     docs: { ...DEFAULTS.docs, ...(user.docs || {}), ...(override.docs || {}) },
   };
+  normalizeMainConfig(cfg, user.main || {}, override.main || {});
   validate(cfg);
   return cfg;
+}
+
+function normalizeMainConfig(cfg, userMain, overrideMain) {
+  if (typeof cfg.main.autoResolveConflicts !== "boolean")
+    throw new Error("orch.yml: main.autoResolveConflicts must be a boolean");
+  const explicitMode = Object.prototype.hasOwnProperty.call(userMain, "conflictResolution") ||
+    Object.prototype.hasOwnProperty.call(overrideMain, "conflictResolution");
+  if (!explicitMode) cfg.main.conflictResolution = cfg.main.autoResolveConflicts ? "auto" : "manual";
+  cfg.main.autoResolveConflicts = cfg.main.conflictResolution !== "manual";
+  if (cfg.main.conflictResolutionResolvers != null) {
+    if (!Array.isArray(cfg.main.conflictResolutionResolvers) || cfg.main.conflictResolutionResolvers.length < 1)
+      throw new Error("orch.yml: main.conflictResolutionResolvers must be a non-empty list of role specs");
+    cfg.main.conflictResolutionResolvers = parseRoleSpecs(cfg.main.conflictResolutionResolvers);
+  }
 }
 
 export { DEFAULTS };
