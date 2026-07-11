@@ -71,6 +71,19 @@ test("RegExp#exec() and String#match-style .exec() do not trip subprocess rule",
   assert.deepEqual(r.findings, []);
 });
 
+test("receiver-name aliasing (re.exec/regex.exec) without a regex-literal assignment is still flagged", () => {
+  for (const snippet of [
+    `+  re.exec(command);`,
+    `+  regex.exec(command);`,
+    `+  matcher.exec(body);`,
+    `+  tokenPattern.exec(input);`,
+  ]) {
+    const r = scanDiff(`+++ b/src/x.js\n${snippet}`);
+    assert.equal(r.decision, "DISAGREE", snippet);
+    assert.ok(r.findings.some((f) => f.rule === "subprocess"), snippet);
+  }
+});
+
 test("ignores removed and context lines", () => {
   const d = `+++ b/src/x.js
 -  const k = process.env.SECRET;
