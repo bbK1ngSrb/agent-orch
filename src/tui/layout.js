@@ -27,7 +27,7 @@ function distribute(extra, panels, sizes, caps) {
   }
 }
 
-export function computeLayout({ columns, rows, liveCount = 0, interruptedCount = 0, focus = "live" } = {}) {
+export function computeLayout({ columns, rows, liveCount = 0, interruptedCount = 0, historyCount = 0, focus = "live" } = {}) {
   const width = clampInt(columns, 0, 9999);
   const height = clampInt(rows, 0, 9999);
   const activeFocus = PANEL_ORDER.includes(focus) ? focus : "live";
@@ -47,9 +47,14 @@ export function computeLayout({ columns, rows, liveCount = 0, interruptedCount =
   if (fallback) return layout;
 
   const elastic = Math.max(0, height - FIXED_ROWS);
-  const counts = { live: liveCount, interrupted: interruptedCount, history: 0 };
+  const counts = { live: liveCount, interrupted: interruptedCount, history: historyCount };
   const min = {
-    live: liveCount > 0 ? 3 : 3,
+    // An empty LIVE panel keeps its three-row "(none)" block rather than
+    // collapsing: LIVE is the primary, default-focused panel, and an explicit
+    // "(none)" tells the operator the system is idle — a collapsed panel is
+    // indistinguishable from a rendering bug. Only INTERRUPTED (an
+    // exception-state panel) collapses when empty.
+    live: 3,
     interrupted: emptyInterruptedHeight(interruptedCount),
     history: 3,
   };

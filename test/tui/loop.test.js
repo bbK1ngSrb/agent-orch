@@ -168,6 +168,27 @@ test("a down key raises scrollOffset (clamped to content)", () => {
   handle.shutdown(0);
 });
 
+test("unfocused history overflow shows the '... N more' hint", () => {
+  // 10 history entries against a 12-row terminal: the history panel gets its
+  // 3-row minimum (1 body row) while LIVE holds focus, so most entries are
+  // hidden. Before historyCount was threaded into computeLayout() the hint
+  // could never fire for history (its count was hardcoded to 0).
+  const snap = structuredSnapshot(1);
+  snap.history = Array.from({ length: 10 }, (_, i) => ({
+    ts: `2026-07-10T10:0${i % 10}:00.000Z`,
+    branch: `pr/done-${i}`,
+    sid: `sid-${i}`,
+    verdict: "merged",
+    rounds: 1,
+  }));
+  const { screen, handle } = setup({ snapshot: () => snap, rows: 12, columns: 90 });
+
+  assert.equal(handle.state.focus, "live");
+  assert.match(screen.painted.at(-1), /\.\.\. \d+ more/);
+
+  handle.shutdown(0);
+});
+
 test("structured loop cycles focus with Tab and jumps to interrupted with 2", () => {
   const { input, handle } = setup({
     snapshot: () => structuredSnapshot(),

@@ -32,3 +32,15 @@ test("unfocused overflowing panels expose peek hints", () => {
   assert.equal(layout.panels.live.peek, true);
   assert.ok(layout.panels.live.hint > 0);
 });
+
+test("history overflow exposes a peek hint when historyCount is threaded in", () => {
+  const layout = computeLayout({ columns: 90, rows: 12, liveCount: 1, interruptedCount: 0, historyCount: 30, focus: "live" });
+  assert.equal(layout.panels.history.peek, true);
+  assert.equal(layout.panels.history.hint, 30 - layout.panels.history.bodyRows);
+});
+
+test("empty LIVE panel keeps its fixed three-row block instead of collapsing (D3)", () => {
+  const layout = computeLayout({ columns: 100, rows: 24, liveCount: 0, interruptedCount: 0, focus: "history" });
+  assert.equal(layout.panels.live.height, 3);
+  assert.equal(layout.panels.live.collapsed, false);
+});
