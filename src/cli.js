@@ -112,45 +112,48 @@ agents: [claude, codex]   # default: [claude, codex]
 # A role is a spec "<agent> [model] [effort]":
 #   agent  — required; one of the agents above
 #   model  — optional model id, may carry a subversion (e.g. claude-opus-4-8, gpt-5.1)
-#   effort — optional reasoning effort (e.g. low | medium | high)
+#   effort — optional reasoning effort: minimal | low | medium | high | xhigh | max
+#            (which values a given agent CLI actually honors varies by agent)
 # Unset → the agents pool rotates the author; the next agent reviews.
 # author: claude claude-opus-4-8 high      # single author spec
 # reviewer: codex gpt-5.1           # single reviewer spec
-# authors: [claude claude-opus-4-8 high, codex]   # each writes its own branch
-# reviewers: [claude, codex high]          # all audit each branch, except its author
+# authors: [claude claude-opus-4-8 high, codex]     # each writes its own branch
+# reviewers: [claude, codex high]            # all audit each branch, except its author
 
 # === Cycle ===
 test: auto                # "auto" detects the test command, or set one, e.g. "pytest -q"
 reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
-stageTimeout: 25          # per-stage wall-clock cap in MINUTES; 0 disables; default: 25. A stalled author/review (e.g. a wedged codex exec) is killed and the cycle fails (nonzero exit) instead of hanging forever. Env override: ORCH_STAGE_TIMEOUT_MS (milliseconds)
+stageTimeout: 25          # per-stage wall-clock cap in minutes; 0 disables; default: 25
+concurrency: 4            # max concurrent cycles per repo dir; over-cap launches exit; default: 4
+baseBranch: main          # trunk orch reads from, diffs against, and opens PRs to (e.g. dev if main is deploy-only); default: main
 integrationBranch: orch/integration  # local merge target for no-ff/ff-only; default: orch/integration
 merge: no-ff              # merge into integrationBranch: ff-only | no-ff | pr; default: no-ff (pr = skip local integration and open a per-cycle branch PR)
-concurrency: 4            # max concurrent orch cycles in this repo dir; over this a cycle exits; default: 4
 
 # === Cheap-agent dispatch (optional) ===
-# Route mechanical/low-stakes tasks to a cheaper agent (e.g. a local llm via ccr)
-# instead of always paying for Claude/Codex. \`orch task --cheap\` forces \`role\`
-# ad hoc; without the flag, a \`--file\`/\`orch issue\` work order whose
-# suspected_paths all match \`paths\` routes to \`role\` automatically.
+# \`orch task --cheap\` forces \`role\` (e.g. a local llm via ccr) ad hoc; without
+# the flag, a \`--file\`/\`orch issue\` work order whose suspected_paths all match
+# \`paths\` routes to \`role\` automatically.
 # cheap:
-#   role: qwen3-coder-30b  # role spec used for both author and reviewer
+#   role: qwen3-coder-30b
 #   paths: ["*.md", "docs/**"]
 
 # === Scope gate (optional) ===
 scope:
-  maxLines: 0             # 0 = disabled; >0 escalates author commits over this many changed lines
+  maxLines: 0             # 0 = disabled; >0 rejects oversized author commits
   ignore: ["*.lock", "dist/**", "*.snap"]   # globs excluded from the line count
 
-# === GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> main) ===
+# === GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> baseBranch) ===
 github:
   mergeMethod: squash     # gh pr merge strategy for non-integration PRs; default: squash
   autoMergePr: false      # enable GitHub's native auto-merge on PRs orch opens/updates; default: false
+                          # (needs "Allow merge commits" on for the integration PR; see docs/orch-manual.md
+                          # for a caveat when review is only satisfied via a ruleset bypass_actors grant)
 
 # === Main mirror PR (integrationBranch -> baseBranch) ===
 main:
-  autoMerge: false        # true = directly merge the persistent integration PR when GitHub allows it; default: false
+  autoMerge: false        # true = directly merge the persistent integration PR once checks are green; default: false
   conflictResolution: manual   # manual | propose | auto; default: manual
-  conflictResolutionResolvers: [claude]  # role specs; rotate/fail over per conflict
+  # conflictResolutionResolvers: [claude]  # default: null — role specs; rotate/fail over per conflict
   autoResolveConflicts: false  # deprecated alias: true = conflictResolution: auto
   autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json", "src/version.js", "version.js"]
 
@@ -368,26 +371,30 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
   mkdirSync(orchDir, { recursive: true });
   // Resuming a surviving branch (#27): pin its author and DON'T advance rotation —
   // this run is the prior run continuing, not a new author's turn.
+  // Reviewer-only CLI overrides (D2) force reviewers while still rotating the author.
+  const forcedReviewers = configuredReviewers(cfg);
   if (pinnedAuthor && cfg.agents.includes(pinnedAuthor)) {
     const pi = cfg.agents.indexOf(pinnedAuthor);
-    const reviewerName = cfg.agents[(pi + 1) % cfg.agents.length] || pinnedAuthor;
+    const rotationReviewer = cfg.agents[(pi + 1) % cfg.agents.length] || pinnedAuthor;
+    const reviewers = forcedReviewers || [{ agent: rotationReviewer, model: null, effort: null }];
     return {
-      authorName: pinnedAuthor, reviewerName,
-      authorNames: [pinnedAuthor], reviewerNames: [reviewerName],
+      authorName: pinnedAuthor, reviewerName: reviewers[0].agent,
+      authorNames: [pinnedAuthor], reviewerNames: reviewers.map((s) => s.agent),
       authors: [{ agent: pinnedAuthor, model: null, effort: null }],
-      reviewers: [{ agent: reviewerName, model: null, effort: null }],
+      reviewers,
     };
   }
   const last = existsSync(f) ? readFileSync(f, "utf8").trim() : null;
   const i = last ? (cfg.agents.indexOf(last) + 1) % cfg.agents.length : 0;
   const authorName = cfg.agents[i];
-  const reviewerName = cfg.agents[(i + 1) % cfg.agents.length] || authorName;
+  const rotationReviewer = cfg.agents[(i + 1) % cfg.agents.length] || authorName;
   writeFileSync(f, authorName + "\n");
+  const reviewers = forcedReviewers || [{ agent: rotationReviewer, model: null, effort: null }];
   return {
-    authorName, reviewerName,
-    authorNames: [authorName], reviewerNames: [reviewerName],
+    authorName, reviewerName: reviewers[0].agent,
+    authorNames: [authorName], reviewerNames: reviewers.map((s) => s.agent),
     authors: [{ agent: authorName, model: null, effort: null }],
-    reviewers: [{ agent: reviewerName, model: null, effort: null }],
+    reviewers,
   };
 }
 
@@ -993,7 +1000,9 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "task" || command === "review" || command === "issue") {
-    let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: command === "review" });
+    // D2: reviewer-only is meaningful for task/issue too ("rotate author, force this
+    // reviewer"), matching review/continue/pr and the printUsage example.
+    let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
 
     // F3: operator kill switch + one-cycle-at-a-time lock.
