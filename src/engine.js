@@ -1,5 +1,6 @@
 import { isDocsOnly } from "./scope.js";
 import { checkPaths } from "./intake/allowlist.js";
+import { scanDiff } from "./security-review.js";
 
 const RAW_OUTPUT_TAIL_CHARS = 12_000;
 
@@ -208,6 +209,24 @@ export async function runCycle(opts, deps) {
         if (!pass) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
             "AGREE but tests are red — not merging"));
+        }
+        // §3e: deterministic security floor on the FINAL diff, at the same
+        // approve/merge boundary as the §3c protected-path gate below. The LLM
+        // reviewer can be talked out of a DISAGREE; this scan cannot. It runs
+        // before the noMerge return so the PR-bridge approval is gated too.
+        // Fail closed: a diff we cannot read is a diff we do not approve.
+        let finalDiff;
+        try {
+          finalDiff = git.git(["diff", `${baseBranch}...${branch}`], repo);
+        } catch (e) {
+          return recordTerminal(escalate(notify, orchDir, branch, round,
+            `security scan: could not read the final diff (${e.message}) — failing closed, not merging`));
+        }
+        const security = scanDiff(finalDiff);
+        if (security.decision !== "AGREE") {
+          const hits = security.findings.map((f) => `${f.rule}: ${f.line}`).join("; ");
+          return recordTerminal(escalate(notify, orchDir, branch, round,
+            `security scan: risky diff — ${hits} — orch will not merge`));
         }
         // PR-bridge audit: report the verdict, let GitHub own the merge. Reviews
         // are kept (not cleaned) so the caller can quote them in a PR comment.
