@@ -169,15 +169,10 @@ function mainWorktreePath(repo, base = "main") {
   return flush();
 }
 
-function moveMainToOrigin(repo, mode, base = "main") {
+function moveMainToOrigin(repo, base = "main") {
   const path = mainWorktreePath(repo, base);
   if (path) {
-    if (mode === "reset") {
-      git(["reset", "--hard", originRef(base)], path);
-      git(["clean", "-fd"], path);
-    } else {
-      git(["merge", "--ff-only", originRef(base)], path);
-    }
+    git(["merge", "--ff-only", originRef(base)], path);
     return;
   }
   git(["branch", "-f", base, originRef(base)], repo);
@@ -197,7 +192,7 @@ export function syncMainFromOrigin(repo, base = "main") {
   const localBehind = gitTry(["merge-base", "--is-ancestor", base, originRef(base)], repo).ok;
   if (localBehind) {
     try {
-      moveMainToOrigin(repo, "merge", base);
+      moveMainToOrigin(repo, base);
     } catch (e) {
       const reason = (e.stderr || e.stdout || e.message || "").toString().trim();
       return { ok: false, reason: `could not fast-forward local ${base} to origin/${base}: ${reason}` };
@@ -438,13 +433,4 @@ export function bumpVersion(integrationPath, entry) {
     gitTry(["clean", "-fd"], integrationPath);
     return null;
   }
-}
-
-// Files changed on the landing branch since a given sha (what landed after a branch's base).
-// Three-dot: diff from merge-base(sha, base) to base. Two-dot would return the
-// REVERSE diff when base is behind sha (integration behind main), reporting every
-// main-only change as "landed on integration" and false-positiving the overlap guard.
-export function changedSince(repo, sha, base = "main") {
-  const out = gitTry(["diff", "--name-only", `${sha}...${base}`], repo);
-  return out.ok ? out.out.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 }

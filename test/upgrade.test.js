@@ -68,6 +68,19 @@ test("--check reports availability and never installs", async () => {
   assert.match(io.output(), /upgrade available/);
 });
 
+test("--check uses the shared version comparison", async () => {
+  const io = capture();
+  const result = await runUpgrade({
+    current: "1.0.0",
+    exec: execWithLatest("1.0.0.1"),
+    resolveInstall: () => ({ type: "registry" }),
+    stdout: io.stdout,
+    flags: { check: true },
+  });
+  assert.equal(result.status, "available");
+  assert.match(io.output(), /upgrade available/);
+});
+
 test("--dry prints the install command and never installs", async () => {
   const io = capture();
   const calls = [];
