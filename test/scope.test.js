@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseNumstat, isDocsOnly, count } from "../src/scope.js";
+import { globToRegExp, parseNumstat, isDocsOnly, count } from "../src/scope.js";
 
 const DOCS = ["*.md", "docs/**", "**/*.md"];
 
@@ -18,6 +18,16 @@ test("isDocsOnly: any non-docs path -> false", () => {
 
 test("isDocsOnly: empty list -> false", () => {
   assert.equal(isDocsOnly([], DOCS), false);
+});
+
+test("glob ? matches exactly one non-slash path character", () => {
+  const re = globToRegExp("docs/?/file.md");
+  assert.equal(re.test("docs/a/file.md"), true);
+  assert.equal(re.test("docs//file.md"), false);
+  assert.equal(re.test("docs/ab/file.md"), false);
+  assert.equal(re.test("docs/a/b/file.md"), false);
+
+  assert.equal(isDocsOnly(["docs/a/file.md"], ["docs/?/file.md"]), true);
 });
 
 const NUMSTAT = [
