@@ -1,8 +1,17 @@
-// Parse the last standalone AGREE/DISAGREE token. `\bAGREE\b` does not match
-// inside "DISAGREE" (no word boundary after the 'S'), so the two never collide.
+// Parse AGREE/DISAGREE from reviewer output. Prefer the last line-leading token
+// (the review prompt asks for the verdict as the first word of a line) so prose
+// mentions of the vocabulary later in analysis cannot flip a real speech-act.
+// Fall back to the last standalone word-boundary token when no line-leading
+// match exists (models that bury the verdict mid-sentence). `\bAGREE\b` does
+// not match inside "DISAGREE", so the two never collide.
 export function parseVerdict(text) {
   const raw = String(text ?? "");
-  const matches = [...raw.matchAll(/\b(AGREE|DISAGREE)\b/gi)];
+  // Line-leading: optional indent, then AGREE|DISAGREE as the first word.
+  const lineAnchored = [...raw.matchAll(/^[ \t]*(AGREE|DISAGREE)\b/gim)];
+  const matches =
+    lineAnchored.length > 0
+      ? lineAnchored
+      : [...raw.matchAll(/\b(AGREE|DISAGREE)\b/gi)];
   if (matches.length === 0) {
     return { decision: "DISAGREE", reason: "unparseable verdict", raw };
   }
