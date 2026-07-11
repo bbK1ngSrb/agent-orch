@@ -150,7 +150,10 @@ function jsonUsage(obj) {
   const model = obj.model || obj.response?.model || obj.message?.model;
   // Claude CLI's `--output-format json` reports actual spend as a top-level
   // `total_cost_usd` — prefer it over our own per-model estimate when present.
-  const reportedCostUsd = num(obj.total_cost_usd ?? obj.totalCostUsd) || null;
+  // A reported 0 is a legitimate value (e.g. fully-cached turn), so gate on
+  // presence, not truthiness — `num(...) || null` would collapse 0 to null.
+  const rawCost = obj.total_cost_usd ?? obj.totalCostUsd;
+  const reportedCostUsd = rawCost == null ? null : num(rawCost);
   return { model, tokens: total, input, output, cached, costUsd: reportedCostUsd };
 }
 
@@ -163,8 +166,9 @@ export function parseRunUsage(text, fallbackModel = null) {
   let cachedTokens = 0;
   let reportedCostUsd = null;
 
+  let modelFromJson = false;
   const apply = (parsed) => {
-    if (parsed.model) model = parsed.model;
+    if (parsed.model) { model = parsed.model; modelFromJson = true; }
     if (parsed.tokens) tokens += parsed.tokens;
     inputTokens += parsed.input || 0;
     outputTokens += parsed.output || 0;
@@ -183,19 +187,29 @@ export function parseRunUsage(text, fallbackModel = null) {
     }
   }
 
-  const modelMatch = raw.match(/\bmodel\b\s*[:=]\s*([^\s,;]+)/i);
-  if (modelMatch) model = modelMatch[1];
+  // Plain-text regex fallbacks only FILL data structured JSON didn't provide —
+  // never stack on top of it. A transcript that both reports JSON usage and
+  // *mentions* "total tokens: N" in prose (e.g. an agent reviewing usage code)
+  // must not be double-counted, and a prose "model: x" must not overwrite the
+  // model the CLI reported in JSON.
+  if (!modelFromJson) {
+    const modelMatch = raw.match(/\bmodel\b\s*[:=]\s*([^\s,;]+)/i);
+    if (modelMatch) model = modelMatch[1];
+  }
 
-  const totalMatch = raw.match(/\b(?:total\s+tokens|tokens\s+(?:used|spent)|token\s+usage)\b\s*[:=]?\s*([\d,\s]+)/i);
-  if (totalMatch) tokens += num(totalMatch[1]);
-  if (!tokens) {
-    const inputMatch = raw.match(/\b(?:input|prompt)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
-    const outputMatch = raw.match(/\b(?:output|completion)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
-    const inputN = num(inputMatch?.[1]);
-    const outputN = num(outputMatch?.[1]);
-    tokens = inputN + outputN;
-    inputTokens += inputN;
-    outputTokens += outputN;
+  const jsonHadUsage = tokens > 0 || inputTokens > 0 || outputTokens > 0 || cachedTokens > 0 || reportedCostUsd != null;
+  if (!jsonHadUsage) {
+    const totalMatch = raw.match(/\b(?:total\s+tokens|tokens\s+(?:used|spent)|token\s+usage)\b\s*[:=]?\s*([\d,\s]+)/i);
+    if (totalMatch) tokens += num(totalMatch[1]);
+    if (!tokens) {
+      const inputMatch = raw.match(/\b(?:input|prompt)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
+      const outputMatch = raw.match(/\b(?:output|completion)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
+      const inputN = num(inputMatch?.[1]);
+      const outputN = num(outputMatch?.[1]);
+      tokens = inputN + outputN;
+      inputTokens += inputN;
+      outputTokens += outputN;
+    }
   }
 
   const costUsd =

@@ -5,6 +5,8 @@ import { estimateCostUsd } from "../src/pricing.js";
 test("estimateCostUsd prices known models from input/output tokens", () => {
   assert.equal(estimateCostUsd("claude-opus-4-8", { inputTokens: 1_000_000, outputTokens: 0 }), 15);
   assert.equal(estimateCostUsd("claude-opus-4-8", { inputTokens: 0, outputTokens: 1_000_000 }), 75);
+  assert.equal(estimateCostUsd("claude-fable-5", { inputTokens: 1_000_000, outputTokens: 0 }), 10);
+  assert.equal(estimateCostUsd("claude-fable-5", { inputTokens: 0, outputTokens: 1_000_000 }), 50);
 });
 
 test("estimateCostUsd matches models regardless of dot/dash variant", () => {
