@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
@@ -51,9 +51,17 @@ let docsSeq = 0;
 export function spawnDocsTask(prompt, deps = { spawn }, orchDir) {
   const tagged = `auto-docs ${Date.now().toString(36)}${(docsSeq++).toString(36)} ${prompt}`;
   let stdio = "ignore";
-  if (orchDir) { const fd = openSync(join(orchDir, "auto-docs.log"), "a"); stdio = ["ignore", fd, fd]; }
-  deps.spawn(process.execPath, [process.argv[1], "task", tagged],
-    { detached: true, stdio }).unref();
+  let fd;
+  try {
+    if (orchDir) {
+      fd = (deps.openSync || openSync)(join(orchDir, "auto-docs.log"), "a");
+      stdio = ["ignore", fd, fd];
+    }
+    deps.spawn(process.execPath, [process.argv[1], "task", tagged],
+      { detached: true, stdio }).unref();
+  } finally {
+    if (fd !== undefined) (deps.closeSync || closeSync)(fd);
+  }
   console.log("▶ post-merge: docs-update spawned");
 }
 

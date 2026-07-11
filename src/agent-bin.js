@@ -1,6 +1,6 @@
 import { accessSync, constants } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join, win32 } from "node:path";
 import { exeCandidates } from "./platform.js";
 
 // Where agent CLIs usually live when the caller's PATH is degraded (wrappers,
@@ -25,7 +25,8 @@ export function resolveAgentBin(exe, dirs = FALLBACK_BIN_DIRS, envPath = process
     try { accessSync(exe, constants.X_OK); return exe; } catch { return null; }
   }
   const names = exeCandidates(exe, platform);
-  for (const d of (envPath || "").split(delimiter)) {
+  const pathDelimiter = platform === "win32" ? win32.delimiter : delimiter;
+  for (const d of (envPath || "").split(pathDelimiter)) {
     if (!d) continue;
     for (const name of names) {
       const p = join(d, name);
