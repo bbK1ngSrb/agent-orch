@@ -1402,6 +1402,7 @@ export async function main(argv, deps = {}) {
 
   if (command === "dashboard") {
     const historyLimit = flags.limit ? Number(flags.limit) : 10;
+    if (!Number.isInteger(historyLimit) || historyLimit <= 0) throw new Error("--limit must be a positive integer");
     const checkHistory = Boolean(flags["check-history"]);
     const once = Boolean(flags.once || flags.plain);
     // Live TUI is the default only for a genuine interactive terminal; every

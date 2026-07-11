@@ -1079,6 +1079,11 @@ test("CLI role overrides replace orch.yml fixed roles", () => {
   assert.deepEqual(overridden.reviewers, ["codex", "claude"]);
 });
 
+test("dashboard rejects a non-numeric or non-positive --limit", async () => {
+  await assert.rejects(() => runMainCapture(["dashboard", "--limit", "nope"]), /--limit must be a positive integer/);
+  await assert.rejects(() => runMainCapture(["dashboard", "--limit", "0"]), /--limit must be a positive integer/);
+});
+
 async function runMainCapture(argv, deps = {}) {
   const d = mkdtempSync(join(tmpdir(), "orch-mc-"));
   const prev = cwd();
