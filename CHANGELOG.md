@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.47 — 2026-07-11
+- [HIGH][depends:D1] Batch 2: make release auto-bumping opt-in instead of unconditional (closes [#259](https://github.com/bbk1ng/agent-orch/issues/259))
+
 ## 0.3.46 — 2026-07-11
 - [MEDIUM][depends:D4] Batch 8: harden adapter process launching and headless approval behavior (closes [#265](https://github.com/bbk1ng/agent-orch/issues/265))
 
