@@ -1,11 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ORCH_DOC } from "../src/cli.js";
 
+const rootUrl = new URL("../", import.meta.url);
+const rootDir = fileURLToPath(rootUrl);
 const read = (rel) =>
-  readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), "utf8");
+  readFileSync(fileURLToPath(new URL(rel, rootUrl)), "utf8");
 
 const pkg = JSON.parse(read("package.json"));
 const readme = read("README.md");
@@ -70,6 +73,21 @@ test("README documents bash completion install/update behavior", () => {
   assert.match(readme, /~\/\.orch\/completion\.bash/);
   assert.match(readme, /orch completion bash/);
   assert.match(readme, /orch completion install/);
+});
+
+test("npm pack dry-run excludes test files from the package", () => {
+  const out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+    cwd: rootDir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      npm_config_cache: "/tmp/npm-cache-agent-orch",
+      npm_config_loglevel: "silent",
+      npm_config_update_notifier: "false",
+    },
+  });
+  const [{ files }] = JSON.parse(out);
+  assert.deepEqual(files.map((f) => f.path).filter((p) => p.endsWith(".test.js")), []);
 });
 
 test("README documents the auto docs-update feature and its loop guard", () => {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -69,6 +69,28 @@ test("maybeSpawnDocs does not spawn under --dry", () => {
   const m = mockSpawn();
   assert.equal(maybeSpawnDocs({ status: "merged", docsOnly: false }, docsCfg, { spawn: m.spawn, dry: true }), false);
   assert.equal(m.calls.length, 0);
+});
+
+test("spawnDocsTask closes the parent docs log fd after spawn", () => {
+  const closed = [];
+  const calls = [];
+  spawnDocsTask("update docs", {
+    spawn: (...args) => { calls.push(args); return { unref() {} }; },
+    openSync: () => 42,
+    closeSync: (fd) => closed.push(fd),
+  }, "/tmp/orch");
+  assert.deepEqual(calls[0][2].stdio, ["ignore", 42, 42]);
+  assert.deepEqual(closed, [42]);
+});
+
+test("spawnDocsTask closes the parent docs log fd when spawn throws", () => {
+  const closed = [];
+  assert.throws(() => spawnDocsTask("update docs", {
+    spawn: () => { throw new Error("spawn failed"); },
+    openSync: () => 43,
+    closeSync: (fd) => closed.push(fd),
+  }, "/tmp/orch"), /spawn failed/);
+  assert.deepEqual(closed, [43]);
 });
 
 test("--config-file layers a custom yml onto orch.yml for the run (F: config override)", async () => {
