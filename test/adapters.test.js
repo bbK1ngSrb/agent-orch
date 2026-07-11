@@ -134,6 +134,31 @@ test("parseRunUsage omits costUsd for a model with no known price", () => {
     { model: "mystery-model", tokens: 150, inputTokens: 100, outputTokens: 50 });
 });
 
+test("parseRunUsage does not stack text fallbacks on top of parsed JSON usage", () => {
+  // Transcript reports usage in JSON *and* mentions token/model lines in prose
+  // (e.g. an agent reviewing usage code) — prose must not double-count tokens
+  // or overwrite the JSON model.
+  assert.deepEqual(
+    parseRunUsage('{"model":"claude-opus-4.8","usage":{"input_tokens":1000,"output_tokens":250}}\nmodel: gpt-5.1\ntotal tokens: 9999\n'),
+    { model: "claude-opus-4.8", tokens: 1250, inputTokens: 1000, outputTokens: 250, costUsd: 0.03375 },
+  );
+});
+
+test("parseRunUsage text fallbacks still fill data JSON did not provide", () => {
+  // JSON present but with no usage/model — prose fills the gaps.
+  assert.deepEqual(
+    parseRunUsage('{"type":"result"}\nmodel: gpt-5.1\ninput tokens: 100\noutput tokens: 25\n'),
+    { model: "gpt-5.1", tokens: 125, inputTokens: 100, outputTokens: 25, costUsd: 0.000875 },
+  );
+});
+
+test("parseRunUsage preserves a reported zero cost instead of re-estimating", () => {
+  assert.deepEqual(
+    parseRunUsage('{"model":"claude-opus-4.8","total_cost_usd":0,"usage":{"input_tokens":1000,"output_tokens":250}}\n'),
+    { model: "claude-opus-4.8", tokens: 1250, inputTokens: 1000, outputTokens: 250, costUsd: 0 },
+  );
+});
+
 test("parseRunUsage omits costUsd when only a total token count is known, even for a priced model", () => {
   assert.deepEqual(parseRunUsage('{"model":"claude-opus-4.8","usage":{"total_tokens":1250}}\n'),
     { model: "claude-opus-4.8", tokens: 1250 });

@@ -127,7 +127,17 @@ test("metrics computes success rate and usage totals", () => {
   assert.equal(m.successRate, 0.5);
   assert.equal(m.totalTokens, 150);
   assert.equal(m.totalCostUsd, 0.01);
+  // b2 spent tokens but has no price — it is unpriced, not free
+  assert.equal(m.unpricedRuns, 1);
   assert.equal(m.cleanUnattendedCycles, 0);
+});
+
+test("metrics preserves a legitimate zero total cost instead of collapsing it to null", () => {
+  const d = freshDir();
+  notify.recordRun(d, { ts: "1", branch: "b1", verdict: "merged", rounds: 1, tokens: 100, costUsd: 0 });
+  const m = dashboard.metrics(d);
+  assert.equal(m.totalCostUsd, 0);
+  assert.equal(m.unpricedRuns, 0);
 });
 
 test("metrics on an empty history reports nulls, not NaN", () => {
@@ -168,6 +178,16 @@ test("render produces a readable text summary with live cycles, history, and met
   assert.match(text, /Metrics/);
   assert.match(text, /success rate: 100%/);
   assert.match(text, /clean unattended cycles: 1/);
+});
+
+test("render marks metered-but-unpriced runs explicitly and keeps zero cost", () => {
+  const d = freshDir();
+  notify.recordRun(d, { ts: "1", branch: "b1", verdict: "merged", rounds: 1, tokens: 100, costUsd: 0 });
+  notify.recordRun(d, { ts: "2", branch: "b2", verdict: "merged", rounds: 1, tokens: 50 });
+  const text = dashboard.render(d);
+  assert.match(text, /100tok \$0\.0000/);   // zero cost renders as $0, not "unpriced"
+  assert.match(text, /50tok unpriced/);     // missing price is called out, not shown as free
+  assert.match(text, /cost: \$0\.0000 \(\+1 unpriced run\)/);
 });
 
 test("render clamps history table lines to opts.columns", () => {
