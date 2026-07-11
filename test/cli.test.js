@@ -386,6 +386,16 @@ test("--file loads an untrusted JSON work order (dry)", async () => {
   }
 });
 
+test("--file rejects a stray positional task argument instead of dropping it", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-file-"));
+  const f = join(d, "work-order.json");
+  writeFileSync(f, WORK_ORDER); // valid order, so the rejection is about the positional
+  await assert.rejects(
+    () => main(["task", "stray text", "--file", f, "--dry"]),
+    /--file takes no positional task text/,
+  );
+});
+
 test("--file rejects non-JSON content", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-file-"));
   const f = join(d, "task.md");
@@ -1067,6 +1077,16 @@ test("CLI role overrides replace orch.yml fixed roles", () => {
   assert.equal(overridden.reviewer, null);
   assert.deepEqual(overridden.authors, ["claude", "codex"]);
   assert.deepEqual(overridden.reviewers, ["codex", "claude"]);
+});
+
+test("pr rejects a non-numeric PR number", async () => {
+  await assert.rejects(() => runMainCapture(["pr", "abc"]), /usage: orch pr <number>/);
+  await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
+});
+
+test("dashboard rejects a non-numeric or non-positive --limit", async () => {
+  await assert.rejects(() => runMainCapture(["dashboard", "--limit", "nope"]), /--limit must be a positive integer/);
+  await assert.rejects(() => runMainCapture(["dashboard", "--limit", "0"]), /--limit must be a positive integer/);
 });
 
 async function runMainCapture(argv, deps = {}) {
