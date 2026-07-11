@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
+import { parse as parseYaml } from "yaml";
 import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
@@ -1476,6 +1477,82 @@ test("--help / -h print usage and exit cleanly (no unknown-option error)", async
     }
   }
 });
+
+// Split a help example into argv the same way a shell would for simple quoted tokens.
+function argvFromHelpExample(line) {
+  const body = line.trim().replace(/^orch\s+/, "");
+  const tokens = [];
+  const re = /"([^"]*)"|'([^']*)'|\S+/g;
+  let m;
+  while ((m = re.exec(body))) tokens.push(m[1] ?? m[2] ?? m[0]);
+  return tokens;
+}
+
+test("printUsage examples all parse and accept role overrides as shown (A5)", async () => {
+  const logs = [];
+  const orig = console.log;
+  console.log = (m) => logs.push(m);
+  try {
+    await main(["help"], { preflight() {} });
+  } finally {
+    console.log = orig;
+  }
+  const usage = logs.join("\n");
+  const exampleBlock = usage.split("\nExamples:\n")[1]?.split("\n\n")[0] || "";
+  const examples = exampleBlock.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("orch "));
+  assert.ok(examples.length >= 4, `expected help examples, got: ${examples.join(" | ")}`);
+  assert.ok(examples.some((e) => e.includes("--reviewer")), "help still shows the reviewer-only task example");
+
+  const baseCfg = {
+    agents: ["claude", "codex"],
+    author: null, reviewer: null, authors: null, reviewers: null,
+  };
+  for (const line of examples) {
+    const argv = argvFromHelpExample(line);
+    const { command, flags } = parse(argv);
+    assert.ok(command, `example produced no command: ${line}`);
+    // Same allowReviewerOnly policy task/issue/review share after D2.
+    assert.doesNotThrow(
+      () => applyRoleOverrides(baseCfg, flags, { allowReviewerOnly: true }),
+      `example failed role-override parse: ${line}`,
+    );
+  }
+});
+
+test("init scaffold active keys match orch.example.yml (B12)", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-scaffold-parity-"));
+  const prev = cwd();
+  const examplePath = join(prev, "orch.example.yml");
+  // Tests run from the package root; fall back to this file's ../orch.example.yml.
+  const exampleText = existsSync(examplePath)
+    ? readFileSync(examplePath, "utf8")
+    : readFileSync(new URL("../orch.example.yml", import.meta.url), "utf8");
+  chdir(d);
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    const scaffold = parseYamlKeys(readFileSync(join(d, ".orch", "orch.yml"), "utf8"));
+    const example = parseYamlKeys(exampleText);
+    assert.deepEqual(scaffold, example);
+  } finally {
+    chdir(prev);
+  }
+});
+
+// Collect top-level and nested object keys from a YAML document (ignores comments).
+function parseYamlKeys(text) {
+  const doc = parseYaml(text) || {};
+  const keys = [];
+  function walk(obj, prefix = "") {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
+    for (const [k, v] of Object.entries(obj)) {
+      const path = prefix ? `${prefix}.${k}` : k;
+      keys.push(path);
+      if (v && typeof v === "object" && !Array.isArray(v)) walk(v, path);
+    }
+  }
+  walk(doc);
+  return keys.sort();
+}
 
 import { resolveTaskBranch } from "../src/cli.js";
 

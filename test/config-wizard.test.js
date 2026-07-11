@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { parse } from "yaml";
-import { DEFAULTS, validate } from "../src/config.js";
+import { DEFAULTS, load, validate } from "../src/config.js";
 import { OPTION_CATALOG, applyAnswer, applyChoice, configToYaml, runConfigWizard, validateCatalog } from "../src/config-wizard.js";
 
 function tmp() { return mkdtempSync(join(tmpdir(), "orch-wizard-")); }
@@ -17,7 +17,9 @@ test("option catalog is consistent with DEFAULTS and validate()", () => {
     "agents", "author", "reviewer", "authors", "reviewers", "test", "reviseCap", "stageTimeout",
     "baseBranch", "integrationBranch", "merge", "concurrency", "cheap.role", "cheap.paths",
     "scope.maxLines", "scope.ignore", "github.mergeMethod", "github.autoMergePr",
-    "main.autoMerge", "release.autoBump", "docs.autoUpdate", "docs.prompt", "docs.paths",
+    "main.autoMerge", "main.conflictResolution", "main.conflictResolutionResolvers",
+    "main.autoResolveConflicts", "main.autoResolveConflictPaths",
+    "release.autoBump", "docs.autoUpdate", "docs.prompt", "docs.paths",
   ]);
 });
 
@@ -55,7 +57,58 @@ test("non-TTY config wizard exits clearly without hanging", async () => {
 
 test("configToYaml validates before serializing", () => {
   const cfg = applyAnswer(DEFAULTS, OPTION_CATALOG.find((entry) => entry.keys[0] === "github.autoMergePr"), true);
-  const saved = parse(configToYaml(cfg));
-  validate(saved);
+  const yaml = configToYaml(cfg);
+  const saved = parse(yaml);
   assert.equal(saved.github.autoMergePr, true);
+  // Serialized form omits the deprecated alias; reload via load() re-derives it.
+  assert.equal(Object.hasOwn(saved.main || {}, "autoResolveConflicts"), false);
+  const d = tmp();
+  mkdirSync(join(d, ".orch"), { recursive: true });
+  writeFileSync(join(d, ".orch", "orch.yml"), yaml);
+  const reloaded = load(d);
+  validate(reloaded);
+  assert.equal(reloaded.github.autoMergePr, true);
+});
+
+test("alias-only autoResolveConflicts round-trips to canonical conflictResolution: auto", () => {
+  // Simulate a user file that only has the deprecated alias (Codex #3 / A4 acceptance).
+  const d = tmp();
+  mkdirSync(join(d, ".orch"), { recursive: true });
+  writeFileSync(join(d, ".orch", "orch.yml"), "main:\n  autoResolveConflicts: true\n");
+  const loaded = load(d);
+  assert.equal(loaded.main.conflictResolution, "auto");
+  assert.equal(loaded.main.autoResolveConflicts, true);
+
+  const yaml = configToYaml(loaded);
+  const saved = parse(yaml);
+  assert.equal(saved.main.conflictResolution, "auto");
+  assert.equal(Object.hasOwn(saved.main, "autoResolveConflicts"), false);
+
+  // Reload of wizard output must keep auto-resolution on.
+  writeFileSync(join(d, ".orch", "orch.yml"), yaml);
+  const reloaded = load(d);
+  assert.equal(reloaded.main.conflictResolution, "auto");
+  assert.equal(reloaded.main.autoResolveConflicts, true);
+});
+
+test("wizard applyAnswer enforces conflict-resolution business rules, not just types", () => {
+  // Single-agent pool + claude resolver + propose requires a distinct reviewer (normalizeMainConfig).
+  let cfg = applyAnswer(DEFAULTS, OPTION_CATALOG.find((entry) => entry.keys[0] === "agents"), "claude");
+  cfg = applyAnswer(cfg, OPTION_CATALOG.find((entry) => entry.keys[0] === "main.conflictResolutionResolvers"), "claude");
+  assert.throws(
+    () => applyAnswer(cfg, OPTION_CATALOG.find((entry) => entry.keys[0] === "main.conflictResolution"), "propose"),
+    /requires a conflict reviewer/,
+  );
+});
+
+test("editing the deprecated alias re-drives conflictResolution", () => {
+  const mode = OPTION_CATALOG.find((entry) => entry.keys[0] === "main.conflictResolution");
+  const alias = OPTION_CATALOG.find((entry) => entry.keys[0] === "main.autoResolveConflicts");
+  let cfg = applyAnswer(DEFAULTS, mode, "manual");
+  cfg = applyAnswer(cfg, alias, true);
+  assert.equal(cfg.main.conflictResolution, "auto");
+  assert.equal(cfg.main.autoResolveConflicts, true);
+  const saved = parse(configToYaml(cfg));
+  assert.equal(saved.main.conflictResolution, "auto");
+  assert.equal(Object.hasOwn(saved.main, "autoResolveConflicts"), false);
 });
