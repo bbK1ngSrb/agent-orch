@@ -8,6 +8,8 @@
 // touching a real repo. Idempotent by construction (re-running is a no-op once
 // synced/detached/deleted), so the optional docs-update child can run it too.
 
+import { formatInt, formatUsd } from "./usage.js";
+
 export async function finishRun(ctx, deps) {
   const {
     repo, task, merged = [], interactive, docsPending = false, runStats = [],
@@ -43,15 +45,6 @@ export async function finishRun(ctx, deps) {
 
   io.print(summarize({ task, sha, deleted, leftover, docsPending, runStats, integrationBranch, prUrls }));
   return { deleted, leftover };
-}
-
-function formatInt(n) {
-  return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}
-
-function formatUsd(n) {
-  const v = Number(n) || 0;
-  return `$${v > 0 && v < 0.01 ? v.toFixed(4) : v.toFixed(2)}`;
 }
 
 function summarizeStats(runStats) {

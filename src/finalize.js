@@ -4,19 +4,7 @@
 // plus its PR bridge or demotes the branch to a PR / local escalation. The
 // engine calls this via deps.finalize so it stays a pure state machine.
 
-// Sums a cycle's per-role runStats into a single { tokens, costUsd } pair for
-// run-history persistence. costUsd is null (omitted) unless at least one
-// entry had a known price — never fabricate a total from partial data.
-function totalUsage(runStats = []) {
-  let tokens = 0;
-  let costUsd = 0;
-  let hasCost = false;
-  for (const s of runStats) {
-    tokens += Number(s.tokens) || 0;
-    if (typeof s.costUsd === "number") { costUsd += s.costUsd; hasCost = true; }
-  }
-  return { tokens, costUsd: hasCost ? costUsd : null };
-}
+import { totalUsage } from "./usage.js";
 
 const ISSUE_URL_BASE = "https://github.com/bbk1ng/agent-orch/issues";
 
@@ -89,7 +77,7 @@ export async function finalize(ctx, deps) {
       ? peerEntries.flatMap((e) => e.paths || [])
       : inflight.peerPaths(orchDir, sid);
     const integrationTip = git.git(["rev-parse", "HEAD"], integration);
-    const overlap = overlapDetails(paths, [], peerPaths, peerEntries);
+    const overlap = overlapDetails(paths, peerPaths, peerEntries);
     if (overlap.any) {
       return demote(ctx, deps, demoteReason(ctx, {
         trigger: "overlap",
@@ -170,9 +158,8 @@ export async function finalize(ctx, deps) {
   }
 }
 
-function overlapDetails(mine, landedPaths, peerPaths, peerEntries = []) {
+function overlapDetails(mine, peerPaths, peerEntries = []) {
   const mineSet = new Set(mine);
-  const landed = landedPaths.filter((p) => mineSet.has(p));
   const peers = peerEntries.length
     ? peerEntries.map((e) => ({
       sid: e.sid,
@@ -182,7 +169,7 @@ function overlapDetails(mine, landedPaths, peerPaths, peerEntries = []) {
   const peer = peerEntries.length
     ? peers.flatMap((e) => e.paths)
     : peerPaths.filter((p) => mineSet.has(p));
-  return { any: landed.length > 0 || peer.length > 0, landed, peer, peers };
+  return { any: peer.length > 0, peer, peers };
 }
 
 // The hand-off from robot to human. An operator reading this needs to see at a
@@ -236,7 +223,6 @@ function blockedSection(details) {
       "other work, so it demoted instead.",
       "",
     ];
-    if (details.overlap.landed.length) lines.push(`landed overlap: ${list(details.overlap.landed)}`);
     if (details.landedCommits) lines.push(`landed commits: ${details.landedCommits.split("\n").map(oneLine).join("; ")}`);
     if (details.overlap.peers.length) {
       lines.push(`peer overlap: ${details.overlap.peers.map((e) => `${e.sid}: ${list(e.paths)}`).join("; ")}`);
