@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.49 — 2026-07-11
+- pr/codex/medium-depends-none-batch-11-close-the-r-2275757-0 (closes [#268](https://github.com/bbk1ng/agent-orch/issues/268))
+
 ## 0.3.48 — 2026-07-11
 - [HIGH][depends:none] Batch 5: stop usage accounting from inflating cost and hiding unpriced models (closes [#262](https://github.com/bbk1ng/agent-orch/issues/262))
 
