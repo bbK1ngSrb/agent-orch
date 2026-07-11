@@ -1017,6 +1017,9 @@ export async function main(argv, deps = {}) {
       // trusted) is unchanged. `task` stays a short human label (drives slug/resume);
       // `authorPrompt` is what the author actually sees.
       if (flags.file) {
+        // A stray positional next to --file is ambiguous (two task sources);
+        // reject it instead of silently dropping the typed text.
+        if (rest.length) throw new Error("orch task --file takes no positional task text — put the task in the work-order file");
         const wo = parseWorkOrderFile(flags.file);
         task = wo.title;
         authorPrompt = buildAuthorPrompt(wo);

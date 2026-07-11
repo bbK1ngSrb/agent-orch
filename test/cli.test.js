@@ -386,6 +386,16 @@ test("--file loads an untrusted JSON work order (dry)", async () => {
   }
 });
 
+test("--file rejects a stray positional task argument instead of dropping it", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-file-"));
+  const f = join(d, "work-order.json");
+  writeFileSync(f, WORK_ORDER); // valid order, so the rejection is about the positional
+  await assert.rejects(
+    () => main(["task", "stray text", "--file", f, "--dry"]),
+    /--file takes no positional task text/,
+  );
+});
+
 test("--file rejects non-JSON content", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-file-"));
   const f = join(d, "task.md");
