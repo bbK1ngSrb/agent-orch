@@ -32,6 +32,13 @@ export function killTree(pid, platform = process.platform, deps = {}) {
 
 // npm cmd-shims end in a line like: ... "%_prog%"  "%dp0%\node_modules\pkg\cli.js" %*
 const CMD_SHIM_TARGET_RE = /"%dp0%\\([^"]+\.(?:cjs|mjs|js))"\s+%\*/i;
+const CMD_META_RE = /[&|<>()^"%!\r\n]/;
+
+function rejectCmdMeta(value) {
+  if (CMD_META_RE.test(String(value))) {
+    throw new Error(`unsafe Windows cmd fallback argument: ${String(value)}`);
+  }
+}
 
 // Rewrite a spawn of a Windows .cmd/.bat npm shim into a direct
 // `node <target.js>` spawn. Node ≥18.20 refuses to spawn .cmd/.bat without
@@ -48,5 +55,6 @@ export function portableSpawnSpec(bin, args, platform = process.platform, read =
   } catch { /* unreadable shim: fall through */ }
   // ponytail: non-npm .cmd fallback goes through cmd.exe; argv with spaces may
   // not survive cmd re-parsing. Upgrade path: ship the CLI as a native .exe.
+  [bin, ...args].forEach(rejectCmdMeta);
   return { bin: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", bin, ...args] };
 }

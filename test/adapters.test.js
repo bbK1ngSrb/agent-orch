@@ -115,6 +115,16 @@ test("adapter forwards model/effort opts to buildArgs", async () => {
   assert.deepEqual(seen, { model: "m1", effort: "low" });
 });
 
+test("adapters declare model/effort capability support", () => {
+  assert.deepEqual(get("claude").capabilities, { model: true, effort: true });
+  assert.deepEqual(get("codex").capabilities, { model: true, effort: true });
+  assert.deepEqual(get("agy").capabilities, { model: true, effort: false });
+  assert.deepEqual(get("copilot").capabilities, { model: true, effort: false });
+  assert.deepEqual(get("gemini").capabilities, { model: true, effort: false });
+  assert.deepEqual(get("grok").capabilities, { model: true, effort: true });
+  assert.deepEqual(get("qwen3-coder-30b").capabilities, { model: false, effort: false });
+});
+
 test("parseRunUsage reads JSON and text token summaries, estimating $ cost from known model prices", () => {
   assert.deepEqual(parseRunUsage('{"model":"claude-opus-4.8","usage":{"input_tokens":1000,"output_tokens":250}}\n'),
     { model: "claude-opus-4.8", tokens: 1250, inputTokens: 1000, outputTokens: 250, costUsd: 0.03375 });
@@ -162,6 +172,17 @@ test("audit captures stderr from successful agent runs", async () => {
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
   assert.match(v.raw, /stderr verdict/);
+});
+
+test("audit caps captured child output", async () => {
+  const adapter = makeCliAdapter({
+    name: "chatty",
+    bin: process.execPath,
+    buildArgs: () => nodeScript("process.stdout.write('x'.repeat(1100000) + '\\nAGREE ok\\n')"),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.ok(v.raw.length <= 1024 * 1024);
 });
 
 test("audit does not let successful stderr override a parseable stdout verdict", async () => {

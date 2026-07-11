@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
+import { get as getAdapter } from "./adapters/index.js";
 
 const DEFAULTS = {
   agents: ["claude", "codex"],
@@ -113,7 +114,11 @@ export function parseRoleSpec(spec) {
     effort = rest.pop();
   }
   const model = rest.length ? rest[0] : null;
-  return { agent, model, effort };
+  const parsed = { agent, model, effort };
+  const capabilities = getAdapter(agent).capabilities || {};
+  if (model && !capabilities.model) throw new Error(`role spec: agent ${agent} does not support model`);
+  if (effort && !capabilities.effort) throw new Error(`role spec: agent ${agent} does not support effort`);
+  return parsed;
 }
 
 // Parse a list of role specs from a YAML array or a comma-separated string.
