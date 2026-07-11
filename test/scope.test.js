@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseNumstat, isDocsOnly, count } from "../src/scope.js";
+import { globToRegExp, parseNumstat, isDocsOnly, count } from "../src/scope.js";
 
 const DOCS = ["*.md", "docs/**", "**/*.md"];
 
@@ -33,6 +33,22 @@ test("sums added+deleted, ignores binary", () => {
 
 test("honors ignore globs including ** ", () => {
   assert.equal(parseNumstat(NUMSTAT, ["*.lock", "dist/**"]), 15);
+});
+
+test("glob ? matches exactly one non-slash path character", () => {
+  const re = globToRegExp("src/?.js");
+  assert.equal(re.test("src/a.js"), true);
+  assert.equal(re.test("src/.js"), false);
+  assert.equal(re.test("src/ab.js"), false);
+  assert.equal(re.test("src/a/b.js"), false);
+
+  const numstat = [
+    "1\t0\tsrc/a.js",
+    "2\t0\tsrc/.js",
+    "3\t0\tsrc/ab.js",
+    "4\t0\tsrc/a/b.js",
+  ].join("\n");
+  assert.equal(parseNumstat(numstat, ["src/?.js"]), 2 + 3 + 4);
 });
 
 function git(args, cwd) {
