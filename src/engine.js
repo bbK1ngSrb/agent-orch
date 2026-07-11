@@ -169,7 +169,10 @@ export async function runCycle(opts, deps) {
           round,
           reviewer: v.reviewer,
           model: v.model || null,
-          decision: v.decision === "AGREE" ? "AGREE" : "DISAGREE",
+          // Log decision is AGREE | DISAGREE | ERROR (#299). ERROR is metrics-only:
+          // control flow below still treats agentError as DISAGREE + fast-escalate.
+          // Crash/stall is not an editorial rejection — do not count it as DISAGREE.
+          decision: v.agentError ? "ERROR" : (v.decision === "AGREE" ? "AGREE" : "DISAGREE"),
           agentError: Boolean(v.agentError),
         })));
         verdict = {
