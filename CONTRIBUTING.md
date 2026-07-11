@@ -1,5 +1,12 @@
 # Contributing
 
+## Picking up an idea
+
+[PLANNED.md](PLANNED.md) (near-term, detailed) and [FUTURE.md](FUTURE.md)
+(1mo/3mo/1yr horizon) list ideas that aren't scoped into an implementation
+plan yet. Contributors are more than welcome to pick up anything on either
+list — open an issue or PR referencing it.
+
 ## Adding an agent adapter
 1. Create `src/adapters/<name>.js`:
    ```js
