@@ -32,12 +32,11 @@ export function killTree(pid, platform = process.platform, deps = {}) {
 
 // npm cmd-shims end in a line like: ... "%_prog%"  "%dp0%\node_modules\pkg\cli.js" %*
 const CMD_SHIM_TARGET_RE = /"%dp0%\\([^"]+\.(?:cjs|mjs|js))"\s+%\*/i;
-const CMD_FALLBACK_META_RE = /[&|<>^%!()\r\n]/;
+const CMD_META_RE = /[&|<>()^"%!\r\n]/;
 
-function assertSafeCmdFallbackArg(value) {
-  const text = String(value ?? "");
-  if (CMD_FALLBACK_META_RE.test(text)) {
-    throw new Error(`refusing unsafe cmd.exe fallback argument: ${text}`);
+function rejectCmdMeta(value) {
+  if (CMD_META_RE.test(String(value))) {
+    throw new Error(`unsafe Windows cmd fallback argument: ${String(value)}`);
   }
 }
 
@@ -54,8 +53,10 @@ export function portableSpawnSpec(bin, args, platform = process.platform, read =
     // is exercised from POSIX tests, where the host path module would mis-split it.
     if (m) return { bin: process.execPath, args: [winPath.join(winPath.dirname(bin), m[1]), ...args] };
   } catch { /* unreadable shim: fall through */ }
-  // ponytail: non-npm .cmd fallback goes through cmd.exe. Block command-control
-  // metacharacters rather than trying to quote through cmd.exe re-parsing.
-  [bin, ...args].forEach(assertSafeCmdFallbackArg);
+  // ponytail: non-npm .cmd fallback goes through cmd.exe; argv with spaces may
+  // not survive cmd re-parsing. Block command-control metacharacters rather
+  // than trying to quote through cmd.exe re-parsing. Upgrade path: ship the
+  // CLI as a native .exe.
+  [bin, ...args].forEach(rejectCmdMeta);
   return { bin: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", bin, ...args] };
 }

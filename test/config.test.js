@@ -26,6 +26,11 @@ test("parseRoleSpec: agent + effort only (effort keyword, no model)", () => {
     { agent: "codex", model: null, effort: "high" });
 });
 
+test("parseRoleSpec: rejects unsupported model/effort options for an adapter", () => {
+  assert.throws(() => parseRoleSpec("gemini high"), /agent gemini does not support effort/);
+  assert.throws(() => parseRoleSpec("qwen3-coder-30b gpt-5"), /agent qwen3-coder-30b does not support model/);
+});
+
 test("parseRoleSpec: rejects empty spec", () => {
   assert.throws(() => parseRoleSpec("  "), /must name an agent/);
 });
@@ -270,6 +275,23 @@ test("docs user override shallow-merges (keeps default prompt/paths)", () => {
   assert.equal(c.docs.autoUpdate, true);
   assert.equal(c.docs.prompt, "update documentation to reflect the latest merged changes");
   assert.deepEqual(c.docs.paths, ["*.md", "docs/**", "**/*.md"]); // default kept
+});
+
+test("release.autoBump off by default", () => {
+  const c = load(tmp());
+  assert.equal(c.release.autoBump, false);
+});
+
+test("release.autoBump user override enables the bump", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "release:\n  autoBump: true\n");
+  assert.equal(load(d).release.autoBump, true);
+});
+
+test("invalid release.autoBump throws", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "release:\n  autoBump: yes please\n");
+  assert.throws(() => load(d), /release.autoBump must be a boolean/);
 });
 
 test("invalid docs.autoUpdate throws", () => {

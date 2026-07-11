@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
+import { get as getAdapter } from "./adapters/index.js";
 
 const DEFAULTS = {
   agents: ["claude", "codex"],
@@ -38,6 +39,9 @@ const DEFAULTS = {
     autoUpdate: false, // opt-in per repo; flip true in .orch/orch.yml
     prompt: "update documentation to reflect the latest merged changes",
     paths: ["*.md", "docs/**", "**/*.md"], // docs-only globs = loop guard
+  },
+  release: {
+    autoBump: false, // opt-in per repo: patch version bump + CHANGELOG entry after each integrated merge
   },
 };
 
@@ -90,6 +94,8 @@ export function validate(cfg) {
     throw new Error("orch.yml: docs.prompt must be a non-empty string");
   if (!Array.isArray(cfg.docs.paths) || !cfg.docs.paths.every((p) => typeof p === "string"))
     throw new Error("orch.yml: docs.paths must be an array of strings");
+  if (typeof cfg.release.autoBump !== "boolean")
+    throw new Error("orch.yml: release.autoBump must be a boolean");
 }
 
 // A role spec is "<agent> [model] [effort]" — whitespace-separated fields.
@@ -113,7 +119,11 @@ export function parseRoleSpec(spec) {
     effort = rest.pop();
   }
   const model = rest.length ? rest[0] : null;
-  return { agent, model, effort };
+  const parsed = { agent, model, effort };
+  const capabilities = getAdapter(agent).capabilities || {};
+  if (model && !capabilities.model) throw new Error(`role spec: agent ${agent} does not support model`);
+  if (effort && !capabilities.effort) throw new Error(`role spec: agent ${agent} does not support effort`);
+  return parsed;
 }
 
 // Parse a list of role specs from a YAML array or a comma-separated string.
@@ -150,6 +160,7 @@ export function load(dir, overridePath) {
     github: { ...DEFAULTS.github, ...(user.github || {}), ...(override.github || {}) },
     main: { ...DEFAULTS.main, ...(user.main || {}), ...(override.main || {}) },
     docs: { ...DEFAULTS.docs, ...(user.docs || {}), ...(override.docs || {}) },
+    release: { ...DEFAULTS.release, ...(user.release || {}), ...(override.release || {}) },
   };
   normalizeMainConfig(cfg, user.main || {}, override.main || {});
   validate(cfg);

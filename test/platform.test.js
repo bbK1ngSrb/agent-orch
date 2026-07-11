@@ -73,13 +73,20 @@ test("portableSpawnSpec: win32 safe non-shim .cmd falls back to cmd.exe /c", () 
 test("portableSpawnSpec: win32 cmd.exe fallback rejects command metacharacters", () => {
   assert.throws(
     () => portableSpawnSpec("C:\\x\\weird.cmd", ["ok", "bad&touch pwned"], "win32", () => "@echo custom script"),
-    /refusing unsafe cmd\.exe fallback argument/,
+    /unsafe Windows cmd fallback argument: bad&touch pwned/,
   );
 });
 
 test("portableSpawnSpec: win32 unreadable .cmd falls back to cmd.exe /c", () => {
   const spec = portableSpawnSpec("C:\\x\\gone.cmd", [], "win32", () => { throw new Error("ENOENT"); });
   assert.equal(spec.bin, process.env.ComSpec || "cmd.exe");
+});
+
+test("portableSpawnSpec: win32 cmd fallback rejects dangerous metacharacters", () => {
+  assert.throws(
+    () => portableSpawnSpec("C:\\x\\gone.cmd", ["safe", "bad&arg"], "win32", () => { throw new Error("ENOENT"); }),
+    /unsafe Windows cmd fallback argument: bad&arg/,
+  );
 });
 
 test("resolveAgentBin: win32 finds a .cmd shim in a fallback dir via PATHEXT", () => {

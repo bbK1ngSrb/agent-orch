@@ -17,4 +17,4 @@ export function buildArgs(prompt, _wd, opts = {}) {
   return args;
 }
 
-export default makeCliAdapter({ name: "claude", bin: "claude", buildArgs, supports: { model: true, effort: true } });
+export default makeCliAdapter({ name: "claude", bin: "claude", buildArgs, capabilities: { model: true, effort: true } });

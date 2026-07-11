@@ -15,4 +15,4 @@ export function buildArgs(prompt, wd, opts = {}) {
   return args;
 }
 
-export default makeCliAdapter({ name: "codex", bin: "codex", buildArgs, supports: { model: true, effort: true } });
+export default makeCliAdapter({ name: "codex", bin: "codex", buildArgs, capabilities: { model: true, effort: true } });

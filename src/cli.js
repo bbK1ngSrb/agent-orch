@@ -159,6 +159,10 @@ docs:
   autoUpdate: false       # true = spawn a docs-update task after a merge; default: false
   prompt: update documentation to reflect the latest merged changes
   paths: ["*.md", "docs/**", "**/*.md"]   # docs-only globs (loop guard)
+
+# === Release automation (optional) ===
+release:
+  autoBump: false         # true = patch version bump + CHANGELOG commit after each integrated merge; default: false
 `;
 
 // Agent-agnostic usage doc written to .orch/ORCH.md on init. Committed and

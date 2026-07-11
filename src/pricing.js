@@ -3,6 +3,7 @@
 // accurate (ignores cache discounts, batch pricing, etc). Unknown models
 // return null rather than guessing.
 const PRICE_PER_MILLION = {
+  "claude-fable-5": { in: 10, out: 50 },
   "claude-opus-4-8": { in: 15, out: 75 },
   "claude-sonnet-5": { in: 3, out: 15 },
   "claude-haiku-4-5": { in: 1, out: 5 },

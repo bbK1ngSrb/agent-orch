@@ -109,7 +109,7 @@ test("adapter forwards model/effort opts to buildArgs", async () => {
   let seen;
   const adapter = makeCliAdapter({
     name: "spy", bin: process.execPath,
-    supports: { model: true, effort: true },
+    capabilities: { model: true, effort: true },
     buildArgs: (_p, _wd, opts) => { seen = opts; return nodeScript("process.exit(0)"); },
   });
   await adapter.audit("pr/x/y", tmpdir(), { model: "m1", effort: "low" });
@@ -120,7 +120,7 @@ test("adapter rejects unsupported model/effort opts before spawning", async () =
   let spawned = false;
   const adapter = makeCliAdapter({
     name: "limited", bin: process.execPath,
-    supports: { model: true, effort: false },
+    capabilities: { model: true, effort: false },
     buildArgs: () => { spawned = true; return nodeScript("process.exit(0)"); },
   });
   await assert.rejects(
@@ -130,14 +130,14 @@ test("adapter rejects unsupported model/effort opts before spawning", async () =
   assert.equal(spawned, false);
 });
 
-test("registered adapters declare supported model/effort options", () => {
-  assert.deepEqual(get("claude").supports, { model: true, effort: true });
-  assert.deepEqual(get("codex").supports, { model: true, effort: true });
-  assert.deepEqual(get("grok").supports, { model: true, effort: true });
-  assert.deepEqual(get("agy").supports, { model: true, effort: false });
-  assert.deepEqual(get("copilot").supports, { model: true, effort: false });
-  assert.deepEqual(get("gemini").supports, { model: true, effort: false });
-  assert.deepEqual(get("qwen3-coder-30b").supports, { model: false, effort: false });
+test("adapters declare model/effort capability support", () => {
+  assert.deepEqual(get("claude").capabilities, { model: true, effort: true });
+  assert.deepEqual(get("codex").capabilities, { model: true, effort: true });
+  assert.deepEqual(get("agy").capabilities, { model: true, effort: false });
+  assert.deepEqual(get("copilot").capabilities, { model: true, effort: false });
+  assert.deepEqual(get("gemini").capabilities, { model: true, effort: false });
+  assert.deepEqual(get("grok").capabilities, { model: true, effort: true });
+  assert.deepEqual(get("qwen3-coder-30b").capabilities, { model: false, effort: false });
 });
 
 test("parseRunUsage reads JSON and text token summaries, estimating $ cost from known model prices", () => {
@@ -157,6 +157,31 @@ test("parseRunUsage prefers the CLI's reported total_cost_usd over its own price
 test("parseRunUsage omits costUsd for a model with no known price", () => {
   assert.deepEqual(parseRunUsage('{"model":"mystery-model","usage":{"input_tokens":100,"output_tokens":50}}\n'),
     { model: "mystery-model", tokens: 150, inputTokens: 100, outputTokens: 50 });
+});
+
+test("parseRunUsage does not stack text fallbacks on top of parsed JSON usage", () => {
+  // Transcript reports usage in JSON *and* mentions token/model lines in prose
+  // (e.g. an agent reviewing usage code) — prose must not double-count tokens
+  // or overwrite the JSON model.
+  assert.deepEqual(
+    parseRunUsage('{"model":"claude-opus-4.8","usage":{"input_tokens":1000,"output_tokens":250}}\nmodel: gpt-5.1\ntotal tokens: 9999\n'),
+    { model: "claude-opus-4.8", tokens: 1250, inputTokens: 1000, outputTokens: 250, costUsd: 0.03375 },
+  );
+});
+
+test("parseRunUsage text fallbacks still fill data JSON did not provide", () => {
+  // JSON present but with no usage/model — prose fills the gaps.
+  assert.deepEqual(
+    parseRunUsage('{"type":"result"}\nmodel: gpt-5.1\ninput tokens: 100\noutput tokens: 25\n'),
+    { model: "gpt-5.1", tokens: 125, inputTokens: 100, outputTokens: 25, costUsd: 0.000875 },
+  );
+});
+
+test("parseRunUsage preserves a reported zero cost instead of re-estimating", () => {
+  assert.deepEqual(
+    parseRunUsage('{"model":"claude-opus-4.8","total_cost_usd":0,"usage":{"input_tokens":1000,"output_tokens":250}}\n'),
+    { model: "claude-opus-4.8", tokens: 1250, inputTokens: 1000, outputTokens: 250, costUsd: 0 },
+  );
 });
 
 test("parseRunUsage omits costUsd when only a total token count is known, even for a priced model", () => {
@@ -203,6 +228,7 @@ test("audit captures stderr from successful agent runs", async () => {
   assert.equal(v.decision, "AGREE");
   assert.match(v.raw, /stderr verdict/);
 });
+
 
 test("audit does not let successful stderr override a parseable stdout verdict", async () => {
   const adapter = makeCliAdapter({

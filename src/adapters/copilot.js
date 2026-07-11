@@ -6,4 +6,4 @@ export function buildArgs(prompt, wd, opts = {}) {
   return args;
 }
 
-export default makeCliAdapter({ name: "copilot", bin: "copilot", buildArgs, supports: { model: true, effort: false } });
+export default makeCliAdapter({ name: "copilot", bin: "copilot", buildArgs, capabilities: { model: true, effort: false } });
