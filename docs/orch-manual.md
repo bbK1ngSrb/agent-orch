@@ -635,7 +635,9 @@ docs:
   Built-in agents: `claude`, `codex`, `copilot`, `gemini`, `agy`, `grok`. Local-llm
   models (`qwen3-coder-30b`, `deepseek-coder-v2-lite`, `glm-4.5-air`) run via
   `ccr` and need `~/.claude-code-router/config.json`'s `local` provider
-  configured.
+  configured. `agy` is review-only: its headless mode edits a private scratch
+  workspace instead of the worktree (#272), so orch refuses to seat it as an
+  author — pin it via `reviewer`/`reviewers` rather than the rotation pool.
 - **`author`/`reviewer` vs `authors`/`reviewers`** — singular pins one role
   each; plural runs each author on its own branch, cross-reviewed by every
   reviewer that didn't write it. Set matching CLI flags

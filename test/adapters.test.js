@@ -32,6 +32,21 @@ test("agy buildArgs appends --model when given", () => {
     ["-p", "PROMPT", "--model", "agy-model"]);
 });
 
+test("agy is review-only: author() rejects instead of silently no-oping (#272)", async () => {
+  // Headless `agy -p` edits its own scratch workspace, never the cwd worktree,
+  // so an agy author stage would "succeed" with an empty diff. The adapter must
+  // refuse the author seat loudly — before spawning the CLI at all.
+  const agy = get("agy");
+  assert.equal(agy.reviewOnly, true);
+  await assert.rejects(() => agy.author("TASK", "/wd"), /cannot author.*scratch workspace/);
+});
+
+test("other built-in adapters are not review-only", () => {
+  for (const name of ["claude", "codex", "copilot", "gemini", "grok"]) {
+    assert.ok(!get(name).reviewOnly, `${name} unexpectedly review-only`);
+  }
+});
+
 test("claude buildArgs uses -p with headless write permission", () => {
   assert.deepEqual(claudeArgs("PROMPT", "/wd"),
     ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions", "PROMPT"]);
