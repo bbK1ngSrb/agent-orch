@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { pidAlive } from "./pid.js";
 
 const dir = (orchDir) => join(orchDir, "inflight");
 const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
@@ -41,10 +42,6 @@ export function deregister(orchDir, sid) {
 export function lookup(orchDir, sid) {
   try { return JSON.parse(readFileSync(file(orchDir, sid), "utf8")); }
   catch { return null; } // ENOENT / parse error → no record
-}
-
-function pidAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; }
 }
 
 // Live entries; dead-owner files are deleted here (doubles as inflight reclaim).

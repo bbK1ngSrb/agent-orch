@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
@@ -51,9 +51,17 @@ let docsSeq = 0;
 export function spawnDocsTask(prompt, deps = { spawn }, orchDir) {
   const tagged = `auto-docs ${Date.now().toString(36)}${(docsSeq++).toString(36)} ${prompt}`;
   let stdio = "ignore";
-  if (orchDir) { const fd = openSync(join(orchDir, "auto-docs.log"), "a"); stdio = ["ignore", fd, fd]; }
-  deps.spawn(process.execPath, [process.argv[1], "task", tagged],
-    { detached: true, stdio }).unref();
+  let fd;
+  try {
+    if (orchDir) {
+      fd = (deps.openSync || openSync)(join(orchDir, "auto-docs.log"), "a");
+      stdio = ["ignore", fd, fd];
+    }
+    deps.spawn(process.execPath, [process.argv[1], "task", tagged],
+      { detached: true, stdio }).unref();
+  } finally {
+    if (fd !== undefined) (deps.closeSync || closeSync)(fd);
+  }
   console.log("▶ post-merge: docs-update spawned");
 }
 
@@ -455,10 +463,21 @@ function roleName(spec) {
   return [spec.agent, spec.model, spec.effort].filter(Boolean).join(" ");
 }
 
+function firstRoleOtherThan(agentName, ...roleLists) {
+  return roleLists.flat().find((r) => r?.agent !== agentName) || null;
+}
+
+function roleSpecsFromAgents(agents = []) {
+  return agents.map((agent) => ({ agent, model: null, effort: null }));
+}
+
 function conflictReviewerFor(cfg, resolver, resolvers) {
-  return resolvers.find((r) => r.agent !== resolver.agent) ||
-    (cfg.reviewers ? parseRoleSpecs(cfg.reviewers).find((r) => r.agent !== resolver.agent) : null) ||
-    (cfg.agents || []).map((agent) => ({ agent, model: null, effort: null })).find((r) => r.agent !== resolver.agent);
+  return firstRoleOtherThan(
+    resolver.agent,
+    resolvers,
+    cfg.reviewers ? parseRoleSpecs(cfg.reviewers) : [],
+    (cfg.agents || []).map((agent) => ({ agent, model: null, effort: null })),
+  );
 }
 
 function resetMergeAttempt(gitDep, integration, preSha) {
@@ -1069,10 +1088,7 @@ export async function main(argv, deps = {}) {
       // audit-only: reviewers default to all agents except branch author. authorName unused by engine.
       const branchAuthor = branch.split("/")[1];
       const configured = configuredReviewers(cfg);
-      const reviewerList = configured
-        ? reviewersForAuthor(branchAuthor, configured)
-        : cfg.agents.filter((a) => a !== branchAuthor).map((a) => ({ agent: a, model: null, effort: null }));
-      const reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+      const reviewers = reviewersForAuthor(branchAuthor, configured || roleSpecsFromAgents(cfg.agents));
       const authorName = branchAuthor && cfg.agents.includes(branchAuthor) ? branchAuthor : cfg.agents[0];
       task = null;
       const sid = newSid();
@@ -1238,10 +1254,7 @@ export async function main(argv, deps = {}) {
       reviewers = persistedReviewers;
     } else {
       const configured = configuredReviewers(cfg);
-      const reviewerList = configured
-        ? reviewersForAuthor(authorName, configured)
-        : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
-      reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+      reviewers = reviewersForAuthor(authorName, configured || roleSpecsFromAgents(cfg.agents));
     }
     if (!dry) preflightFn(cfg, orchDir, { only: [authorSpec.agent, ...reviewers.map((r) => r.agent)] });
 

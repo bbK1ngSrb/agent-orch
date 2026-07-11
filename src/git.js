@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sleepSync } from "./lock.js";
+import { pidAlive } from "./pid.js";
 
 function originRef(base) {
   return `refs/remotes/origin/${base}`;
@@ -21,15 +22,6 @@ function ownerPid(markerPath) {
   } catch {
     return null;
   }
-}
-
-function pidAlive(pid) {
-  // Signal 0 either succeeds (process exists, we can signal it) or throws.
-  // EPERM means the process exists but we lack permission — still alive.
-  // Any other code (ESRCH, or Windows' error for an out-of-range/bogus pid)
-  // means dead: treating unrecognized errors as "alive" left huge test pids
-  // (e.g. 999999999) wrongly protected from reclaim on Windows.
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
 }
 
 export function git(args, cwd) {
@@ -169,15 +161,10 @@ function mainWorktreePath(repo, base = "main") {
   return flush();
 }
 
-function moveMainToOrigin(repo, mode, base = "main") {
+function moveMainToOrigin(repo, base = "main") {
   const path = mainWorktreePath(repo, base);
   if (path) {
-    if (mode === "reset") {
-      git(["reset", "--hard", originRef(base)], path);
-      git(["clean", "-fd"], path);
-    } else {
-      git(["merge", "--ff-only", originRef(base)], path);
-    }
+    git(["merge", "--ff-only", originRef(base)], path);
     return;
   }
   git(["branch", "-f", base, originRef(base)], repo);
@@ -197,7 +184,7 @@ export function syncMainFromOrigin(repo, base = "main") {
   const localBehind = gitTry(["merge-base", "--is-ancestor", base, originRef(base)], repo).ok;
   if (localBehind) {
     try {
-      moveMainToOrigin(repo, "merge", base);
+      moveMainToOrigin(repo, base);
     } catch (e) {
       const reason = (e.stderr || e.stdout || e.message || "").toString().trim();
       return { ok: false, reason: `could not fast-forward local ${base} to origin/${base}: ${reason}` };
@@ -438,13 +425,4 @@ export function bumpVersion(integrationPath, entry) {
     gitTry(["clean", "-fd"], integrationPath);
     return null;
   }
-}
-
-// Files changed on the landing branch since a given sha (what landed after a branch's base).
-// Three-dot: diff from merge-base(sha, base) to base. Two-dot would return the
-// REVERSE diff when base is behind sha (integration behind main), reporting every
-// main-only change as "landed on integration" and false-positiving the overlap guard.
-export function changedSince(repo, sha, base = "main") {
-  const out = gitTry(["diff", "--name-only", `${sha}...${base}`], repo);
-  return out.ok ? out.out.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 }
