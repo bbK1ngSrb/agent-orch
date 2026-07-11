@@ -221,6 +221,10 @@ test("DISAGREE until cap -> escalated after reviseCap rounds", async () => {
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "escalated");
   assert.equal(r.rounds, 3);
+  // Editorial rejection stays DISAGREE in the metrics log (#299) — not ERROR.
+  assert.ok(deps._calls.reviewLog.length >= 1);
+  assert.equal(deps._calls.reviewLog[0].decision, "DISAGREE");
+  assert.equal(deps._calls.reviewLog[0].agentError, false);
 });
 
 test("DISAGREE escalation diffs against cfg.baseBranch", async () => {
@@ -242,6 +246,11 @@ test("agentError reviewer escalates on round 1 instead of revising (#33)", async
   assert.match(r.reason, /agent error: rev agent exited nonzero: bad model/);
   assert.equal(deps._calls.authors, 1, "only the initial author runs — no revise on a reviewer crash");
   assert.equal(deps._calls.audits, 1);
+  // Crash is not an editorial DISAGREE — metrics must not count it as one.
+  assert.equal(deps._calls.reviewLog.length, 1);
+  assert.equal(deps._calls.reviewLog[0].decision, "ERROR");
+  assert.equal(deps._calls.reviewLog[0].agentError, true);
+  assert.equal(deps._calls.reviewLog[0].defectLaterSurfaced, false);
 });
 
 // #272/#296: preflight() is the primary guard (rejects agy before a cycle

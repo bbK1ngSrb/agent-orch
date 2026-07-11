@@ -193,10 +193,12 @@ print `merged` for a cycle whose commit never reached `origin/main`:
 - **Per-cycle cost.** Every cycle's summary line includes `; cost <usageSummary>` — the
   token/$ estimate for that cycle's author + review rounds — so cost is visible next to
   the verdict, not just in aggregate run stats.
-- **Review outcome log.** Every review round (`AGREE`/`DISAGREE`) is appended to
-  `.orch/review-outcomes.jsonl` (`src/review-log.js`). This is the raw data needed to
-  eventually measure whether cross-audit catches real defects (reviewer catch-rate) —
-  unmeasured today, called out as the project's central unproven assumption.
+- **Review outcome log.** Every review round is appended to
+  `.orch/review-outcomes.jsonl` (`src/review-log.js`) with `decision` one of
+  `AGREE`, `DISAGREE` (editorial rejection), or `ERROR` (reviewer crash/stall —
+  not a code rejection). This is the raw data needed to eventually measure whether
+  cross-audit catches real defects (reviewer catch-rate) — unmeasured today, called
+  out as the project's central unproven assumption.
 
 ## Crash recovery
 A killed `orch task` can leave worktrees under `.orch/wt`. Before starting, a run
