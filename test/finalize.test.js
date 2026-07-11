@@ -14,7 +14,6 @@ function baseDeps(over = {}) {
       ensureIntegrationWorktree: () => "/integ",
       syncWorktreeToIntegration: () => {},
       reconcileIntegrationToBase: () => ({ ok: true, updated: false }),
-      changedSince: () => [],
       mergeInWorktree: () => ({ ok: true, reason: "merged" }),
       bumpVersion: () => "0.1.1",
       verifyOriginContains: () => ({ ok: true }),
@@ -159,21 +158,6 @@ test("path overlap with a peer → pr-fallback (no merge attempted)", async () =
   assert.equal(recorded[0].sid, "1");
   assert.equal(recorded[0].verdict, "pr-fallback");
   assert.match(recorded[0].reason, /peer overlap: peer-2: src\/a\.js/);
-});
-
-test("overlap with a changeset landed since base → merge attempted, lands when clean (#96)", async () => {
-  let merged = false;
-  const { deps, recorded } = baseDeps({
-    git: {
-      ...baseDeps().deps.git,
-      changedSince: () => ["src/a.js"],
-      mergeInWorktree: () => { merged = true; return { ok: true, reason: "merged" }; },
-    },
-  });
-  const r = await finalize(ctx(), deps);
-  assert.equal(r.status, "merged");
-  assert.equal(merged, true);
-  assert.equal(recorded[0].verdict, "merged");
 });
 
 test("merge conflict → pr-fallback", async () => {

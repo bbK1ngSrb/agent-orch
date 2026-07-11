@@ -32,6 +32,21 @@ test("agy buildArgs appends --model when given", () => {
     ["-p", "PROMPT", "--model", "agy-model"]);
 });
 
+// #272: headless agy edits its own scratch workspace, never the cwd worktree,
+// so letting it author would silently produce an empty diff. The adapter must
+// refuse the author seat with an error naming the cause — and never spawn the
+// CLI (a spawn would "succeed" and reintroduce the silent no-op this guards).
+test("agy refuses the author seat loudly (review-only, #272)", async () => {
+  await assert.rejects(
+    () => get("agy").author("do work", tmpdir(), {}),
+    /agy cannot author.*scratch workspace.*reviewer only/s,
+  );
+});
+
+test("agy remains audit-capable", () => {
+  assert.equal(typeof get("agy").audit, "function");
+});
+
 test("claude buildArgs uses -p with headless write permission", () => {
   assert.deepEqual(claudeArgs("PROMPT", "/wd"),
     ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions", "PROMPT"]);
