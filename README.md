@@ -265,7 +265,8 @@ them.
 **Two-speed merge path.** When all reviewers agree and tests pass, the cycle
 merges into `orch/integration` through `.orch/integration` under a brief
 `merge.lock`. That branch is immediately usable locally after the post-merge
-test gate and version bump. Orch then pushes `orch/integration` and opens or
+test gate (and the version bump, if `release.autoBump` is enabled). Orch then
+pushes `orch/integration` and opens or
 updates one persistent PR from `orch/integration` to `main`; with
 `github.autoMergePr: true`, it also enables GitHub's native auto-merge on that
 PR using a merge commit so `orch/integration` stays in `main`'s ancestry.
@@ -319,7 +320,8 @@ auto-merge fails (e.g. branch protection isn't configured), the PR itself still
 stands; only the auto-merge step is skipped.
 
 ## Version bump on merge
-Every cycle that lands via the local integration path (not `merge: pr`) patch-bumps
+Opt-in per repo. With `release.autoBump: true` in `.orch/orch.yml`, every cycle
+that lands via the local integration path (not `merge: pr`) patch-bumps
 `package.json` right after the post-merge test gate passes: `x.y.z` → `x.y.(z+1)`,
 mirrored into `package-lock.json`'s root version and `src/version.js` (the file
 `orch --version` reads, if the target repo has one). If the repo ships a GitHub
@@ -330,6 +332,13 @@ issue <n>`), then
 commits as `chore(release): vX.Y.Z`. Best-effort: a missing/unparsable
 `package.json` or any write/commit failure is swallowed — it never blocks or
 unwinds a merge that already landed.
+```yaml
+release:
+  autoBump: true   # off by default; orch never edits release files unless you opt in
+```
+Without the flag, a merge lands with no release-file edits at all — a generic
+orchestration run must not impose this repo's release policy (patch bump +
+CHANGELOG commit) on your repo by surprise.
 
 ## Auto docs-update on merge
 Opt-in per repo. With `docs.autoUpdate: true` in `.orch/orch.yml`, a successful
