@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.46 — 2026-07-11
+- [MEDIUM][depends:D4] Batch 8: harden adapter process launching and headless approval behavior (closes [#265](https://github.com/bbk1ng/agent-orch/issues/265))
+
 ## 0.3.45 — 2026-07-11
 - [HIGH][depends:none] Batch 6: consolidate pidAlive so Windows liveness checks agree (closes [#263](https://github.com/bbk1ng/agent-orch/issues/263))
 
