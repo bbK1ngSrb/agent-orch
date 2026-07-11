@@ -32,19 +32,31 @@ test("agy buildArgs appends --model when given", () => {
     ["-p", "PROMPT", "--model", "agy-model"]);
 });
 
-// #272: headless agy edits its own scratch workspace, never the cwd worktree,
-// so letting it author would silently produce an empty diff. The adapter must
-// refuse the author seat with an error naming the cause — and never spawn the
-// CLI (a spawn would "succeed" and reintroduce the silent no-op this guards).
-test("agy refuses the author seat loudly (review-only, #272)", async () => {
+// #272/#296: headless agy edits and reads inside its own scratch workspace,
+// never the cwd worktree it's handed — so letting it author would silently
+// produce an empty diff, and letting it review would judge stale/empty
+// scratch-dir state instead of the real branch. Both seats must refuse loudly
+// and never spawn the CLI (a spawn would "succeed" and reintroduce the silent
+// no-op / bogus-verdict bug this guards against).
+test("agy refuses the author seat loudly (#272, #296)", async () => {
   await assert.rejects(
     () => get("agy").author("do work", tmpdir(), {}),
-    /agy cannot author.*scratch workspace.*reviewer only/s,
+    /agy cannot be used.*scratch workspace/s,
   );
 });
 
-test("agy remains audit-capable", () => {
-  assert.equal(typeof get("agy").audit, "function");
+test("agy refuses the audit seat loudly (#272, #296)", async () => {
+  await assert.rejects(
+    () => get("agy").audit("some-branch", tmpdir(), {}),
+    /agy cannot be used.*scratch workspace/s,
+  );
+});
+
+// preflight() (src/cli.js) reads this flag to reject a config naming agy
+// before a cycle ever starts, instead of only failing mid-run inside
+// author()/audit(). See "preflight rejects a config naming agy" in cli.test.js.
+test("agy adapter exposes `disabled` so preflight can reject it upfront (#272, #296)", () => {
+  assert.match(get("agy").disabled, /scratch workspace/);
 });
 
 test("claude buildArgs uses -p with headless write permission", () => {

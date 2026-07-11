@@ -413,6 +413,7 @@ export function preflight(cfg, orchDir, opts = {}) {
       ].filter(Boolean));
   for (const name of names) {
     const a = adapters.get(name); // throws on unknown
+    if (a.disabled) throw new Error(`agent "${name}" is disabled: ${a.disabled}`);
     const exe = a.bin || a.name; // local models run via `ccr`, not their own name
     const resolved = resolveAgentBin(exe);
     if (!resolved) throw new Error(`agent CLI not found on PATH: ${exe} (for agent ${name}; also probed ${FALLBACK_BIN_DIRS.join(", ")})`);

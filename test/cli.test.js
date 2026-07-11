@@ -663,6 +663,11 @@ test("preflight stays green when a prior preflight rewrote adapter.bin to an abs
   }
 });
 
+test("preflight rejects a config naming agy as author or reviewer (#272, #296)", () => {
+  assert.throws(() => preflight({ agents: [], author: "agy" }), /agent "agy" is disabled/);
+  assert.throws(() => preflight({ agents: [], reviewer: "agy" }), /agent "agy" is disabled/);
+});
+
 test("nextAuthor honors explicit fixed roles over rotation", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
   const cfg = { agents: ["claude", "codex"], author: "qwen3-coder-30b", reviewer: "claude" };
