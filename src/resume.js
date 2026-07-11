@@ -4,8 +4,9 @@
 // wrong branch. Written before runCycle, cleared after it RETURNS — a throw
 // (quota) skips the clear, so the record survives for the next run to resume.
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomic } from "./atomic-file.js";
 
 const dir = (orchDir) => join(orchDir, "resume");
 const key = (task, author) => createHash("sha1").update(`${author}\0${task}`).digest("hex");
@@ -16,7 +17,7 @@ export function record(orchDir, task, author, { branch, sid }) {
   mkdirSync(dir(orchDir), { recursive: true });
   // author + taskHash let lookupForTask find this branch regardless of which agent
   // the rotation pool advanced to on the resuming run (#27).
-  writeFileSync(file(orchDir, task, author),
+  writeFileAtomic(file(orchDir, task, author),
     JSON.stringify({ branch, sid, author, taskHash: taskKey(task), ts: new Date().toISOString() }));
 }
 

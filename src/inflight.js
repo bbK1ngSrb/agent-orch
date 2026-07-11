@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomic } from "./atomic-file.js";
 
 const dir = (orchDir) => join(orchDir, "inflight");
 const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
@@ -14,7 +15,7 @@ const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
 // which agents/models it should resume with instead of guessing from rotation.
 export function register(orchDir, sid, { branch, pid, baseSha, closes = null, author = null, reviewers = null }) {
   mkdirSync(dir(orchDir), { recursive: true });
-  writeFileSync(file(orchDir, sid), JSON.stringify({
+  writeFileAtomic(file(orchDir, sid), JSON.stringify({
     sid, branch, pid, baseSha, closes, author, reviewers, paths: [], ts: new Date().toISOString(),
   }));
 }
@@ -25,7 +26,7 @@ export function setPaths(orchDir, sid, paths, baseSha) {
     const e = JSON.parse(readFileSync(p, "utf8"));
     e.paths = paths;
     if (baseSha !== undefined) e.baseSha = baseSha;
-    writeFileSync(p, JSON.stringify(e));
+    writeFileAtomic(p, JSON.stringify(e));
   } catch (err) {
     // Treat missing file (ENOENT) and parse errors as silent no-op.
     // In multi-process designs, the file may be removed or corrupted between calls.
