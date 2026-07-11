@@ -1365,7 +1365,7 @@ export async function main(argv, deps = {}) {
   if (command === "pr") {
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const n = rest[0];
-    if (!n) throw new Error("usage: orch pr <number> [--merge]");
+    if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch pr <number> [--merge]");
     preflightFn(cfg, orchDir);
     requireGhAuth((deps.githubDeps || githubDeps)().gh);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");

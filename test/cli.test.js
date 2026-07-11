@@ -1079,6 +1079,11 @@ test("CLI role overrides replace orch.yml fixed roles", () => {
   assert.deepEqual(overridden.reviewers, ["codex", "claude"]);
 });
 
+test("pr rejects a non-numeric PR number", async () => {
+  await assert.rejects(() => runMainCapture(["pr", "abc"]), /usage: orch pr <number>/);
+  await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
+});
+
 test("dashboard rejects a non-numeric or non-positive --limit", async () => {
   await assert.rejects(() => runMainCapture(["dashboard", "--limit", "nope"]), /--limit must be a positive integer/);
   await assert.rejects(() => runMainCapture(["dashboard", "--limit", "0"]), /--limit must be a positive integer/);
