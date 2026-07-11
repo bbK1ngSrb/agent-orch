@@ -52,6 +52,13 @@ test("agy refuses the audit seat loudly (#272, #296)", async () => {
   );
 });
 
+// preflight() (src/cli.js) reads this flag to reject a config naming agy
+// before a cycle ever starts, instead of only failing mid-run inside
+// author()/audit(). See "preflight rejects a config naming agy" in cli.test.js.
+test("agy adapter exposes `disabled` so preflight can reject it upfront (#272, #296)", () => {
+  assert.match(get("agy").disabled, /scratch workspace/);
+});
+
 test("claude buildArgs uses -p with headless write permission", () => {
   assert.deepEqual(claudeArgs("PROMPT", "/wd"),
     ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions", "PROMPT"]);

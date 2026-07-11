@@ -244,6 +244,19 @@ test("agentError reviewer escalates on round 1 instead of revising (#33)", async
   assert.equal(deps._calls.audits, 1);
 });
 
+// #272/#296: preflight() is the primary guard (rejects agy before a cycle
+// starts), but runCycle must never turn a crashing author into a silent
+// no-op if it's ever reached anyway (e.g. a resume path). It must reject
+// loudly instead of swallowing the error and reporting a false success.
+test("author() throwing (agy's #272 refusal) propagates out of runCycle instead of a silent success", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.adapters.get = (n) => (n === "auth"
+    ? { name: "auth", async author() { throw new Error("agy cannot be used: ... scratch workspace ..."); }, async audit() { return { decision: "AGREE", reason: "", raw: "" }; } }
+    : { name: n, async audit() { return { decision: "AGREE", reason: "", raw: "" }; } });
+  await assert.rejects(() => runCycle(opts, deps), /agy cannot be used/);
+  assert.equal(deps._calls.finalized, undefined, "a crashed author must never reach finalize/merge");
+});
+
 test("DISAGREE then AGREE -> merged on round 2", async () => {
   const deps = makeDeps({
     verdicts: [

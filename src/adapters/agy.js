@@ -24,6 +24,10 @@ const REFUSAL =
   "(~/.gemini/antigravity-cli/scratch/), never the worktree passed as cwd, so it can " +
   "neither author changes (#272) nor reliably review a branch's actual diff (#296). " +
   "Do not configure agy in any seat.";
+// Set so preflight() can reject a config naming agy in any seat before a
+// cycle ever spins up a worktree (rather than crashing mid-run inside a
+// try/catch that wasn't built to expect author()/audit() to throw).
+adapter.disabled = REFUSAL;
 adapter.author = async () => {
   throw new Error(REFUSAL);
 };
