@@ -117,8 +117,10 @@ export async function finalize(ctx, deps) {
     }
 
     // Patch-per-merge version bump + CHANGELOG entry, so a merged sha always
-    // maps to a bumped `orch --version`. Best-effort: never blocks the merge.
-    git.bumpVersion(integration, changelogEntry(ctx));
+    // maps to a bumped `orch --version`. Opt-in via release.autoBump: a generic
+    // orchestrator must not edit downstream release files by default.
+    // Best-effort: never blocks the merge.
+    if (cfg.release?.autoBump) git.bumpVersion(integration, changelogEntry(ctx));
 
     const sha = git.git(["rev-parse", "HEAD"], integration);
     const localIntegration = git.git(["rev-parse", integrationBranch], repo);

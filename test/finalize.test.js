@@ -36,6 +36,9 @@ const ctx = () => ({
   baseSha: "base", paths: ["src/a.js"], testCmd: "npm test", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1,
 });
 
+// ctx with the opt-in release policy enabled — bumpVersion only runs with this.
+const bumpCtx = () => ({ ...ctx(), cfg: { ...ctx().cfg, release: { autoBump: true } } });
+
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-finalize-"));
   gitMod.git(["init", "-b", "main"], d);
@@ -255,13 +258,25 @@ test("issue bridge: closes #N reaches github.demote when a merge is blocked", as
   assert.equal(capturedCtx.closes, 52);
 });
 
-test("clean merge → version bump runs against the integration worktree", async () => {
-  let bumpArgs;
+test("release.autoBump off (default) → clean merge never calls bumpVersion", async () => {
+  let calls = 0;
   const { deps } = baseDeps({
-    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
+    git: { ...baseDeps().deps.git, bumpVersion: () => { calls += 1; return "0.1.1"; } },
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merged");
+  assert.equal(calls, 0);
+});
+
+test("release.autoBump on → clean merge runs the version bump exactly once against the integration worktree", async () => {
+  let bumpArgs;
+  let calls = 0;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { calls += 1; bumpArgs = { path, entry }; return "0.1.1"; } },
+  });
+  const r = await finalize(bumpCtx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(calls, 1);
   assert.equal(bumpArgs.path, "/integ");
   assert.equal(bumpArgs.entry, "pr/claude/x-1");
 });
@@ -271,7 +286,7 @@ test("clean merge with task: version bump entry uses the human title", async () 
   const { deps } = baseDeps({
     git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
   });
-  await finalize({ ...ctx(), task: "Demote escalation output too terse for humans" }, deps);
+  await finalize({ ...bumpCtx(), task: "Demote escalation output too terse for humans" }, deps);
   assert.equal(bumpArgs.entry, "Demote escalation output too terse for humans");
 });
 
@@ -280,7 +295,7 @@ test("clean merge with closes: version bump entry links the issue number", async
   const { deps } = baseDeps({
     git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
   });
-  await finalize({ ...ctx(), task: "Demote escalation output too terse for humans", closes: 53 }, deps);
+  await finalize({ ...bumpCtx(), task: "Demote escalation output too terse for humans", closes: 53 }, deps);
   assert.equal(
     bumpArgs.entry,
     "Demote escalation output too terse for humans (closes [#53](https://github.com/bbk1ng/agent-orch/issues/53))",
@@ -294,7 +309,7 @@ test("post-merge test failure → version bump never runs (rolled back first)", 
     gate: { run: () => ({ pass: false, log: "boom" }) },
     git: { ...g, bumpVersion: () => { bumped = true; }, git: (args) => (args[0] === "rev-parse" ? "pre" : "") },
   });
-  await finalize(ctx(), deps);
+  await finalize(bumpCtx(), deps);
   assert.equal(bumped, false);
 });
 

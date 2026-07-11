@@ -272,6 +272,23 @@ test("docs user override shallow-merges (keeps default prompt/paths)", () => {
   assert.deepEqual(c.docs.paths, ["*.md", "docs/**", "**/*.md"]); // default kept
 });
 
+test("release.autoBump off by default", () => {
+  const c = load(tmp());
+  assert.equal(c.release.autoBump, false);
+});
+
+test("release.autoBump user override enables the bump", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "release:\n  autoBump: true\n");
+  assert.equal(load(d).release.autoBump, true);
+});
+
+test("invalid release.autoBump throws", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "release:\n  autoBump: yes please\n");
+  assert.throws(() => load(d), /release.autoBump must be a boolean/);
+});
+
 test("invalid docs.autoUpdate throws", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "docs:\n  autoUpdate: yes please\n");
