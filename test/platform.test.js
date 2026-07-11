@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, win32 } from "node:path";
+import { join, win32 } from "node:path";
 import { exeCandidates, killTree, portableSpawnSpec } from "../src/platform.js";
 import { resolveAgentBin } from "../src/agent-bin.js";
 
@@ -90,5 +90,5 @@ test("resolveAgentBin: win32 PATH hit returns the absolute resolved path", () =>
   chmodSync(p, 0o755);
   // POSIX returns the bare name on a PATH hit; win32 must return the absolute
   // path so the caller can see the .cmd extension and unwrap the shim.
-  assert.equal(resolveAgentBin("fake-win-cli2", [], `${delimiter}${d}${delimiter}`, "win32"), p);
+  assert.equal(resolveAgentBin("fake-win-cli2", [], `${win32.delimiter}${d}${win32.delimiter}`, "win32"), p);
 });

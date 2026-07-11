@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { start, normalizeKey } from "./input.js";
+import { start, normalizeKey } from "../../src/tui/input.js";
 
 // Fake stdin: an EventEmitter with the tty surface start() touches.
 function fakeStdin() {
