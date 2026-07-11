@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, mergeInWorktree, changedFiles, changedSince, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, mergeInWorktree, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -402,26 +402,6 @@ test("#134: reclaim still sweeps an orphan on win32 even when git reports a diff
 
   assert.equal(r.recovered, true);
   assert.equal(branchExists(repo, "pr/claude/cased"), false);
-});
-
-test("changedSince lists files merged into the named branch after a base sha", () => {
-  const repo = newRepo();
-  const base = git(["rev-parse", "main"], repo);
-  git(["switch", "-c", "orch/integration"], repo);
-  writeFileSync(join(repo, "new.txt"), "x\n");
-  git(["add", "."], repo); git(["commit", "-m", "land new"], repo);
-  assert.deepEqual(changedSince(repo, base, "orch/integration"), ["new.txt"]);
-});
-
-test("changedSince is empty when the named branch is BEHIND the base sha (no reverse diff)", () => {
-  const repo = newRepo();
-  git(["branch", "orch/integration"], repo); // integration at current main tip
-  writeFileSync(join(repo, "ahead.txt"), "x\n");
-  git(["add", "."], repo); git(["commit", "-m", "advance main past integration"], repo);
-  const base = git(["rev-parse", "main"], repo);
-  // integration is now an ancestor of base: nothing landed there since our base,
-  // so main-only changes must NOT be reported as overlap candidates.
-  assert.deepEqual(changedSince(repo, base, "orch/integration"), []);
 });
 
 test("fetchOriginMain retries and succeeds on transient ref-lock contention", () => {

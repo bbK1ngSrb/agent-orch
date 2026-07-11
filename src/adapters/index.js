@@ -20,7 +20,3 @@ export function get(name) {
   if (!a) throw new Error(`unknown agent: ${name}`);
   return a;
 }
-
-export function bins() {
-  return Object.fromEntries(Object.values(REGISTRY).map((a) => [a.name, a.name]));
-}
