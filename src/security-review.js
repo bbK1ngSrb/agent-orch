@@ -7,7 +7,7 @@ export const SECURITY_RULES = [
   { rule: "env-read", re: /process\.env|import\.meta\.env|os\.environ|\$\{?GITHUB_TOKEN/ },
   { rule: "secret-read", re: /\.orch\/|id_rsa|\.ssh\/|secrets?\.|\.pem\b|PRIVATE KEY/i },
   { rule: "network", re: /\bfetch\s*\(|node:net\b|node:dns\b|node:https?\b|require\(\s*["']https?["']\s*\)|XMLHttpRequest|\.connect\s*\(/ },
-  { rule: "subprocess", re: /child_process|execSync|execFileSync|spawnSync|(?<!\.)\bspawn\s*\(|(?<!\.)\bexec\s*\(/ },
+  { rule: "subprocess", re: /child_process|execSync|execFileSync|spawnSync|\bspawn\s*\(|(?<!\b(?:re|regex|regexp|pattern|rx)\.)\bexec\s*\(/i },
   { rule: "guardrail-touch", re: /branchProtection|CODEOWNERS|orch-pr\.yml|workflows\// },
 ];
 

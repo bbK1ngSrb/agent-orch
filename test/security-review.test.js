@@ -49,6 +49,17 @@ test("bare exec()/spawn() calls still flagged (subprocess)", () => {
   }
 });
 
+test("aliased child_process calls (cp.exec/child.spawn) still flagged (subprocess)", () => {
+  for (const snippet of [
+    `+  cp.exec("rm -rf /", cb);`,
+    `+  child.spawn("sh", ["-c", cmd]);`,
+  ]) {
+    const r = scanDiff(`+++ b/src/x.js\n${snippet}`);
+    assert.equal(r.decision, "DISAGREE", snippet);
+    assert.ok(r.findings.some((f) => f.rule === "subprocess"), snippet);
+  }
+});
+
 // --- fix: RegExp#exec() false positive ---
 test("RegExp#exec() and String#match-style .exec() do not trip subprocess rule", () => {
   const d = `+++ b/test/cli.test.js
