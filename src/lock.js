@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { pidAlive } from "./pid.js";
 
 // Atomic lock via O_EXCL (flag "wx") — fails if the lock already exists. The
 // lock holds the owner PID so a crashed cycle (dead PID, or an empty file from
@@ -43,13 +44,7 @@ function isStale(lockPath) {
   } catch {
     return true; // unreadable
   }
-  if (!Number.isInteger(pid) || pid <= 0) return true;
-  try {
-    process.kill(pid, 0); // signal 0 = liveness probe, kills nothing
-    return false; // alive
-  } catch (e) {
-    return e.code === "ESRCH"; // ESRCH = no such process = stale; EPERM = alive
-  }
+  return !pidAlive(pid);
 }
 
 export function releaseLock(orchDir, lockName = "lock") {
