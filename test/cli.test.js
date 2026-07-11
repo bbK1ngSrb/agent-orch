@@ -1477,6 +1477,26 @@ test("--help / -h print usage and exit cleanly (no unknown-option error)", async
   }
 });
 
+test("task --reviewer-only forces reviewers while rotating the author (D2)", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-reviewer-only-"));
+  const base = {
+    agents: ["claude", "codex"],
+    author: null, reviewer: null, authors: null, reviewers: null,
+  };
+  // Without the flag pair, reviewer-only still throws.
+  assert.throws(
+    () => applyRoleOverrides(base, { reviewer: "codex" }, { allowReviewerOnly: false }),
+    /set both --author\(s\) and --reviewer\(s\)/,
+  );
+  const cfg = applyRoleOverrides(base, { reviewer: "codex" }, { allowReviewerOnly: true });
+  assert.equal(cfg.authors, null);
+  assert.deepEqual(cfg.reviewers, ["codex"]);
+  const picked = nextAuthor(cfg, d);
+  assert.equal(picked.authorName, "claude"); // rotation author
+  assert.deepEqual(picked.reviewerNames, ["codex"]); // forced reviewer, not rotation's codex-by-chance alone
+  assert.deepEqual(picked.reviewers, [{ agent: "codex", model: null, effort: null }]);
+});
+
 import { resolveTaskBranch } from "../src/cli.js";
 
 function resumeStubs({ record = null, exists = true, changed = ["a"] }) {

@@ -368,26 +368,30 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
   mkdirSync(orchDir, { recursive: true });
   // Resuming a surviving branch (#27): pin its author and DON'T advance rotation —
   // this run is the prior run continuing, not a new author's turn.
+  // Reviewer-only CLI overrides (D2) force reviewers while still rotating the author.
+  const forcedReviewers = configuredReviewers(cfg);
   if (pinnedAuthor && cfg.agents.includes(pinnedAuthor)) {
     const pi = cfg.agents.indexOf(pinnedAuthor);
-    const reviewerName = cfg.agents[(pi + 1) % cfg.agents.length] || pinnedAuthor;
+    const rotationReviewer = cfg.agents[(pi + 1) % cfg.agents.length] || pinnedAuthor;
+    const reviewers = forcedReviewers || [{ agent: rotationReviewer, model: null, effort: null }];
     return {
-      authorName: pinnedAuthor, reviewerName,
-      authorNames: [pinnedAuthor], reviewerNames: [reviewerName],
+      authorName: pinnedAuthor, reviewerName: reviewers[0].agent,
+      authorNames: [pinnedAuthor], reviewerNames: reviewers.map((s) => s.agent),
       authors: [{ agent: pinnedAuthor, model: null, effort: null }],
-      reviewers: [{ agent: reviewerName, model: null, effort: null }],
+      reviewers,
     };
   }
   const last = existsSync(f) ? readFileSync(f, "utf8").trim() : null;
   const i = last ? (cfg.agents.indexOf(last) + 1) % cfg.agents.length : 0;
   const authorName = cfg.agents[i];
-  const reviewerName = cfg.agents[(i + 1) % cfg.agents.length] || authorName;
+  const rotationReviewer = cfg.agents[(i + 1) % cfg.agents.length] || authorName;
   writeFileSync(f, authorName + "\n");
+  const reviewers = forcedReviewers || [{ agent: rotationReviewer, model: null, effort: null }];
   return {
-    authorName, reviewerName,
-    authorNames: [authorName], reviewerNames: [reviewerName],
+    authorName, reviewerName: reviewers[0].agent,
+    authorNames: [authorName], reviewerNames: reviewers.map((s) => s.agent),
     authors: [{ agent: authorName, model: null, effort: null }],
-    reviewers: [{ agent: reviewerName, model: null, effort: null }],
+    reviewers,
   };
 }
 
@@ -993,7 +997,9 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "task" || command === "review" || command === "issue") {
-    let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: command === "review" });
+    // D2: reviewer-only is meaningful for task/issue too ("rotate author, force this
+    // reviewer"), matching review/continue/pr and the printUsage example.
+    let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
 
     // F3: operator kill switch + one-cycle-at-a-time lock.
