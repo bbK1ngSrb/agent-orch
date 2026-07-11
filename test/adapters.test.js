@@ -11,7 +11,7 @@ import { buildArgs as copilotArgs } from "../src/adapters/copilot.js";
 import { buildArgs as geminiArgs } from "../src/adapters/gemini.js";
 import { buildArgs as grokArgs } from "../src/adapters/grok.js";
 import { get } from "../src/adapters/index.js";
-import { makeCliAdapter, isUsageLimit, parseRunUsage } from "../src/adapters/cli-adapter.js";
+import { makeCliAdapter, isUsageLimit, parseRunUsage, MAX_AGENT_OUTPUT_CHARS } from "../src/adapters/cli-adapter.js";
 
 // Fake-agent fixtures spawn `node -e <script>` instead of `sh -c <script>`.
 // A shell (and printf/cat/trap/exit) is POSIX-only — this repo's own CI
@@ -109,10 +109,35 @@ test("adapter forwards model/effort opts to buildArgs", async () => {
   let seen;
   const adapter = makeCliAdapter({
     name: "spy", bin: process.execPath,
+    supports: { model: true, effort: true },
     buildArgs: (_p, _wd, opts) => { seen = opts; return nodeScript("process.exit(0)"); },
   });
   await adapter.audit("pr/x/y", tmpdir(), { model: "m1", effort: "low" });
   assert.deepEqual(seen, { model: "m1", effort: "low" });
+});
+
+test("adapter rejects unsupported model/effort opts before spawning", async () => {
+  let spawned = false;
+  const adapter = makeCliAdapter({
+    name: "limited", bin: process.execPath,
+    supports: { model: true, effort: false },
+    buildArgs: () => { spawned = true; return nodeScript("process.exit(0)"); },
+  });
+  await assert.rejects(
+    () => adapter.audit("pr/x/y", tmpdir(), { model: "ok", effort: "high" }),
+    /limited adapter does not support effort settings/,
+  );
+  assert.equal(spawned, false);
+});
+
+test("registered adapters declare supported model/effort options", () => {
+  assert.deepEqual(get("claude").supports, { model: true, effort: true });
+  assert.deepEqual(get("codex").supports, { model: true, effort: true });
+  assert.deepEqual(get("grok").supports, { model: true, effort: true });
+  assert.deepEqual(get("agy").supports, { model: true, effort: false });
+  assert.deepEqual(get("copilot").supports, { model: true, effort: false });
+  assert.deepEqual(get("gemini").supports, { model: true, effort: false });
+  assert.deepEqual(get("qwen3-coder-30b").supports, { model: false, effort: false });
 });
 
 test("parseRunUsage reads JSON and text token summaries, estimating $ cost from known model prices", () => {
@@ -151,6 +176,21 @@ test("audit returns parsed model, token usage, and estimated cost from agent out
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
   assert.deepEqual(v.usage, { model: "gpt-5.1", tokens: 125, inputTokens: 100, outputTokens: 25, costUsd: 0.000875 });
+});
+
+test("audit caps captured child output while preserving the tail", async () => {
+  const adapter = makeCliAdapter({
+    name: "chatty",
+    bin: process.execPath,
+    buildArgs: () => nodeScript(
+      `process.stdout.write('x'.repeat(${MAX_AGENT_OUTPUT_CHARS + 50_000}));` +
+      "process.stdout.write('\\nAGREE final verdict\\n')"),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.match(v.raw, /output truncated to last/);
+  assert.match(v.raw, /final verdict/);
+  assert.ok(v.raw.length <= MAX_AGENT_OUTPUT_CHARS + 200);
 });
 
 test("audit captures stderr from successful agent runs", async () => {

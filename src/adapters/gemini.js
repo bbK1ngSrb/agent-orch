@@ -6,4 +6,4 @@ export function buildArgs(prompt, _wd, opts = {}) {
   return args;
 }
 
-export default makeCliAdapter({ name: "gemini", bin: "gemini", buildArgs });
+export default makeCliAdapter({ name: "gemini", bin: "gemini", buildArgs, supports: { model: true, effort: false } });

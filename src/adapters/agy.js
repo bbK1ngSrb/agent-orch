@@ -6,7 +6,7 @@ export function buildArgs(prompt, _wd, opts = {}) {
   return args;
 }
 
-const adapter = makeCliAdapter({ name: "agy", bin: "agy", buildArgs });
+const adapter = makeCliAdapter({ name: "agy", bin: "agy", buildArgs, supports: { model: true, effort: false } });
 
 // Review-only (#272): headless `agy -p` ignores the process cwd and performs
 // every file edit inside its own scratch workspace (~/.gemini/antigravity-cli/

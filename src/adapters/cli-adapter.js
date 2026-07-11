@@ -7,6 +7,8 @@ import { estimateCostUsd } from "../pricing.js";
 const OPTS = { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 };
 const DEFAULT_PROGRESS_INTERVAL_MS = 30_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 25 * 60_000; // #56: per-stage wall-clock cap; 0 disables.
+export const MAX_AGENT_OUTPUT_CHARS = 1024 * 1024;
+const OUTPUT_TRUNCATED = `[orch: output truncated to last ${MAX_AGENT_OUTPUT_CHARS} chars]\n`;
 
 // True if CLI output looks like a Claude usage/rate-limit message. Keep this in
 // sync with the regex in harness/orch-loop.sh (is_limit) — that wrapper waits
@@ -43,6 +45,12 @@ function formatElapsed(ms) {
   return minutes ? `${minutes}m ${String(rest).padStart(2, "0")}s` : `${seconds}s`;
 }
 
+function appendCapturedOutput(buffer, chunk) {
+  const next = buffer + String(chunk);
+  if (next.length <= MAX_AGENT_OUTPUT_CHARS) return next;
+  return OUTPUT_TRUNCATED + next.slice(-MAX_AGENT_OUTPUT_CHARS);
+}
+
 function runAgent(bin, args, cwd, label, runOpts = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
@@ -50,6 +58,15 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timer = null;
+    let watchdog = null;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearInterval(timer);
+      if (watchdog) clearTimeout(watchdog);
+      resolve(result);
+    };
     // detached (POSIX only): the child leads its own process group, so a stalled
     // agent that spawns grandchildren (e.g. `node codex exec` → the codex musl
     // binary) can be reaped as a whole group, not orphaned. #56 observed exactly
@@ -61,9 +78,16 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     // claude takes its prompt from argv, so EOF is safe for every adapter.
     // portableSpawnSpec: on Windows an npm .cmd shim is unwrapped to its JS
     // target so the prompt argv never passes through cmd.exe quoting.
-    const spec = portableSpawnSpec(bin, args);
+    let spec;
+    try {
+      spec = portableSpawnSpec(bin, args);
+    } catch (e) {
+      const out = e.message || String(e);
+      finish({ out, raw: out, ok: false });
+      return;
+    }
     const child = spawn(spec.bin, spec.args, { cwd, detached: !IS_WINDOWS, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    const timer = setInterval(() => {
+    timer = setInterval(() => {
       process.stderr.write(`… ${label} still running (${formatElapsed(Date.now() - started)} elapsed)\n`);
     }, progressIntervalMs());
     timer.unref?.();
@@ -72,7 +96,7 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     // explicitly. We must NOT wait for `close`: the stalled child may exit 0 on a
     // catchable signal (which would let an empty branch advance to audit) or sit
     // in uninterruptible-sleep on NFS where even SIGKILL doesn't reap promptly.
-    const watchdog = timeoutMs > 0 ? setTimeout(() => {
+    watchdog = timeoutMs > 0 ? setTimeout(() => {
       const elapsed = Date.now() - started;
       process.stderr.write(`… ${label} TIMED OUT after ${formatElapsed(elapsed)} — killing stalled stage\n`);
       // Liveness-gated: only signal a still-running child's tree. Once settled or
@@ -83,18 +107,11 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
       finish({ out: `${stdout}${stderr}\n${label} timed out after ${formatElapsed(elapsed)}`, ok: false });
     }, timeoutMs) : null;
     watchdog?.unref?.();
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      clearInterval(timer);
-      if (watchdog) clearTimeout(watchdog);
-      resolve(result);
-    };
 
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => { stdout += chunk; });
-    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.stdout?.on("data", (chunk) => { stdout = appendCapturedOutput(stdout, chunk); });
+    child.stderr?.on("data", (chunk) => { stderr = appendCapturedOutput(stderr, chunk); });
     child.on("error", (e) => {
       const out = e.message || "";
       finish({ out, raw: out, ok: false });
@@ -218,14 +235,26 @@ function detail(out) {
   return tail ? `: ${tail.slice(-300)}` : "";
 }
 
-export function makeCliAdapter({ name, bin, buildArgs }) {
+function normalizeSupports(supports = {}) {
+  return { model: Boolean(supports.model), effort: Boolean(supports.effort) };
+}
+
+function assertSupported(name, supports, opts = {}) {
+  if (opts.model && !supports.model) throw new Error(`${name} adapter does not support model overrides`);
+  if (opts.effort && !supports.effort) throw new Error(`${name} adapter does not support effort settings`);
+}
+
+export function makeCliAdapter({ name, bin, buildArgs, supports = { model: true, effort: true } }) {
+  const capabilitySupport = normalizeSupports(supports);
   // Spawns read adapter.bin (not the closed-over param) so preflight can rewrite
   // it to an absolute path when the CLI is found off-PATH in a known install dir.
   const adapter = {
     name,
     bin, // the actual executable (may differ from name, e.g. local models run via `ccr`)
+    supports: capabilitySupport,
     async author(task, wd, opts = {}) {
       // Author must succeed; a failure here is a hard error (no commits made).
+      assertSupported(name, capabilitySupport, opts);
       const args = buildArgs(render("author", { task }), wd, opts);
       const result = await runAgent(adapter.bin, args, wd, `${name} authoring`, { stageTimeoutMs: opts.stageTimeoutMs });
       if (!result.ok) throw new Error(result.out || `Command failed: ${adapter.bin}`);
@@ -246,6 +275,7 @@ export function makeCliAdapter({ name, bin, buildArgs }) {
     async audit(branch, wd, opts = {}) {
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
+      assertSupported(name, capabilitySupport, opts);
       const args = buildArgs(render("review", { branch }), wd, opts);
       const { out, raw, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, { stageTimeoutMs: opts.stageTimeoutMs });
       const captured = raw || out;

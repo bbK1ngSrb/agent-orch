@@ -22,7 +22,7 @@ function makeLocal(model) {
     "--dangerously-skip-permissions",
     prompt,
   ];
-  return makeCliAdapter({ name: model, bin: "ccr", buildArgs });
+  return makeCliAdapter({ name: model, bin: "ccr", buildArgs, supports: { model: false, effort: false } });
 }
 
 export default Object.fromEntries(MODELS.map((m) => [m, makeLocal(m)]));
