@@ -9,7 +9,8 @@
   },
   "files": [
     "bin",
-    "src"
+    "src",
+    "!src/**/*.test.js"
   ],
   "engines": {
     "node": ">=18"
