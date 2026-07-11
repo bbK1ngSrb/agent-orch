@@ -111,6 +111,17 @@ export function validate(cfg) {
 // keyword would be misread — none exists, and effort is a reserved trailing word.
 const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "minimal"]);
 export function parseRoleSpec(spec) {
+  // Already-parsed runtime objects (e.g. after normalizeMainConfig) re-enter cleanly.
+  if (spec && typeof spec === "object" && !Array.isArray(spec)) {
+    if (typeof spec.agent !== "string" || !spec.agent.trim()) throw new Error("role spec must name an agent");
+    const agent = spec.agent.trim();
+    const model = spec.model == null || spec.model === "" ? null : String(spec.model);
+    const effort = spec.effort == null || spec.effort === "" ? null : String(spec.effort);
+    const capabilities = getAdapter(agent).capabilities || {};
+    if (model && !capabilities.model) throw new Error(`role spec: agent ${agent} does not support model`);
+    if (effort && !capabilities.effort) throw new Error(`role spec: agent ${agent} does not support effort`);
+    return { agent, model, effort };
+  }
   const parts = String(spec ?? "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) throw new Error("role spec must name an agent");
   const [agent, ...rest] = parts;
@@ -167,7 +178,7 @@ export function load(dir, overridePath) {
   return cfg;
 }
 
-function normalizeMainConfig(cfg, userMain, overrideMain) {
+export function normalizeMainConfig(cfg, userMain = {}, overrideMain = {}) {
   if (typeof cfg.main.autoResolveConflicts !== "boolean")
     throw new Error("orch.yml: main.autoResolveConflicts must be a boolean");
   const explicitMode = Object.prototype.hasOwnProperty.call(userMain, "conflictResolution") ||

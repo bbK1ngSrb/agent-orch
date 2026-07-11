@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { parse, stringify } from "yaml";
-import { DEFAULTS, validate } from "./config.js";
+import { DEFAULTS, normalizeMainConfig, validate } from "./config.js";
 import { start as startInput } from "./tui/input.js";
 import { box, C, colorEnabled } from "./tui/theme.js";
 
@@ -44,6 +44,17 @@ export const OPTION_CATALOG = [
     false: "Keep this off when main should move only after human approval.",
     true: "Use this only when unattended updates to main are acceptable for the repo.",
   } },
+  { keys: ["main.conflictResolution"], label: "main conflict resolution", widget: ENUM, choices: ["manual", "propose", "auto"], explain: "What orch does when the persistent integration-to-main PR is dirty.", choiceExplain: {
+    manual: "Comment for a human and leave the dirty PR alone.",
+    propose: "A resolver drafts a resolution for review without pushing.",
+    auto: "Push only whitelisted metadata conflicts after the test gate passes; everything else is proposed.",
+  } },
+  { keys: ["main.conflictResolutionResolvers"], label: "main conflict resolvers", widget: LIST, nullableList: true, explain: "Optional role-spec pool for conflict resolution (rotate/fail over per conflict). Leave blank for the historical single-claude default." },
+  { keys: ["main.autoResolveConflicts"], label: "main auto-resolve conflicts (deprecated)", widget: BOOL, choices: [false, true], explain: "Deprecated alias for conflict resolution. Prefer main.conflictResolution; true maps to auto, false to manual when no explicit mode is set.", choiceExplain: {
+    false: "Legacy alias for conflictResolution: manual when no explicit mode is set.",
+    true: "Legacy alias for conflictResolution: auto when no explicit mode is set.",
+  } },
+  { keys: ["main.autoResolveConflictPaths"], label: "main auto-resolve conflict paths", widget: LIST, explain: "Paths auto mode may push after a green gate. Non-matching conflicts stay proposed for humans even when resolution is auto." },
   { keys: ["release.autoBump"], label: "release auto-bump", widget: BOOL, choices: [false, true], explain: "Controls the automatic patch version bump and CHANGELOG entry after each integrated merge.", choiceExplain: {
     false: "orch never edits release files; the repo keeps its own release policy.",
     true: "Every integrated merge bumps the patch version and prepends a CHANGELOG entry.",
@@ -82,10 +93,33 @@ function cloneConfig(cfg) {
     cheap: { ...cfg.cheap, paths: [...cfg.cheap.paths] },
     scope: { ...cfg.scope, ignore: [...cfg.scope.ignore] },
     github: { ...cfg.github },
-    main: { ...cfg.main },
+    main: {
+      ...cfg.main,
+      autoResolveConflictPaths: [...(cfg.main.autoResolveConflictPaths || [])],
+      conflictResolutionResolvers: cfg.main.conflictResolutionResolvers == null
+        ? null
+        : cfg.main.conflictResolutionResolvers.map((r) => (typeof r === "string" ? r : { ...r })),
+    },
     docs: { ...cfg.docs, paths: [...cfg.docs.paths] },
     release: { ...cfg.release },
   };
+}
+
+// Wizard in-memory configs already carry a resolved conflictResolution. Re-run
+// normalize with that mode as explicit so propose/auto is not collapsed back to
+// the deprecated boolean alias — unless the user is editing the alias itself.
+function normalizeWizardConfig(cfg, entry = null) {
+  const touchesAlias = Boolean(entry?.keys?.includes("main.autoResolveConflicts"));
+  const userMain = touchesAlias ? {} : { conflictResolution: cfg.main.conflictResolution };
+  normalizeMainConfig(cfg, userMain, {});
+  validate(cfg);
+  return cfg;
+}
+
+function roleSpecToString(spec) {
+  if (spec == null) return spec;
+  if (typeof spec === "string") return spec;
+  return [spec.agent, spec.model, spec.effort].filter(Boolean).join(" ");
 }
 
 function parseList(input, nullable = false) {
@@ -124,8 +158,7 @@ export function applyAnswer(cfg, entry, answer) {
     : formatValue(get(cfg, entry.keys[0]));
   const value = parseAnswer(entry, answer, current);
   entry.keys.forEach((key, i) => set(next, key, entry.pair ? value[i] : value));
-  validate(next);
-  return next;
+  return normalizeWizardConfig(next, entry);
 }
 
 export function validateCatalog(catalog = OPTION_CATALOG, defaults = DEFAULTS) {
@@ -134,20 +167,33 @@ export function validateCatalog(catalog = OPTION_CATALOG, defaults = DEFAULTS) {
       if (get(defaults, key) === undefined) throw new Error(`catalog key missing from DEFAULTS: ${key}`);
     }
     if (entry.widget === ENUM) {
-      for (const choice of entry.choices) validate(applyAnswer(defaults, entry, choice));
+      for (const choice of entry.choices) normalizeWizardConfig(applyAnswer(defaults, entry, choice));
     }
   }
-  validate(defaults);
+  normalizeWizardConfig(cloneConfig(defaults));
   return true;
 }
 
 export function configToYaml(cfg) {
-  validate(cfg);
-  return stringify(cfg);
+  const out = cloneConfig(cfg);
+  // Preserve the in-memory mode as explicit so serialization cannot flip propose/auto
+  // back through the deprecated alias (Codex #3 / A4).
+  normalizeMainConfig(out, { conflictResolution: out.main.conflictResolution }, {});
+  validate(out);
+  const main = { ...out.main };
+  // Canonical field only — writing both alias + mode is what inverted behavior on reload.
+  delete main.autoResolveConflicts;
+  if (main.conflictResolutionResolvers != null) {
+    main.conflictResolutionResolvers = main.conflictResolutionResolvers.map(roleSpecToString);
+  }
+  return stringify({ ...out, main });
 }
 
 function formatValue(value) {
-  if (Array.isArray(value)) return value.join(", ");
+  if (Array.isArray(value)) {
+    return value.map((v) => (v && typeof v === "object" && v.agent != null ? roleSpecToString(v) : v)).join(", ");
+  }
+  if (value && typeof value === "object" && value.agent != null) return roleSpecToString(value);
   if (value == null) return "";
   return String(value);
 }
@@ -166,8 +212,16 @@ function mergeConfig(user = {}) {
 }
 
 function loadTarget(target) {
-  if (existsSync(target)) return mergeConfig(parse(readFileSync(target, "utf8")) || {});
-  return cloneConfig(DEFAULTS);
+  if (existsSync(target)) {
+    const user = parse(readFileSync(target, "utf8")) || {};
+    const cfg = mergeConfig(user);
+    // Same userMain tracking as load() so alias-only files map to conflictResolution: auto
+    // instead of DEFAULTS' manual mode winning as "explicit".
+    normalizeMainConfig(cfg, user.main || {}, {});
+    validate(cfg);
+    return cfg;
+  }
+  return normalizeWizardConfig(cloneConfig(DEFAULTS));
 }
 
 function renderPicker(entry, value, index, total, stream, error) {
@@ -241,7 +295,6 @@ export async function runConfigWizard({ repo = process.cwd(), configFile, stdin 
   if (!stdin.isTTY) throw new Error("orch config: interactive config needs a TTY");
   const target = configFile || join(repo, ".orch", "orch.yml");
   let cfg = loadTarget(target);
-  validate(cfg);
   let i = 0;
   let error = "";
   while (i < OPTION_CATALOG.length) {
@@ -263,7 +316,7 @@ export async function runConfigWizard({ repo = process.cwd(), configFile, stdin 
       error = e.message;
     }
   }
-  validate(cfg);
+  normalizeWizardConfig(cfg);
   if (!(await confirmOverwrite(target, { stdin, stdout }))) return { status: "aborted" };
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, configToYaml(cfg));
