@@ -26,6 +26,11 @@ test("parseRoleSpec: agent + effort only (effort keyword, no model)", () => {
     { agent: "codex", model: null, effort: "high" });
 });
 
+test("parseRoleSpec: rejects unsupported model/effort options for an adapter", () => {
+  assert.throws(() => parseRoleSpec("gemini high"), /agent gemini does not support effort/);
+  assert.throws(() => parseRoleSpec("qwen3-coder-30b gpt-5"), /agent qwen3-coder-30b does not support model/);
+});
+
 test("parseRoleSpec: rejects empty spec", () => {
   assert.throws(() => parseRoleSpec("  "), /must name an agent/);
 });

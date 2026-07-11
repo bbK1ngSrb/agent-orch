@@ -75,6 +75,13 @@ test("portableSpawnSpec: win32 unreadable .cmd falls back to cmd.exe /c", () => 
   assert.equal(spec.bin, process.env.ComSpec || "cmd.exe");
 });
 
+test("portableSpawnSpec: win32 cmd fallback rejects dangerous metacharacters", () => {
+  assert.throws(
+    () => portableSpawnSpec("C:\\x\\gone.cmd", ["safe", "bad&arg"], "win32", () => { throw new Error("ENOENT"); }),
+    /unsafe Windows cmd fallback argument: bad&arg/,
+  );
+});
+
 test("resolveAgentBin: win32 finds a .cmd shim in a fallback dir via PATHEXT", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-agentbin-"));
   const p = join(d, "fake-win-cli.cmd");

@@ -12,4 +12,4 @@ export function buildArgs(prompt, _wd, opts = {}) {
   return args;
 }
 
-export default makeCliAdapter({ name: "grok", bin: "grok", buildArgs });
+export default makeCliAdapter({ name: "grok", bin: "grok", buildArgs, capabilities: { model: true, effort: true } });

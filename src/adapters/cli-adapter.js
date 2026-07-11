@@ -5,6 +5,7 @@ import { parseVerdict } from "../verdict.js";
 import { estimateCostUsd } from "../pricing.js";
 
 const OPTS = { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 };
+const MAX_OUTPUT_CHARS = 1024 * 1024;
 const DEFAULT_PROGRESS_INTERVAL_MS = 30_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 25 * 60_000; // #56: per-stage wall-clock cap; 0 disables.
 
@@ -14,6 +15,12 @@ const DEFAULT_STAGE_TIMEOUT_MS = 25 * 60_000; // #56: per-stage wall-clock cap; 
 const LIMIT_RE = /usage limit|rate.?limit|limit (will )?reset|resets? at|\b429\b|overloaded/i;
 export function isUsageLimit(text) {
   return LIMIT_RE.test(text || "");
+}
+
+function appendBounded(text, chunk, max = MAX_OUTPUT_CHARS) {
+  const next = text + chunk;
+  if (next.length <= max) return next;
+  return next.slice(next.length - max);
 }
 
 function progressIntervalMs() {
@@ -93,8 +100,8 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
 
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => { stdout += chunk; });
-    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.stdout?.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
+    child.stderr?.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
     child.on("error", (e) => {
       const out = e.message || "";
       finish({ out, raw: out, ok: false });
@@ -218,12 +225,13 @@ function detail(out) {
   return tail ? `: ${tail.slice(-300)}` : "";
 }
 
-export function makeCliAdapter({ name, bin, buildArgs }) {
+export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: true, effort: true } }) {
   // Spawns read adapter.bin (not the closed-over param) so preflight can rewrite
   // it to an absolute path when the CLI is found off-PATH in a known install dir.
   const adapter = {
     name,
     bin, // the actual executable (may differ from name, e.g. local models run via `ccr`)
+    capabilities,
     async author(task, wd, opts = {}) {
       // Author must succeed; a failure here is a hard error (no commits made).
       const args = buildArgs(render("author", { task }), wd, opts);
