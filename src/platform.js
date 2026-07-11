@@ -54,7 +54,9 @@ export function portableSpawnSpec(bin, args, platform = process.platform, read =
     if (m) return { bin: process.execPath, args: [winPath.join(winPath.dirname(bin), m[1]), ...args] };
   } catch { /* unreadable shim: fall through */ }
   // ponytail: non-npm .cmd fallback goes through cmd.exe; argv with spaces may
-  // not survive cmd re-parsing. Upgrade path: ship the CLI as a native .exe.
+  // not survive cmd re-parsing. Block command-control metacharacters rather
+  // than trying to quote through cmd.exe re-parsing. Upgrade path: ship the
+  // CLI as a native .exe.
   [bin, ...args].forEach(rejectCmdMeta);
   return { bin: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", bin, ...args] };
 }

@@ -64,10 +64,17 @@ test("portableSpawnSpec: win32 unwraps an npm .cmd shim to node + JS target", ()
   assert.deepEqual(spec.args.slice(1), ["-p", "multi\nline prompt"]); // prompt argv survives verbatim
 });
 
-test("portableSpawnSpec: win32 non-shim .cmd falls back to cmd.exe /c", () => {
+test("portableSpawnSpec: win32 safe non-shim .cmd falls back to cmd.exe /c", () => {
   const spec = portableSpawnSpec("C:\\x\\weird.cmd", ["a"], "win32", () => "@echo custom script");
   assert.equal(spec.bin, process.env.ComSpec || "cmd.exe");
   assert.deepEqual(spec.args, ["/d", "/s", "/c", "C:\\x\\weird.cmd", "a"]);
+});
+
+test("portableSpawnSpec: win32 cmd.exe fallback rejects command metacharacters", () => {
+  assert.throws(
+    () => portableSpawnSpec("C:\\x\\weird.cmd", ["ok", "bad&touch pwned"], "win32", () => "@echo custom script"),
+    /unsafe Windows cmd fallback argument: bad&touch pwned/,
+  );
 });
 
 test("portableSpawnSpec: win32 unreadable .cmd falls back to cmd.exe /c", () => {
