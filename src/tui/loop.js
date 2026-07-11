@@ -157,6 +157,7 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
     rows,
     liveCount: snap.live.length,
     interruptedCount: snap.interrupted.length,
+    historyCount: history.length,
     focus: state.focus,
   });
   if (layout.fallback) return null;

@@ -1017,6 +1017,9 @@ export async function main(argv, deps = {}) {
       // trusted) is unchanged. `task` stays a short human label (drives slug/resume);
       // `authorPrompt` is what the author actually sees.
       if (flags.file) {
+        // A stray positional next to --file is ambiguous (two task sources);
+        // reject it instead of silently dropping the typed text.
+        if (rest.length) throw new Error("orch task --file takes no positional task text — put the task in the work-order file");
         const wo = parseWorkOrderFile(flags.file);
         task = wo.title;
         authorPrompt = buildAuthorPrompt(wo);
@@ -1362,7 +1365,7 @@ export async function main(argv, deps = {}) {
   if (command === "pr") {
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const n = rest[0];
-    if (!n) throw new Error("usage: orch pr <number> [--merge]");
+    if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch pr <number> [--merge]");
     preflightFn(cfg, orchDir);
     requireGhAuth((deps.githubDeps || githubDeps)().gh);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -1399,6 +1402,7 @@ export async function main(argv, deps = {}) {
 
   if (command === "dashboard") {
     const historyLimit = flags.limit ? Number(flags.limit) : 10;
+    if (!Number.isInteger(historyLimit) || historyLimit <= 0) throw new Error("--limit must be a positive integer");
     const checkHistory = Boolean(flags["check-history"]);
     const once = Boolean(flags.once || flags.plain);
     // Live TUI is the default only for a genuine interactive terminal; every
