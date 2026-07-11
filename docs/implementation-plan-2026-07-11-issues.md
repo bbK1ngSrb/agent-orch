@@ -13,3 +13,4 @@ This records the GitHub issues opened from `docs/implementation-plan-2026-07-11.
 - Batch 9 — X3 + B11 + X4 + C15 — MEDIUM — depends: none — #266
 - Batch 10 — C1 + C2 + C3 + C4 + C14 + C18 + B3 + C17 — MEDIUM — depends: none — #267
 - Batch 11 — B14 + C6 + C7 — MEDIUM — depends: none — #268
+- Batch 12 — B1 — MEDIUM — depends: none — #270
