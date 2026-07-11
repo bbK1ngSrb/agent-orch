@@ -633,6 +633,14 @@ function reviewersForAuthor(authorName, reviewerSpecs) {
   return others.length ? others : reviewerSpecs;
 }
 
+function fallbackReviewersForAuthor(cfg, authorName) {
+  const configured = configuredReviewers(cfg);
+  const reviewerList = configured
+    ? reviewersForAuthor(authorName, configured)
+    : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
+  return reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+}
+
 function roleLabel(spec) {
   return [spec.agent, spec.model, spec.effort].filter(Boolean).join(" · ");
 }
@@ -1068,11 +1076,7 @@ export async function main(argv, deps = {}) {
       const branch = reviewBranch;
       // audit-only: reviewers default to all agents except branch author. authorName unused by engine.
       const branchAuthor = branch.split("/")[1];
-      const configured = configuredReviewers(cfg);
-      const reviewerList = configured
-        ? reviewersForAuthor(branchAuthor, configured)
-        : cfg.agents.filter((a) => a !== branchAuthor).map((a) => ({ agent: a, model: null, effort: null }));
-      const reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+      const reviewers = fallbackReviewersForAuthor(cfg, branchAuthor);
       const authorName = branchAuthor && cfg.agents.includes(branchAuthor) ? branchAuthor : cfg.agents[0];
       task = null;
       const sid = newSid();
@@ -1237,11 +1241,7 @@ export async function main(argv, deps = {}) {
     if (!reviewerOverride && persistedReviewers) {
       reviewers = persistedReviewers;
     } else {
-      const configured = configuredReviewers(cfg);
-      const reviewerList = configured
-        ? reviewersForAuthor(authorName, configured)
-        : cfg.agents.filter((a) => a !== authorName).map((a) => ({ agent: a, model: null, effort: null }));
-      reviewers = reviewerList.length ? reviewerList : [{ agent: cfg.agents[0], model: null, effort: null }];
+      reviewers = fallbackReviewersForAuthor(cfg, authorName);
     }
     if (!dry) preflightFn(cfg, orchDir, { only: [authorSpec.agent, ...reviewers.map((r) => r.agent)] });
 

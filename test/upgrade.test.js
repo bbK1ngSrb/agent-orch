@@ -97,3 +97,17 @@ test("already latest is a no-op", async () => {
   assert.deepEqual(calls, [["npm", "view", "@bbk1ng/agent-orch", "version"]]);
   assert.match(io.output(), /already latest/);
 });
+
+test("version comparison uses the shared all-segment comparator", async () => {
+  const io = capture();
+  const calls = [];
+  const result = await runUpgrade({
+    current: "1.0.0.1",
+    exec: execWithLatest("1.0.0", calls),
+    resolveInstall: () => ({ type: "registry" }),
+    stdout: io.stdout,
+    flags: {},
+  });
+  assert.equal(result.status, "current");
+  assert.match(io.output(), /already latest/);
+});

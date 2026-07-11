@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { VERSION } from "./version.js";
 import { C, colorEnabled, paint } from "./tui/theme.js";
+import { compareVersions } from "./version-compare.js";
 
 const PACKAGE = "@bbk1ng/agent-orch";
 const INSTALL_CMD = ["npm", "install", "-g", `${PACKAGE}@latest`];
@@ -24,16 +25,6 @@ export function resolveInstall(exec = defaultExec) {
     path,
     realPath,
   };
-}
-
-function cmpVersion(a, b) {
-  const aa = String(a).split(".").map((n) => Number(n));
-  const bb = String(b).split(".").map((n) => Number(n));
-  for (let i = 0; i < 3; i++) {
-    const d = (aa[i] || 0) - (bb[i] || 0);
-    if (d) return d;
-  }
-  return 0;
 }
 
 function latestVersion(exec) {
@@ -85,7 +76,7 @@ export async function runUpgrade(opts = {}) {
   }
 
   write(`orch upgrade: ${current} -> ${target}`);
-  if (cmpVersion(current, target) >= 0) {
+  if (compareVersions(current, target) >= 0) {
     write(`${paint(color, C.ok, "orch upgrade:")} already latest`);
     return { status: "current", current, target, install };
   }
