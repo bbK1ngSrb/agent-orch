@@ -40,6 +40,9 @@ const DEFAULTS = {
     prompt: "update documentation to reflect the latest merged changes",
     paths: ["*.md", "docs/**", "**/*.md"], // docs-only globs = loop guard
   },
+  release: {
+    autoBump: false, // opt-in per repo: patch version bump + CHANGELOG entry after each integrated merge
+  },
 };
 
 export function validate(cfg) {
@@ -91,6 +94,8 @@ export function validate(cfg) {
     throw new Error("orch.yml: docs.prompt must be a non-empty string");
   if (!Array.isArray(cfg.docs.paths) || !cfg.docs.paths.every((p) => typeof p === "string"))
     throw new Error("orch.yml: docs.paths must be an array of strings");
+  if (typeof cfg.release.autoBump !== "boolean")
+    throw new Error("orch.yml: release.autoBump must be a boolean");
 }
 
 // A role spec is "<agent> [model] [effort]" — whitespace-separated fields.
@@ -155,6 +160,7 @@ export function load(dir, overridePath) {
     github: { ...DEFAULTS.github, ...(user.github || {}), ...(override.github || {}) },
     main: { ...DEFAULTS.main, ...(user.main || {}), ...(override.main || {}) },
     docs: { ...DEFAULTS.docs, ...(user.docs || {}), ...(override.docs || {}) },
+    release: { ...DEFAULTS.release, ...(user.release || {}), ...(override.release || {}) },
   };
   normalizeMainConfig(cfg, user.main || {}, override.main || {});
   validate(cfg);

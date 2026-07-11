@@ -96,6 +96,20 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
 });
 
+test("docs document that the version bump on merge is opt-in via release.autoBump", () => {
+  // finalize() only calls bumpVersion() when release.autoBump is true (default
+  // off), so the prose must not promise an unconditional post-merge bump.
+  for (const doc of [readme, manual, exampleConfig]) {
+    assert.match(doc, /release\.autoBump|autoBump: false/);
+  }
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /release\.autoBump/);
+    assert.match(doc, /[Oo]pt-in|off by default/);
+  }
+  // the FAQ answer must point at the flag, not just at merge modes
+  assert.match(manual, /"Why didn't my version get bumped\?"[\s\S]{0,200}release\.autoBump/);
+});
+
 test("docs document main.autoMerge for the persistent integration PR", () => {
   for (const doc of [readme, manual, exampleConfig]) {
     assert.match(doc, /main\.autoMerge|autoMerge: false/);
