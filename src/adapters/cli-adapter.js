@@ -5,6 +5,7 @@ import { parseVerdict } from "../verdict.js";
 import { estimateCostUsd } from "../pricing.js";
 
 const OPTS = { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 };
+const MAX_OUTPUT_CHARS = 1024 * 1024;
 const DEFAULT_PROGRESS_INTERVAL_MS = 30_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 25 * 60_000; // #56: per-stage wall-clock cap; 0 disables.
 
@@ -14,6 +15,12 @@ const DEFAULT_STAGE_TIMEOUT_MS = 25 * 60_000; // #56: per-stage wall-clock cap; 
 const LIMIT_RE = /usage limit|rate.?limit|limit (will )?reset|resets? at|\b429\b|overloaded/i;
 export function isUsageLimit(text) {
   return LIMIT_RE.test(text || "");
+}
+
+function appendBounded(text, chunk, max = MAX_OUTPUT_CHARS) {
+  const next = text + chunk;
+  if (next.length <= max) return next;
+  return next.slice(next.length - max);
 }
 
 function progressIntervalMs() {
@@ -93,8 +100,8 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
 
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => { stdout += chunk; });
-    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.stdout?.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
+    child.stderr?.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
     child.on("error", (e) => {
       const out = e.message || "";
       finish({ out, raw: out, ok: false });
@@ -143,7 +150,10 @@ function jsonUsage(obj) {
   const model = obj.model || obj.response?.model || obj.message?.model;
   // Claude CLI's `--output-format json` reports actual spend as a top-level
   // `total_cost_usd` — prefer it over our own per-model estimate when present.
-  const reportedCostUsd = num(obj.total_cost_usd ?? obj.totalCostUsd) || null;
+  // A reported 0 is a legitimate value (e.g. fully-cached turn), so gate on
+  // presence, not truthiness — `num(...) || null` would collapse 0 to null.
+  const rawCost = obj.total_cost_usd ?? obj.totalCostUsd;
+  const reportedCostUsd = rawCost == null ? null : num(rawCost);
   return { model, tokens: total, input, output, cached, costUsd: reportedCostUsd };
 }
 
@@ -156,8 +166,9 @@ export function parseRunUsage(text, fallbackModel = null) {
   let cachedTokens = 0;
   let reportedCostUsd = null;
 
+  let modelFromJson = false;
   const apply = (parsed) => {
-    if (parsed.model) model = parsed.model;
+    if (parsed.model) { model = parsed.model; modelFromJson = true; }
     if (parsed.tokens) tokens += parsed.tokens;
     inputTokens += parsed.input || 0;
     outputTokens += parsed.output || 0;
@@ -176,19 +187,29 @@ export function parseRunUsage(text, fallbackModel = null) {
     }
   }
 
-  const modelMatch = raw.match(/\bmodel\b\s*[:=]\s*([^\s,;]+)/i);
-  if (modelMatch) model = modelMatch[1];
+  // Plain-text regex fallbacks only FILL data structured JSON didn't provide —
+  // never stack on top of it. A transcript that both reports JSON usage and
+  // *mentions* "total tokens: N" in prose (e.g. an agent reviewing usage code)
+  // must not be double-counted, and a prose "model: x" must not overwrite the
+  // model the CLI reported in JSON.
+  if (!modelFromJson) {
+    const modelMatch = raw.match(/\bmodel\b\s*[:=]\s*([^\s,;]+)/i);
+    if (modelMatch) model = modelMatch[1];
+  }
 
-  const totalMatch = raw.match(/\b(?:total\s+tokens|tokens\s+(?:used|spent)|token\s+usage)\b\s*[:=]?\s*([\d,\s]+)/i);
-  if (totalMatch) tokens += num(totalMatch[1]);
-  if (!tokens) {
-    const inputMatch = raw.match(/\b(?:input|prompt)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
-    const outputMatch = raw.match(/\b(?:output|completion)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
-    const inputN = num(inputMatch?.[1]);
-    const outputN = num(outputMatch?.[1]);
-    tokens = inputN + outputN;
-    inputTokens += inputN;
-    outputTokens += outputN;
+  const jsonHadUsage = tokens > 0 || inputTokens > 0 || outputTokens > 0 || cachedTokens > 0 || reportedCostUsd != null;
+  if (!jsonHadUsage) {
+    const totalMatch = raw.match(/\b(?:total\s+tokens|tokens\s+(?:used|spent)|token\s+usage)\b\s*[:=]?\s*([\d,\s]+)/i);
+    if (totalMatch) tokens += num(totalMatch[1]);
+    if (!tokens) {
+      const inputMatch = raw.match(/\b(?:input|prompt)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
+      const outputMatch = raw.match(/\b(?:output|completion)\s+tokens\b\s*[:=]?\s*([\d,\s]+)/i);
+      const inputN = num(inputMatch?.[1]);
+      const outputN = num(outputMatch?.[1]);
+      tokens = inputN + outputN;
+      inputTokens += inputN;
+      outputTokens += outputN;
+    }
   }
 
   const costUsd =
@@ -218,12 +239,13 @@ function detail(out) {
   return tail ? `: ${tail.slice(-300)}` : "";
 }
 
-export function makeCliAdapter({ name, bin, buildArgs }) {
+export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: true, effort: true } }) {
   // Spawns read adapter.bin (not the closed-over param) so preflight can rewrite
   // it to an absolute path when the CLI is found off-PATH in a known install dir.
   const adapter = {
     name,
     bin, // the actual executable (may differ from name, e.g. local models run via `ccr`)
+    capabilities,
     async author(task, wd, opts = {}) {
       // Author must succeed; a failure here is a hard error (no commits made).
       const args = buildArgs(render("author", { task }), wd, opts);

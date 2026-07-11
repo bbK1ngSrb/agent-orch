@@ -68,8 +68,9 @@ author branch ──(AGREE + green tests)──▶ orch/integration ──▶ [p
    `merge.lock` (so two concurrent cycles don't race each other). A
    post-merge re-test runs against the *integrated* tree, not just the
    branch — catching semantic conflicts a plain git merge wouldn't.
-2. On success, `orch` patch-bumps your version file and prepends a
-   `CHANGELOG.md` entry, committed as `chore(release): vX.Y.Z`.
+2. On success — and only if you opted in with `release.autoBump: true`
+   (default off, see §4.1) — `orch` patch-bumps your version file and prepends
+   a `CHANGELOG.md` entry, committed as `chore(release): vX.Y.Z`.
 3. `orch` pushes `orch/integration` to the remote and opens **or updates**
    one single, persistent PR from `orch/integration → main`. It does not open
    a new PR per cycle — successive cycles pile onto the same PR until it's
@@ -428,8 +429,9 @@ auto-merge step is skipped, never the PR.
 
 **Consequence you should know:** `merge: pr` bypasses the version-bump-on-merge
 and CHANGELOG behavior described in §4.1 entirely — those only apply to the
-local integration path. A repo on `merge: pr` gets no automatic version bump
-from orch; that's on you (or your CI) to handle at the PR-merge stage.
+local integration path (and even there only with `release.autoBump: true`). A
+repo on `merge: pr` gets no automatic version bump from orch; that's on you (or
+your CI) to handle at the PR-merge stage.
 
 **When to use it:**
 - Your branch protection rules require PR review on every change, with no
@@ -485,9 +487,18 @@ path instead of the fallback.
 
 ## Part 4 — Everything that happens automatically around a merge
 
-### 4.1 Version bump on merge (local integration path only)
+### 4.1 Version bump on merge (opt-in, local integration path only)
 
-Every cycle that lands via `orch/integration` (i.e. **not** `merge: pr`)
+```yaml
+release:
+  autoBump: true    # off by default
+```
+
+Off by default: without this flag, a merge lands with no release-file edits
+at all — orch doesn't assume your repo wants a patch bump and a CHANGELOG
+commit on every integrated cycle. With `release.autoBump: true` in
+`.orch/orch.yml`, every cycle that lands via `orch/integration` (i.e. **not**
+`merge: pr`)
 patch-bumps `package.json` right after the post-merge test gate passes
 (`x.y.z → x.y.(z+1)`), mirrors that into `package-lock.json` and
 `src/version.js` if present, prepends a `CHANGELOG.md` entry naming the
@@ -627,6 +638,10 @@ docs:
   autoUpdate: false
   prompt: update documentation to reflect the latest merged changes
   paths: ["*.md", "docs/**", "**/*.md"]
+
+# === Release automation ===
+release:
+  autoBump: false                 # true = patch bump + CHANGELOG commit after each integrated merge (§4.1)
 ```
 
 ### 5.1 Field-by-field notes
@@ -715,6 +730,10 @@ docs:
   resolution, using the same `"<agent> [model] [effort]"` grammar as authors
   and reviewers. The pool rotates per conflict and failed resolver attempts
   restart from the pre-merge tree before the next resolver tries.
+- **`release.autoBump`** — opt-in (default `false`). When `true`, every cycle
+  that lands via the local integration path gets the §4.1 patch bump +
+  CHANGELOG commit. Left off, orch never edits release files — same opt-in
+  philosophy as `docs.autoUpdate`.
 
 ---
 
@@ -786,6 +805,8 @@ orch review my-branch --reviewer "codex, claude high"
   (`overlap` trigger) — give them disjoint `--authors`/`--reviewers` and
   disjoint file scopes, or accept the PR-fallback as the correct safety
   behavior for genuinely overlapping work.
-- **"Why didn't my version get bumped?"** Version bump only happens on the
-  local integration path (`no-ff`/`ff-only`), never under `merge: pr`. If
-  you're on `merge: pr` and want version bumps, that's your own CI's job now.
+- **"Why didn't my version get bumped?"** The bump is opt-in: set
+  `release.autoBump: true` in `.orch/orch.yml` (it's off by default). Even
+  then it only happens on the local integration path (`no-ff`/`ff-only`),
+  never under `merge: pr`. If you're on `merge: pr` and want version bumps,
+  that's your own CI's job now.

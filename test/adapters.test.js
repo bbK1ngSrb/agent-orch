@@ -115,6 +115,16 @@ test("adapter forwards model/effort opts to buildArgs", async () => {
   assert.deepEqual(seen, { model: "m1", effort: "low" });
 });
 
+test("adapters declare model/effort capability support", () => {
+  assert.deepEqual(get("claude").capabilities, { model: true, effort: true });
+  assert.deepEqual(get("codex").capabilities, { model: true, effort: true });
+  assert.deepEqual(get("agy").capabilities, { model: true, effort: false });
+  assert.deepEqual(get("copilot").capabilities, { model: true, effort: false });
+  assert.deepEqual(get("gemini").capabilities, { model: true, effort: false });
+  assert.deepEqual(get("grok").capabilities, { model: true, effort: true });
+  assert.deepEqual(get("qwen3-coder-30b").capabilities, { model: false, effort: false });
+});
+
 test("parseRunUsage reads JSON and text token summaries, estimating $ cost from known model prices", () => {
   assert.deepEqual(parseRunUsage('{"model":"claude-opus-4.8","usage":{"input_tokens":1000,"output_tokens":250}}\n'),
     { model: "claude-opus-4.8", tokens: 1250, inputTokens: 1000, outputTokens: 250, costUsd: 0.03375 });
@@ -132,6 +142,31 @@ test("parseRunUsage prefers the CLI's reported total_cost_usd over its own price
 test("parseRunUsage omits costUsd for a model with no known price", () => {
   assert.deepEqual(parseRunUsage('{"model":"mystery-model","usage":{"input_tokens":100,"output_tokens":50}}\n'),
     { model: "mystery-model", tokens: 150, inputTokens: 100, outputTokens: 50 });
+});
+
+test("parseRunUsage does not stack text fallbacks on top of parsed JSON usage", () => {
+  // Transcript reports usage in JSON *and* mentions token/model lines in prose
+  // (e.g. an agent reviewing usage code) — prose must not double-count tokens
+  // or overwrite the JSON model.
+  assert.deepEqual(
+    parseRunUsage('{"model":"claude-opus-4.8","usage":{"input_tokens":1000,"output_tokens":250}}\nmodel: gpt-5.1\ntotal tokens: 9999\n'),
+    { model: "claude-opus-4.8", tokens: 1250, inputTokens: 1000, outputTokens: 250, costUsd: 0.03375 },
+  );
+});
+
+test("parseRunUsage text fallbacks still fill data JSON did not provide", () => {
+  // JSON present but with no usage/model — prose fills the gaps.
+  assert.deepEqual(
+    parseRunUsage('{"type":"result"}\nmodel: gpt-5.1\ninput tokens: 100\noutput tokens: 25\n'),
+    { model: "gpt-5.1", tokens: 125, inputTokens: 100, outputTokens: 25, costUsd: 0.000875 },
+  );
+});
+
+test("parseRunUsage preserves a reported zero cost instead of re-estimating", () => {
+  assert.deepEqual(
+    parseRunUsage('{"model":"claude-opus-4.8","total_cost_usd":0,"usage":{"input_tokens":1000,"output_tokens":250}}\n'),
+    { model: "claude-opus-4.8", tokens: 1250, inputTokens: 1000, outputTokens: 250, costUsd: 0 },
+  );
 });
 
 test("parseRunUsage omits costUsd when only a total token count is known, even for a priced model", () => {
@@ -162,6 +197,17 @@ test("audit captures stderr from successful agent runs", async () => {
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
   assert.match(v.raw, /stderr verdict/);
+});
+
+test("audit caps captured child output", async () => {
+  const adapter = makeCliAdapter({
+    name: "chatty",
+    bin: process.execPath,
+    buildArgs: () => nodeScript("process.stdout.write('x'.repeat(1100000) + '\\nAGREE ok\\n')"),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.ok(v.raw.length <= 1024 * 1024);
 });
 
 test("audit does not let successful stderr override a parseable stdout verdict", async () => {

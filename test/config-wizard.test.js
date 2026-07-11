@@ -17,7 +17,7 @@ test("option catalog is consistent with DEFAULTS and validate()", () => {
     "agents", "author", "reviewer", "authors", "reviewers", "test", "reviseCap", "stageTimeout",
     "baseBranch", "integrationBranch", "merge", "concurrency", "cheap.role", "cheap.paths",
     "scope.maxLines", "scope.ignore", "github.mergeMethod", "github.autoMergePr",
-    "main.autoMerge", "docs.autoUpdate", "docs.prompt", "docs.paths",
+    "main.autoMerge", "release.autoBump", "docs.autoUpdate", "docs.prompt", "docs.paths",
   ]);
 });
 

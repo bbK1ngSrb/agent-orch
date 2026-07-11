@@ -44,6 +44,10 @@ export const OPTION_CATALOG = [
     false: "Keep this off when main should move only after human approval.",
     true: "Use this only when unattended updates to main are acceptable for the repo.",
   } },
+  { keys: ["release.autoBump"], label: "release auto-bump", widget: BOOL, choices: [false, true], explain: "Controls the automatic patch version bump and CHANGELOG entry after each integrated merge.", choiceExplain: {
+    false: "orch never edits release files; the repo keeps its own release policy.",
+    true: "Every integrated merge bumps the patch version and prepends a CHANGELOG entry.",
+  } },
   { keys: ["docs.autoUpdate"], label: "docs auto-update", widget: BOOL, choices: [false, true], explain: "Controls follow-up documentation tasks after real code merges.", choiceExplain: {
     false: "Documentation changes remain manual.",
     true: "A successful code merge spawns a separate docs task using the configured prompt.",
@@ -80,6 +84,7 @@ function cloneConfig(cfg) {
     github: { ...cfg.github },
     main: { ...cfg.main },
     docs: { ...cfg.docs, paths: [...cfg.docs.paths] },
+    release: { ...cfg.release },
   };
 }
 
@@ -156,6 +161,7 @@ function mergeConfig(user = {}) {
     github: { ...DEFAULTS.github, ...(user.github || {}) },
     main: { ...DEFAULTS.main, ...(user.main || {}) },
     docs: { ...DEFAULTS.docs, ...(user.docs || {}) },
+    release: { ...DEFAULTS.release, ...(user.release || {}) },
   };
 }
 

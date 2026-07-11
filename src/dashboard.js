@@ -96,11 +96,14 @@ export function runHistory(orchDir, limit = 20, { repo = null, checkHistory = fa
 // Success-rate + usage totals over the full run-history file.
 export function metrics(orchDir) {
   const entries = readJsonl(join(orchDir, "runs.jsonl"));
-  let merged = 0, tokens = 0, costUsd = 0, hasCost = false;
+  let merged = 0, tokens = 0, costUsd = 0, hasCost = false, unpricedRuns = 0;
   for (const e of entries) {
     if (e.verdict === "merged" || e.verdict === "pr") merged++;
     if (typeof e.tokens === "number") tokens += e.tokens;
+    // A run with tokens but no numeric cost is UNPRICED, not free — count it so
+    // the total cost can be labeled as partial instead of silently understated.
     if (typeof e.costUsd === "number") { costUsd += e.costUsd; hasCost = true; }
+    else if (typeof e.tokens === "number" && e.tokens > 0) unpricedRuns++;
   }
   return {
     total: entries.length,
@@ -108,6 +111,7 @@ export function metrics(orchDir) {
     successRate: entries.length ? merged / entries.length : null,
     totalTokens: tokens,
     totalCostUsd: hasCost ? costUsd : null,
+    unpricedRuns,
     cleanUnattendedCycles: kpi(orchDir).cleanUnattendedCycles,
   };
 }
@@ -178,7 +182,9 @@ export function render(orchDir, opts = {}) {
     lines.push("  (none)");
   } else {
     const rows = history.map((e) => {
-      const usage = e.tokens ? `${e.tokens}tok${e.costUsd != null ? ` ${usd(e.costUsd)}` : ""}` : "";
+      // No costUsd on a metered run means the model had no price entry — say
+      // "unpriced" so the operator sees the gap instead of assuming $0.
+      const usage = e.tokens ? `${e.tokens}tok ${e.costUsd != null ? usd(e.costUsd) : "unpriced"}` : "";
       const colorCode = e.resolved ? C.muted : VERDICT_COLOR[e.verdict] || "";
       const verdict = verdictText(e.verdict, color, colorCode);
       const row = [formatTimestamp(e.ts), e.branch, verdict, `${e.rounds}rnd`, usage];
@@ -193,6 +199,7 @@ export function render(orchDir, opts = {}) {
   lines.push("Metrics");
   lines.push(`  runs: ${m.total}  merged: ${m.merged}  success rate: ${pct(m.successRate)}`);
   lines.push(`  clean unattended cycles: ${m.cleanUnattendedCycles}`);
-  lines.push(`  tokens: ${m.totalTokens}  cost: ${usd(m.totalCostUsd)}`);
+  const unpriced = m.unpricedRuns ? ` (+${m.unpricedRuns} unpriced run${m.unpricedRuns === 1 ? "" : "s"})` : "";
+  lines.push(`  tokens: ${m.totalTokens}  cost: ${usd(m.totalCostUsd)}${unpriced}`);
   return lines.join("\n");
 }
