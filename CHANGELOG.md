@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.45 — 2026-07-11
+- [HIGH][depends:none] Batch 6: consolidate pidAlive so Windows liveness checks agree (closes [#263](https://github.com/bbk1ng/agent-orch/issues/263))
+
 ## 0.3.44 — 2026-07-11
 - pr/codex/read-docs-mplementation-plan-2026-07-11--960718-0
 
