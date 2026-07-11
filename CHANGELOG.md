@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.44 — 2026-07-11
+- pr/codex/read-docs-mplementation-plan-2026-07-11--960718-0
+
 ## 0.3.43 — 2026-07-10
 - orch issue: auto-close the work order when it lands on `main` via the integration bridge PR (closes [#253](https://github.com/bbk1ng/agent-orch/issues/253))
 
