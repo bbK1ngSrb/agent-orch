@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.51 — 2026-07-11
+- pr/claude/high-depends-none-batch-4-ship-the-high--3123061-0 (closes [#261](https://github.com/bbk1ng/agent-orch/issues/261))
+
 ## 0.3.50 — 2026-07-11
 - pr/claude/high-depends-d3-batch-7-finish-the-tui-l-3123087-0 (closes [#264](https://github.com/bbk1ng/agent-orch/issues/264))
 
