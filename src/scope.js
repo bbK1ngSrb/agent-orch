@@ -6,6 +6,7 @@ export function globToRegExp(glob) {
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*\*/g, DOUBLE_STAR)
     .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]")
     .replaceAll(DOUBLE_STAR, ".*");
   return new RegExp("^" + re + "$");
 }

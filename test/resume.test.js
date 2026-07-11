@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as resume from "../src/resume.js";
@@ -24,6 +24,22 @@ test("lookup returns null for a different task or author", () => {
   resume.record(d, "do x", "claude", { branch: "b", sid: "s" });
   assert.equal(resume.lookup(d, "do y", "claude"), null); // different task text
   assert.equal(resume.lookup(d, "do x", "codex"), null);  // different author
+});
+
+test("record replaces the resume path atomically instead of writing through it", () => {
+  const d = freshDir();
+  resume.record(d, "do x", "claude", { branch: "old", sid: "s1" });
+  const target = join(d, "resume", readdirSync(join(d, "resume"))[0]);
+  const linked = join(d, "linked.json");
+  writeFileSync(linked, JSON.stringify({ branch: "linked", sid: "linked" }));
+  rmSync(target);
+  symlinkSync(linked, target);
+
+  resume.record(d, "do x", "claude", { branch: "new", sid: "s2" });
+
+  assert.equal(JSON.parse(readFileSync(linked, "utf8")).branch, "linked");
+  assert.equal(lstatSync(target).isSymbolicLink(), false);
+  assert.equal(resume.lookup(d, "do x", "claude").branch, "new");
 });
 
 test("clear removes the record", () => {
