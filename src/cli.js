@@ -980,11 +980,12 @@ export async function main(argv, deps = {}) {
       const answer = await io.confirm(`orch: '${name}' is not a registered agent — build it now? (y/N) `);
       if (!answer) throw e;
       const buildFn = deps.buildAgent || buildAgent;
-      const result = await buildFn(name, { repo, orchDir, flags: {}, deps });
-        console.log(`orch agent build ${name}: ${result.status}${result.branch ? ` on ${result.branch}` : ""}${costSuffix(result)}`);
+      const result = await buildFn(name, { repo, orchDir, flags, deps });
+      console.log(`orch agent build ${name}: ${result.status}${result.branch ? ` on ${result.branch}` : ""}${costSuffix(result)}`);
       if (result.status === "approved") {
         console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
       }
+      if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
       return;
     }
     const file = configPath(repo);

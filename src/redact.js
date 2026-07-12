@@ -7,7 +7,7 @@ export const SECRET_PATTERNS = [
   /gh[pousr]_[A-Za-z0-9]{36,}/g,            // GitHub PAT / OAuth / refresh
   /github_pat_[A-Za-z0-9_]{20,}/g,          // fine-grained PAT
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/g,    // PEM private key header
-  /sk-[A-Za-z0-9]{20,}/g,                   // generic provider key shape
+  /sk-[A-Za-z0-9_-]{10,}/g,                 // generic provider key shape (incl. hyphenated sk-ant-.../sk-proj-...)
   /\bAKIA[0-9A-Z]{16}\b/g,                  // AWS access key id
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, // JWT
 ];
