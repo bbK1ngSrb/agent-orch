@@ -1,10 +1,13 @@
 name: npm-publish
 on:
   # Manual-only publish. No `push: tags` trigger by design — publishing is a
-  # deliberate human act, run from a terminal via `node scripts/orch-release.js` (or
-  # `gh workflow run npm-publish.yml -f tag=vX.Y.Z`). Prior auto-trigger was
-  # already dead for bot tags anyway: GitHub Actions won't cascade-trigger a
-  # workflow from a tag pushed with the default GITHUB_TOKEN (loop prevention).
+  # deliberate human act: bump/commit/tag locally via
+  # `node scripts/orch-release.js`, push the tag, then dispatch this workflow
+  # yourself (e.g. `gh workflow run npm-publish.yml -f tag=vX.Y.Z`, or your
+  # own tooling that confirms the tag is pushed and dispatches/watches this
+  # workflow). Prior auto-trigger was already dead for bot tags anyway:
+  # GitHub Actions won't cascade-trigger a workflow from a tag pushed with
+  # the default GITHUB_TOKEN (loop prevention).
   workflow_dispatch:
     inputs:
       tag:
