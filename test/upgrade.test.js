@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runUpgrade } from "../src/upgrade.js";
+import { execSpec, runUpgrade } from "../src/upgrade.js";
 
 function capture() {
   let out = "";
@@ -17,6 +17,37 @@ function execWithLatest(version, calls = []) {
     return "";
   };
 }
+
+test("execSpec unwraps a Windows npm .cmd shim into a direct node spawn", () => {
+  const shim = '@ECHO off\r\n"%_prog%"  "%dp0%\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n';
+  const spec = execSpec("npm", ["root", "-g"], {
+    resolve: () => "C:\\Program Files\\nodejs\\npm.cmd",
+    platform: "win32",
+    read: () => shim,
+  });
+  assert.equal(spec.bin, process.execPath);
+  assert.deepEqual(spec.args, [
+    "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+    "root",
+    "-g",
+  ]);
+});
+
+test("execSpec passes npm through untouched on POSIX", () => {
+  const spec = execSpec("npm", ["view", "pkg", "version"], {
+    resolve: () => "npm",
+    platform: "linux",
+  });
+  assert.deepEqual(spec, { bin: "npm", args: ["view", "pkg", "version"] });
+});
+
+test("execSpec falls back to the bare command when PATH resolution misses", () => {
+  const spec = execSpec("npm", ["root", "-g"], {
+    resolve: () => null,
+    platform: "linux",
+  });
+  assert.deepEqual(spec, { bin: "npm", args: ["root", "-g"] });
+});
 
 test("linked dev install prints git-pull guidance and never installs", async () => {
   const io = capture();
