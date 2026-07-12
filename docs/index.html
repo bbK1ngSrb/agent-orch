@@ -522,7 +522,7 @@
   <header id="top" class="hero">
     <div class="pill"><span class="pulse"></span> orchestration is local - agents connect to remote model APIs</div>
     <h1>Two agents. <span class="gradient-text">One writes,<br>the other audits.</span></h1>
-    <p class="lede">Run local coding agents - Claude, Codex, Copilot, Gemini - in a cross-audit loop on any git repo. One authors a small change; another reviews it; on agreement + green tests it merges. On disagreement, it revises. On stalemate, it asks you.</p>
+    <p class="lede">Run local coding agents - Claude, Codex, Copilot, Gemini, Grok, agy - in a cross-audit loop on any git repo. One authors a small change; another reviews it; on agreement + green tests it merges. On disagreement, it revises. On stalemate, it asks you.</p>
     <div class="hero-actions">
       <div class="install" aria-label="Install command"><span>$</span><span>npm install -g <strong>@bbk1ng/agent-orch</strong></span></div>
       <a class="btn" href="https://github.com/bbk1ng/agent-orch#readme">Read the docs</a>
@@ -604,6 +604,11 @@
         <p>Auto-detects npm, pytest, go, or make. No test command? It refuses to auto-merge and tells you.</p>
       </article>
       <article class="feature">
+        <div class="feature-icon">⛊</div>
+        <h3>Deterministic security floor</h3>
+        <p>Every merge-bound diff is pattern-scanned for secret reads, network calls, subprocess spawns, and guardrail edits - a check no reviewer prompt can talk its way past.</p>
+      </article>
+      <article class="feature">
         <div class="feature-icon">↺</div>
         <h3>Crash recovery</h3>
         <p>Killed mid-cycle? Committed work survives on its branch; the next run resumes from where it died.</p>
@@ -629,6 +634,8 @@
       <span class="chip">codex</span>
       <span class="chip">copilot</span>
       <span class="chip">gemini</span>
+      <span class="chip">grok</span>
+      <span class="chip">agy</span>
       <span class="chip ghost">qwen3-coder-30b</span>
       <span class="chip ghost">deepseek-coder-v2-lite</span>
       <span class="chip ghost">glm-4.5-air</span>
