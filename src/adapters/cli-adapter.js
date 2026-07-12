@@ -17,7 +17,7 @@ function killLiveChildren() {
 }
 
 process.once("exit", killLiveChildren);
-for (const signal of ["SIGINT", "SIGTERM"]) {
+for (const signal of ["SIGINT", "SIGTERM", ...(IS_WINDOWS ? [] : ["SIGHUP"])]) {
   process.once(signal, () => {
     killLiveChildren();
     process.kill(process.pid, signal);

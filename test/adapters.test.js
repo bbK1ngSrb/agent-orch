@@ -367,7 +367,7 @@ test("runAgent closes the child's stdin so codex's exec stdin read sees EOF (#58
   assert.equal(v.decision, "AGREE");
 });
 
-test("terminating the orch process kills its detached agent child", { timeout: 5000, skip: process.platform === "win32" }, async () => {
+for (const parentSignal of ["SIGTERM", "SIGHUP"]) test(`terminating the orch process with ${parentSignal} kills its detached agent child`, { timeout: 5000, skip: process.platform === "win32" }, async () => {
   const wd = mkdtempSync(join(tmpdir(), "orch-parent-exit-"));
   const pidFile = join(wd, "agent.pid");
   const adapterUrl = new URL("../src/adapters/cli-adapter.js", import.meta.url).href;
@@ -386,10 +386,18 @@ test("terminating the orch process kills its detached agent child", { timeout: 5
     try { agentPid = Number(readFileSync(pidFile, "utf8")); break; } catch { await new Promise((resolve) => setTimeout(resolve, 20)); }
   }
   assert.ok(agentPid, "agent child did not start");
-  parent.kill("SIGTERM");
+  parent.kill(parentSignal);
   await new Promise((resolve) => parent.once("exit", resolve));
 
-  assert.throws(() => process.kill(agentPid, 0), { code: "ESRCH" });
+  let reaped = false;
+  for (let i = 0; i < 100; i++) {
+    try { process.kill(agentPid, 0); } catch (error) {
+      if (error.code === "ESRCH") { reaped = true; break; }
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(reaped, "agent child was not reaped");
 });
 
 test("author commits worktree changes the agent left uncommitted", async () => {
