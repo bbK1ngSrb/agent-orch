@@ -2,14 +2,26 @@ import { lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { VERSION } from "./version.js";
+import { portableSpawnSpec } from "./platform.js";
+import { resolveAgentBin } from "./agent-bin.js";
 import { C, colorEnabled, paint } from "./tui/theme.js";
 import { compareVersions } from "./update-check.js";
 
 const PACKAGE = "@bbk1ng/agent-orch";
 const INSTALL_CMD = ["npm", "install", "-g", `${PACKAGE}@latest`];
 
+// Shell-less spawn spec for npm. Windows installs npm as a .cmd shim that a
+// bare execFileSync("npm", ...) can't spawn (CreateProcess ignores PATHEXT →
+// ENOENT), so resolve the real shim path first and let portableSpawnSpec
+// unwrap it into a direct `node <npm-cli.js>` spawn. POSIX passes through.
+export function execSpec(cmd, args, deps = {}) {
+  const bin = (deps.resolve || resolveAgentBin)(cmd) || cmd;
+  return portableSpawnSpec(bin, args, deps.platform, deps.read);
+}
+
 function defaultExec(cmd, args = []) {
-  return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const spec = execSpec(cmd, args);
+  return execFileSync(spec.bin, spec.args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
 export function resolveInstall(exec = defaultExec) {
