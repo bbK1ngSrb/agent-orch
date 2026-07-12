@@ -1,6 +1,7 @@
 .orch/
 modules/
 node_modules/
+test-packages/
 
 # docs/: whitelist-only. Every markdown doc under docs/ is ignored by default —
 # design notes, discussion, run artifacts, red-team reports stay local and never
@@ -36,8 +37,11 @@ pnpm-lock.yaml
 /.zprofile
 /.zshrc
 /.idea
+# /scripts/* (not bare /scripts): ignore contents so ! exceptions can re-include
+# files. A bare directory pattern excludes the directory entry itself; git then
+# never evaluates negations for untracked paths under it (gitignore(5)).
 /scripts/*
-# Exception: load-bearing security lint (§3g) must stay tracked, not swept by /scripts.
+# Exception: load-bearing security lint (§3g) must stay tracked, not swept by /scripts/*.
 !/scripts/lint-token-step.js
 # Exception: maintainer release tooling (see npm-publish.yml's header comment).
 !/scripts/orch-release.js
