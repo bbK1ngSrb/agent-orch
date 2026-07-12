@@ -4,9 +4,10 @@
 // docs/superpowers/specs/2026-07-06-terminal-reskin-design.md for why.
 
 // Some glyphs render 2 columns wide in a terminal (emoji, box-drawing
-// pictographs) while `.length` counts them as 1, which would misalign box
-// borders. ANSI color codes are zero-width and stripped first.
-const WIDE_GLYPH = /[⌚-⏿☀-➿\u{1f000}-\u{1faff}]/u;
+// pictographs, CJK/Hangul ideographs, fullwidth forms) while `.length` counts
+// them as 1, which would misalign box borders. ANSI color codes are zero-width
+// and stripped first.
+const WIDE_GLYPH = /[\u{1100}-\u{11ff}\u{2e80}-\u{9fff}\u{ac00}-\u{d7a3}\u{ff00}-\u{ffef}⌚-⏿☀-➿\u{1f000}-\u{1faff}]/u;
 
 export function visWidth(s) {
   const plain = s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -51,7 +52,9 @@ export function formatTimestamp(dateOrIso) {
 }
 
 // Truncate plain (ANSI-free) text to `width` display columns, ellipsis last.
-function truncate(plain, width) {
+// A non-positive width has no room for even the ellipsis glyph itself.
+export function truncate(plain, width) {
+  if (width <= 0) return "";
   let out = "", w = 0;
   for (const ch of plain) {
     const cw = WIDE_GLYPH.test(ch) ? 2 : 1;

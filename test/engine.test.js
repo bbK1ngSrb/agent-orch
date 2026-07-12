@@ -204,6 +204,15 @@ test("AGREE + red gate -> escalated, no merge", async () => {
   assert.equal(deps._calls.recorded.rounds, 1);
 });
 
+test("recordTerminal includes sid so an abnormally-ended run is still correlatable in runs.jsonl", async () => {
+  // recordTerminal is engine.js's own runs.jsonl writer (the other three live in
+  // finalize.js and already carry sid) — it must not be the one writer that
+  // drops the join key.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], gatePass: false });
+  await runCycle({ ...opts, sid: "engine-sid-test" }, deps);
+  assert.equal(deps._calls.recorded.sid, "engine-sid-test");
+});
+
 test("merge wipes reviews + records the run; escalation keeps them", async () => {
   const merged = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   const r1 = await runCycle(opts, merged);

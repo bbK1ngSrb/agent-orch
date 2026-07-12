@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visWidth, paint, C, colorEnabled, row, box, table, formatTimestamp } from "../../src/tui/theme.js";
+import { visWidth, paint, C, colorEnabled, row, box, table, formatTimestamp, truncate } from "../../src/tui/theme.js";
 
 test("formatTimestamp renders yyyy-mm-dd HH:mm in UTC from a known instant", () => {
   // Drops the T separator, sub-second .927, and the trailing Z; minute precision.
@@ -41,6 +41,22 @@ test("visWidth counts wide glyphs as 2 columns and ignores ANSI codes", () => {
   assert.equal(visWidth("abc"), 3);
   assert.equal(visWidth("\x1b[1;38;5;208mabc\x1b[0m"), 3);
   assert.equal(visWidth("⏱"), 2);
+});
+
+test("visWidth counts CJK, Hangul, and fullwidth-form glyphs as 2 columns each", () => {
+  // CJK Unified Ideographs (U+2E80-9FFF) — the branch/task text a task
+  // description could plausibly contain, not just emoji/box-drawing.
+  assert.equal(visWidth("你好"), 4);
+  // Hangul syllables (U+AC00-D7A3) and Hangul Jamo (U+1100-11FF).
+  assert.equal(visWidth("안녕"), 4);
+  assert.equal(visWidth("가"), 4);
+  // Fullwidth forms (U+FF00-FFEF) — visually distinct from ASCII "ABC".
+  assert.equal(visWidth("ＡＢＣ"), 6);
+});
+
+test("truncate returns empty string for a non-positive width instead of an ellipsis that itself overflows", () => {
+  assert.equal(truncate("hello", 0), "");
+  assert.equal(truncate("hello", -3), "");
 });
 
 test("paint no-ops when color is off, wraps+resets when on", () => {
