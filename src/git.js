@@ -353,14 +353,17 @@ export function mergeInWorktree(integrationPath, branch, mode, message = null) {
   return { ok: false, reason };
 }
 
-// Simple patch-per-merge version bump, run in the integration worktree right
-// after a merge lands and the post-merge test gate passes. Bumps package.json
-// (+ package-lock.json's root version, + src/version.js — the source
-// `orch --version` reads from) and prepends a CHANGELOG.md entry, then commits
-// — so every merge to main is traceable to a version. No-op (returns null) if
+// Merge-bump version bump (the "cc" half of the x.y.zcc scheme — see
+// src/versioning.js for the "z" publish-bump half), run in the integration
+// worktree right after a merge lands and the post-merge test gate passes.
+// Bumps package.json's patch field by 1 (+ package-lock.json's root
+// version) and prepends a CHANGELOG.md entry, then commits — so every merge
+// to main is traceable to a version. Decimal carry rolls cc 99->00 into z on
+// its own; that's by design, not a bug (a merge cadence that high between
+// publishes means a publish is overdue anyway). No-op (returns null) if
 // package.json is missing/unparsable, or if anything below fails (dirty
-// target-repo pre-commit hooks, missing git identity, etc.) — this must never
-// throw out of a finalize that already landed the merge (issue #44).
+// target-repo pre-commit hooks, missing git identity, etc.) — this must
+// never throw out of a finalize that already landed the merge (issue #44).
 export function bumpVersion(integrationPath, entry) {
   const pkgPath = join(integrationPath, "package.json");
   let pkg;
@@ -374,10 +377,8 @@ export function bumpVersion(integrationPath, entry) {
   const version = `${parts[0]}.${parts[1]}.${Number(parts[2]) + 1}`;
 
   try {
-    const versionPath = join(integrationPath, "src", "version.js");
     pkg.version = version;
     writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
-    if (existsSync(versionPath)) writeFileSync(versionPath, `export const VERSION = "${version}";\n`);
 
     const lockPath = join(integrationPath, "package-lock.json");
     if (existsSync(lockPath)) {
@@ -389,7 +390,7 @@ export function bumpVersion(integrationPath, entry) {
 
     const changelogPath = join(integrationPath, "CHANGELOG.md");
     const date = new Date().toISOString().slice(0, 10);
-    const section = `## ${version} — ${date}\n- ${entry}\n\n`;
+    const section = `## v${version} — ${date}\n- ${entry}\n\n`;
     const prior = existsSync(changelogPath) ? readFileSync(changelogPath, "utf8").replace(/^# Changelog\n+/, "") : "";
     writeFileSync(changelogPath, `# Changelog\n\n${section}${prior}`);
 
@@ -414,7 +415,6 @@ export function bumpVersion(integrationPath, entry) {
     }
 
     const addFiles = ["package.json", "CHANGELOG.md"];
-    if (existsSync(versionPath)) addFiles.push("src/version.js");
     if (existsSync(lockPath)) addFiles.push("package-lock.json");
     if (siteBumped) addFiles.push("docs/index.html");
     git(["add", ...addFiles], integrationPath);
