@@ -88,8 +88,9 @@ author branch ──(AGREE + green tests)──▶ orch/integration ──▶ [p
    post-merge re-test runs against the *integrated* tree, not just the
    branch — catching semantic conflicts a plain git merge wouldn't.
 2. On success — and only if you opted in with `release.autoBump: true`
-   (default off, see §4.1) — `orch` patch-bumps your version file and prepends
-   a `CHANGELOG.md` entry, committed as `chore(release): vX.Y.Z`.
+   (default off, see §4.1) — `orch` bumps the merge counter (see §4.1 for the
+   `x.y.zcc` scheme) and prepends a `CHANGELOG.md` entry, committed as
+   `chore(release): vX.Y.Z`.
 3. `orch` pushes `orch/integration` to the remote and opens **or updates**
    one single, persistent PR from `orch/integration → main`. It does not open
    a new PR per cycle — successive cycles pile onto the same PR until it's
@@ -576,15 +577,15 @@ release:
 ```
 
 Off by default: without this flag, a merge lands with no release-file edits
-at all — orch doesn't assume your repo wants a patch bump and a CHANGELOG
-commit on every integrated cycle. With `release.autoBump: true` in
+at all — orch doesn't assume your repo wants a merge-counter bump and a
+CHANGELOG commit on every integrated cycle. With `release.autoBump: true` in
 `.orch/orch.yml`, every cycle that lands via `orch/integration` (i.e. **not**
-`merge: pr`)
-patch-bumps `package.json` right after the post-merge test gate passes
-(`x.y.z → x.y.(z+1)`), mirrors that into `package-lock.json` and
-`src/version.js` if present, prepends a `CHANGELOG.md` entry naming the
-branch (and issue number, for `orch issue`), and commits it all as
-`chore(release): vX.Y.Z`.
+`merge: pr`) bumps the merge counter in `package.json` right after the
+post-merge test gate passes, mirrors that into `package-lock.json`, prepends
+a `CHANGELOG.md` entry naming the branch (and issue number, for `orch
+issue`), and commits it all as `chore(release): vX.Y.Z`. See this repo's own
+README, "Version bump on merge" section, for the full `x.y.zcc` scheme (merge
+counter vs. publish counter) — this doc doesn't re-derive it.
 
 This is **best-effort**: a missing or unparsable `package.json`, or any
 write/commit failure here, is swallowed — it never blocks or unwinds a merge
@@ -722,7 +723,7 @@ docs:
 
 # === Release automation ===
 release:
-  autoBump: false                 # true = patch bump + CHANGELOG commit after each integrated merge (§4.1)
+  autoBump: false                 # true = merge-counter bump + CHANGELOG commit after each integrated merge (§4.1)
 ```
 
 ### 5.1 Field-by-field notes
@@ -812,7 +813,7 @@ release:
   and reviewers. The pool rotates per conflict and failed resolver attempts
   restart from the pre-merge tree before the next resolver tries.
 - **`release.autoBump`** — opt-in (default `false`). When `true`, every cycle
-  that lands via the local integration path gets the §4.1 patch bump +
+  that lands via the local integration path gets the §4.1 merge-counter bump +
   CHANGELOG commit. Left off, orch never edits release files — same opt-in
   philosophy as `docs.autoUpdate`.
 
@@ -890,7 +891,10 @@ orch review my-branch --reviewer "codex, claude high"
   `release.autoBump: true` in `.orch/orch.yml` (it's off by default). Even
   then it only happens on the local integration path (`no-ff`/`ff-only`),
   never under `merge: pr`. If you're on `merge: pr` and want version bumps,
-  that's your own CI's job now.
+  that's your own CI's job now. Separately, this repo's own
+  `.github/workflows/version-bump.yml` bumps the merge counter for any merge
+  to `main` that doesn't already carry its own version change, regardless of
+  merge path.
 - **"I ran `orch review` just to get a second opinion, and it merged the
   branch!"** That's correct, and by design (§2.6) — `orch review` skips only
   the *authoring* step; agreement + green tests + a clean security scan still
