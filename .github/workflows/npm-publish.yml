@@ -10,6 +10,10 @@ on:
       tag:
         description: "Tag to publish (e.g. v0.3.11)"
         required: true
+      skip_announce:
+        description: "Skip X (@agentorchbot) release tweet"
+        type: boolean
+        default: false
 jobs:
   # Cheap gate ahead of the 3-OS matrix: a bogus workflow_dispatch tag should
   # fail here, not after burning three checkouts+installs in pack-test.
@@ -112,3 +116,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: gh release create "$TAG_REF" --generate-notes --repo "$GITHUB_REPOSITORY"
+  # Public announce only after npm + GitHub release both succeeded. Posts as
+  # @agentorchbot via OAuth 1.0a user-context tokens stored as repo secrets.
+  # Missing secrets → skip (exit 0). Re-running publish for the same tag can
+  # double-post; use skip_announce=true to suppress.
+  announce:
+    needs: release
+    if: ${{ github.event.inputs.skip_announce != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: post release to X
+        env:
+          TAG_REF: ${{ github.event.inputs.tag || github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+        run: node src/announce-release.js "$TAG_REF"
