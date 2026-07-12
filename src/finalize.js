@@ -239,7 +239,7 @@ function blockedSection(details) {
     const lines = [
       "**Merge conflict.** git could not combine this branch with the integration branch on its own, " +
       "because both sides changed the same lines. Conflicts confined to release-churn files " +
-      "(`CHANGELOG.md`, `package-lock.json`, `src/version.js`) are landing-race collisions and resolve " +
+      "(`CHANGELOG.md`, `package-lock.json`, `package.json`) are landing-race collisions and resolve " +
       "mechanically; conflicts anywhere else are real content overlaps worth a closer read.",
       "",
     ];

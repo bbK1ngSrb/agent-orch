@@ -159,7 +159,7 @@ main:
   conflictResolution: manual   # manual | propose | auto; default: manual
   # conflictResolutionResolvers: [claude]  # default: null — role specs; rotate/fail over per conflict
   autoResolveConflicts: false  # deprecated alias: true = conflictResolution: auto
-  autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json", "src/version.js", "version.js"]
+  autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json"]
 
 # === Auto docs-update after a real merge (optional) ===
 docs:
