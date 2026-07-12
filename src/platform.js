@@ -10,12 +10,14 @@ export const IS_WINDOWS = process.platform === "win32";
 const WIN_EXT_RE = /\.(exe|cmd|bat|com|ps1)$/i;
 
 // Filenames to probe for `exe` on this platform. POSIX: the bare name. Windows:
-// the bare name plus each PATHEXT extension (claude → claude.cmd etc.) — npm
-// installs CLIs as .cmd shims, so an extensionless probe never finds them.
+// each PATHEXT extension, never the bare name — CreateProcess can't launch an
+// extensionless file, and some tools (npm) ship a bare POSIX shim alongside
+// their real .cmd shim in the same dir; probing bare first can match that
+// unlaunchable file before ever trying npm.cmd (#313).
 export function exeCandidates(exe, platform = process.platform, pathext = process.env.PATHEXT) {
   if (platform !== "win32" || WIN_EXT_RE.test(exe)) return [exe];
   const exts = (pathext || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-  return [exe, ...exts.map((e) => exe + e.toLowerCase())];
+  return exts.map((e) => exe + e.toLowerCase());
 }
 
 // Kill a stalled agent and all its descendants. POSIX: SIGKILL the process

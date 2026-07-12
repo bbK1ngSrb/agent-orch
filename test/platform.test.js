@@ -11,10 +11,10 @@ test("exeCandidates: POSIX returns the bare name only", () => {
   assert.deepEqual(exeCandidates("claude", "darwin"), ["claude"]);
 });
 
-test("exeCandidates: win32 expands PATHEXT after the bare name", () => {
+test("exeCandidates: win32 expands PATHEXT, never the bare extensionless name", () => {
   assert.deepEqual(
     exeCandidates("claude", "win32", ".COM;.EXE;.BAT;.CMD"),
-    ["claude", "claude.com", "claude.exe", "claude.bat", "claude.cmd"],
+    ["claude.com", "claude.exe", "claude.bat", "claude.cmd"],
   );
 });
 
@@ -105,4 +105,16 @@ test("resolveAgentBin: win32 PATH hit returns the absolute resolved path", () =>
   // POSIX returns the bare name on a PATH hit; win32 must return the absolute
   // path so the caller can see the .cmd extension and unwrap the shim.
   assert.equal(resolveAgentBin("fake-win-cli2", [], `${win32.delimiter}${d}${win32.delimiter}`, "win32"), p);
+});
+
+test("resolveAgentBin: win32 prefers the .cmd shim over a same-named bare POSIX shim (#313)", () => {
+  // npm ships both a bare `npm` (POSIX shim) and `npm.cmd` (real Windows shim)
+  // in the same global bin dir. The bare file must never win the probe.
+  const d = mkdtempSync(join(tmpdir(), "orch-agentbin-"));
+  const bare = join(d, "npm");
+  const cmd = join(d, "npm.cmd");
+  writeFileSync(bare, "#!/bin/sh\n");
+  writeFileSync(cmd, "@echo off\n");
+  chmodSync(cmd, 0o755);
+  assert.equal(resolveAgentBin("npm", [d], "", "win32"), cmd);
 });
