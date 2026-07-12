@@ -20,24 +20,43 @@ identically on all three, so nothing in this manual is Linux/macOS-specific.
 
 ### 1.1 What a "cycle" is
 
-Every `orch task`, `orch issue`, or `orch agent build` run is a **cycle**:
+Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
+**cycle**:
 
 1. **Author** — one agent writes a change on its own branch, in its own git
    worktree (isolated from your working directory; you keep working while it
-   runs).
+   runs). `orch review` skips this step entirely — it starts from a branch
+   you (or something else) already wrote — but everything from here on is the
+   same machinery.
 2. **Cross-audit** — a *different* agent reviews the author's diff and returns
    `AGREE` or `DISAGREE`. If `DISAGREE`, the author revises and the review
-   repeats, up to `reviseCap` rounds (default 3).
+   repeats, up to `reviseCap` rounds (default 3) — except under `orch review`,
+   which has no author to revise and so escalates immediately on the first
+   `DISAGREE` instead of looping.
 3. **Test-gate** — the repo's test command runs against the change. No green
    tests, no merge, no exceptions.
-4. **Merge** — *only if* every reviewer said `AGREE` **and** tests passed, the
-   branch is merged. How and where it merges is the part this manual spends
-   the most time on, because there are three distinct answers.
+4. **Security scan** — a deterministic pattern scan (`scanDiff` in
+   `src/security-review.js`) runs over the *added* lines of the final diff,
+   flagging reads of secrets/env (`process.env`, `.ssh/`, `PRIVATE KEY`, ...),
+   opening a network connection, spawning a subprocess, or touching
+   branch-protection/CODEOWNERS/workflow files. Unlike the LLM reviewers, this
+   scan can't be reasoned or prompted out of a finding — any hit escalates,
+   even after `AGREE` and green tests. If the final diff itself can't be read,
+   orch fails closed and escalates rather than assuming an unseen patch is
+   safe. This runs on every cycle that reaches AGREE + green, including the
+   `orch pr`/PR-bridge audit-only path (§2.7) where nothing else merges.
+5. **Merge** — *only if* every reviewer said `AGREE`, tests passed, **and**
+   the security scan found nothing — the branch is merged. How and where it
+   merges is the part this manual spends the most time on, because there are
+   three distinct answers. `orch review <branch>` **does merge** on this same
+   AGREE-and-green outcome, exactly like `orch task`; the only thing it skips
+   is the authoring step. Only `orch pr` stops short of a local merge — it
+   reports its verdict and leaves GitHub to own the actual merge (§2.7).
 
-If any stage fails — reviewer disagreement past the cap, red tests, a merge
-conflict — the cycle does not merge. It **escalates**: it either opens a PR
-for a human to look at, or writes a local decision file and keeps the branch
-around. Nothing is silently discarded.
+If any stage fails — reviewer disagreement past the cap, red tests, a risky
+security-scan finding, a merge conflict — the cycle does not merge. It
+**escalates**: it either opens a PR for a human to look at, or writes a local
+decision file and keeps the branch around. Nothing is silently discarded.
 
 ### 1.2 Two branches you need to know about
 
@@ -117,7 +136,32 @@ drive `orch` in this repo.
 **When to use it:** once, the first time you set up `orch` in a repo. Safe to
 re-run — it won't clobber an existing `.orch/orch.yml`.
 
-### 2.2 `orch task "<change>"`
+### 2.2 `orch config`
+
+An interactive, one-field-at-a-time wizard for creating or editing
+`.orch/orch.yml`. It walks every key in the config schema, showing the
+current value (or default) and an explanation before you change it.
+
+```bash
+orch config
+orch config --config-file custom.yml   # write somewhere other than .orch/orch.yml
+```
+
+Unlike hand-editing YAML, the wizard **normalizes** what it writes: it runs
+the same business-rule validation the loader applies at run time (e.g.
+rejecting a `main.conflictResolution` whose only configured resolver is also
+the sole reviewer), and it canonicalizes the deprecated
+`main.autoResolveConflicts` boolean into `main.conflictResolution` before
+saving, so the file it writes never round-trips both the old alias and the
+new field in a way that could silently disagree with itself.
+
+**When to use it:** setting up a repo's config for the first time beyond the
+bare `orch init` scaffold, or changing a field you're not confident editing
+by hand (especially the `main.*` conflict-resolution keys, where the wizard's
+validation catches a broken combination before it's saved instead of after
+the next run fails to load it).
+
+### 2.3 `orch task "<change>"`
 
 The everyday command. Runs one full cycle — author, cross-audit, test-gate,
 merge — described from a plain-English instruction.
@@ -131,10 +175,15 @@ orch task "fix the flaky login test"
 ```bash
 orch task "add input validation" --author "claude" --reviewer "codex"
 orch task "migrate auth module"  --authors claude,codex --reviewers claude,codex
+orch task "add input validation" --reviewer "codex"   # reviewer-only: rotate the author, pin the reviewer
 ```
 
-- `--author` / `--reviewer` — one spec each, singular; must set both or
-  neither.
+- `--author` / `--reviewer` — one spec each, singular. Set both to pin both
+  roles, or set only `--reviewer` to force the reviewer while the author
+  still rotates from the `agents:` pool — the one asymmetric case `task`,
+  `issue`, and `review` all allow. Setting only `--author` without a
+  `--reviewer` is rejected the same as before; author-only isn't meaningful
+  the same way, since the rotation pool already picks *someone* to review.
 - `--authors` / `--reviewers` — comma lists; each author writes its **own**
   branch, and every reviewer audits every branch it didn't write. Use this
   when you want several independent attempts at the same change and will
@@ -165,13 +214,13 @@ in a `gh` call — `openIntegrationPr` opens or updates the persistent
 integration→main PR after *every* successful merge, not just `merge: pr`
 runs. So if your repo has a git remote configured, `orch task`/`orch issue`
 check `gh auth status` up front, the same fail-fast check `orch pr` always
-did (§2.6) — you get one clear "run `gh auth login`" error before any agent
+did (§2.7) — you get one clear "run `gh auth login`" error before any agent
 work happens, instead of a cycle that authors, reviews, tests, and merges
 successfully, only to fail obscurely at the very last step. A repo with no
 remote configured at all skips this check entirely, since there's no PR
 bridge to open.
 
-### 2.3 `orch task --file <work-order.json>`
+### 2.4 `orch task --file <work-order.json>`
 
 Same cycle, but the instruction comes from a structured, untrusted JSON file
 instead of a free-text string — useful when you're generating work orders
@@ -195,7 +244,7 @@ instructions to orch itself.
 **When to use it:** scripted or bulk task generation, or whenever the source
 of the request isn't a human typing directly into your terminal.
 
-### 2.4 `orch issue <n>`
+### 2.5 `orch issue <n>`
 
 Fetches GitHub issue `#n` (title + body), treats it as a work order, runs the
 full cycle, and on a successful merge stamps `Closes #n` — so the issue
@@ -204,6 +253,7 @@ persistent integration PR merges and GitHub processes the closing keyword).
 
 ```bash
 orch issue 42
+orch issue 42 --reviewer "codex"   # reviewer-only override, same as §2.3's task example
 ```
 
 If the cycle escalates instead of merging (disagreement past the cap, or a
@@ -216,10 +266,17 @@ watching stdout. This is the only trace besides the local
 consume them directly rather than re-typing the description as a `task`
 string. Needs `gh` authenticated.
 
-### 2.5 `orch review <branch>`
+### 2.6 `orch review <branch>`
 
-Audit-only — no authoring, no merge. Points one or more reviewer agents at an
-existing branch and asks for a verdict.
+No authoring — but it **does merge**. Points one or more reviewer agents at
+an existing branch and runs the exact same audit → test-gate → security-scan
+→ merge machinery as `orch task` (§1.1), just starting from a branch you (or
+something else) already wrote instead of authoring one. If every reviewer
+says `AGREE` and tests pass and the security scan is clean, the branch
+merges into `orch/integration` (or opens a PR, under `merge: pr`) the same
+way a `task` cycle's result would. A `DISAGREE` escalates immediately —
+there's no author to revise, so the retry loop that `task` gets doesn't apply
+here; one round decides it.
 
 ```bash
 orch review pr/claude/some-branch
@@ -227,10 +284,13 @@ orch review my-feature-branch --reviewer "codex, claude high"
 ```
 
 **When to use it:** you (a human) wrote a branch yourself, or an agent wrote
-one outside of orch, and you want orch's cross-audit discipline applied to it
-without re-authoring anything.
+one outside of orch, and you want orch's cross-audit discipline — including
+its merge decision — applied to it without re-authoring anything. If you want
+a verdict *without* any possibility of a local merge, use `orch pr` (§2.7)
+against a GitHub PR instead, which is the audit-only path that never touches
+`orch/integration`.
 
-### 2.6 `orch pr <n> [--merge]`
+### 2.7 `orch pr <n> [--merge]`
 
 The GitHub PR bridge. Fetches PR `#n`'s head, runs an audit-only cycle
 against it (local `main` is never touched — GitHub owns the actual merge),
@@ -247,8 +307,13 @@ want orch's agents to weigh in the same way they would on an internal cycle,
 with the option to let orch actually merge it once approved.
 
 Needs `gh` authenticated (`orch` checks this up front and fails fast rather
-than partway through a cycle — see §2.2's note on why `orch task`/`orch
+than partway through a cycle — see §2.3's note on why `orch task`/`orch
 issue` check this too).
+
+**The security scan (§1.1) still applies, even though nothing merges here.**
+`orch pr` skips the actual merge — GitHub owns that — but not the deterministic
+scan: a risky diff escalates instead of reporting `approved`, regardless of
+what the LLM reviewers concluded.
 
 **Merge verification, not just a trusted exit code.** After `gh pr merge`
 returns success, `orch` doesn't take that at face value: it re-fetches
@@ -262,7 +327,7 @@ silently didn't take), `orch` refuses to report success and raises an error
 instead — the same "don't claim a merge that didn't happen" discipline
 described under Merge honesty in the README.
 
-### 2.7 `orch agent build <name> [--pr]`
+### 2.8 `orch agent build <name> [--pr]`
 
 Scaffolds a missing adapter (`src/adapters/<name>.js`) through orch's *own*
 author → audit → test pipeline, in its own isolated worktree/branch.
@@ -276,7 +341,7 @@ orch agent build mynewagent --pr     # opens a PR instead
 already in the built-in set (`claude`, `codex`, `copilot`, `gemini`, `agy`,
 `grok`, plus the local-llm models).
 
-### 2.8 `orch continue <sid>`
+### 2.9 `orch continue <sid>`
 
 Resumes an interrupted or stalled cycle from its checkpoint (see §4.3 on
 crash recovery). You'll be told the `sid` to use when a cycle dies mid-way;
@@ -291,37 +356,53 @@ checkpoint points at work that no longer exists, so orch clears the stale
 resume state and exits cleanly rather than failing on every subsequent
 `continue` for that dead `sid`.
 
-### 2.9 `orch dashboard [--json] [--limit N] [--check-history]`
+### 2.10 `orch dashboard [--json] [--limit N] [--check-history] [--once|--plain] [--refresh-ms N]`
 
 Read-only. Shows live cycle status/stage, a streaming log tail, run history,
-and success-rate metrics. It never mutates orch state — that holds with
-`--check-history` too.
+and success-rate metrics. It never mutates orch state — that holds in every
+mode below.
 
-`--check-history` only changes what this command *displays*. For each red
-history row it asks git whether the row's branch still exists, and any row
-whose branch is gone is shown as `resolved` — so a long-since-merged cycle no
-longer reads as a lingering failure. This reconciliation is recomputed from git
-on every run; the on-disk history (`runs.jsonl`) is left untouched.
+**Live TUI by default, in a real terminal.** When both stdout and stdin are a
+genuine interactive TTY and you didn't pass `--json`/`--once`/`--plain`,
+`orch dashboard` opens a full-screen live TUI that polls and redraws every
+`--refresh-ms` milliseconds (default `1000`):
 
 ```bash
-orch dashboard
-orch dashboard --json --limit 5
-orch dashboard --check-history
+orch dashboard                    # live TUI in an interactive terminal
+orch dashboard --refresh-ms 2000  # poll every 2s instead of the 1s default
 ```
 
+**Static one-shot, everywhere else.** Any of these forces the plain, single
+render instead — the same byte-identical text output this command has always
+had, so scripts, logs, and CI output stay diffable: `--json`, `--once`,
+`--plain`, a piped/redirected stream, or simply not having a TTY at all (cron,
+CI, a non-interactive shell):
+
+```bash
+orch dashboard --json --limit 5
+orch dashboard --check-history
+orch dashboard --once        # force the static render even in a real terminal
+```
+
+`--check-history` only changes what this command *displays* (in either mode).
+For each red history row it asks git whether the row's branch still exists,
+and any row whose branch is gone is shown as `resolved` — so a long-since-
+merged cycle no longer reads as a lingering failure. This reconciliation is
+recomputed from git on every run; the on-disk history (`runs.jsonl`) is left untouched.
+
 **When to use it:** checking on a long-running or concurrent set of cycles
-without interrupting them.
+without interrupting them. Reach for `--once`/`--plain` specifically when you
+want the old plain-text summary from inside an interactive terminal — piping
+or redirecting the live-TUI invocation gets you the static render
+automatically, without needing the flag.
 
-A live full-screen TUI version of this command is designed in
-[`docs/tui-design.md`](tui-design.md).
-
-### 2.10 `orch agent add <name>`
+### 2.11 `orch agent add <name>`
 
 Appends an already-known agent to the `agents:` rotation pool in
 `.orch/orch.yml`. For an agent orch doesn't know at all, use
-`orch agent build <name>` (§2.7) instead — `add` registers, `build` creates.
+`orch agent build <name>` (§2.8) instead — `add` registers, `build` creates.
 
-### 2.11 `orch completion [bash]` / `orch completion install`
+### 2.12 `orch completion [bash]` / `orch completion install`
 
 Prints (or installs to `~/.orch/completion.bash`) the bash tab-completion
 script. `npm install -g` already installs it via a postinstall hook; these
@@ -332,7 +413,7 @@ orch completion install
 source <(orch completion bash)
 ```
 
-### 2.12 Flags that apply across commands
+### 2.13 Flags that apply across commands
 
 - **`--dry`** — plan a `task`/`review` cycle without shelling out to agents,
   touching git, or running tests. Never deletes worktrees or branches.
@@ -630,7 +711,7 @@ github:
 main:
   autoMerge: false                # true = orch itself merges the persistent integration PR once its checks are green
   conflictResolution: manual      # manual | propose | auto
-  conflictResolutionResolvers: [claude]  # role specs; rotate/fail over per conflict
+  # conflictResolutionResolvers: [claude]  # default: null; role specs, rotate/fail over per conflict
   autoResolveConflicts: false     # deprecated alias: true = conflictResolution: auto
 
 # === Auto docs-update ===
@@ -810,3 +891,9 @@ orch review my-branch --reviewer "codex, claude high"
   then it only happens on the local integration path (`no-ff`/`ff-only`),
   never under `merge: pr`. If you're on `merge: pr` and want version bumps,
   that's your own CI's job now.
+- **"I ran `orch review` just to get a second opinion, and it merged the
+  branch!"** That's correct, and by design (§2.6) — `orch review` skips only
+  the *authoring* step; agreement + green tests + a clean security scan still
+  merges it, exactly like `orch task` would. If you want a verdict with no
+  possibility of a local merge, point `orch pr` at a GitHub PR instead —
+  that's the one command in this list that never merges locally.

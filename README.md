@@ -55,6 +55,7 @@ Run from inside the git repo you want orchestrated:
 ```bash
 orch init                                  # scaffold .orch/orch.yml + .orch/ORCH.md, verify agent CLIs
 orch init --link                           # also wire .orch/ORCH.md into CLAUDE.md/AGENTS.md/GEMINI.md
+orch config                                 # interactive wizard to create/edit .orch/orch.yml
 orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
 orch task "fix x" --authors claude,codex --reviewers claude,codex
 orch task --file wo.json                    # untrusted JSON work order (validated + fenced)
@@ -150,6 +151,7 @@ orch task "fix the flaky login test"
 
 ## Commands
 - `orch init [--link]` — scaffold `.orch/orch.yml` + agent-agnostic `.orch/ORCH.md` usage doc, verify agent CLIs, and print a detection summary of what's actually usable on this machine (`claude`/`codex`/`copilot`/`gemini`/`grok` resolvable via the same PATH + fallback-dir lookup preflight uses, local-llm models configured for `ccr`'s `local` provider), e.g. `orch: detected: claude, glm-4.5-air — not found: codex (CLI not found: PATH + fallback dirs)`. `--link` appends an idempotent pointer to `.orch/ORCH.md` in the repo's `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` (created for the configured agent if none exist). The `@.orch/ORCH.md` line auto-loads the doc in Claude Code; other agents read the prose pointer to it.
+- `orch config` — interactive wizard to create or edit `.orch/orch.yml` field by field, validating and normalizing (e.g. canonicalizing the legacy `main.autoResolveConflicts` alias to `main.conflictResolution`) before writing.
 - `orch agent add <name>` — append a registered agent to `.orch/orch.yml`.
 - `orch task "..."` — author + cross-audit + test-gate + merge.
 - `orch issue <n>` — fetch GitHub issue #n (title+body, treated as an untrusted work order), run the full cycle, and stamp `Closes #n` on the no-ff merge so it auto-closes once main reaches origin. Needs the [`gh`] CLI authenticated. If the cycle escalates or falls back to a PR instead of merging, orch posts a comment on the source issue (verdict, branch, reason, round count) — headless runs have no one watching stdout, so this is the only trace besides the local `.orch/reviews/<branch>/DECISION.md`.
@@ -157,10 +159,13 @@ orch task "fix the flaky login test"
 - `orch pr <n> [--merge]` — audit a GitHub PR, comment the verdict, optionally merge via `gh`.
 - `orch agent build <name> [--pr]` — an unregistered agent name scaffolds `src/adapters/<name>.js` through orch's own author → audit → test pipeline, isolated in its own worktree/branch. Default lands on that local branch only; `--pr` opens a PR instead.
 - `orch continue <sid>` — resume an interrupted or stalled cycle (crash, hard kill, usage-limit abort) from its checkpoint, reattaching the same branch/author instead of re-authoring from scratch. If the saved branch is gone, stale local resume state is cleared; if it exists only as `origin/<branch>`, check it out locally first. `orch` tells you the `sid` to use when a cycle dies mid-way.
-- `orch dashboard [--json] [--limit N] [--check-history]` — read-only view of live cycle status/stage, streaming log tail, run history, and success-rate metrics. `--check-history` shows stale red history rows as resolved when their branches are gone — a view-only reconciliation that leaves the run-history file unchanged.
+- `orch dashboard [--json] [--limit N] [--check-history] [--once|--plain] [--refresh-ms N]` — read-only view of live cycle status/stage, streaming log tail, run history, and success-rate metrics. In a real interactive terminal (stdout and stdin both a TTY) with no `--json`/`--once`/`--plain`, it opens a live full-screen TUI that polls and redraws every `--refresh-ms` (default `1000`). Any scriptable context — `--json`, `--once`/`--plain`, a piped/redirected stream, or a non-TTY session — instead prints the static one-shot render, byte-identical to earlier versions, so cron/CI output stays diffable. `--check-history` shows stale red history rows as resolved when their branches are gone — a view-only reconciliation that leaves the run-history file unchanged.
 - `orch completion [bash]` / `orch completion install` — print the bash completion script or rewrite `~/.orch/completion.bash`.
 Add `--reviewer name` or `--reviewers a,b` to override review agents for
-`review`/`pr` runs.
+`task`/`issue`/`review`/`pr` runs. On `task`/`issue`/`review`, setting only
+`--reviewer(s)` (no `--author(s)`) is allowed and forces that reviewer while
+still rotating the author from the `agents:` pool — the one asymmetric case;
+setting only `--author(s)` without a reviewer is rejected the same as before.
 
 Other flags: `--cheap` forces `orch.yml`'s `cheap.role` (e.g. a local llm) for one
 `task`/`issue` run — set `cheap.paths` to auto-route matching `--file`/`orch issue`
@@ -177,6 +182,19 @@ below that says `main`, read "your `baseBranch`".
 ## How it decides to merge
 Merge happens only when every reviewer says `AGREE` **and** the repo's tests pass.
 No test command detected → it refuses to auto-merge and tells you.
+
+There's a third, independent gate the LLM reviewers can't talk their way past:
+immediately before every merge attempt — the normal local-integration path and
+the `orch pr`/PR-bridge no-merge approval path alike — orch reads the full
+base→branch diff and runs it through a deterministic pattern scanner
+(`scanDiff` in `src/security-review.js`) that flags added lines reading
+secrets/env (`process.env`, `.ssh/`, `PRIVATE KEY`, ...), opening a network
+connection, spawning a subprocess, or touching branch-protection/workflow
+files. Any finding escalates without merging, even if every reviewer already
+said `AGREE` and tests are green — an LLM reviewer can be prompted into
+approving something it shouldn't, but this check can't be argued with. If the
+diff itself can't be read, orch fails closed (escalates) rather than assuming
+the unseen patch is safe.
 
 ## Merge honesty and cost/catch-rate reporting
 Prompted by a red-team report that found orch could
