@@ -96,9 +96,14 @@ export function runHistory(orchDir, limit = 20, { repo = null, checkHistory = fa
 // Success-rate + usage totals over the full run-history file.
 export function metrics(orchDir) {
   const entries = readJsonl(join(orchDir, "runs.jsonl"));
-  let merged = 0, tokens = 0, costUsd = 0, hasCost = false, unpricedRuns = 0;
+  // "merged" and "pr" are different terminal outcomes — a `pr` run opened a
+  // GitHub PR (cfg.merge === "pr") but never actually landed a local merge, so
+  // folding it into `merged` mislabels it. Count them separately; `successRate`
+  // still treats both as a successful cycle (neither is an escalation).
+  let merged = 0, prOpened = 0, tokens = 0, costUsd = 0, hasCost = false, unpricedRuns = 0;
   for (const e of entries) {
-    if (e.verdict === "merged" || e.verdict === "pr") merged++;
+    if (e.verdict === "merged") merged++;
+    else if (e.verdict === "pr") prOpened++;
     if (typeof e.tokens === "number") tokens += e.tokens;
     // A run with tokens but no numeric cost is UNPRICED, not free — count it so
     // the total cost can be labeled as partial instead of silently understated.
@@ -108,7 +113,8 @@ export function metrics(orchDir) {
   return {
     total: entries.length,
     merged,
-    successRate: entries.length ? merged / entries.length : null,
+    prOpened,
+    successRate: entries.length ? (merged + prOpened) / entries.length : null,
     totalTokens: tokens,
     totalCostUsd: hasCost ? costUsd : null,
     unpricedRuns,
@@ -197,7 +203,8 @@ export function render(orchDir, opts = {}) {
   }
   lines.push("");
   lines.push("Metrics");
-  lines.push(`  runs: ${m.total}  merged: ${m.merged}  success rate: ${pct(m.successRate)}`);
+  const prSuffix = m.prOpened ? `  PRs opened: ${m.prOpened}` : "";
+  lines.push(`  runs: ${m.total}  merged: ${m.merged}${prSuffix}  success rate: ${pct(m.successRate)}`);
   lines.push(`  clean unattended cycles: ${m.cleanUnattendedCycles}`);
   const unpriced = m.unpricedRuns ? ` (+${m.unpricedRuns} unpriced run${m.unpricedRuns === 1 ? "" : "s"})` : "";
   lines.push(`  tokens: ${m.totalTokens}  cost: ${usd(m.totalCostUsd)}${unpriced}`);

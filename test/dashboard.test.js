@@ -132,6 +132,21 @@ test("metrics computes success rate and usage totals", () => {
   assert.equal(m.cleanUnattendedCycles, 0);
 });
 
+test("metrics counts a 'pr' verdict as PRs opened, not as merged", () => {
+  // A `pr` verdict (cfg.merge === "pr") only opened a GitHub PR — it never
+  // landed a local merge. Folding it into `merged` mislabels the stat; it
+  // must be tracked separately even though it still counts toward success.
+  const d = freshDir();
+  notify.recordRun(d, { ts: "1", branch: "b1", verdict: "merged", rounds: 1 });
+  notify.recordRun(d, { ts: "2", branch: "b2", verdict: "pr", rounds: 1 });
+  notify.recordRun(d, { ts: "3", branch: "b3", verdict: "escalated", rounds: 1 });
+  const m = dashboard.metrics(d);
+  assert.equal(m.total, 3);
+  assert.equal(m.merged, 1);
+  assert.equal(m.prOpened, 1);
+  assert.equal(m.successRate, 2 / 3);
+});
+
 test("metrics preserves a legitimate zero total cost instead of collapsing it to null", () => {
   const d = freshDir();
   notify.recordRun(d, { ts: "1", branch: "b1", verdict: "merged", rounds: 1, tokens: 100, costUsd: 0 });

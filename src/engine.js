@@ -56,7 +56,7 @@ export async function runCycle(opts, deps) {
   const recordTerminal = (result) => {
     const usage = totalUsage(runStats);
     notify.recordRun?.(orchDir, {
-      ts: new Date().toISOString(), branch, verdict: result.status, reason: result.reason, rounds: result.rounds,
+      ts: new Date().toISOString(), branch, sid, verdict: result.status, reason: result.reason, rounds: result.rounds,
       ...(usage.tokens ? { tokens: usage.tokens } : {}),
       ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
     });
