@@ -37,3 +37,17 @@ test("missing verdict is a fail-safe DISAGREE", () => {
   assert.equal(v.decision, "DISAGREE");
   assert.equal(v.reason, "unparseable verdict");
 });
+
+test("ignores mid-prose DISAGREE after a line-leading AGREE", () => {
+  // Reviewers often mention the AGREE/DISAGREE vocabulary while reasoning.
+  // Those mentions must not override a real line-leading speech-act.
+  const v = parseVerdict("AGREE looks good.\nMentions AGREE/DISAGREE enum later.");
+  assert.equal(v.decision, "AGREE");
+  assert.match(v.reason, /looks good/);
+});
+
+test("last line-leading token wins over earlier line-leading ones", () => {
+  const v = parseVerdict("DISAGREE missing tests\nAGREE tests added now");
+  assert.equal(v.decision, "AGREE");
+  assert.match(v.reason, /tests added/);
+});
