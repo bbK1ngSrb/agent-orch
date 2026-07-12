@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.1 — 2026-07-12
+- fix: sync `src/version.js` with `package.json` so `orch --version` matches the npm release (closes [#308](https://github.com/bbk1ng/agent-orch/issues/308)). The 0.4.0 publish bumped the package identity and docs but left the runtime `VERSION` constant at 0.3.51; add a smoke test that fails CI if the two drift again.
+
 ## 0.4.0 — 2026-07-12
 
 The audit release: closes out the 2026-07-11 implementation plan — all 9 HIGH
