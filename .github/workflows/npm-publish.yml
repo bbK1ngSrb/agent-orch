@@ -1,7 +1,7 @@
 name: npm-publish
 on:
   # Manual-only publish. No `push: tags` trigger by design — publishing is a
-  # deliberate human act, run from a terminal via scripts/orch_release.sh (or
+  # deliberate human act, run from a terminal via `node scripts/orch-release.js` (or
   # `gh workflow run npm-publish.yml -f tag=vX.Y.Z`). Prior auto-trigger was
   # already dead for bot tags anyway: GitHub Actions won't cascade-trigger a
   # workflow from a tag pushed with the default GITHUB_TOKEN (loop prevention).
