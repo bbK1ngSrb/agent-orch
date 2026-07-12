@@ -25,7 +25,23 @@ if (existsSync("package-lock.json")) {
   writeFileSync("package-lock.json", `${JSON.stringify(lock, null, 2)}\n`);
 }
 
-execFileSync("git", ["add", "package.json", "package-lock.json"], { stdio: "inherit" });
+// The GitHub Pages site (docs/index.html) hard-codes the version in a
+// `>vX.Y.Z</span>` and nothing else touches it, so it must be bumped here too (#192).
+const sitePath = "docs/index.html";
+let siteBumped = false;
+if (existsSync(sitePath)) {
+  const html = readFileSync(sitePath, "utf8");
+  const next = html.replace(/v\d+\.\d+\.\d+(?=<(?:\\u002F|\\\/|\/)span>)/, `v${version}`);
+  if (next !== html) {
+    writeFileSync(sitePath, next);
+    siteBumped = true;
+  }
+}
+
+const addFiles = ["package.json"];
+if (existsSync("package-lock.json")) addFiles.push("package-lock.json");
+if (siteBumped) addFiles.push("docs/index.html");
+execFileSync("git", ["add", ...addFiles], { stdio: "inherit" });
 execFileSync("git", ["commit", "-m", `chore(release): v${version}`], { stdio: "inherit" });
 execFileSync("git", ["tag", "-a", `v${version}`, "-m", `v${version}`], { stdio: "inherit" });
 
