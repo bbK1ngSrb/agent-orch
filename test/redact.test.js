@@ -65,6 +65,35 @@ test("detects an sk- prefixed provider key", () => {
   assert.equal(hasSecret(redact(secret)), false);
 });
 
+// --- A1: modern hyphenated provider key shapes ---
+// Anthropic and OpenAI keys embed hyphenated segments (sk-ant-api03-..., sk-proj-...)
+// that the old /sk-[A-Za-z0-9]{20,}/ pattern could never match: any hyphen inside
+// the run reset its 20-char alphanumeric count to zero.
+test("detects a modern Anthropic sk-ant-api03- key", () => {
+  const secret = "sk-ant-api03-" + "A".repeat(40) + "-" + "B".repeat(10);
+  assert.equal(hasSecret(secret), true);
+  assert.equal(hasSecret(redact(secret)), false);
+});
+
+test("detects a modern OpenAI sk-proj- key", () => {
+  const secret = "sk-proj-" + "C".repeat(48);
+  assert.equal(hasSecret(secret), true);
+  assert.equal(hasSecret(redact(secret)), false);
+});
+
+test("redact scrubs a modern sk-ant-api03- key in surrounding prose", () => {
+  const secret = "sk-ant-api03-" + "D".repeat(40) + "-" + "E".repeat(10);
+  const out = redact(`export ANTHROPIC_API_KEY=${secret}`);
+  assert.equal(out.includes(secret), false);
+  assert.match(out, /^export ANTHROPIC_API_KEY=«redacted»$/);
+});
+
+test("clean prose with a short sk- fragment is not flagged", () => {
+  // "sk-" followed by fewer than 10 key-shaped chars stays below the threshold.
+  assert.equal(hasSecret("desk-jockey"), false);
+  assert.equal(hasSecret("risk-averse"), false);
+});
+
 test("detects an AKIA AWS access key id", () => {
   const secret = "AKIA" + "0123456789ABCDEF";
   assert.equal(hasSecret(secret), true);

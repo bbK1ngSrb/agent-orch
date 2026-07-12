@@ -931,6 +931,65 @@ test("agent add offers to build an unregistered agent; accepting delegates to bu
   }
 });
 
+// A6+B4: the confirm path used to hardcode `flags: {}`, silently discarding
+// `--dry`/`--config-file` — a confirmed `--dry` build would run a REAL build
+// (real worktree/branch/merge) because the flag never reached buildAgent. It
+// also never set the escalation exit code the direct `agent build <name>`
+// sibling sets. Both are asserted here against the same confirm path.
+test("agent add confirm path forwards real flags to buildAgent (A6)", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-flags-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    let receivedFlags = null;
+    await main(["agent", "add", "widget", "--dry", "--config-file", "custom.yml"], {
+      io: { confirm: async () => true },
+      buildAgent: async (name, ctx) => { receivedFlags = ctx.flags; return { status: "approved", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }; },
+    });
+    assert.equal(receivedFlags.dry, true);
+    assert.equal(receivedFlags["config-file"], "custom.yml");
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("agent add confirm path sets exit code 2 on an escalated build (B4)", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-escalated-"));
+  const prev = cwd();
+  const savedExitCode = process.exitCode;
+  chdir(d);
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    await main(["agent", "add", "widget"], {
+      io: { confirm: async () => true },
+      buildAgent: async () => ({ status: "escalated", reason: "stalemate after cap", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }),
+    });
+    assert.equal(process.exitCode, 2);
+  } finally {
+    process.exitCode = savedExitCode;
+    chdir(prev);
+  }
+});
+
+test("agent add confirm path sets exit code 2 on a pr-fallback build (B4)", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-prfallback-"));
+  const prev = cwd();
+  const savedExitCode = process.exitCode;
+  chdir(d);
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    await main(["agent", "add", "widget"], {
+      io: { confirm: async () => true },
+      buildAgent: async () => ({ status: "pr-fallback", reason: "conflict", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }),
+    });
+    assert.equal(process.exitCode, 2);
+  } finally {
+    process.exitCode = savedExitCode;
+    chdir(prev);
+  }
+});
+
 test("agent add declines the build offer and still throws unknown agent", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-decline-"));
   const prev = cwd();
