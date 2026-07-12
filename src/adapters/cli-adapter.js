@@ -10,6 +10,19 @@ const DEFAULT_STAGE_TIMEOUT_MS = 25 * 60_000; // #56: per-stage wall-clock cap; 
 // Cap captured stdout/stderr so a chatty or stuck agent cannot balloon memory.
 export const MAX_AGENT_OUTPUT_CHARS = 1024 * 1024;
 const OUTPUT_TRUNCATED = `[orch: output truncated to last ${MAX_AGENT_OUTPUT_CHARS} chars]\n`;
+const liveChildren = new Set();
+
+function killLiveChildren() {
+  for (const pid of liveChildren) killTree(pid);
+}
+
+process.once("exit", killLiveChildren);
+for (const signal of ["SIGINT", "SIGTERM", ...(IS_WINDOWS ? [] : ["SIGHUP"])]) {
+  process.once(signal, () => {
+    killLiveChildren();
+    process.kill(process.pid, signal);
+  });
+}
 
 // True if CLI output looks like a Claude usage/rate-limit message. Keep this in
 // sync with the regex in harness/orch-loop.sh (is_limit) — that wrapper waits
@@ -88,6 +101,7 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
       return;
     }
     const child = spawn(spec.bin, spec.args, { cwd, detached: !IS_WINDOWS, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    if (child.pid != null) liveChildren.add(child.pid);
     timer = setInterval(() => {
       process.stderr.write(`… ${label} still running (${formatElapsed(Date.now() - started)} elapsed)\n`);
     }, progressIntervalMs());
@@ -114,10 +128,12 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     child.stdout?.on("data", (chunk) => { stdout = appendCapturedOutput(stdout, chunk); });
     child.stderr?.on("data", (chunk) => { stderr = appendCapturedOutput(stderr, chunk); });
     child.on("error", (e) => {
+      if (child.pid != null) liveChildren.delete(child.pid);
       const out = e.message || "";
       finish({ out, raw: out, ok: false });
     });
     child.on("close", (code, signal) => {
+      if (child.pid != null) liveChildren.delete(child.pid);
       const failed = code !== 0 || Boolean(signal);
       const raw = `${stdout}${stderr}`;
       const out = failed ? raw || `Command failed: ${bin}` : stdout;

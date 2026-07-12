@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { buildArgs as agyArgs } from "../src/adapters/agy.js";
 import { buildArgs as claudeArgs } from "../src/adapters/claude.js";
 import { buildArgs as codexArgs } from "../src/adapters/codex.js";
@@ -365,6 +365,39 @@ test("runAgent closes the child's stdin so codex's exec stdin read sees EOF (#58
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
+});
+
+for (const parentSignal of ["SIGTERM", "SIGHUP"]) test(`terminating the orch process with ${parentSignal} kills its detached agent child`, { timeout: 5000, skip: process.platform === "win32" }, async () => {
+  const wd = mkdtempSync(join(tmpdir(), "orch-parent-exit-"));
+  const pidFile = join(wd, "agent.pid");
+  const adapterUrl = new URL("../src/adapters/cli-adapter.js", import.meta.url).href;
+  const parent = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { makeCliAdapter } from ${JSON.stringify(adapterUrl)};
+    const adapter = makeCliAdapter({
+      name: "staller",
+      bin: process.execPath,
+      buildArgs: () => ["-e", ${JSON.stringify(`require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)`)}],
+    });
+    await adapter.audit("pr/x/y", ${JSON.stringify(wd)}, { stageTimeoutMs: 0 });
+  `], { stdio: "ignore" });
+
+  let agentPid;
+  for (let i = 0; i < 50; i++) {
+    try { agentPid = Number(readFileSync(pidFile, "utf8")); break; } catch { await new Promise((resolve) => setTimeout(resolve, 20)); }
+  }
+  assert.ok(agentPid, "agent child did not start");
+  parent.kill(parentSignal);
+  await new Promise((resolve) => parent.once("exit", resolve));
+
+  let reaped = false;
+  for (let i = 0; i < 100; i++) {
+    try { process.kill(agentPid, 0); } catch (error) {
+      if (error.code === "ESRCH") { reaped = true; break; }
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(reaped, "agent child was not reaped");
 });
 
 test("author commits worktree changes the agent left uncommitted", async () => {
