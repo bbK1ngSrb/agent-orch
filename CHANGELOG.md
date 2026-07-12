@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.200 — 2026-07-12
+- feat: x.y.zcc versioning scheme — the patch field's last two digits are a merge-bump counter, the digits above that a publish-bump counter. See the "Version bump on merge" section of the README.
+- fix: eliminate `src/version.js` as a second, hand-synced version source (closes the #308 drift class) — `orch --version` now reads `package.json` directly and displays it with a `v` prefix.
+- fix: native Windows support — `orch update` was broken by two related bugs in the process-spawn path (#311, #313), both fixed and confirmed on real Windows 10/11 hardware. See PLANNED.md for the full writeup.
+- fix: `scripts/orch-release.js` now also syncs `docs/index.html`'s version span on a publish-bump, matching what the merge-bump path already did (#192) — found while cutting this release.
+- ci: `version-bump.yml` bumps the merge counter automatically for any merge to `main` that doesn't already carry its own version change. `npm-publish.yml`'s pack-test job now runs `orch update --check` on every OS, closing the CI gap that let #311/#313 ship.
+
 ## 0.4.1 — 2026-07-12
 - fix: sync `src/version.js` with `package.json` so `orch --version` matches the npm release (closes [#308](https://github.com/bbk1ng/agent-orch/issues/308)). The 0.4.0 publish bumped the package identity and docs but left the runtime `VERSION` constant at 0.3.51; add a smoke test that fails CI if the two drift again.
 
