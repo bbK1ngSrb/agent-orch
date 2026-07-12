@@ -217,7 +217,8 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
   }
 
   const m = snap.metrics;
-  const status = `LIVE ${snap.live.length} · INTERRUPTED ${snap.interrupted.length} · RUNS ${m.total} · MERGED ${m.merged} (${pct(m.successRate)}) · TOKENS ${m.totalTokens} · COST ${usd(m.totalCostUsd)}`;
+  const prSuffix = m.prOpened ? ` +${m.prOpened}PR` : "";
+  const status = `LIVE ${snap.live.length} · INTERRUPTED ${snap.interrupted.length} · RUNS ${m.total} · MERGED ${m.merged}${prSuffix} (${pct(m.successRate)}) · TOKENS ${m.totalTokens} · COST ${usd(m.totalCostUsd)}`;
   const out = [
     clip(`orch dashboard - ${orchDir}`, columns),
     clip(status, columns),
