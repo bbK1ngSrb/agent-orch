@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 — 2026-07-12
+
+The audit release: closes out the 2026-07-11 implementation plan — all 9 HIGH
+findings landed and re-verified by a second landing audit
+(`docs/high-severity-landing-audit-2026-07-12-revision-2.md`). Extended notes:
+`docs/release-notes-v0.4.0.md`.
+
+Everything merged since 0.3.51:
+
+- fix: land remaining HIGH audit items A1 (modern hyphenated `sk-*` key redaction) and A6+B4 (agent-add confirm path forwards real flags, sets exit code 2 on escalation) ([#304](https://github.com/bbk1ng/agent-orch/pull/304))
+- fix: land batch remnants B2 (`sid` in recordTerminal's runs.jsonl payload), C5 (slugify slice-before-strip), C10 (dashboard splits PRs-opened from merged), C11 (TUI width math for CJK/Hangul/fullwidth), C12 (truncate width≤0 guard) ([#305](https://github.com/bbk1ng/agent-orch/pull/305))
+- docs: v0.4.0 documentation refresh — 8 drift fixes across README, manual, and site, incl. documenting the security-scan gate, the config wizard, live-TUI default, and correcting `orch review`'s merge semantics ([#306](https://github.com/bbk1ng/agent-orch/pull/306))
+- fix(verdict): prefer line-leading AGREE/DISAGREE token over a prose mention ([#303](https://github.com/bbk1ng/agent-orch/pull/303), closes [#301](https://github.com/bbk1ng/agent-orch/issues/301))
+- fix(review-log): distinguish reviewer crash (ERROR) from editorial DISAGREE ([#302](https://github.com/bbk1ng/agent-orch/pull/302), closes [#299](https://github.com/bbk1ng/agent-orch/issues/299))
+- fix(security-review): close subprocess-detection bypass via renamed `child_process` handles ([#300](https://github.com/bbk1ng/agent-orch/pull/300))
+- feat(cli): honor `--reviewer`-only for `task`/`issue`, not just `review` (D2) ([#298](https://github.com/bbk1ng/agent-orch/pull/298))
+- fix(config): normalize wizard writes and restore schema parity; canonicalize legacy `main.autoResolveConflicts` ([#296](https://github.com/bbk1ng/agent-orch/pull/296))
+- fix(agy): refuse both author and reviewer seats — headless `agy` ignores cwd and would review scratch-dir state instead of the branch ([#293](https://github.com/bbk1ng/agent-orch/pull/293), see [#272](https://github.com/bbk1ng/agent-orch/issues/272), [#292](https://github.com/bbk1ng/agent-orch/issues/292))
+
 ## 0.3.51 — 2026-07-11
 - pr/claude/high-depends-none-batch-4-ship-the-high--3123061-0 (closes [#261](https://github.com/bbk1ng/agent-orch/issues/261))
 
