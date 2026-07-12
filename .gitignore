@@ -1,6 +1,7 @@
 .orch/
 modules/
 node_modules/
+test-packages/
 
 # docs/: whitelist-only. Every markdown doc under docs/ is ignored by default —
 # design notes, discussion, run artifacts, red-team reports stay local and never
