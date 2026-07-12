@@ -1,0 +1,124 @@
+name: version-bump
+# Merge-bump (the "cc" half of x.y.zcc) safety net for any merge to main that
+# didn't already carry its own version change. orch's own integration-path
+# merge already bumps the patch field (when release.autoBump is on) as part
+# of the merge commit itself — this workflow covers any OTHER way a commit
+# lands on main (a direct PR orch never touched). Idempotent: if
+# package.json's version already differs from the previous commit on main,
+# this push already bumped it — skip.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: version-bump-main
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: skip if this push already carries a version bump
+        id: check
+        run: |
+          if [ "$(git rev-list --count HEAD)" -lt 2 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CURR="$(node -p "require('./package.json').version")"
+          PREV="$(git show HEAD~1:package.json | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).version')"
+          if [ "$CURR" != "$PREV" ]; then
+            echo "version already changed ($PREV -> $CURR), skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v6
+        if: steps.check.outputs.skip == 'false'
+        with:
+          node-version: "24"
+
+      - name: bump patch by 1, open a PR, wait for checks, admin-merge
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CURR="$(node -p "require('./package.json').version")"
+          NEXT="$(node -e '
+            const [x, y, z] = process.argv[1].split(".").map(Number);
+            console.log(`${x}.${y}.${z + 1}`);
+          ' "$CURR")"
+          SITE_CHANGED="$(node -e '
+            const fs = require("fs");
+            const version = process.argv[1];
+
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.version = version;
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            if (fs.existsSync("package-lock.json")) {
+              const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+              lock.version = version;
+              if (lock.packages?.[""]) lock.packages[""].version = version;
+              fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");
+            }
+
+            const entry = "automated merge-bump (version-bump.yml safety net)";
+            const date = new Date().toISOString().slice(0, 10);
+            const section = `## v${version} — ${date}\n- ${entry}\n\n`;
+            const changelogPath = "CHANGELOG.md";
+            const prior = fs.existsSync(changelogPath)
+              ? fs.readFileSync(changelogPath, "utf8").replace(/^# Changelog\n+/, "")
+              : "";
+            fs.writeFileSync(changelogPath, `# Changelog\n\n${section}${prior}`);
+
+            // Mirrors src/git.js bumpVersion() / scripts/orch-release.js: the
+            // GitHub Pages site (docs/index.html) hard-codes the release version
+            // as `>vX.Y.Z</span>` inside an inline-SPA JSON string, and nothing
+            // else touches it. The slash in the closing tag may be literal
+            // (`</span>`) or escaped (`<\/span>`, `</span>`) depending on the
+            // export, so the lookahead accepts all three (#192).
+            const sitePath = "docs/index.html";
+            let siteChanged = false;
+            if (fs.existsSync(sitePath)) {
+              const html = fs.readFileSync(sitePath, "utf8");
+              const next = html.replace(/v\d+\.\d+\.\d+(?=<(?:\\u002F|\\\/|\/)span>)/, `v${version}`);
+              if (next !== html) {
+                fs.writeFileSync(sitePath, next);
+                siteChanged = true;
+              }
+            }
+            process.stdout.write(siteChanged ? "true" : "false");
+          ' "$NEXT")"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="chore/bump-cc-$(git rev-parse --short HEAD)"
+          git checkout -b "$BRANCH"
+          git add package.json package-lock.json CHANGELOG.md
+          if [ "$SITE_CHANGED" = "true" ]; then
+            git add docs/index.html
+          fi
+          git commit -m "chore(release): v$NEXT"
+          git push origin "$BRANCH"
+
+          gh pr create --title "chore(release): v$NEXT" \
+            --body "Automated merge-bump — this merge to main landed without orch's own release.autoBump path." \
+            --base main --head "$BRANCH"
+
+          for i in $(seq 1 30); do
+            PENDING="$(gh pr checks "$BRANCH" --json state -q '.[] | select(.state != "SUCCESS" and .state != "SKIPPED" and .state != "NEUTRAL") | .state' | head -1)"
+            if [ -z "$PENDING" ]; then break; fi
+            sleep 20
+          done
+
+          gh pr merge "$BRANCH" --squash --delete-branch --admin

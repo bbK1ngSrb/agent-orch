@@ -43,6 +43,8 @@ pnpm-lock.yaml
 /scripts/*
 # Exception: load-bearing security lint (§3g) must stay tracked, not swept by /scripts/*.
 !/scripts/lint-token-step.js
+# Exception: maintainer release tooling (see npm-publish.yml's header comment).
+!/scripts/orch-release.js
 
 # Ignore all local VS Code configurations
 .vscode/*

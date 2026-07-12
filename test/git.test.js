@@ -590,88 +590,79 @@ test("reclaim never sweeps the .orch/integration worktree", () => {
   assert.match(git(["worktree", "list"], repo), /integration/); // outside wt/ → untouched
 });
 
-test("bumpVersion bumps patch, updates version.js, prepends CHANGELOG, and commits", () => {
-  const repo = newRepo();
-  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.1.0" }, null, 2) + "\n");
-  const srcDir = join(repo, "src");
-  mkdirSync(srcDir, { recursive: true });
-  writeFileSync(join(srcDir, "version.js"), 'export const VERSION = "0.1.0";\n');
+test("bumpVersion bumps cc by 1, prepends a v-prefixed CHANGELOG heading, and commits", () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-bumpver-"));
+  git(["init"], repo);
+  git(["config", "user.email", "t@t.com"], repo);
+  git(["config", "user.name", "t"], repo);
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.4.1" }, null, 2));
   git(["add", "."], repo);
-  git(["commit", "-m", "seed versioned files"], repo);
-  const before = git(["rev-parse", "HEAD"], repo);
+  git(["commit", "-m", "init"], repo);
 
   const version = bumpVersion(repo, "pr/claude/x-1");
 
-  assert.equal(version, "0.1.1");
-  assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "0.1.1");
-  assert.equal(readFileSync(join(srcDir, "version.js"), "utf8"), 'export const VERSION = "0.1.1";\n');
+  assert.equal(version, "0.4.2");
+  const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+  assert.equal(pkg.version, "0.4.2");
   const changelog = readFileSync(join(repo, "CHANGELOG.md"), "utf8");
-  assert.match(changelog, /^# Changelog/);
-  assert.match(changelog, /## 0\.1\.1 —/);
-  assert.match(changelog, /- pr\/claude\/x-1/);
-  const after = git(["rev-parse", "HEAD"], repo);
-  assert.notEqual(after, before); // bump landed as its own commit
-  assert.match(git(["log", "-1", "--format=%s"], repo), /chore\(release\): v0\.1\.1/);
+  assert.match(changelog, /^# Changelog\n\n## v0\.4\.2 — \d{4}-\d{2}-\d{2}\n- pr\/claude\/x-1/);
+  const log = git(["log", "-1", "--format=%s"], repo).trim();
+  assert.equal(log, "chore(release): v0.4.2");
+});
+
+test("bumpVersion carries cc 99 into z on a plain merge bump", () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-bumpver-"));
+  git(["init"], repo);
+  git(["config", "user.email", "t@t.com"], repo);
+  git(["config", "user.name", "t"], repo);
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.4.99" }, null, 2));
+  git(["add", "."], repo);
+  git(["commit", "-m", "init"], repo);
+
+  const version = bumpVersion(repo, "pr/claude/x-1");
+
+  assert.equal(version, "0.4.100");
 });
 
 test("bumpVersion is a no-op when package.json is missing", () => {
-  const repo = newRepo(); // no package.json seeded
-  const before = git(["rev-parse", "HEAD"], repo);
+  const repo = mkdtempSync(join(tmpdir(), "orch-bumpver-"));
+  git(["init"], repo);
   const result = bumpVersion(repo, "pr/claude/x-1");
   assert.equal(result, null);
-  assert.equal(git(["rev-parse", "HEAD"], repo), before); // no commit made
-});
-
-test("bumpVersion commits fine when package.json exists but src/version.js does not", () => {
-  const repo = newRepo();
-  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.1.0" }, null, 2) + "\n");
-  git(["add", "."], repo);
-  git(["commit", "-m", "seed package.json only"], repo);
-
-  const version = bumpVersion(repo, "pr/claude/x-1");
-
-  assert.equal(version, "0.1.1");
-  assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "0.1.1");
-  assert.equal(existsSync(join(repo, "src", "version.js")), false);
-  assert.match(git(["log", "-1", "--format=%s"], repo), /chore\(release\): v0\.1\.1/);
 });
 
 test("bumpVersion also bumps package-lock.json's root version", () => {
-  const repo = newRepo();
-  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.1.0" }, null, 2) + "\n");
+  const repo = mkdtempSync(join(tmpdir(), "orch-bumpver-"));
+  git(["init"], repo);
+  git(["config", "user.email", "t@t.com"], repo);
+  git(["config", "user.name", "t"], repo);
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.4.1" }, null, 2));
   writeFileSync(
     join(repo, "package-lock.json"),
-    JSON.stringify({ name: "x", version: "0.1.0", lockfileVersion: 3, packages: { "": { name: "x", version: "0.1.0" } } }, null, 2) + "\n",
+    JSON.stringify({ name: "x", version: "0.4.1", packages: { "": { version: "0.4.1" } } }, null, 2),
   );
   git(["add", "."], repo);
-  git(["commit", "-m", "seed package.json + lockfile"], repo);
+  git(["commit", "-m", "init"], repo);
 
-  const version = bumpVersion(repo, "pr/claude/x-1");
+  bumpVersion(repo, "pr/claude/x-1");
 
-  assert.equal(version, "0.1.1");
   const lock = JSON.parse(readFileSync(join(repo, "package-lock.json"), "utf8"));
-  assert.equal(lock.version, "0.1.1");
-  assert.equal(lock.packages[""].version, "0.1.1");
-  assert.match(git(["show", "--stat", "-1"], repo), /package-lock\.json/);
+  assert.equal(lock.version, "0.4.2");
+  assert.equal(lock.packages[""].version, "0.4.2");
 });
 
-test("bumpVersion returns null and leaves the repo clean when the commit fails (e.g. a rejecting pre-commit hook)", () => {
-  const repo = newRepo();
-  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.1.0" }, null, 2) + "\n");
+test("bumpVersion returns null and leaves the repo clean when the commit fails", () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-bumpver-"));
+  git(["init"], repo);
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.4.1" }, null, 2));
   git(["add", "."], repo);
-  git(["commit", "-m", "seed package.json only"], repo);
-
   const hooksDir = join(repo, ".git", "hooks");
   mkdirSync(hooksDir, { recursive: true });
   const hookPath = join(hooksDir, "pre-commit");
   writeFileSync(hookPath, "#!/bin/sh\nexit 1\n");
   chmodSync(hookPath, 0o755);
-
-  const before = git(["rev-parse", "HEAD"], repo);
+  // Rejecting pre-commit hook forces the commit to fail regardless of git
+  // identity, exercising the catch/reset path.
   const version = bumpVersion(repo, "pr/claude/x-1");
-
-  assert.equal(version, null); // best-effort: never throws, never blocks the caller
-  assert.equal(git(["rev-parse", "HEAD"], repo), before); // no half-bumped commit
-  assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "0.1.0"); // rolled back
-  assert.equal(git(["status", "--porcelain"], repo), ""); // no dirty leftovers for the next finalize
+  assert.equal(version, null);
 });

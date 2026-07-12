@@ -1,11 +1,14 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { VERSION } from "./version.js";
 import { portableSpawnSpec } from "./platform.js";
 import { resolveAgentBin } from "./agent-bin.js";
 import { C, colorEnabled, paint } from "./tui/theme.js";
 import { compareVersions } from "./update-check.js";
+
+const VERSION = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+).version;
 
 const PACKAGE = "@bbk1ng/agent-orch";
 const INSTALL_CMD = ["npm", "install", "-g", `${PACKAGE}@latest`];

@@ -340,24 +340,46 @@ auto-merge fails (e.g. branch protection isn't configured), the PR itself still
 stands; only the auto-merge step is skipped.
 
 ## Version bump on merge
-Opt-in per repo. With `release.autoBump: true` in `.orch/orch.yml`, every cycle
-that lands via the local integration path (not `merge: pr`) patch-bumps
-`package.json` right after the post-merge test gate passes: `x.y.z` → `x.y.(z+1)`,
-mirrored into `package-lock.json`'s root version and `src/version.js` (the file
-`orch --version` reads, if the target repo has one). If the repo ships a GitHub
-Pages site at `docs/index.html`, the version shown in its header (the `vX.Y.Z`
-span) is rewritten to match — anchored to that one span so nothing else moves.
-Also prepends a `CHANGELOG.md` entry naming the branch (and issue, for `orch
-issue <n>`), then
-commits as `chore(release): vX.Y.Z`. Best-effort: a missing/unparsable
-`package.json` or any write/commit failure is swallowed — it never blocks or
-unwinds a merge that already landed.
+
+agent-orch's own version, `x.y.z`, reads the patch field (`z`) as two
+counters packed together: the last two digits are a **merge-bump counter**
+(`cc`, 00-99, one per merge to `main`), and the digits above that are a
+**publish-bump counter** — advanced only by an actual `npm publish`, which
+also resets the merge counter to `00`. "0.4.203" means: 2 publishes have happened (z=2) and 3 merges have landed since the most recent one (cc=03). It's ordinary decimal
+arithmetic, not a custom encoding — a plain merge bump is just `patch + 1`;
+`...z99 + 1` naturally carries into `(z+1)00`. If the merge counter reaches
+99 before a real publish happens, that carry happens on its own — expected,
+not a bug: that many merges without a publish means a publish is overdue.
+
+`orch --version` and the CLI banner display the version with a `v` prefix
+(`v0.4.203`); `package.json#version` itself stays plain, valid semver with no
+prefix, as npm requires.
+
+With `release.autoBump: true` in `.orch/orch.yml`, every cycle that lands via
+the local integration path (not `merge: pr`) bumps the merge counter right
+after the post-merge test gate passes, mirrored into `package-lock.json`'s
+root version, and prepends a `CHANGELOG.md` entry. If the repo ships a
+GitHub Pages site at `docs/index.html`, the version shown in its header (the
+`vX.Y.Z` span) is rewritten to match — anchored to that one span so nothing
+else moves. Commits as `chore(release): vX.Y.Z`. Best-effort: a
+missing/unparsable `package.json` or any write/commit failure is swallowed —
+it never blocks or unwinds a merge that already landed.
+
+A separate CI workflow (`.github/workflows/version-bump.yml`) bumps the merge
+counter for any merge to `main` that lands WITHOUT going through orch's
+integration path — e.g. a direct-to-main PR — so every merge is traceable to
+a version regardless of how it landed.
+
+The publish counter never bumps automatically. Run `node
+scripts/orch-release.js` by hand at actual release time — it snaps the patch
+field to the next multiple of 100, commits, and tags, leaving the push and
+the `npm-publish.yml` dispatch as separate deliberate steps.
 ```yaml
 release:
   autoBump: true   # off by default; orch never edits release files unless you opt in
 ```
 Without the flag, a merge lands with no release-file edits at all — a generic
-orchestration run must not impose this repo's release policy (patch bump +
+orchestration run must not impose this repo's release policy (merge bump +
 CHANGELOG commit) on your repo by surprise.
 
 ## Auto docs-update on merge

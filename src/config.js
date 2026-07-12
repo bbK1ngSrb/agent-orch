@@ -33,7 +33,7 @@ const DEFAULTS = {
     autoResolveConflicts: false, // opt-in Claude reconciliation when the persistent PR is dirty
     conflictResolution: "manual", // manual | propose | auto; autoResolveConflicts is a deprecated alias
     conflictResolutionResolvers: null, // null = fallback to the historical single claude resolver
-    autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json", "src/version.js", "version.js"],
+    autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json"],
   },
   docs: {
     autoUpdate: false, // opt-in per repo; flip true in .orch/orch.yml

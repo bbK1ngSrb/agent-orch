@@ -15,7 +15,11 @@ import { globToRegExp } from "./scope.js";
 import * as notify from "./notify.js";
 import { acquireLock, releaseLock, acquireBlocking, isPaused } from "./lock.js";
 import { slugify } from "./slug.js";
-import { VERSION } from "./version.js";
+
+const VERSION = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+).version;
+const DISPLAY_VERSION = `v${VERSION}`;
 import { newSid } from "./sid.js";
 import * as inflight from "./inflight.js";
 import * as resume from "./resume.js";
@@ -155,7 +159,7 @@ main:
   conflictResolution: manual   # manual | propose | auto; default: manual
   # conflictResolutionResolvers: [claude]  # default: null — role specs; rotate/fail over per conflict
   autoResolveConflicts: false  # deprecated alias: true = conflictResolution: auto
-  autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json", "src/version.js", "version.js"]
+  autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json"]
 
 # === Auto docs-update after a real merge (optional) ===
 docs:
@@ -690,7 +694,7 @@ export function runBanner(cfg, runs, opts = {}) {
     lbl("test"), { code: 0, text: cfg.test },
     { code: C.label, text: "   merge  " }, { code: 0, text: cfg.merge },
   ]);
-  return box(` agent-orch ${VERSION} `, rows, { color, columns });
+  return box(` agent-orch ${DISPLAY_VERSION} `, rows, { color, columns });
 }
 
 export function maybePrintRunBanner(cfg, runs, flags, stdout = process.stdout) {
@@ -874,7 +878,7 @@ export async function main(argv, deps = {}) {
     await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
     return;
   }
-  if (flags.version || command === "version") { console.log(VERSION); return; }
+  if (flags.version || command === "version") { console.log(DISPLAY_VERSION); return; }
   if (flags.help || command === "help") { printUsage(); return; }
   if (command === "upgrade" || command === "update") {
     await runUpgrade({ flags, stdout: deps.stdout || process.stdout, ...deps.upgradeDeps });
