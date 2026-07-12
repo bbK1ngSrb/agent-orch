@@ -1,32 +1,42 @@
 # Planned
 
-## Windows native release
+## Windows native release — shipped
 
-Cross-platform (Windows) support is on the radar but not landing soon.
+Native Windows support landed and was confirmed on real Windows 10/11
+hardware (not WSL) with agent-orch installed via `npm install -g` from a
+built tarball. Confirmed working: `orch init --link`, `orch agent add`,
+`orch task --dry` (agent rotation), a full real task cycle (author → review
+→ revise → gate → escalate/merge, including a `.sh`-script test gate via Git
+for Windows' bundled `sh.exe` association), and `orch update`.
 
-Three independent attempts (2 by Claude, 1 by Codex) got as far as review
-`AGREE` and still didn't merge — not because the code was wrong, but because
-every attempt has to touch files orch refuses to auto-merge (`.github/workflows/**`,
-`package.json`): CI needs a Windows job, and a real release needs a packaging
-workflow. That's an orch guardrail working as intended, not a bug — but it means
-this needs a human to actually land it.
+Two real bugs were found and fixed along the way, both in the Windows
+process-spawn path (`src/platform.js`, `src/agent-bin.js`, `src/gate.js`,
+`src/adapters/cli-adapter.js`, `src/upgrade.js`):
 
-Biggest gotcha found so far: **spawning `.cmd`/`.bat` shims on Windows**. Node's
-`spawn()` refuses to exec them directly (`EINVAL`) — npm-global CLIs (`claude`,
-`codex`) install as exactly that on Windows. Two fixes were tried:
+- **#311** — `src/upgrade.js` spawned `npm` with a bare `execFileSync("npm",
+  ...)`, which can't resolve Windows' `npm.cmd` shim (`CreateProcess` ignores
+  `PATHEXT`). Fixed by routing through the same `portableSpawnSpec`/
+  `resolveAgentBin` seam `gate.js` and `cli-adapter.js` already used.
+- **#313** — the root cause `#311`'s first fix didn't fully address:
+  `exeCandidates()` probed the bare extensionless binary name *before* trying
+  `PATHEXT`-suffixed candidates. npm's own global bin directory ships both a
+  bare `npm` (POSIX shim) and `npm.cmd` (the real Windows shim) side by
+  side — Windows' `fs.accessSync` can't distinguish an executable file from a
+  non-executable one (no POSIX exec bit), so the bare, unlaunchable file won
+  the probe. Fixed by dropping the bare name from the Windows candidate list
+  entirely.
 
-- Route through `cmd.exe` with hand-rolled caret-escaping (correct, but it's
-  custom quoting logic ported from `cross-spawn` — easy to get subtly wrong).
-- Just set `shell: true` (simpler, but shells out, so args need to stay
-  internally-controlled, never user input).
-
-Also: PATH resolution needs PATHEXT-aware probing (`claude` on Windows is really
-`claude.cmd`), and killing a hung agent needs `taskkill /T /F` since Windows has
-no process groups to `SIGKILL`.
-
-If someone wants to pick this up: the two escalated branches
+The approach that actually landed differs from the two escalated branches
+referenced in earlier drafts of this note
 (`pr/claude/refactor-for-multi-platform-agnostic-rel-2623896-0`,
-`pr/codex/refactor-for-multi-platform-agnostic-rel-2623896-1`) have working
-starting points — CI matrix + spawn fix in the first, release packaging
-workflow in the second. They overlap on `agent-bin.js`/`cli-adapter.js` and need
-reconciling, not a straight merge. Contributions welcome.
+`pr/codex/refactor-for-multi-platform-agnostic-rel-2623896-1`, both since
+abandoned) — those attempted hand-rolled `cmd.exe` caret-escaping or a
+`shell: true` fallback. The shipped fix instead resolves the correct binary
+path *before* spawning and stays shell-less on every platform, avoiding both
+the quoting-correctness risk of caret-escaping and the shell-injection
+surface of `shell: true`.
+
+CI's Windows matrix leg (`npm-publish.yml`'s `pack-test` job) now also runs
+`orch update --check` as part of every pre-publish pack-test, so this
+regression class gets caught automatically before any future publish, not
+just via manual testing.
