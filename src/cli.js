@@ -102,6 +102,31 @@ function resetKpiOnRecovery(orchDir, recovery) {
   if (recovery?.recovered) notify.resetKpi(orchDir);
 }
 
+// `orch agent add` edits orch.yml as text (not a YAML round-trip, which would
+// strip its comments). For the scaffold's block-sequence form, append a new
+// `  - <name>` after the LAST existing item — scanning past interspersed blank
+// or comment lines so a hand-edited pool (a comment between entries, or right
+// after `agents:`) still appends at the end rather than mid-list, which would
+// silently reorder the author rotation. Returns null if no block list is found.
+export function appendAgentToBlockList(text, name) {
+  const lines = text.split("\n");
+  const start = lines.findIndex((l) => /^agents:[ \t]*(#.*)?$/.test(l));
+  if (start === -1) return null;
+  let itemIndent = null, gap = " ", lastItem = -1;
+  for (let i = start + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.trim() === "" || /^\s*#/.test(l)) continue; // blank/comment inside or trailing the block
+    const m = l.match(/^(\s+)-(\s+)/);
+    if (!m) break; // a dedented line or the next key ends the sequence
+    itemIndent = itemIndent ?? m[1];
+    gap = m[2];
+    lastItem = i;
+  }
+  if (lastItem === -1) return null;
+  lines.splice(lastItem + 1, 0, `${itemIndent}-${gap}${name}`);
+  return lines.join("\n");
+}
+
 // init scaffold — mirrors orch.example.yml. Every key is listed with its
 // possible values and default; commented keys use the shown default.
 const SCAFFOLD = `# agent-orch config — every key is optional; a commented key shows its default.
@@ -1060,20 +1085,13 @@ export async function main(argv, deps = {}) {
     // so `agent add` edits either without a full YAML round-trip (which would
     // strip the file's comments).
     const inlineRe = /^(agents:\s*\[)([^\]]*)(\])/m;
-    const blockRe = /^agents:[ \t]*\n((?:[ \t]*-[ \t].*(?:\n|$))+)/m;
     if (inlineRe.test(text)) {
       writeFileSync(file, text.replace(inlineRe, (_m, open, inner, close) =>
         `${open}${inner.trim() ? inner.trim() + ", " : ""}${name}${close}`));
-    } else if (blockRe.test(text)) {
-      writeFileSync(file, text.replace(blockRe, (_m, items) => {
-        const first = items.match(/^([ \t]*)-([ \t]+)/); // reuse existing indent/spacing
-        const indent = first ? first[1] : "  ";
-        const gap = first ? first[2] : " ";
-        const trailing = items.endsWith("\n") ? "" : "\n";
-        return `agents:\n${items}${trailing}${indent}-${gap}${name}\n`;
-      }));
     } else {
-      throw new Error("could not find `agents:` list in orch.yml — add it manually");
+      const updated = appendAgentToBlockList(text, name);
+      if (!updated) throw new Error("could not find `agents:` list in orch.yml — add it manually");
+      writeFileSync(file, updated);
     }
     console.log(`orch: added ${name} to agents`);
     return;

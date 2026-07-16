@@ -6,7 +6,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -790,6 +790,31 @@ test("agent add appends copilot to the pool", async () => {
   } finally {
     chdir(prev);
   }
+});
+
+test("appendAgentToBlockList appends after the last item even with interspersed comments (codex #326)", () => {
+  // Contiguous scaffold list.
+  assert.equal(
+    appendAgentToBlockList("agents:\n  - claude\n  - codex\ntest: auto\n", "grok"),
+    "agents:\n  - claude\n  - codex\n  - grok\ntest: auto\n"
+  );
+  // Comment between entries → still appends at the END, not mid-list.
+  assert.equal(
+    appendAgentToBlockList("agents:\n  - claude\n  # fave\n  - codex\ntest: auto\n", "grok"),
+    "agents:\n  - claude\n  # fave\n  - codex\n  - grok\ntest: auto\n"
+  );
+  // Comment immediately after `agents:` (previously prevented any match).
+  assert.equal(
+    appendAgentToBlockList("agents:\n  # pool\n  - claude\ntest: auto\n", "grok"),
+    "agents:\n  # pool\n  - claude\n  - grok\ntest: auto\n"
+  );
+  // Trailing blank + next-section comment must not be mistaken for block members.
+  assert.equal(
+    appendAgentToBlockList("agents:\n  - claude\n\n# === Roles ===\nauthor: x\n", "grok"),
+    "agents:\n  - claude\n  - grok\n\n# === Roles ===\nauthor: x\n"
+  );
+  // No block list present.
+  assert.equal(appendAgentToBlockList("author: claude\n", "grok"), null);
 });
 
 test("agent add still appends to a legacy inline `agents: [...]` config", async () => {
