@@ -78,3 +78,67 @@ export function scanDiff(diffText) {
   }
   return { decision: findings.length ? "DISAGREE" : "AGREE", findings };
 }
+
+// Plain-English gloss of each rule, for the escalation note. A reader who has
+// never seen the rule names should still understand what class of behavior the
+// scan objected to.
+const RULE_BLURB = {
+  "secret-read": "reads a secret or orch's own control state (`.orch/`, `.ssh/`, `.pem`, PRIVATE KEY)",
+  "env-read": "reads environment variables or a GitHub token",
+  network: "opens a network connection (fetch / net / dns / http)",
+  subprocess: "spawns a subprocess (child_process / exec / spawn)",
+  "guardrail-touch": "edits a guardrail file (branch protection, CODEOWNERS, workflows)",
+};
+
+// Render a scanDiff() DISAGREE for humans. Returns:
+//   summary — one line for run logs and the CLI status line (kept short),
+//   detail  — an educational markdown note for the escalation a person reads.
+// The raw findings list repeats and interleaves rules; here we DEDUPE identical
+// lines, GROUP by rule, and CLIP long snippets so the note stays scannable. The
+// detail also explains *why* the scan can fire on lines that aren't dangerous:
+// it matches added text, so a test fixture or a doc that merely mentions a
+// pattern trips it. Naming that up front lets a reader tell a false positive
+// from a real hit without re-deriving it each time.
+export function formatSecurityFindings(findings, { maxPerRule = 5, maxLen = 100 } = {}) {
+  const byRule = new Map(); // rule -> Set of unique offending lines (insertion-ordered)
+  for (const { rule, line } of findings) {
+    if (!byRule.has(rule)) byRule.set(rule, new Set());
+    byRule.get(rule).add(line);
+  }
+  const total = [...byRule.values()].reduce((n, s) => n + s.size, 0);
+  const counts = [...byRule].map(([rule, s]) => `${rule} ×${s.size}`).join(", ");
+  const summary = `security scan blocked the merge — ${total} finding${total === 1 ? "" : "s"} (${counts})`;
+
+  const clip = (s) => (s.length > maxLen ? s.slice(0, maxLen - 1) + "…" : s);
+  const sections = [...byRule].map(([rule, set]) => {
+    const lines = [...set];
+    const shown = lines.slice(0, maxPerRule).map((l) => `    ${clip(l)}`);
+    if (lines.length > maxPerRule) shown.push(`    …and ${lines.length - maxPerRule} more`);
+    return `- **${rule}** — ${RULE_BLURB[rule] || "matched a risky pattern"}:\n${shown.join("\n")}`;
+  });
+
+  const detail = [
+    "## Security scan blocked the merge",
+    "",
+    "orch runs a **deterministic security floor** over the added lines of the final diff,",
+    "independent of the LLM reviewer. Unlike the reviewer it cannot be talked out of a",
+    "DISAGREE — it is the last gate before merge. It matches *text*, so it flags any added",
+    "line containing a risky pattern whether that line is real code or a string that merely",
+    "*mentions* the pattern (a test fixture, a documentation example). It fails **closed**:",
+    "it would rather over-block than let something slip through.",
+    "",
+    "**What tripped it:**",
+    "",
+    ...sections,
+    "",
+    "**How to proceed:**",
+    "",
+    "- If a flagged line is real code that reads a secret, opens the network, or spawns a",
+    "  subprocess, the scan did its job — change the code.",
+    "- If every flagged line is a **test fixture or documentation** that only contains the",
+    "  pattern as text (common when editing the security tests, or docs about `.orch/`), it",
+    "  is a false positive. Read the diff to confirm, then merge by hand.",
+  ].join("\n");
+
+  return { summary, detail };
+}

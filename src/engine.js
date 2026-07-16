@@ -1,6 +1,6 @@
 import { isDocsOnly } from "./scope.js";
 import { checkPaths } from "./intake/allowlist.js";
-import { scanDiff } from "./security-review.js";
+import { scanDiff, formatSecurityFindings } from "./security-review.js";
 import { formatUsage, totalUsage } from "./usage.js";
 
 const RAW_OUTPUT_TAIL_CHARS = 12_000;
@@ -228,9 +228,10 @@ export async function runCycle(opts, deps) {
         }
         const security = scanDiff(finalDiff);
         if (security.decision !== "AGREE") {
-          const hits = security.findings.map((f) => `${f.rule}: ${f.line}`).join("; ");
-          return recordTerminal(escalate(notify, orchDir, branch, round,
-            `security scan: risky diff — ${hits} — orch will not merge`));
+          // summary → the concise reason kept in run logs / the CLI status line;
+          // detail → the grouped, deduped, educational note a human reads.
+          const { summary, detail } = formatSecurityFindings(security.findings);
+          return recordTerminal(escalate(notify, orchDir, branch, round, summary, detail));
         }
         // PR-bridge audit: report the verdict, let GitHub own the merge. Reviews
         // are kept (not cleaned) so the caller can quote them in a PR comment.
@@ -287,8 +288,12 @@ export async function runCycle(opts, deps) {
   }
 }
 
-function escalate(notify, orchDir, branch, round, reason) {
-  notify.escalate(orchDir, branch, `# Escalation — ${branch}\n\n${reason}\n`);
+// `reason` is the short line kept in the returned result (logs, status line);
+// `body` is what the escalation note shows — defaults to `reason` for the many
+// callers that have only a one-liner, but the security gate passes a richer
+// educational detail so the human-facing note reads as more than a jammed string.
+function escalate(notify, orchDir, branch, round, reason, body = reason) {
+  notify.escalate(orchDir, branch, `# Escalation — ${branch}\n\n${body}\n`);
   return { status: "escalated", reason, rounds: round };
 }
 
