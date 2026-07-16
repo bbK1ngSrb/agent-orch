@@ -27,8 +27,10 @@ function isDocsPath(file) {
   return false;
 }
 
-// Yield added content lines with the current +++ b/<path> file context.
-// Docs files are skipped — only code (and unknown-path) lines are scannable.
+// Yield added content lines paired with the current +++ b/<path> file context.
+// Docs files are skipped — only code (and unknown-path) lines are scannable. The
+// file travels with each line so a finding can say WHERE it came from — that is
+// what lets the escalation note tell a test fixture apart from a real code path.
 function addedCodeLines(diffText) {
   const out = [];
   let file = null;
@@ -38,7 +40,7 @@ function addedCodeLines(diffText) {
       continue;
     }
     if (l.startsWith("+") && !l.startsWith("+++") && !isDocsPath(file)) {
-      out.push(l);
+      out.push({ file, raw: l });
     }
   }
   return out;
@@ -66,14 +68,14 @@ function isSubprocessCall(line, regexVars) {
 
 export function scanDiff(diffText) {
   const findings = [];
-  const lines = addedCodeLines(diffText);
-  const regexVars = regexLiteralVars(lines);
-  for (const line of lines) {
+  const entries = addedCodeLines(diffText);
+  const regexVars = regexLiteralVars(entries.map((e) => e.raw));
+  for (const { file, raw } of entries) {
     for (const { rule, re } of SECURITY_RULES) {
-      if (re.test(line)) findings.push({ rule, line: line.slice(1).trim() });
+      if (re.test(raw)) findings.push({ rule, line: raw.slice(1).trim(), file });
     }
-    if (isSubprocessCall(line, regexVars)) {
-      findings.push({ rule: "subprocess", line: line.slice(1).trim() });
+    if (isSubprocessCall(raw, regexVars)) {
+      findings.push({ rule: "subprocess", line: raw.slice(1).trim(), file });
     }
   }
   return { decision: findings.length ? "DISAGREE" : "AGREE", findings };
@@ -90,16 +92,46 @@ const RULE_BLURB = {
   "guardrail-touch": "edits a guardrail file (branch protection, CODEOWNERS, workflows)",
 };
 
+// A path whose secret-ish text is almost certainly a fixture rather than a live
+// read: files under a test dir, or named *.test/*.spec. Docs are dropped before
+// the scan even runs, so by the time a finding exists the only benign source
+// left to recognise is a test. An unknown path (no `+++ b/` header) is treated
+// as NOT a fixture, so the recommendation errs toward "look at this".
+function isTestFile(file) {
+  if (!file) return false;
+  return /(^|\/)tests?\//.test(file) || /\.(test|spec)\.[cm]?jsx?$/.test(file);
+}
+
+// Compute the recommended path forward from WHERE the findings live. This is the
+// verdict a human would otherwise have to ask for: all-fixtures → almost surely a
+// false positive, safe to merge by hand; anything in a real code path → look
+// before merging, it might be a genuine read.
+function recommend(findings, mergeCmd) {
+  const suspects = [...new Set(findings.map((f) => f.file).filter((f) => !isTestFile(f)))];
+  const doMerge = mergeCmd ? `\`${mergeCmd}\`` : "merge by hand";
+  if (suspects.length === 0) {
+    const fixtures = [...new Set(findings.map((f) => f.file))].map((f) => `\`${f}\``).join(", ");
+    return `**Recommendation:** likely a **false positive** — every flagged line lives in a test `
+      + `file (${fixtures}), whose fixtures must contain these patterns to exercise the scan. `
+      + `Skim the diff to confirm, then ${doMerge}.`;
+  }
+  const where = suspects.map((f) => `\`${f || "an unknown file"}\``).join(", ");
+  return `**Recommendation:** **inspect before merging** — ${where} `
+    + `${suspects.length === 1 ? "is a real code path" : "are real code paths"}, not a test fixture, so `
+    + `the scan may have caught a genuine secret-read / network / subprocess. Do **not** merge until each `
+    + `flagged line there is confirmed benign.`;
+}
+
 // Render a scanDiff() DISAGREE for humans. Returns:
 //   summary — one line for run logs and the CLI status line (kept short),
 //   detail  — an educational markdown note for the escalation a person reads.
 // The raw findings list repeats and interleaves rules; here we DEDUPE identical
 // lines, GROUP by rule, and CLIP long snippets so the note stays scannable. The
-// detail also explains *why* the scan can fire on lines that aren't dangerous:
-// it matches added text, so a test fixture or a doc that merely mentions a
-// pattern trips it. Naming that up front lets a reader tell a false positive
-// from a real hit without re-deriving it each time.
-export function formatSecurityFindings(findings, { maxPerRule = 5, maxLen = 100 } = {}) {
+// detail explains *why* the scan can fire on lines that aren't dangerous (it
+// matches added text, so a fixture that merely mentions a pattern trips it) and
+// then gives a COMPUTED recommendation — a bare "decision needed" is useless
+// friction, so the note names the likely verdict and the concrete next step.
+export function formatSecurityFindings(findings, { maxPerRule = 5, maxLen = 100, mergeCmd = null } = {}) {
   const byRule = new Map(); // rule -> Set of unique offending lines (insertion-ordered)
   for (const { rule, line } of findings) {
     if (!byRule.has(rule)) byRule.set(rule, new Set());
@@ -131,13 +163,7 @@ export function formatSecurityFindings(findings, { maxPerRule = 5, maxLen = 100 
     "",
     ...sections,
     "",
-    "**How to proceed:**",
-    "",
-    "- If a flagged line is real code that reads a secret, opens the network, or spawns a",
-    "  subprocess, the scan did its job — change the code.",
-    "- If every flagged line is a **test fixture or documentation** that only contains the",
-    "  pattern as text (common when editing the security tests, or docs about `.orch/`), it",
-    "  is a false positive. Read the diff to confirm, then merge by hand.",
+    recommend(findings, mergeCmd),
   ].join("\n");
 
   return { summary, detail };
