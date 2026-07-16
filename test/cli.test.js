@@ -6,7 +6,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -766,8 +766,9 @@ test("agent add appends a known agent to the pool, preserving comments", async (
     await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) }); // stub: no real agent CLIs needed in tests
     await main(["agent", "add", "qwen3-coder-30b"]);
     const text = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
-    assert.match(text, /agents: \[claude, codex, qwen3-coder-30b\]/);
-    assert.match(text, /# === Agents ===/); // comments survived
+    // Scaffold ships a block sequence; add appends a `  - <name>` item.
+    assert.match(text, /agents:\n {2}- claude\n {2}- codex\n {2}- qwen3-coder-30b/);
+    assert.match(text, /# Agents — rotation pool/); // comments survived
     // idempotent: a second add is a no-op
     await main(["agent", "add", "qwen3-coder-30b"]);
     const again = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
@@ -783,6 +784,48 @@ test("agent add appends copilot to the pool", async () => {
   chdir(d);
   try {
     await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    await main(["agent", "add", "copilot"]);
+    const text = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
+    assert.match(text, /agents:\n {2}- claude\n {2}- codex\n {2}- copilot/);
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("appendAgentToBlockList appends after the last item even with interspersed comments (codex #326)", () => {
+  // Contiguous scaffold list.
+  assert.equal(
+    appendAgentToBlockList("agents:\n  - claude\n  - codex\ntest: auto\n", "grok"),
+    "agents:\n  - claude\n  - codex\n  - grok\ntest: auto\n"
+  );
+  // Comment between entries → still appends at the END, not mid-list.
+  assert.equal(
+    appendAgentToBlockList("agents:\n  - claude\n  # fave\n  - codex\ntest: auto\n", "grok"),
+    "agents:\n  - claude\n  # fave\n  - codex\n  - grok\ntest: auto\n"
+  );
+  // Comment immediately after `agents:` (previously prevented any match).
+  assert.equal(
+    appendAgentToBlockList("agents:\n  # pool\n  - claude\ntest: auto\n", "grok"),
+    "agents:\n  # pool\n  - claude\n  - grok\ntest: auto\n"
+  );
+  // Trailing blank + next-section comment must not be mistaken for block members.
+  assert.equal(
+    appendAgentToBlockList("agents:\n  - claude\n\n# === Roles ===\nauthor: x\n", "grok"),
+    "agents:\n  - claude\n  - grok\n\n# === Roles ===\nauthor: x\n"
+  );
+  // No block list present.
+  assert.equal(appendAgentToBlockList("author: claude\n", "grok"), null);
+});
+
+test("agent add still appends to a legacy inline `agents: [...]` config", async () => {
+  // The scaffold ships block-form, but hand-written / older configs use inline
+  // flow style — add must keep editing those in place too.
+  const d = mkdtempSync(join(tmpdir(), "orch-add-inline-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    mkdirSync(join(d, ".orch"));
+    writeFileSync(join(d, ".orch", "orch.yml"), "agents: [claude, codex]\ntest: auto\n");
     await main(["agent", "add", "copilot"]);
     const text = readFileSync(join(d, ".orch", "orch.yml"), "utf8");
     assert.match(text, /agents: \[claude, codex, copilot\]/);
