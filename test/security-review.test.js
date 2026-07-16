@@ -126,3 +126,38 @@ test("patching CODEOWNERS → DISAGREE (guardrail-touch)", () => {
   assert.equal(r.decision, "DISAGREE");
   assert.ok(r.findings.some((f) => f.rule === "guardrail-touch"));
 });
+
+// --- docs-path skip: prose mentioning secret paths must not false-positive ---
+test("markdown mentioning .orch/orch.yml → AGREE (docs-only, no secret-read)", () => {
+  const d = `+++ b/docs/orch-manual.md
++Appends an agent to the \`.orch/orch.yml\` rotation pool, adding it as a new item (\`- name\`).`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "AGREE");
+  assert.deepEqual(r.findings, []);
+});
+
+test("README.md mentioning .ssh/id_rsa and process.env → AGREE", () => {
+  const d = `+++ b/README.md
++Set up SSH with \`~/.ssh/id_rsa\` and never commit process.env secrets.`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "AGREE");
+  assert.deepEqual(r.findings, []);
+});
+
+test("mixed diff: docs mention OK, code secret-read still DISAGREE", () => {
+  const d = `+++ b/docs/orch-manual.md
++Documents \`.orch/orch.yml\` for operators.
++++ b/src/x.js
++  const k = readFileSync(".orch/last-author");`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.equal(r.findings.length, 1);
+  assert.equal(r.findings[0].rule, "secret-read");
+  assert.match(r.findings[0].line, /last-author/);
+});
+
+test("nested **/*.md path (src/nested/y.md) is docs-skipped", () => {
+  const d = `+++ b/src/nested/y.md
++See \`.orch/orch.yml\` and PRIVATE KEY handling.`;
+  assert.equal(scanDiff(d).decision, "AGREE");
+});
