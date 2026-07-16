@@ -400,7 +400,12 @@ automatically, without needing the flag.
 ### 2.11 `orch agent add <name>`
 
 Appends an already-known agent to the `agents:` rotation pool in
-`.orch/orch.yml`. For an agent orch doesn't know at all, use
+`.orch/orch.yml`, adding it as a new block-sequence item (`- name`) after the
+last existing entry. A legacy inline flow array (`agents: [claude, codex]`)
+still parses and still works — YAML treats both forms the same — but any repo
+scaffolded since the block-sequence rewrite gets the multi-line form; `add`
+doesn't rewrite an existing inline array into block style, it just appends in
+whichever form is already there. For an agent orch doesn't know at all, use
 `orch agent build <name>` (§2.8) instead — `add` registers, `build` creates.
 
 ### 2.12 `orch completion [bash]` / `orch completion install`
@@ -676,13 +681,24 @@ if both exist (back-compat only).
 
 ```yaml
 # === Agents ===
-agents: [claude, codex]          # rotation pool when no explicit roles set
+agents:                          # rotation pool when no explicit roles set
+  - claude
+  - codex
 
 # === Roles (set both sides or neither) ===
+# A role is "<agent> [model] [effort]". Current Claude model ids:
+#   claude-opus-4-8, claude-sonnet-5, claude-fable-5, claude-haiku-4-5-20251001
+# An unknown/misspelled model id doesn't fail fast — it silently escalates
+# the cycle after round 1, so double-check the id before relying on it.
+#
 # author: claude claude-opus-4-8 high
-# reviewer: codex gpt-5.1
-# authors: [claude claude-opus-4-8 high, codex]
-# reviewers: [claude, codex high]
+# reviewer: codex
+# authors:
+#   - claude claude-opus-4-8 high
+#   - codex
+# reviewers:
+#   - claude
+#   - codex high
 
 # === Cycle ===
 test: auto                       # or an explicit command, e.g. "pytest -q"
@@ -696,12 +712,17 @@ merge: no-ff                     # ff-only | no-ff | pr
 # === Cheap-agent dispatch (optional) ===
 # cheap:
 #   role: qwen3-coder-30b
-#   paths: ["*.md", "docs/**"]
+#   paths:
+#     - "*.md"
+#     - docs/**
 
 # === Scope gate (optional) ===
 scope:
   maxLines: 0                    # 0 = off; >0 escalates oversized author commits
-  ignore: ["*.lock", "dist/**", "*.snap"]
+  ignore:
+    - "*.lock"
+    - dist/**
+    - "*.snap"
 
 # === GitHub PR bridge ===
 github:
@@ -712,14 +733,23 @@ github:
 main:
   autoMerge: false                # true = orch itself merges the persistent integration PR once its checks are green
   conflictResolution: manual      # manual | propose | auto
-  # conflictResolutionResolvers: [claude]  # default: null; role specs, rotate/fail over per conflict
+  # conflictResolutionResolvers:  # default: null; role specs, rotate/fail over per conflict
+  #   - claude
   autoResolveConflicts: false     # deprecated alias: true = conflictResolution: auto
+  autoResolveConflictPaths:       # whitelisted metadata paths conflictResolution: auto may push
+    - CHANGELOG.md
+    - docs/index.html
+    - package-lock.json
+    - package.json
 
 # === Auto docs-update ===
 docs:
   autoUpdate: false
   prompt: update documentation to reflect the latest merged changes
-  paths: ["*.md", "docs/**", "**/*.md"]
+  paths:                          # docs-only globs (loop guard)
+    - "*.md"
+    - docs/**
+    - "**/*.md"
 
 # === Release automation ===
 release:
@@ -812,6 +842,9 @@ release:
   resolution, using the same `"<agent> [model] [effort]"` grammar as authors
   and reviewers. The pool rotates per conflict and failed resolver attempts
   restart from the pre-merge tree before the next resolver tries.
+- **`main.autoResolveConflictPaths`** — the glob whitelist `conflictResolution:
+  auto` is allowed to push a resolution for; conflicts touching any other path
+  are always proposed for human approval, regardless of resolver agreement.
 - **`release.autoBump`** — opt-in (default `false`). When `true`, every cycle
   that lands via the local integration path gets the §4.1 merge-counter bump +
   CHANGELOG commit. Left off, orch never edits release files — same opt-in
