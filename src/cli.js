@@ -104,72 +104,131 @@ function resetKpiOnRecovery(orchDir, recovery) {
 
 // init scaffold — mirrors orch.example.yml. Every key is listed with its
 // possible values and default; commented keys use the shown default.
-const SCAFFOLD = `# agent-orch config — all keys optional. Commented keys show the default.
+const SCAFFOLD = `# agent-orch config — every key is optional; a commented key shows its default.
+# Full annotated reference: docs/orch-manual.md. Groups are spaced and commented;
+# uncomment a key to override the shown default.
 
-# === Agents ===
-# Rotation pool: picks author/reviewer when no explicit roles are set below.
-# Built-in: claude, codex, copilot, gemini, agy, grok. Local llm models (run via ccr): qwen3-coder-30b,
-# deepseek-coder-v2-lite, glm-4.5-air. Append a known agent with \`orch agent add <name>\`.
-agents: [claude, codex]   # default: [claude, codex]
 
-# === Roles (optional; set both sides or neither) ===
+# ===================================================================
+# Agents — rotation pool
+# ===================================================================
+# When no explicit roles are set (next group), orch rotates this pool
+# for the author and takes the next entry as reviewer. Order matters.
+#
+# Built-in: claude, codex, copilot, gemini, agy, grok
+# Local llm models (run via ccr, no API cost):
+#   qwen3-coder-30b, deepseek-coder-v2-lite, glm-4.5-air
+#
+# Add a known agent with \`orch agent add <name>\`.
+agents:
+  - claude
+  - codex
+
+
+# ===================================================================
+# Roles — optional explicit author/reviewer (set both sides or neither)
+# ===================================================================
 # A role is a spec "<agent> [model] [effort]":
 #   agent  — required; one of the agents above
-#   model  — optional model id, may carry a subversion (e.g. claude-opus-4-8, gpt-5.1)
+#   model  — optional model id, may carry a subversion. Current Claude ids:
+#            claude-opus-4-8, claude-sonnet-5, claude-fable-5,
+#            claude-haiku-4-5-20251001 (a bad id silently escalates the cycle)
 #   effort — optional reasoning effort: minimal | low | medium | high | xhigh | max
-#            (which values a given agent CLI actually honors varies by agent)
+#            (which values an agent CLI honors varies by agent)
+#
 # Unset → the agents pool rotates the author; the next agent reviews.
-# author: claude claude-opus-4-8 high      # single author spec
-# reviewer: codex gpt-5.1           # single reviewer spec
-# authors: [claude claude-opus-4-8 high, codex]     # each writes its own branch
-# reviewers: [claude, codex high]            # all audit each branch, except its author
+#
+# author: claude claude-opus-4-8 high        # single author spec
+# reviewer: codex                            # single reviewer spec
+# authors:                                   # each writes its own branch
+#   - claude claude-opus-4-8 high
+#   - codex
+# reviewers:                                 # all audit each branch, except its author
+#   - claude
+#   - codex high
 
-# === Cycle ===
-test: auto                # "auto" detects the test command, or set one, e.g. "pytest -q"
-reviseCap: 3              # max revise rounds before escalation (positive integer); default: 3
-stageTimeout: 25          # per-stage wall-clock cap in minutes; 0 disables; default: 25
-concurrency: 4            # max concurrent cycles per repo dir; over-cap launches exit; default: 4
-baseBranch: main          # trunk orch reads from, diffs against, and opens PRs to (e.g. dev if main is deploy-only); default: main
-integrationBranch: orch/integration  # local merge target for no-ff/ff-only; default: orch/integration
-merge: no-ff              # merge into integrationBranch: ff-only | no-ff | pr; default: no-ff (pr = skip local integration and open a per-cycle branch PR)
 
-# === Cheap-agent dispatch (optional) ===
+# ===================================================================
+# Cycle
+# ===================================================================
+test: auto                              # "auto" detects the test command, or set one, e.g. "pytest -q"
+reviseCap: 3                            # max revise rounds before escalation (positive int); default: 3
+stageTimeout: 25                        # per-stage wall-clock cap in minutes; 0 disables; default: 25
+concurrency: 4                          # max concurrent cycles per repo dir; over-cap launches exit; default: 4
+baseBranch: main                        # trunk orch reads/diffs/PRs against (e.g. dev if main is deploy-only); default: main
+integrationBranch: orch/integration     # local merge target for no-ff/ff-only; default: orch/integration
+merge: no-ff                            # into integrationBranch: ff-only | no-ff | pr; default: no-ff
+                                        # (pr = skip local integration, open a per-cycle branch PR)
+
+
+# ===================================================================
+# Cheap-agent dispatch (optional)
+# ===================================================================
 # \`orch task --cheap\` forces \`role\` (e.g. a local llm via ccr) ad hoc; without
 # the flag, a \`--file\`/\`orch issue\` work order whose suspected_paths all match
 # \`paths\` routes to \`role\` automatically.
+#
 # cheap:
 #   role: qwen3-coder-30b
-#   paths: ["*.md", "docs/**"]
+#   paths:
+#     - "*.md"
+#     - docs/**
 
-# === Scope gate (optional) ===
+
+# ===================================================================
+# Scope gate (optional)
+# ===================================================================
 scope:
-  maxLines: 0             # 0 = disabled; >0 rejects oversized author commits
-  ignore: ["*.lock", "dist/**", "*.snap"]   # globs excluded from the line count
+  maxLines: 0                           # 0 = disabled; >0 rejects oversized author commits
+  ignore:                               # globs excluded from the line count
+    - "*.lock"
+    - dist/**
+    - "*.snap"
 
-# === GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> baseBranch) ===
+
+# ===================================================================
+# GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> baseBranch)
+# ===================================================================
 github:
-  mergeMethod: squash     # gh pr merge strategy for non-integration PRs; default: squash
-  autoMergePr: false      # enable GitHub's native auto-merge on PRs orch opens/updates; default: false
-                          # (needs "Allow merge commits" on for the integration PR; see docs/orch-manual.md
-                          # for a caveat when review is only satisfied via a ruleset bypass_actors grant)
+  mergeMethod: squash                   # gh pr merge strategy for non-integration PRs; default: squash
+  autoMergePr: false                    # enable GitHub native auto-merge on PRs orch opens/updates; default: false
+                                        # (needs "Allow merge commits" on for the integration PR; see
+                                        # docs/orch-manual.md for the ruleset bypass_actors caveat)
 
-# === Main mirror PR (integrationBranch -> baseBranch) ===
+
+# ===================================================================
+# Main mirror PR (integrationBranch -> baseBranch)
+# ===================================================================
 main:
-  autoMerge: false        # true = directly merge the persistent integration PR once checks are green; default: false
-  conflictResolution: manual   # manual | propose | auto; default: manual
-  # conflictResolutionResolvers: [claude]  # default: null — role specs; rotate/fail over per conflict
-  autoResolveConflicts: false  # deprecated alias: true = conflictResolution: auto
-  autoResolveConflictPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json"]
+  autoMerge: false                      # true = merge the persistent integration PR once checks are green; default: false
+  conflictResolution: manual            # manual | propose | auto; default: manual
+  # conflictResolutionResolvers:        # default: null — role specs; rotate/fail over per conflict
+  #   - claude
+  autoResolveConflicts: false           # deprecated alias: true = conflictResolution: auto
+  autoResolveConflictPaths:
+    - CHANGELOG.md
+    - docs/index.html
+    - package-lock.json
+    - package.json
 
-# === Auto docs-update after a real merge (optional) ===
+
+# ===================================================================
+# Auto docs-update after a real merge (optional)
+# ===================================================================
 docs:
-  autoUpdate: false       # true = spawn a docs-update task after a merge; default: false
+  autoUpdate: false                     # true = spawn a docs-update task after a merge; default: false
   prompt: update documentation to reflect the latest merged changes
-  paths: ["*.md", "docs/**", "**/*.md"]   # docs-only globs (loop guard)
+  paths:                                # docs-only globs (loop guard)
+    - "*.md"
+    - docs/**
+    - "**/*.md"
 
-# === Release automation (optional) ===
+
+# ===================================================================
+# Release automation (optional)
+# ===================================================================
 release:
-  autoBump: false         # true = patch version bump + CHANGELOG commit after each integrated merge; default: false
+  autoBump: false                       # true = patch bump + CHANGELOG commit after each integrated merge; default: false
 `;
 
 // Agent-agnostic usage doc written to .orch/ORCH.md on init. Committed and
@@ -996,10 +1055,26 @@ export async function main(argv, deps = {}) {
     if (!existsSync(file)) throw new Error("no orch.yml — run `orch init` first");
     if (load(repo).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
     const text = readFileSync(file, "utf8");
-    const re = /^(agents:\s*\[)([^\]]*)(\])/m;
-    if (!re.test(text)) throw new Error("could not find `agents: [...]` in orch.yml — add it manually");
-    writeFileSync(file, text.replace(re, (_m, open, inner, close) =>
-      `${open}${inner.trim() ? inner.trim() + ", " : ""}${name}${close}`));
+    // Two on-disk shapes: inline flow (`agents: [claude, codex]`) and the
+    // scaffold's block sequence (`agents:\n  - claude\n  - codex`). Support both
+    // so `agent add` edits either without a full YAML round-trip (which would
+    // strip the file's comments).
+    const inlineRe = /^(agents:\s*\[)([^\]]*)(\])/m;
+    const blockRe = /^agents:[ \t]*\n((?:[ \t]*-[ \t].*(?:\n|$))+)/m;
+    if (inlineRe.test(text)) {
+      writeFileSync(file, text.replace(inlineRe, (_m, open, inner, close) =>
+        `${open}${inner.trim() ? inner.trim() + ", " : ""}${name}${close}`));
+    } else if (blockRe.test(text)) {
+      writeFileSync(file, text.replace(blockRe, (_m, items) => {
+        const first = items.match(/^([ \t]*)-([ \t]+)/); // reuse existing indent/spacing
+        const indent = first ? first[1] : "  ";
+        const gap = first ? first[2] : " ";
+        const trailing = items.endsWith("\n") ? "" : "\n";
+        return `agents:\n${items}${trailing}${indent}-${gap}${name}\n`;
+      }));
+    } else {
+      throw new Error("could not find `agents:` list in orch.yml — add it manually");
+    }
     console.log(`orch: added ${name} to agents`);
     return;
   }
