@@ -17,11 +17,31 @@ const EXEC_CALL_RE = /(?:([A-Za-z_$][\w$]*)\.)?\bexec\s*\(/gi;
 // lets an attacker rename a child_process handle to slip past the filter.
 const REGEX_LITERAL_ASSIGN_RE = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\/(?:[^/\\\n]|\\.)+\/[a-z]*\s*[;,)]/;
 
-// Added lines: start with a single '+' but not the '+++' file header.
-function addedLines(diffText) {
-  return String(diffText)
-    .split("\n")
-    .filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+// Mirror DEFAULTS.docs.paths (*.md, docs/**, **/*.md): markdown/docs prose cannot
+// execute a secret read at runtime, so scanning it for path substrings only
+// false-positives on legitimate documentation.
+function isDocsPath(file) {
+  if (!file) return false;
+  if (file.endsWith(".md")) return true;
+  if (file === "docs" || file.startsWith("docs/")) return true;
+  return false;
+}
+
+// Yield added content lines with the current +++ b/<path> file context.
+// Docs files are skipped — only code (and unknown-path) lines are scannable.
+function addedCodeLines(diffText) {
+  const out = [];
+  let file = null;
+  for (const l of String(diffText).split("\n")) {
+    if (l.startsWith("+++ ")) {
+      file = l.startsWith("+++ b/") ? l.slice(6) : null;
+      continue;
+    }
+    if (l.startsWith("+") && !l.startsWith("+++") && !isDocsPath(file)) {
+      out.push(l);
+    }
+  }
+  return out;
 }
 
 function regexLiteralVars(lines) {
@@ -46,7 +66,7 @@ function isSubprocessCall(line, regexVars) {
 
 export function scanDiff(diffText) {
   const findings = [];
-  const lines = addedLines(diffText);
+  const lines = addedCodeLines(diffText);
   const regexVars = regexLiteralVars(lines);
   for (const line of lines) {
     for (const { rule, re } of SECURITY_RULES) {
