@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.201 — 2026-07-16
+- Rotation pool treats model/effort role specs as literal agent names (closes [#323](https://github.com/bbk1ng/agent-orch/issues/323))
+
 ## v0.4.200 — 2026-07-12
 - feat: x.y.zcc versioning scheme — the patch field's last two digits are a merge-bump counter, the digits above that a publish-bump counter. See the "Version bump on merge" section of the README.
 - fix: eliminate `src/version.js` as a second, hand-synced version source (closes the #308 drift class) — `orch --version` now reads `package.json` directly and displays it with a `v` prefix.
