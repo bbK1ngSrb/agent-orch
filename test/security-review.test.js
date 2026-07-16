@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scanDiff } from "../src/security-review.js";
+import { scanDiff, formatSecurityFindings } from "../src/security-review.js";
 
 const clean = `--- a/src/config.js
 +++ b/src/config.js
@@ -125,4 +125,34 @@ test("patching CODEOWNERS → DISAGREE (guardrail-touch)", () => {
   const r = scanDiff(d);
   assert.equal(r.decision, "DISAGREE");
   assert.ok(r.findings.some((f) => f.rule === "guardrail-touch"));
+});
+
+// --- formatSecurityFindings: dedupe, group, clip, summarize -----------------
+test("formatSecurityFindings dedupes, groups by rule, and counts", () => {
+  const findings = [
+    { rule: "secret-read", line: "read .orch/x" },
+    { rule: "secret-read", line: "read .orch/x" }, // dupe → collapsed
+    { rule: "secret-read", line: "read .ssh/id_rsa" },
+    { rule: "env-read", line: "process.env.TOKEN" },
+  ];
+  const { summary, detail } = formatSecurityFindings(findings);
+  assert.equal(summary, "security scan blocked the merge — 3 findings (secret-read ×2, env-read ×1)");
+  assert.match(detail, /\*\*secret-read\*\*/);
+  assert.match(detail, /\*\*env-read\*\*/);
+  // dupe appears once
+  assert.equal((detail.match(/read \.orch\/x/g) || []).length, 1);
+});
+
+test("formatSecurityFindings clips long lines and caps per-rule with a +N more", () => {
+  const findings = Array.from({ length: 8 }, (_, i) => ({ rule: "network", line: `fetch call ${i}` }));
+  findings.push({ rule: "network", line: "x".repeat(200) });
+  const { summary, detail } = formatSecurityFindings(findings, { maxPerRule: 5, maxLen: 40 });
+  assert.match(summary, /network ×9/);
+  assert.match(detail, /…and 4 more/);       // 9 unique, 5 shown
+  assert.ok(!detail.includes("x".repeat(60))); // long line was clipped
+});
+
+test("formatSecurityFindings singularizes a lone finding", () => {
+  const { summary } = formatSecurityFindings([{ rule: "subprocess", line: "execSync(x)" }]);
+  assert.equal(summary, "security scan blocked the merge — 1 finding (subprocess ×1)");
 });
