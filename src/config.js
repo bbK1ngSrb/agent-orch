@@ -48,6 +48,8 @@ const DEFAULTS = {
 export function validate(cfg) {
   if (!Array.isArray(cfg.agents) || cfg.agents.length < 1)
     throw new Error("orch.yml: agents must be a non-empty list");
+  if (!cfg.agents.every((agent) => typeof agent === "string" && /^\S+$/.test(agent)))
+    throw new Error("orch.yml: agents entries must be bare adapter names; put model/effort in author/reviewer or use CLI overrides");
   if ((cfg.author == null) !== (cfg.reviewer == null))
     throw new Error("orch.yml: set both author and reviewer, or neither");
   if ((cfg.authors == null) !== (cfg.reviewers == null))
