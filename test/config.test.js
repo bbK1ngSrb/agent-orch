@@ -318,6 +318,15 @@ test("empty agents list throws", () => {
   assert.throws(() => load(d), /agents/);
 });
 
+test("rotation pool rejects model/effort role specs during config load", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "agents: [codex gpt-5.6-sol high, grok grok-4.5 high]\n");
+  assert.throws(
+    () => load(d),
+    /agents entries must be bare adapter names; put model\/effort in author\/reviewer or use CLI overrides/,
+  );
+});
+
 test("author/reviewer must be set together", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "author: qwen3-coder-30b\n"); // reviewer missing
