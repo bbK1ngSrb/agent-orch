@@ -20,6 +20,15 @@ list — open an issue or PR referencing it.
 The adapter contract: `author(task, wd)` makes commits in the worktree;
 `audit(branch, wd)` returns a `Verdict` (it ends its output with `AGREE`/`DISAGREE`).
 
+## Git hooks
+
+`npm install` wires up the committed hooks in `githooks/` (via
+`git config core.hooksPath githooks`). The `reference-transaction` hook
+refuses to delete the protected branches `main` and `orch/integration`
+locally — GitHub already protects them server-side, but plain git will
+happily `branch -D` them in your clone. For an intentional delete, prefix
+the command with `ALLOW_BRANCH_DELETE=1`.
+
 ## Tests
 `npm test` (uses built-in `node:test`). Keep modules pure where possible and
 inject side effects so they stay unit-testable.

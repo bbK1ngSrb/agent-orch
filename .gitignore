@@ -45,6 +45,8 @@ pnpm-lock.yaml
 !/scripts/lint-token-step.js
 # Exception: maintainer release tooling (see npm-publish.yml's header comment).
 !/scripts/orch-release.js
+# Exception: git-hooks installer, run by npm "prepare" on dev installs.
+!/scripts/install-hooks.js
 
 # Ignore all local VS Code configurations
 .vscode/*
