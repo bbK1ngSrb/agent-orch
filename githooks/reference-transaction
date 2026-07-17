@@ -1,0 +1,25 @@
+#!/bin/sh
+# Block local deletion of protected branches (main, orch/integration).
+#
+# Git has no local equivalent of GitHub branch protection: `git branch -D`
+# deletes any branch, no questions asked. This reference-transaction hook
+# (git >= 2.28) is called for every ref update; a deletion shows up as a
+# transition to the all-zeros object id, and exiting non-zero in the
+# "prepared" state aborts the whole transaction.
+#
+# Override for an intentional delete:
+#   ALLOW_BRANCH_DELETE=1 git branch -D <name>
+[ "$1" = "prepared" ] || exit 0
+[ -n "$ALLOW_BRANCH_DELETE" ] && exit 0
+zero=0000000000000000000000000000000000000000
+while read -r old new ref; do
+  if [ "$new" = "$zero" ]; then
+    case "$ref" in
+      refs/heads/main|refs/heads/orch/integration)
+        echo "hook: refusing to delete protected branch $ref" >&2
+        echo "hook: intentional? run with ALLOW_BRANCH_DELETE=1" >&2
+        exit 1 ;;
+    esac
+  fi
+done
+exit 0

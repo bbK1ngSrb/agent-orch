@@ -17,6 +17,7 @@
   },
   "scripts": {
     "test": "node --test",
+    "prepare": "node scripts/install-hooks.js",
     "prepublishOnly": "npm test",
     "postinstall": "node bin/orch.js completion install"
   },
