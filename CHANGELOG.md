@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.202 — 2026-07-19
+- feat: `kimi` adapter (kimi-code, Moonshot AI) — headless `-p` prompt mode, no bypass flag (kimi rejects `--prompt` + `--yolo`; prompt mode already auto-approves tools), `effort` capability off ([#335](https://github.com/bbk1ng/agent-orch/pull/335))
+
 ## v0.4.201 — 2026-07-16
 - Rotation pool treats model/effort role specs as literal agent names (closes [#323](https://github.com/bbk1ng/agent-orch/issues/323))
 
