@@ -759,7 +759,8 @@ release:
 ### 5.1 Field-by-field notes
 
 - **`agents`** — the rotation pool used when `author`/`reviewer` aren't set.
-  Built-in agents: `claude`, `codex`, `copilot`, `gemini`, `agy`, `grok`. Local-llm
+  Built-in agents: `claude`, `codex`, `copilot`, `gemini`, `agy`, `grok`,
+  `kimi`. Local-llm
   models (`qwen3-coder-30b`, `deepseek-coder-v2-lite`, `glm-4.5-air`) run via
   `ccr` and need `~/.claude-code-router/config.json`'s `local` provider
   configured.

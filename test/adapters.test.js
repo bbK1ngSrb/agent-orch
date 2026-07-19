@@ -107,15 +107,16 @@ test("grok buildArgs appends --model and --effort when given", () => {
     ["-p", "PROMPT", "--always-approve", "--model", "grok-4", "--effort", "high"]);
 });
 
-test("kimi buildArgs uses headless print mode with approval bypass", () => {
-  // --yolo is required: headless --print still gates Edit/Write/Bash on
-  // approval, which would hang/no-op the author stage without it.
-  assert.deepEqual(kimiArgs("PROMPT", "/wd"), ["--print", "PROMPT", "--yolo"]);
+test("kimi buildArgs uses headless prompt mode with approval bypass", () => {
+  // -p/--prompt is kimi-code's non-interactive single-prompt mode. --yolo is
+  // required: headless still gates Edit/Write/Bash on approval, which would
+  // hang/no-op the author stage without it.
+  assert.deepEqual(kimiArgs("PROMPT", "/wd"), ["-p", "PROMPT", "--yolo"]);
 });
 
 test("kimi buildArgs appends --model when given", () => {
   assert.deepEqual(kimiArgs("PROMPT", "/wd", { model: "kimi-k2" }),
-    ["--print", "PROMPT", "--yolo", "--model", "kimi-k2"]);
+    ["-p", "PROMPT", "--yolo", "--model", "kimi-k2"]);
 });
 
 test("buildArgs omits model/effort flags when absent (no regression)", () => {
@@ -127,7 +128,7 @@ test("buildArgs omits model/effort flags when absent (no regression)", () => {
   assert.deepEqual(copilotArgs("P", "/wd", {}),
     ["-p", "P", "--allow-all-tools", "--allow-all-paths", "--add-dir", "/wd"]);
   assert.deepEqual(geminiArgs("P", "/wd", {}), ["-p", "P", "--yolo"]);
-  assert.deepEqual(kimiArgs("P", "/wd", {}), ["--print", "P", "--yolo"]);
+  assert.deepEqual(kimiArgs("P", "/wd", {}), ["-p", "P", "--yolo"]);
 });
 
 test("adapter forwards model/effort opts to buildArgs", async () => {
