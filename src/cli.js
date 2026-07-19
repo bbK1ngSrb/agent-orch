@@ -212,6 +212,19 @@ scope:
 
 
 # ===================================================================
+# Security scan (deterministic merge gate)
+# ===================================================================
+# Globs exempt from the security scan — for committed build artifacts
+# (minified bundles false-positive as subprocess spawns, #334). Empty by
+# default: everything is scanned. Exempting a path skips ALL security
+# rules for it, so list only generated files, never authored code.
+#
+# security:
+#   ignore:
+#     - dist/**
+
+
+# ===================================================================
 # GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> baseBranch)
 # ===================================================================
 github:

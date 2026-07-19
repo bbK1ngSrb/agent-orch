@@ -226,7 +226,7 @@ export async function runCycle(opts, deps) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
             `security scan: could not read the final diff (${e.message}) — failing closed, not merging`));
         }
-        const security = scanDiff(finalDiff);
+        const security = scanDiff(finalDiff, { ignore: cfg.security?.ignore ?? [] });
         if (security.decision !== "AGREE") {
           // summary → the concise reason kept in run logs / the CLI status line;
           // detail → the grouped, deduped, educational note a human reads.

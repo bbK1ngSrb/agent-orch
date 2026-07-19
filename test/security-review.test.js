@@ -224,3 +224,31 @@ test("an unknown-file finding (no +++ header) errs toward inspection", () => {
   const { detail } = formatSecurityFindings([{ rule: "network", line: "fetch(x)", file: null }]);
   assert.match(detail, /inspect before merging/);
 });
+
+// #334: security.ignore — committed build artifacts (minified bundles) can be
+// deliberately exempted; everything else stays scanned, fail-closed.
+test("ignore glob exempts a matching file's findings", () => {
+  const d = `+++ b/dist/bundle.min.js\n+var a=/x/;a.exec(l);r.exec(s);`;
+  assert.equal(scanDiff(d).decision, "DISAGREE"); // default: no ignores
+  const r = scanDiff(d, { ignore: ["dist/**"] });
+  assert.equal(r.decision, "AGREE");
+  assert.deepEqual(r.findings, []);
+});
+
+test("ignore glob does not exempt non-matching files", () => {
+  const d = [
+    `+++ b/dist/bundle.min.js`,
+    `+r.exec(s);`,
+    `+++ b/src/x.js`,
+    `+const k = process.env.GITHUB_TOKEN;`,
+  ].join("\n");
+  const r = scanDiff(d, { ignore: ["dist/**"] });
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings.map((f) => f.file), ["src/x.js"]);
+});
+
+test("unknown-path lines (no +++ b/ header) are never ignorable", () => {
+  const d = `--- a/whatever\n+r.exec(s);`;
+  const r = scanDiff(d, { ignore: ["**"] });
+  assert.equal(r.decision, "DISAGREE");
+});

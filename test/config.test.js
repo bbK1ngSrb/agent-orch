@@ -400,3 +400,21 @@ test("concurrency defaults to 4 and must be a positive integer", () => {
   writeFileSync(join(d, ".orch", "orch.yml"), "concurrency: 0\n");
   assert.throws(() => load(d), /concurrency must be a positive integer/);
 });
+
+test("security.ignore defaults to [] and deep-merges from orch.yml (#334)", () => {
+  assert.deepEqual(load(tmp()).security.ignore, []);
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "security:\n  ignore:\n    - dist/**\n");
+  const c = load(d);
+  assert.deepEqual(c.security.ignore, ["dist/**"]);
+  assert.equal(c.merge, "no-ff"); // top-level defaults survive the deep-merge
+});
+
+test("security.ignore rejects non-list and empty-string globs (#334)", () => {
+  const bad = tmp();
+  writeFileSync(join(bad, "orch.yml"), "security:\n  ignore: dist/**\n");
+  assert.throws(() => load(bad), /security\.ignore must be an array/);
+  const empty = tmp();
+  writeFileSync(join(empty, "orch.yml"), 'security:\n  ignore:\n    - ""\n');
+  assert.throws(() => load(empty), /security\.ignore must be an array/);
+});

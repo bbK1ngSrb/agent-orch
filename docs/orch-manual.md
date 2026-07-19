@@ -43,7 +43,12 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    scan can't be reasoned or prompted out of a finding — any hit escalates,
    even after `AGREE` and green tests. If the final diff itself can't be read,
    orch fails closed and escalates rather than assuming an unseen patch is
-   safe. This runs on every cycle that reaches AGREE + green, including the
+   safe. Files matching a `security.ignore` glob are exempt (default: none) —
+   an escape hatch for committed build artifacts like minified bundles, where
+   pattern-matching on generated text false-positives (a `RegExp#exec()` call
+   in minified code reads exactly like a subprocess `exec()`). Exempting a
+   path skips *every* security rule for it, so list only generated files,
+   never authored code. This runs on every cycle that reaches AGREE + green, including the
    `orch pr`/PR-bridge audit-only path (§2.7) where nothing else merges.
 5. **Merge** — *only if* every reviewer said `AGREE`, tests passed, **and**
    the security scan found nothing — the branch is merged. How and where it
@@ -786,6 +791,13 @@ release:
   ask: `0` disables it; set it to escalate (not silently truncate) any author
   commit whose changed-line count exceeds the limit, ignoring the globs in
   `scope.ignore`.
+- **`security.ignore`** — globs exempt from the deterministic security scan
+  (§1.1 step 4). Empty by default: everything is scanned. This exists for
+  repos that commit build artifacts (a minified `dist/` bundle trips the
+  subprocess rule on lit's `RegExp#exec()` — see issue #334); it is a
+  *separate* list from `scope.ignore` on purpose, because dropping a file
+  from a line count is routine hygiene while dropping it from the security
+  floor is a security decision that deserves its own explicit opt-in.
 - **`github.mergeMethod`** — only affects PRs orch itself merges via `gh`:
   `orch pr --merge` and the `merge: pr` per-cycle PRs. It does **not** apply
   to the persistent `orch/integration → main` PR — that one always uses a

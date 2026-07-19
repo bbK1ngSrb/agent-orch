@@ -24,6 +24,12 @@ const DEFAULTS = {
     paths: [], // globs; a --file/issue work order whose suspected_paths all match auto-routes to `role`
   },
   scope: { maxLines: 0, ignore: ["*.lock", "dist/**", "*.snap"] },
+  security: {
+    ignore: [], // globs exempt from the deterministic security scan (#334). Deliberately
+                // NOT scope.ignore: excluding a file from a line COUNT is routine hygiene,
+                // excluding it from the security FLOOR is a security decision — coupling
+                // them would silently widen the exemption every time someone tunes scope.
+  },
   github: {
     mergeMethod: "squash", // gh pr merge strategy for orch-owned PR auto-merge
     autoMergePr: false, // enable GitHub auto-merge on PRs orch opens or updates
@@ -76,6 +82,8 @@ export function validate(cfg) {
     throw new Error("orch.yml: cheap.paths must be an array of strings");
   if (!Number.isInteger(cfg.scope.maxLines) || cfg.scope.maxLines < 0)
     throw new Error("orch.yml: scope.maxLines must be a non-negative integer");
+  if (!Array.isArray(cfg.security.ignore) || !cfg.security.ignore.every((p) => typeof p === "string" && p.trim()))
+    throw new Error("orch.yml: security.ignore must be an array of non-empty glob strings");
   if (!["squash", "merge", "rebase"].includes(cfg.github.mergeMethod))
     throw new Error("orch.yml: github.mergeMethod must be squash, merge, or rebase");
   if (typeof cfg.github.autoMergePr !== "boolean")
@@ -170,6 +178,7 @@ export function load(dir, overridePath) {
     ...override,
     cheap: { ...DEFAULTS.cheap, ...(user.cheap || {}), ...(override.cheap || {}) },
     scope: { ...DEFAULTS.scope, ...(user.scope || {}), ...(override.scope || {}) },
+    security: { ...DEFAULTS.security, ...(user.security || {}), ...(override.security || {}) },
     github: { ...DEFAULTS.github, ...(user.github || {}), ...(override.github || {}) },
     main: { ...DEFAULTS.main, ...(user.main || {}), ...(override.main || {}) },
     docs: { ...DEFAULTS.docs, ...(user.docs || {}), ...(override.docs || {}) },
