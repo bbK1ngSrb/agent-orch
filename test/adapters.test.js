@@ -10,6 +10,7 @@ import { buildArgs as codexArgs } from "../src/adapters/codex.js";
 import { buildArgs as copilotArgs } from "../src/adapters/copilot.js";
 import { buildArgs as geminiArgs } from "../src/adapters/gemini.js";
 import { buildArgs as grokArgs } from "../src/adapters/grok.js";
+import { buildArgs as kimiArgs } from "../src/adapters/kimi.js";
 import { get } from "../src/adapters/index.js";
 import { makeCliAdapter, isUsageLimit, parseRunUsage, MAX_AGENT_OUTPUT_CHARS } from "../src/adapters/cli-adapter.js";
 
@@ -106,6 +107,20 @@ test("grok buildArgs appends --model and --effort when given", () => {
     ["-p", "PROMPT", "--always-approve", "--model", "grok-4", "--effort", "high"]);
 });
 
+test("kimi buildArgs uses headless prompt mode without approval flags", () => {
+  // -p/--prompt is kimi-code's non-interactive single-prompt mode. It must NOT
+  // carry --yolo or --auto: kimi-code 0.27.0 exits 1 with "error: Cannot
+  // combine --prompt with --yolo" — prompt mode auto-approves tools on its own.
+  const args = kimiArgs("PROMPT", "/wd");
+  assert.deepEqual(args, ["-p", "PROMPT"]);
+  assert.ok(!args.includes("--yolo") && !args.includes("--auto"));
+});
+
+test("kimi buildArgs appends --model when given", () => {
+  assert.deepEqual(kimiArgs("PROMPT", "/wd", { model: "kimi-k2" }),
+    ["-p", "PROMPT", "--model", "kimi-k2"]);
+});
+
 test("buildArgs omits model/effort flags when absent (no regression)", () => {
   assert.deepEqual(agyArgs("P", "/wd", {}), ["-p", "P"]);
   assert.deepEqual(claudeArgs("P", "/wd", {}),
@@ -115,6 +130,7 @@ test("buildArgs omits model/effort flags when absent (no regression)", () => {
   assert.deepEqual(copilotArgs("P", "/wd", {}),
     ["-p", "P", "--allow-all-tools", "--allow-all-paths", "--add-dir", "/wd"]);
   assert.deepEqual(geminiArgs("P", "/wd", {}), ["-p", "P", "--yolo"]);
+  assert.deepEqual(kimiArgs("P", "/wd", {}), ["-p", "P"]);
 });
 
 test("adapter forwards model/effort opts to buildArgs", async () => {
@@ -149,6 +165,7 @@ test("adapters declare model/effort capability support", () => {
   assert.deepEqual(get("copilot").capabilities, { model: true, effort: false });
   assert.deepEqual(get("gemini").capabilities, { model: true, effort: false });
   assert.deepEqual(get("grok").capabilities, { model: true, effort: true });
+  assert.deepEqual(get("kimi").capabilities, { model: true, effort: false });
   assert.deepEqual(get("qwen3-coder-30b").capabilities, { model: false, effort: false });
 });
 
@@ -533,6 +550,7 @@ test("registry resolves known adapters and rejects unknown", () => {
   assert.equal(get("copilot").name, "copilot");
   assert.equal(get("gemini").name, "gemini");
   assert.equal(get("grok").name, "grok");
+  assert.equal(get("kimi").name, "kimi");
   assert.throws(() => get("nope"), /unknown agent/);
 });
 
@@ -550,4 +568,5 @@ test("adapter exposes bin for preflight", () => {
   assert.equal(get("copilot").bin, "copilot");
   assert.equal(get("gemini").bin, "gemini");
   assert.equal(get("grok").bin, "grok");
+  assert.equal(get("kimi").bin, "kimi");
 });

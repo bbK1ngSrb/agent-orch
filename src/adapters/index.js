@@ -4,9 +4,10 @@ import codex from "./codex.js";
 import copilot from "./copilot.js";
 import gemini from "./gemini.js";
 import grok from "./grok.js";
+import kimi from "./kimi.js";
 import local from "./local.js";
 
-const NATIVE = { agy, claude, codex, copilot, gemini, grok };
+const NATIVE = { agy, claude, codex, copilot, gemini, grok, kimi };
 const REGISTRY = { ...NATIVE, ...local };
 
 // Native per-CLI adapters (one bin per name), as opposed to ccr-routed local
