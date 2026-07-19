@@ -340,7 +340,7 @@ orch agent build mynewagent --pr     # opens a PR instead
 
 **When to use it:** adding support for a new CLI coding agent that isn't
 already in the built-in set (`claude`, `codex`, `copilot`, `gemini`, `agy`,
-`grok`, plus the local-llm models).
+`grok`, `kimi`, plus the local-llm models).
 
 ### 2.9 `orch continue <sid>`
 
