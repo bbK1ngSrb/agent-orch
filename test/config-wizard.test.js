@@ -16,7 +16,7 @@ test("option catalog is consistent with DEFAULTS and validate()", () => {
   assert.deepEqual(keys, [
     "agents", "author", "reviewer", "authors", "reviewers", "test", "reviseCap", "stageTimeout",
     "baseBranch", "integrationBranch", "merge", "concurrency", "cheap.role", "cheap.paths",
-    "scope.maxLines", "scope.ignore", "github.mergeMethod", "github.autoMergePr",
+    "scope.maxLines", "scope.ignore", "security.ignore", "github.mergeMethod", "github.autoMergePr",
     "main.autoMerge", "main.conflictResolution", "main.conflictResolutionResolvers",
     "main.autoResolveConflicts", "main.autoResolveConflictPaths",
     "release.autoBump", "docs.autoUpdate", "docs.prompt", "docs.paths",

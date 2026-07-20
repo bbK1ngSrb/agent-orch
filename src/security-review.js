@@ -1,3 +1,5 @@
+import { globToRegExp } from "./scope.js";
+
 // §3e: independent security gate. Static scan of ADDED diff lines for the
 // classes of behavior that exfiltrate or self-modify, regardless of whether the
 // change satisfies the (attacker-influenced) acceptance_criteria. The LLM
@@ -66,9 +68,18 @@ function isSubprocessCall(line, regexVars) {
   return false;
 }
 
-export function scanDiff(diffText) {
+// `ignore` (#334): globs from `security.ignore` in orch.yml, for files that are
+// build artifacts rather than authored code — e.g. a committed minified bundle,
+// where RegExp#exec() receivers lose their regex-literal assignment to var
+// renaming and always false-positive as subprocess spawns. Default is [] (scan
+// everything); an unknown path (no `+++ b/` header) is never ignorable, and the
+// config itself lives in `.orch/` where the secret-read rule + config load
+// timing keep a same-cycle diff from widening its own exemptions.
+export function scanDiff(diffText, { ignore = [] } = {}) {
   const findings = [];
-  const entries = addedCodeLines(diffText);
+  const ignoreRes = ignore.map(globToRegExp);
+  const entries = addedCodeLines(diffText)
+    .filter(({ file }) => !(file && ignoreRes.some((re) => re.test(file))));
   const regexVars = regexLiteralVars(entries.map((e) => e.raw));
   for (const { file, raw } of entries) {
     for (const { rule, re } of SECURITY_RULES) {

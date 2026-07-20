@@ -31,6 +31,7 @@ export const OPTION_CATALOG = [
   { keys: ["cheap.paths"], label: "cheap paths", widget: LIST, explain: "Globs that qualify a work order for the cheap role. Keep this narrow so only mechanical paths are routed away from the normal pool." },
   { keys: ["scope.maxLines"], label: "scope max lines", widget: NUMBER, min: 0, explain: "Optional changed-line budget for a task. Zero disables the limit; positive values make oversized changes stop early." },
   { keys: ["scope.ignore"], label: "scope ignore", widget: LIST, explain: "Globs ignored by scope checks. Generated files, locks, and snapshots usually belong here." },
+  { keys: ["security.ignore"], label: "security ignore", widget: LIST, explain: "Globs exempt from the deterministic security scan. Only committed build artifacts (e.g. dist/**) belong here — never authored code." },
   { keys: ["github.mergeMethod"], label: "GitHub merge method", widget: ENUM, choices: ["squash", "merge", "rebase"], explain: "Merge method used when orch asks GitHub to merge an owned PR.", choiceExplain: {
     squash: "Squash produces one compact commit from the PR.",
     merge: "Merge preserves the PR branch commits and records a merge commit.",
@@ -92,6 +93,7 @@ function cloneConfig(cfg) {
     reviewers: cfg.reviewers == null ? null : [...cfg.reviewers],
     cheap: { ...cfg.cheap, paths: [...cfg.cheap.paths] },
     scope: { ...cfg.scope, ignore: [...cfg.scope.ignore] },
+    security: { ...cfg.security, ignore: [...cfg.security.ignore] },
     github: { ...cfg.github },
     main: {
       ...cfg.main,
