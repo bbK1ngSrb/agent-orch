@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, mergeInWorktree, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare } from "../src/git.js";
+import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, mergeInWorktree, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -665,4 +665,22 @@ test("bumpVersion returns null and leaves the repo clean when the commit fails",
   // identity, exercising the catch/reset path.
   const version = bumpVersion(repo, "pr/claude/x-1");
   assert.equal(version, null);
+});
+
+test("deleteRemoteBranch removes an existing remote head (#339)", () => {
+  const repo = newRepo();
+  addOrigin(repo);
+  git(["push", "origin", "HEAD:refs/heads/pr/claude/x-1"], repo);
+  assert.ok(git(["ls-remote", "--heads", "origin", "pr/claude/x-1"], repo).trim(), "precondition: remote head exists");
+  const r = deleteRemoteBranch(repo, "pr/claude/x-1");
+  assert.equal(r.ok, true);
+  assert.equal(git(["ls-remote", "--heads", "origin", "pr/claude/x-1"], repo).trim(), "");
+});
+
+test("deleteRemoteBranch is a harmless no-op when the remote head is already gone (#339)", () => {
+  const repo = newRepo();
+  addOrigin(repo);
+  // Never pushed — deleting a missing ref must not throw; gitTry reports ok:false.
+  const r = deleteRemoteBranch(repo, "pr/claude/never-existed-1");
+  assert.equal(r.ok, false);
 });

@@ -147,6 +147,22 @@ export async function finalize(ctx, deps) {
       ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
     });
     notify.cleanupReviews(orchDir, branch);
+    // The cycle's `pr/*` head has served its whole purpose now that its content is
+    // on the integration branch — drop the remote copy so origin doesn't accumulate
+    // one orphan per cycle (#339). Only reached on the merged path: demote and
+    // `merge: pr` return earlier and keep their open-PR head untouched.
+    //
+    // Gated on pr.prUrl for a reason: `openIntegrationPr` is the ONLY step that
+    // pushes the integration branch to origin (github.js), and it can throw (caught
+    // above → prUrl null). On that failure origin/integration is stale — the merged
+    // content lives only on the local branch — so deleting the `pr/*` head would
+    // destroy the sole remote copy of just-landed work, in the exact state a human
+    // is being told to recover from. prUrl truthy ⇒ the push succeeded ⇒ origin has
+    // the content ⇒ the head is safe to drop. Also guarded against ever deleting a
+    // protected ref, and best-effort so it never undoes a merge that already landed.
+    if (pr.prUrl && branch && branch !== integrationBranch && branch !== baseBranch) {
+      git.deleteRemoteBranch?.(repo, branch);
+    }
     return {
       status: "merged",
       reason: pr.prUrl
