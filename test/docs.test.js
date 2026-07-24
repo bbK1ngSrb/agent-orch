@@ -11,6 +11,7 @@ const read = (rel) =>
   readFileSync(fileURLToPath(new URL(rel, rootUrl)), "utf8");
 
 const pkg = JSON.parse(read("package.json"));
+const claude = read("CLAUDE.md");
 const readme = read("README.md");
 const landing = read("docs/index.html");
 const manual = read("docs/orch-manual.md");
@@ -142,6 +143,15 @@ test("docs explain headless self-merge needs bypass or a second reviewer identit
     assert.match(doc, /cross-audit/);
   }
   assert.match(manual, /GitHub approval is bypassed, not recorded/);
+});
+
+test("CLAUDE routes agent changes through the persistent integration PR", () => {
+  assert.match(claude, /Agent-generated changes destined for `main` must start as a GitHub Issue/);
+  assert.match(claude, /Never hand-author a direct agent PR to `main`/);
+  assert.match(claude, /ambient\s+`gh` identity—the repo owner—not `orch\[bot\]`/);
+  assert.match(claude, /does not allow a PR author\s+to approve its own PR/);
+  assert.match(claude, /single persistent `orch\/integration → main` PR/);
+  assert.match(claude, /trivial human\/owner chore or\s+documentation change may still use a direct owner PR/);
 });
 
 test("landing page is plain static HTML with social metadata", () => {
