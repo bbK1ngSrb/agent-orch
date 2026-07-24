@@ -139,7 +139,7 @@ test("integration PR bridge failure after local merge → records merged and esc
   assert.match(escalated.body, /gh failed/);
 });
 
-test("path overlap with a peer → pr-fallback (no merge attempted)", async () => {
+test("path overlap with a peer → merge-deferred (no merge attempted)", async () => {
   let merged = false;
   const deferredRecords = [];
   const { deps, recorded } = baseDeps({
@@ -154,17 +154,21 @@ test("path overlap with a peer → pr-fallback (no merge attempted)", async () =
     },
   });
   const r = await finalize(ctx(), deps);
-  assert.equal(r.status, "pr-fallback");
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.trigger, "overlap");
+  assert.match(r.reason, /^opened PR https:\/\/x\/pr\/1; collides with peer peer-2 on src\/a\.js\./);
+  assert.match(r.reason, /Vetted: agents AGREE, tests green, security clean\./);
   assert.match(r.reason, /trigger \| overlap/);
   assert.match(r.reason, /AGREE after 1 round/);
   assert.match(r.reason, /passed on branch \(npm test\)/);
   assert.match(r.reason, /base base; orch\/integration deadbee/);
   assert.match(r.reason, /peer overlap: peer-2: src\/a\.js/);
   assert.match(r.reason, /next action:/);
-  assert.match(r.reason, /## Why this PR exists/); // teaching-toned, not a raw dump
+  assert.match(r.reason, /## Merge deferred: overlap/); // teaching-toned, not a raw dump
   assert.equal(merged, false);
   assert.equal(recorded[0].sid, "1");
-  assert.equal(recorded[0].verdict, "pr-fallback");
+  assert.equal(recorded[0].verdict, "merge-deferred");
+  assert.equal(recorded[0].trigger, "overlap");
   assert.match(recorded[0].reason, /peer overlap: peer-2: src\/a\.js/);
   // Overlap demote queues the cycle for post-land redrive (#350).
   assert.equal(deferredRecords.length, 1);
@@ -265,7 +269,7 @@ test("post-land redrive: rebase conflict leaves peer deferred (no second demote)
   assert.equal(deferredPeer.redriveAttempts, 1);
 });
 
-test("merge conflict → pr-fallback", async () => {
+test("merge conflict → merge-deferred", async () => {
   const mergeReason = "Auto-merging src/a.js\nCONFLICT (content): Merge conflict in src/a.js\nAutomatic merge failed";
   const { deps } = baseDeps({
     git: {
@@ -277,8 +281,9 @@ test("merge conflict → pr-fallback", async () => {
     },
   });
   const r = await finalize(ctx(), deps);
-  assert.equal(r.status, "pr-fallback");
-  assert.match(r.reason, /trigger \| conflict/);
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.trigger, "dirty-merge");
+  assert.match(r.reason, /trigger \| dirty-merge/);
   assert.ok(r.reason.includes(`merge result:\n\`\`\`\n${mergeReason}\n\`\`\``));
   assert.match(r.reason, /<details><summary>raw merge output<\/summary>/); // dump collapsed, not headline
   assert.match(r.reason, /conflicting paths: src\/a\.js/);
@@ -292,7 +297,7 @@ test("demote reason is teaching-toned markdown, not a raw machine dump", async (
   });
   const r = await finalize(ctx(), deps);
   // Sectioned, professor-tone markdown — the four headings the operator reads.
-  assert.match(r.reason, /## Why this PR exists/);
+  assert.match(r.reason, /## Merge deferred: dirty-merge/);
   assert.match(r.reason, /## What blocked the automatic landing/);
   assert.match(r.reason, /## Signals/);
   assert.match(r.reason, /## Next step/);
@@ -302,20 +307,22 @@ test("demote reason is teaching-toned markdown, not a raw machine dump", async (
   // The git internals are available but collapsed, not the headline.
   assert.match(r.reason, /<details><summary>raw merge output<\/summary>[\s\S]*<\/details>/);
   // Machine facts survive: the Signals table still carries every value.
-  assert.match(r.reason, /\| trigger \| conflict \|/);
+  assert.match(r.reason, /\| trigger \| dirty-merge \|/);
   assert.match(r.reason, /\| test gate \| passed on branch \(npm test\) \|/);
 });
 
-test("post-merge test failure → reset + pr-fallback", async () => {
+test("post-merge test failure → reset + merge-deferred", async () => {
   const resets = [];
   const g = baseDeps().deps.git;
-  const { deps } = baseDeps({
+  const { deps, recorded } = baseDeps({
     gate: { run: () => ({ pass: false, log: "boom" }) },
     git: { ...g, git: (args) => { if (args[0] === "reset") resets.push(args); return args[0] === "rev-parse" ? "pre" : ""; } },
   });
   const r = await finalize(ctx(), deps);
-  assert.equal(r.status, "pr-fallback");
-  assert.match(r.reason, /trigger \| post-merge-test-fail/);
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.trigger, "integration-test");
+  assert.equal(recorded[0].trigger, "integration-test");
+  assert.match(r.reason, /trigger \| integration-test/);
   assert.match(r.reason, /integration gate: failed after merge/);
   assert.ok(resets.length === 1); // rolled main back to pre-merge sha
 });
@@ -327,8 +334,8 @@ test("demote reason is forwarded to github.demote (final-review I2)", async () =
     github: { demote: async (c) => { capturedCtx = c; return { prUrl: "https://x/pr/1" }; } },
   });
   const r = await finalize(ctx(), deps);
-  assert.equal(r.status, "pr-fallback");
-  assert.match(capturedCtx.reason, /trigger \| conflict/); // reason threaded via { ...ctx, reason }
+  assert.equal(r.status, "merge-deferred");
+  assert.match(capturedCtx.reason, /trigger \| dirty-merge/); // reason threaded via { ...ctx, reason }
 });
 
 test("issue bridge: closes #N is stamped into the no-ff merge commit message", async () => {
@@ -435,13 +442,14 @@ test("clean merge → recorded run history omits tokens/cost when nothing was me
   assert.equal("costUsd" in recorded[0], false);
 });
 
-test("pr-fallback (demote) → recorded run history includes total tokens and estimated cost", async () => {
+test("merge-deferred (demote) → recorded run history includes total tokens and estimated cost", async () => {
   const { deps, recorded } = baseDeps({
     git: { ...baseDeps().deps.git, mergeInWorktree: () => ({ ok: false, reason: "CONFLICT" }) },
   });
   const runStats = [{ role: "author", agent: "claude", model: "claude-opus-4.8", tokens: 500, costUsd: 0.02 }];
   const r = await finalize({ ...ctx(), runStats }, deps);
-  assert.equal(r.status, "pr-fallback");
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(recorded[0].trigger, "dirty-merge");
   assert.equal(recorded[0].tokens, 500);
   assert.equal(recorded[0].costUsd, 0.02);
 });
@@ -548,7 +556,7 @@ test("direct-to-main advance followed by finalize leaves integration ahead, not 
   assert.doesNotThrow(() => gitMod.git(["merge-base", "--is-ancestor", "origin/main", "orch/integration"], repo));
 });
 
-test("main diverged from origin at merge time → pr-fallback (no merge attempted, GitHub main preserved)", async () => {
+test("main diverged from origin at merge time → merge-deferred (no merge attempted, GitHub main preserved)", async () => {
   let merged = false;
   const { deps, recorded } = baseDeps({
     git: {
@@ -558,15 +566,17 @@ test("main diverged from origin at merge time → pr-fallback (no merge attempte
     },
   });
   const r = await finalize(ctx(), deps);
-  assert.equal(r.status, "pr-fallback");
-  assert.match(r.reason, /trigger \| main-sync-failed/);
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.trigger, "sync");
+  assert.match(r.reason, /trigger \| sync/);
   assert.match(r.reason, /diverged from origin/);
   assert.match(r.reason, /next action: inspect local main/);
   assert.equal(merged, false);
-  assert.equal(recorded[0].verdict, "pr-fallback");
+  assert.equal(recorded[0].verdict, "merge-deferred");
+  assert.equal(recorded[0].trigger, "sync");
 });
 
-test("local main ahead of origin at merge time → pr-fallback (orch never pushes main)", async () => {
+test("local main ahead of origin at merge time → merge-deferred (orch never pushes main)", async () => {
   let merged = false;
   const { deps, recorded } = baseDeps({
     git: {
@@ -576,23 +586,27 @@ test("local main ahead of origin at merge time → pr-fallback (orch never pushe
     },
   });
   const r = await finalize(ctx(), deps);
-  assert.equal(r.status, "pr-fallback");
-  assert.match(r.reason, /trigger \| main-sync-failed/);
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.trigger, "sync");
+  assert.match(r.reason, /trigger \| sync/);
   assert.match(r.reason, /ahead of origin/);
   assert.equal(merged, false);
-  assert.equal(recorded[0].verdict, "pr-fallback");
+  assert.equal(recorded[0].verdict, "merge-deferred");
+  assert.equal(recorded[0].trigger, "sync");
 });
 
-test("merge-lock timeout → pr-fallback without touching the worktree", async () => {
+test("merge-lock timeout → merge-deferred without touching the worktree", async () => {
   let ensured = false;
   let releaseCalls = 0;
-  const { deps } = baseDeps({
+  const { deps, recorded } = baseDeps({
     lock: { acquireBlocking: () => false, releaseLock: () => { releaseCalls++; } },
     git: { ...baseDeps().deps.git, ensureIntegrationWorktree: () => { ensured = true; return "/integ"; } },
   });
   const r = await finalize(ctx(), deps);
-  assert.equal(r.status, "pr-fallback");
-  assert.match(r.reason, /trigger \| merge-lock timeout/);
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.trigger, "lock");
+  assert.equal(recorded[0].trigger, "lock");
+  assert.match(r.reason, /trigger \| lock/);
   assert.match(r.reason, /next action: retry/);
   assert.equal(ensured, false);
   assert.equal(releaseCalls, 0); // must not release a lock we never acquired
@@ -640,7 +654,7 @@ test("demote path leaves the remote head alone — its open PR still needs it (#
     },
   });
   const r = await finalize(ctx(), deps);
-  assert.equal(r.status, "pr-fallback");
+  assert.equal(r.status, "merge-deferred");
   assert.equal(deleted, false);
 });
 

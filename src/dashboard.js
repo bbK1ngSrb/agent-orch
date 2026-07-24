@@ -12,8 +12,8 @@ import { kpi, reviewsDir } from "./notify.js";
 import { paint, C, STAGE_SYMBOL, VERDICT_SYMBOL, table, formatTimestamp } from "./tui/theme.js";
 
 const STAGE_LABELS = { reviewed: "review", tested: "test" };
-const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "pr-fallback": C.fail };
-const RED_VERDICTS = new Set(["escalated", "pr-fallback"]);
+const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "merge-deferred": C.fail };
+const RED_VERDICTS = new Set(["escalated", "merge-deferred"]);
 
 // Live cycles, newest inflight registration first, each annotated with its
 // most recent checkpoint stage (or "authoring" if none was recorded yet —

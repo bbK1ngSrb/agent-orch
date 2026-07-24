@@ -8,6 +8,7 @@
 
 ## v0.4.204 — 2026-07-24
 - split issue 345 per kimi review in pr/claude/security-floor-report-the-real-guardrail-434415-0
+- rename the `pr-fallback` verdict to `merge-deferred` and add a top-level run `trigger` (`overlap`, `dirty-merge`, `integration-test`, `lock`, or `sync`) (closes [#349](https://github.com/bbk1ng/agent-orch/issues/349))
 
 ## v0.4.203 — 2026-07-24
 - automated merge-bump (version-bump.yml safety net)

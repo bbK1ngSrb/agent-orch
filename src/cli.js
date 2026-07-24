@@ -84,7 +84,7 @@ function cleanStreakSuffix(orchDir, dry) {
   return `; clean unattended cycles: ${notify.kpi(orchDir).cleanUnattendedCycles}`;
 }
 
-const STATUS_COLOR = { merged: C.ok, escalated: C.fail, "pr-fallback": C.fail, pr: C.warn, demoted: C.warn };
+const STATUS_COLOR = { merged: C.ok, escalated: C.fail, "merge-deferred": C.fail, pr: C.warn, demoted: C.warn };
 
 export function summaryLine(result, branch, dry, extra, color = false) {
   const status = paint(color, STATUS_COLOR[result.status] || "", result.status);
@@ -95,7 +95,11 @@ export function summaryLine(result, branch, dry, extra, color = false) {
   // jamming embedded newlines/fences into the single-line summary.
   const head = nl === -1 ? reason : reason.slice(0, nl);
   const rest = nl === -1 ? "" : `\n${reason.slice(nl + 1)}`;
-  return `orch${dry ? " (dry)" : ""}: ${branch}: ${status} (${head}) after ${result.rounds} round(s)${extra}; cost ${result.usageSummary}${rest}`;
+  const deferred = result.status === "merge-deferred" && result.trigger;
+  const outcome = deferred
+    ? ` (${result.trigger}) — ${head.replace(/[.;]$/, "")}; completed`
+    : ` (${head})`;
+  return `orch${dry ? " (dry)" : ""}: ${branch}: ${status}${outcome} after ${result.rounds} round(s)${extra}; cost ${result.usageSummary}${rest}`;
 }
 
 function resetKpiOnRecovery(orchDir, recovery) {
@@ -1079,7 +1083,7 @@ export async function main(argv, deps = {}) {
       if (result.status === "approved") {
         console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
       }
-      if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
+      if (result.status === "escalated" || result.status === "merge-deferred") process.exitCode = 2;
       return;
     }
 
@@ -1101,7 +1105,7 @@ export async function main(argv, deps = {}) {
       if (result.status === "approved") {
         console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
       }
-      if (result.status === "escalated" || result.status === "pr-fallback") process.exitCode = 2;
+      if (result.status === "escalated" || result.status === "merge-deferred") process.exitCode = 2;
       return;
     }
     const file = configPath(repo);
@@ -1276,7 +1280,7 @@ export async function main(argv, deps = {}) {
         console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout)));
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.prUrl) prUrls.push(result.prUrl);
-        if (result.status === "escalated" || result.status === "pr-fallback") {
+        if (result.status === "escalated" || result.status === "merge-deferred") {
           process.exitCode = 2;
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
@@ -1469,7 +1473,7 @@ export async function main(argv, deps = {}) {
       // handling instead of reusing the shared `task`/`issue` tail, and dropped
       // two of its side effects for a resumed cycle — the detached docs-update
       // spawn on a real merge, and the issue-bridge comment (closes is now
-      // restored, see above) on escalation/PR-fallback. Both restored here,
+      // restored, see above) on escalation/merge-deferred. Both restored here,
       // matching the shared loop at the `task`/`issue` command above.
       if (!dry) maybeSpawnDocs(result, cfg, { dry, spawn: deps.spawn }, orchDir);
       if (result.status === "merged" && !dry && !flags["no-tidy"]) {
@@ -1480,7 +1484,7 @@ export async function main(argv, deps = {}) {
           { git, io, notify },
         );
       }
-      if (result.status === "escalated" || result.status === "pr-fallback") {
+      if (result.status === "escalated" || result.status === "merge-deferred") {
         process.exitCode = 2;
         if (!dry && closes) {
           try {

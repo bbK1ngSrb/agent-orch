@@ -70,7 +70,7 @@ test("conflicting branches: first merges, second demotes (conflict, not pre-demo
   const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
 
   assert.equal(rA.status, "merged");
-  assert.equal(rB.status, "pr-fallback");
+  assert.equal(rB.status, "merge-deferred");
   assert.match(rB.reason, /conflict/);
 });
 
@@ -94,7 +94,7 @@ test("same file already landed, but cleanly mergeable → second branch still me
   assert.match(merged, /BOTTOM/);
 });
 
-test("in-flight peer overlap → pr-fallback before any merge attempt", async () => {
+test("in-flight peer overlap → merge-deferred before any merge attempt", async () => {
   const repo = newRepo();
   const orchDir = join(repo, ".orch");
   const baseB = makeBranch(repo, orchDir, "pr/codex/b-2", "shared.txt", "B\n");
@@ -103,7 +103,7 @@ test("in-flight peer overlap → pr-fallback before any merge attempt", async ()
   inflight.setPaths(orchDir, "peer", ["shared.txt"]);
   try {
     const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
-    assert.equal(rB.status, "pr-fallback");
+    assert.equal(rB.status, "merge-deferred");
     assert.match(rB.reason, /overlap/);
   } finally {
     inflight.deregister(orchDir, "peer");
@@ -127,7 +127,7 @@ test("overlap demote then blocker lands → peer is rebased, re-gated, and auto-
     repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB,
     paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1,
   }, realDeps());
-  assert.equal(rB.status, "pr-fallback");
+  assert.equal(rB.status, "merge-deferred");
   assert.match(rB.reason, /overlap/);
 
   // A lands; post-land redrive should rebase + gate + merge B.
@@ -158,7 +158,7 @@ test("true line conflict after redrive stays merge-deferred (#350 Tier-1 bound)"
     repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB,
     paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1,
   }, realDeps());
-  assert.equal(rB.status, "pr-fallback");
+  assert.equal(rB.status, "merge-deferred");
 
   inflight.deregister(orchDir, "1");
   const rA = await finalize({
@@ -186,7 +186,8 @@ test("clean text merge but post-merge tests fail → demote, integration unchang
   deps.gate = { run: () => ({ pass: false }) }; // post-merge test fails
   const r = await finalize({ repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: base, paths: ["a.txt"], testCmd: "false", cfg: { merge: "no-ff" }, rounds: 1 }, deps);
 
-  assert.equal(r.status, "pr-fallback");
-  assert.match(r.reason, /post-merge-test-fail/);
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.trigger, "integration-test");
+  assert.match(r.reason, /integration-test/);
   assert.equal(git(["rev-parse", "main"], repo), before); // main was never touched
 });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runPr, buildComment, demote, openPr, openIntegrationPr } from "../src/github.js";
+import { runPr, buildComment, buildIssueComment, demote, openPr, openIntegrationPr } from "../src/github.js";
 
 function makeDeps({
   status = "approved", state = "OPEN",
@@ -169,7 +169,7 @@ test("demote opens a PR when a remote and gh are present", async () => {
   assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
   const args = calls.find((c) => c[0] === "gh" && c[2] === "create");
   const body = args[args.indexOf("--body") + 1];
-  assert.match(body, /Auto-demoted by agent-orch/);
+  assert.match(body, /Merge deferred by agent-orch/);
   assert.match(body, /trigger: overlap/);
   assert.match(body, /next action: rerun orch review/);
   assert.match(body, /Plain `gh pr merge` can be refused by its bypass-blind precheck/);
@@ -177,6 +177,17 @@ test("demote opens a PR when a remote and gh are present", async () => {
   const edit = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit");
   assert.ok(edit, "demote should update the PR body once the PR number is known");
   assert.match(edit[edit.indexOf("--body") + 1], /gh api -X PUT repos\/\{owner\}\/\{repo\}\/pulls\/7\/merge -f merge_method=squash/);
+});
+
+test("issue comment recognizes the merge-deferred verdict", () => {
+  const body = buildIssueComment({
+    status: "merge-deferred",
+    reason: "opened PR https://x/pr/7",
+    rounds: 1,
+  }, "pr/codex/x");
+  assert.match(body, /agent-orch: MERGE DEFERRED/);
+  assert.doesNotMatch(body, /agent-orch: ESCALATED/);
+  assert.match(body, /opened PR https:\/\/x\/pr\/7/);
 });
 
 test("demote with github.autoMergePr directly merges the opened fallback PR", async () => {

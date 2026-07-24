@@ -269,7 +269,7 @@ orch issue 42 --reviewer "codex"   # reviewer-only override, same as §2.3's tas
 ```
 
 If the cycle escalates instead of merging (disagreement past the cap, or a
-PR-fallback trigger), `orch` posts a comment on the *source issue* itself —
+`merge-deferred` trigger), `orch` posts a comment on the *source issue* itself —
 verdict, branch, reason, round count — because a headless run has no one
 watching stdout. This is the only trace besides the local
 `.orch/reviews/<branch>/DECISION.md`.
@@ -487,7 +487,7 @@ once.
 Same target (`orch/integration`), but requires a fast-forward — no merge
 commit. If a concurrent peer has already advanced `orch/integration` since
 this cycle's branch point, the fast-forward isn't possible, and the cycle
-**falls back to a PR** instead (see §3.4, PR-fallback) rather than force- or
+**defers to a PR** instead (see §3.4, `merge-deferred`) rather than force- or
 merge-committing around the conflict.
 
 **When to use it:** you want a strictly linear `orch/integration` history
@@ -518,7 +518,7 @@ orch task "add rate-limit header"   # → opens (or updates) its own PR to main
 ```
 
 This needs a git remote and the `gh` CLI. Without them, the cycle escalates
-locally the same way ordinary PR-fallback does (§3.4) — it does not silently
+locally the same way ordinary `merge-deferred` does (§3.4) — it does not silently
 merge somewhere else.
 
 If `github.autoMergePr: true` and enabling auto-merge fails (e.g. branch
@@ -546,7 +546,7 @@ without any GitHub round-trip (e.g. iterating fast with no network, or
 running many small concurrent cycles that don't each need their own
 formal review), stick with the default `no-ff` two-speed path instead.
 
-### 3.4 PR-fallback (this can happen under *any* merge mode)
+### 3.4 `merge-deferred` (this can happen under *any* merge mode)
 
 Separately from `merge: pr`, **any** cycle — regardless of which `merge:`
 mode you've configured — can demote to a PR (or a local escalation if there's
@@ -555,19 +555,20 @@ no remote/`gh`) when one of these triggers fires:
 | Trigger | Meaning |
 |---|---|
 | `overlap` | Your changed files collide with a live concurrent cycle's files |
-| `conflict` | The merge into `orch/integration` itself fails |
-| `post-merge-test-fail` | Tests fail after merging into the integrated tree |
-| `merge-lock timeout` | The local merge lock was never acquired in time |
-| `main-sync-failed` | Local `main` couldn't catch up to `origin/main` |
+| `dirty-merge` | The merge into `orch/integration` itself fails |
+| `integration-test` | Tests fail after merging into the integrated tree |
+| `lock` | The local merge lock was never acquired in time |
+| `sync` | Local `main` couldn't catch up to `origin/main` |
 
 With a remote and `gh` available, orch pushes the branch and opens a PR,
 carrying full context in the PR body: round count, base SHA, changed paths,
 and trigger-specific detail (the overlapping paths, the conflicting paths,
 etc.) plus a one-line suggested next action. Without a remote/`gh`, it writes
 `.orch/reviews/<branch>/DECISION.md` instead and keeps the branch for manual
-review.
+review. The `.orch/runs.jsonl` entry records `verdict: "merge-deferred"` and
+the cause as a top-level `trigger` field.
 
-**Takeaway:** PR-fallback is not a mode you choose — it's the safety net that
+**Takeaway:** `merge-deferred` is not a mode you choose — it's the safety net that
 catches a cycle whenever the fast local path can't complete cleanly, under
 *any* `merge:` setting. `merge: pr` just makes "always a PR" the *primary*
 path instead of the fallback.
@@ -577,7 +578,7 @@ path instead of the fallback.
 | You want... | Set |
 |---|---|
 | Fast local iteration, single shared PR gate to `main`, concurrent cycles land without fighting each other | `merge: no-ff` (default) — do nothing |
-| Same as above, but a strictly linear `orch/integration` history (no merge commits), and can tolerate more frequent PR-fallback | `merge: ff-only` |
+| Same as above, but a strictly linear `orch/integration` history (no merge commits), and can tolerate more frequent `merge-deferred` outcomes | `merge: ff-only` |
 | Every cycle becomes its own PR straight to `main`, no shared integration branch, no two-speed lag, branch protection satisfied every time | `merge: pr` |
 | Cycles that land locally to still eventually reach `main` without you clicking merge each time | add `github.autoMergePr: true` (works with any mode that opens a PR) |
 
@@ -936,10 +937,10 @@ orch review my-branch --reviewer "codex, claude high"
   cycle* — it still needs either a human to click merge on GitHub, or
   `github.autoMergePr: true` plus passing CI checks on that PR, to actually
   land on `main`.
-- **"Two cycles I ran at once both escalated to PR-fallback instead of
+- **"Two cycles I ran at once both ended `merge-deferred` instead of
   merging locally."** Check whether their changed files overlapped
   (`overlap` trigger) — give them disjoint `--authors`/`--reviewers` and
-  disjoint file scopes, or accept the PR-fallback as the correct safety
+  disjoint file scopes, or accept `merge-deferred` as the correct safety
   behavior for genuinely overlapping work.
 - **"Why didn't my version get bumped?"** The bump is opt-in: set
   `release.autoBump: true` in `.orch/orch.yml` (it's off by default). Even

@@ -320,19 +320,21 @@ changed paths against live in-flight peers' paths — commits already landed on
 merge itself, and a semantic conflict fails the post-merge re-test) and a
 post-merge re-test against the integrated tree.
 
-**PR-fallback.** A cycle demotes to a PR (or local escalation) when:
+**`merge-deferred`.** A cycle defers its merge to a PR (or local escalation) when:
 - `overlap` — your files collide with a live concurrent cycle's files
-- `conflict` — the merge itself fails
-- `post-merge-test-fail` — tests fail after merge into `.orch/integration`
-- `merge-lock timeout` — the lock was never acquired
-- `main-sync-failed` — local `main` couldn't catch up to `origin/main`
+- `dirty-merge` — the merge itself fails
+- `integration-test` — tests fail after merge into `.orch/integration`
+- `lock` — the lock was never acquired
+- `sync` — local `main` couldn't catch up to `origin/main`
 
 With a git remote and `gh` CLI available, the branch is pushed and a PR is
 opened. Without them, `.orch/reviews/<branch>/DECISION.md` is written and the
 branch is kept for manual review. Either way the reason is more than the
-trigger name: it carries round count, the branch's base SHA (plus the
+trigger name. The `.orch/runs.jsonl` record stores `trigger` at the top level
+alongside `verdict: "merge-deferred"`, and the detailed reason carries round
+count, the branch's base SHA (plus the
 integration branch's tip once that worktree has been synced — still
-"unknown" for `merge-lock timeout` and `main-sync-failed`, which fire before
+"unknown" for `lock` and `sync`, which fire before
 that sync), the branch's changed paths, and trigger-specific detail
 (overlapping paths per peer cycle, the conflicting paths, the sync failure,
 or that the lock timed out) plus a one-line next action, so a human picking
@@ -342,7 +344,7 @@ up the escalation doesn't have to re-derive context orch already had.
 agreed + green cycle skips the local integration branch and `merge.lock`; it
 pushes that cycle branch and opens its own PR to `main` instead. This mode is
 unchanged by the persistent `orch/integration` bridge. Needs a git remote and
-the `gh` CLI; without them the cycle escalates locally the same way PR-fallback
+the `gh` CLI; without them the cycle escalates locally the same way `merge-deferred`
 does. Set `github.autoMergePr: true` to also enable GitHub's native auto-merge
 on that PR (merged automatically once its own checks pass) — if enabling
 auto-merge fails (e.g. branch protection isn't configured), the PR itself still

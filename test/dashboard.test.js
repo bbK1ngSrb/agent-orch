@@ -91,7 +91,7 @@ test("interruptedCycles drops checkpoints whose branch is missing from the repo"
 test("runHistory reads runs.jsonl, newest first, capped at limit", () => {
   const d = freshDir();
   notify.recordRun(d, { ts: "1", branch: "b1", sid: "sid-1", verdict: "merged", rounds: 1 });
-  notify.recordRun(d, { ts: "2", branch: "b2", sid: "sid-2", verdict: "pr-fallback", rounds: 2 });
+  notify.recordRun(d, { ts: "2", branch: "b2", sid: "sid-2", verdict: "merge-deferred", rounds: 2 });
   notify.recordRun(d, { ts: "3", branch: "b3", sid: "sid-3", verdict: "merged", rounds: 1 });
   const h = dashboard.runHistory(d, 2);
   assert.equal(h.length, 2);
@@ -105,7 +105,7 @@ test("runHistory can mark stale red verdicts resolved when their branch is gone"
   const d = freshDir();
   const repo = freshRepo();
   notify.recordRun(d, { ts: "1", branch: "already-merged-and-gone", sid: "sid-1", verdict: "escalated", rounds: 3 });
-  notify.recordRun(d, { ts: "2", branch: "pr/codex/still-here", sid: "sid-2", verdict: "pr-fallback", rounds: 2 });
+  notify.recordRun(d, { ts: "2", branch: "pr/codex/still-here", sid: "sid-2", verdict: "merge-deferred", rounds: 2 });
   notify.recordRun(d, { ts: "3", branch: "done-and-gone", sid: "sid-3", verdict: "merged", rounds: 1 });
 
   const unchecked = dashboard.runHistory(d, 3, { repo });
@@ -120,7 +120,7 @@ test("runHistory can mark stale red verdicts resolved when their branch is gone"
 test("metrics computes success rate and usage totals", () => {
   const d = freshDir();
   notify.recordRun(d, { ts: "1", branch: "b1", verdict: "merged", rounds: 1, tokens: 100, costUsd: 0.01 });
-  notify.recordRun(d, { ts: "2", branch: "b2", verdict: "pr-fallback", rounds: 2, tokens: 50 });
+  notify.recordRun(d, { ts: "2", branch: "b2", verdict: "merge-deferred", rounds: 2, tokens: 50 });
   const m = dashboard.metrics(d);
   assert.equal(m.total, 2);
   assert.equal(m.merged, 1);
@@ -234,10 +234,10 @@ test("render colorizes verdict words when opts.color is true", () => {
 test("render prefixes no-color verdicts with distinct symbols and words", () => {
   const d = freshDir();
   notify.recordRun(d, { ts: "1", branch: "b0", verdict: "escalated", rounds: 1 });
-  notify.recordRun(d, { ts: "2", branch: "b1", verdict: "pr-fallback", rounds: 1 });
+  notify.recordRun(d, { ts: "2", branch: "b1", verdict: "merge-deferred", rounds: 1 });
   const text = dashboard.render(d, { color: false });
   assert.match(text, /✗ escalated/);
-  assert.match(text, /▲ pr-fallback/);
+  assert.match(text, /▲ merge-deferred/);
 });
 
 test("render adds status for resolved stale red history rows only when requested", () => {

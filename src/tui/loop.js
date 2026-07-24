@@ -37,7 +37,7 @@ function debounce(fn, ms) {
 
 const PANEL_ORDER = ["live", "interrupted", "history"];
 const PANEL_TITLE = { live: "LIVE", interrupted: "INTERRUPTED", history: "HISTORY" };
-const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "pr-fallback": C.fail };
+const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "merge-deferred": C.fail };
 
 function pct(n) { return n == null ? "n/a" : `${Math.round(n * 100)}%`; }
 function usd(n) { return n == null ? "n/a" : `$${n.toFixed(4)}`; }

@@ -76,7 +76,7 @@ test("recordRun persists the clean unattended cycle streak", () => {
   recordRun(d, { ts: "2", branch: "b2", verdict: "pr", rounds: 1 });
   assert.equal(kpi(d).cleanUnattendedCycles, 2);
 
-  recordRun(d, { ts: "3", branch: "b3", verdict: "pr-fallback", rounds: 1 });
+  recordRun(d, { ts: "3", branch: "b3", verdict: "merge-deferred", rounds: 1 });
   assert.equal(kpi(d).cleanUnattendedCycles, 0);
 });
 
