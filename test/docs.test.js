@@ -97,6 +97,29 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
 });
 
+test("orch.example.yml exposes security.ignore, commented out, with the sharp-edge warning", () => {
+  // The escape hatch exists in the defaults but a user only ever sees the
+  // example file, so it must appear there — and stay commented, since an
+  // uncommented entry would hand every copier a live exemption.
+  assert.match(exampleConfig, /#\s*security:/);
+  assert.match(exampleConfig, /#\s+ignore:/);
+  assert.doesNotMatch(exampleConfig, /^security:/m);
+  assert.match(exampleConfig, /exempting a path skips EVERY security rule/i);
+  assert.match(exampleConfig, /never\s+authored code/i);
+});
+
+test("docs do not claim the security scan covers every added line", () => {
+  // addedCodeLines() drops markdown and docs paths before any rule runs, so an
+  // empty security.ignore is NOT "everything is scanned".
+  assert.doesNotMatch(manual, /Empty by default: everything is scanned/);
+  for (const doc of [readme, manual, exampleConfig]) {
+    assert.match(doc, /markdown and `docs\/\*\*` paths are dropped/);
+  }
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /guardrail file[^.]{0,60}under `docs\/`/);
+  }
+});
+
 test("docs document that the version bump on merge is opt-in via release.autoBump", () => {
   // finalize() only calls bumpVersion() when release.autoBump is true (default
   // off), so the prose must not promise an unconditional post-merge bump.
