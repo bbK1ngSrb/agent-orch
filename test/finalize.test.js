@@ -495,3 +495,64 @@ test("merge-lock timeout → pr-fallback without touching the worktree", async (
   assert.equal(ensured, false);
   assert.equal(releaseCalls, 0); // must not release a lock we never acquired
 });
+
+test("merged path deletes the cycle's remote pr/* head (#339)", async () => {
+  let deleted = null;
+  const { deps } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      deleteRemoteBranch: (repo, branch) => { deleted = { repo, branch }; return { ok: true }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.deepEqual(deleted, { repo: "/r", branch: "pr/claude/x-1" });
+});
+
+test("PR-bridge failure after local merge leaves the remote head alone — origin/integration is stale, the head is the recovery copy (#339)", async () => {
+  let deleted = false;
+  const { deps } = baseDeps({
+    github: {
+      ...baseDeps().deps.github,
+      openIntegrationPr: async () => { throw new Error("gh push failed"); },
+    },
+    notify: { recordRun: () => {}, cleanupReviews: () => {}, escalate: () => {} },
+    git: {
+      ...baseDeps().deps.git,
+      deleteRemoteBranch: () => { deleted = true; return { ok: true }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.prUrl, null);
+  assert.equal(deleted, false); // must NOT delete: content may live only locally
+});
+
+test("demote path leaves the remote head alone — its open PR still needs it (#339)", async () => {
+  let deleted = false;
+  const { deps } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      mergeInWorktree: () => ({ ok: false, reason: "CONFLICT in src/a.js" }),
+      deleteRemoteBranch: () => { deleted = true; return { ok: true }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "pr-fallback");
+  assert.equal(deleted, false);
+});
+
+test("merged path never deletes the integration or base branch even if handed as ctx.branch (#339)", async () => {
+  let deleted = null;
+  const { deps } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      deleteRemoteBranch: (repo, branch) => { deleted = branch; return { ok: true }; },
+    },
+  });
+  // A misconfiguration that names the integration branch as the cycle branch must
+  // not turn cleanup into self-destruction.
+  const r = await finalize({ ...ctx(), branch: "orch/integration" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(deleted, null);
+});

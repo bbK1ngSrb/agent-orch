@@ -109,6 +109,15 @@ export function forceDeleteBranch(repo, branch) {
   git(["branch", "-D", branch], repo);
 }
 
+// Best-effort remote-branch cleanup. A cycle's `pr/*` head has served its whole
+// purpose once its content lands on the integration branch; left on origin it just
+// accumulates one orphan per cycle (#339). gitTry never throws and a missing remote
+// ref is a harmless no-op, so this can never break a merge that already succeeded.
+// The caller is responsible for never handing it a protected branch.
+export function deleteRemoteBranch(repo, branch) {
+  return gitTry(["push", "origin", "--delete", branch], repo);
+}
+
 export function verifyOriginContains(repo, commit, base = "main") {
   const fetched = fetchOriginMain(repo, { base });
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
