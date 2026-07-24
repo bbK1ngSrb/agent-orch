@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.206 — 2026-07-24
+- Auto-rebase + re-gate merge-deferred peers after a cycle lands (Tier-1 self-progress, no resolver) (closes [#350](https://github.com/bbk1ng/agent-orch/issues/350))
+
 ## v0.4.205 — 2026-07-24
 - docs: expose security.ignore in orch.example.yml and state the built-in docs exemption honestly (closes [#352](https://github.com/bbk1ng/agent-orch/issues/352))
 
