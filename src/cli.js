@@ -971,10 +971,24 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
 
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
+  // `--merge` is only consumed by `orch pr <n>`. On every other command it used
+  // to parse and vanish, so `orch issue 42 --merge` read as "run and merge" while
+  // doing nothing of the sort. A silently-dropped flag is a lie about what the
+  // command will do; reject it before anything else runs. First statement after
+  // parse deliberately: behind any early return (version/help/upgrade) the flag
+  // is still dropped silently on that command. `--help`/`--version` short-circuit
+  // even `orch pr` — printing usage and exiting 0 while the merge never happens —
+  // so pairing them with `--merge` is a contradiction (do a thing / describe the
+  // tool) and is rejected too rather than silently winning.
+  if (flags.merge && (command !== "pr" || flags.help || flags.version)) {
+    throw new Error("--merge is only valid with 'orch pr <number>', and cannot be combined with --help/--version");
+  }
+
   if (command === "__update-check-child") {
     await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
     return;
   }
+
   if (flags.version || command === "version") { console.log(DISPLAY_VERSION); return; }
   if (flags.help || command === "help") { printUsage(); return; }
   if (command === "upgrade" || command === "update") {
