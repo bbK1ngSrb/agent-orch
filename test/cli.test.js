@@ -1015,7 +1015,7 @@ test("agent add confirm path sets exit code 2 on an escalated build (B4)", async
   }
 });
 
-test("agent add confirm path sets exit code 2 on a pr-fallback build (B4)", async () => {
+test("agent add confirm path sets exit code 2 on a merge-deferred build (B4)", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-build-prfallback-"));
   const prev = cwd();
   const savedExitCode = process.exitCode;
@@ -1024,7 +1024,7 @@ test("agent add confirm path sets exit code 2 on a pr-fallback build (B4)", asyn
     await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
     await main(["agent", "add", "widget"], {
       io: { confirm: async () => true },
-      buildAgent: async () => ({ status: "pr-fallback", reason: "conflict", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }),
+      buildAgent: async () => ({ status: "merge-deferred", reason: "conflict", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }),
     });
     assert.equal(process.exitCode, 2);
   } finally {
@@ -2641,10 +2641,10 @@ test("summaryLine emits no ANSI codes when color is off", () => {
 });
 
 test("summaryLine keeps a multi-line reason out of the parenthetical, appended below instead", () => {
-  const reason = "trigger: conflict\nreview: AGREE after 1 round(s)\nmerge result: ```\nCONFLICT (content): Merge conflict in CHANGELOG.md\n```";
-  const result = { status: "pr-fallback", reason, rounds: 1, usageSummary: "$0" };
+  const reason = "opened PR https://x/pr/7. Vetted: agents AGREE, tests green, security clean.\n## Merge deferred: dirty-merge\nmerge result: ```\nCONFLICT (content): Merge conflict in CHANGELOG.md\n```";
+  const result = { status: "merge-deferred", trigger: "dirty-merge", reason, rounds: 1, usageSummary: "$0" };
   const out = summaryLine(result, "b", true, "", false);
   const [firstLine, ...restLines] = out.split("\n");
-  assert.match(firstLine, /^orch \(dry\): b: pr-fallback \(trigger: conflict\) after 1 round\(s\); cost \$0$/);
+  assert.match(firstLine, /^orch \(dry\): b: merge-deferred \(dirty-merge\) — opened PR https:\/\/x\/pr\/7\. Vetted: agents AGREE, tests green, security clean; completed after 1 round\(s\); cost \$0$/);
   assert.equal(restLines.join("\n"), reason.split("\n").slice(1).join("\n"));
 });

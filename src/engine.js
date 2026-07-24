@@ -259,9 +259,13 @@ export async function runCycle(opts, deps) {
         }, deps);
         const label = fin.status === "merged" ? `merged ${branch}`
           : fin.status === "pr" ? `opened PR for ${branch}`
-          : `demoted ${branch} (${fin.reason})`;
+          : fin.status === "merge-deferred" ? `deferred merge for ${branch} (${fin.trigger})`
+          : `escalated ${branch} (${fin.reason})`;
         notify.phase("merge", label);
-        return done({ status: fin.status, reason: fin.reason, rounds: round, docsOnly, noop });
+        return done({
+          status: fin.status, reason: fin.reason, trigger: fin.trigger, prUrl: fin.prUrl,
+          rounds: round, docsOnly, noop,
+        });
       }
 
       // DISAGREE — review mode (cap=1) escalates here on round 1, never revising.

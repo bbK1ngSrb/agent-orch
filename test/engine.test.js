@@ -442,7 +442,7 @@ test("task mode threads cfg.baseBranch through base-sensitive engine calls", asy
   assert.equal(finalizeCtx.baseSha, "base");
 });
 
-test("AGREE + green but finalize demotes → status pr-fallback", async () => {
+test("AGREE + green but finalize demotes → status merge-deferred", async () => {
   const deps = {
     adapters: { get: () => ({ name: "claude", async author() {}, async audit() { return { decision: "AGREE", reason: "ok" }; } }) },
     git: {
@@ -453,7 +453,10 @@ test("AGREE + green but finalize demotes → status pr-fallback", async () => {
     gate: { detect: () => "npm test", run: () => ({ pass: true }) },
     scope: { count: () => 0 },
     inflight: { setPaths() {} },
-    finalize: async () => ({ status: "pr-fallback", reason: "overlap → PR https://x/1", prUrl: "https://x/1" }),
+    finalize: async () => ({
+      status: "merge-deferred", trigger: "overlap",
+      reason: "opened PR https://x/1", prUrl: "https://x/1",
+    }),
     notify: {
       phase() {}, writeRound() { return "p"; },
       buildDecisionBrief: () => "brief", escalate() {},
@@ -466,7 +469,9 @@ test("AGREE + green but finalize demotes → status pr-fallback", async () => {
     cfg: { reviseCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
     orchDir: "/o", repo: "/r", worktree: "/o/wt/x",
   }, deps);
-  assert.equal(res.status, "pr-fallback");
+  assert.equal(res.status, "merge-deferred");
+  assert.equal(res.trigger, "overlap");
+  assert.equal(res.prUrl, "https://x/1");
 });
 
 test("resume:true attaches the existing branch and skips the initial author (issue #24)", async () => {

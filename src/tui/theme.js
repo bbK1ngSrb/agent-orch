@@ -25,7 +25,7 @@ export const C = {
   ok: "38;5;71", fail: "38;5;167", warn: "38;5;221", muted: "38;5;243",
 };
 
-export const VERDICT_SYMBOL = { merged: "✓", pr: "!", escalated: "✗", "pr-fallback": "▲" };
+export const VERDICT_SYMBOL = { merged: "✓", pr: "!", escalated: "✗", "merge-deferred": "▲" };
 export const STAGE_SYMBOL = { live: "●", authoring: "●", review: "●", test: "●" };
 
 // paint() no-ops when color is off and always resets the span so color

@@ -27,7 +27,7 @@ function prNumberFromUrl(url) {
 
 function fallbackPrBody(reason, closes, method, prNumber = "<PR-number>") {
   const body = [
-    "Auto-demoted by agent-orch.",
+    "Merge deferred by agent-orch.",
     "",
     reason,
     "",
@@ -140,17 +140,17 @@ export function buildComment(result, body) {
 // but the caller still redacts it before posting.
 export function buildIssueComment(result, branch) {
   const b = String(branch).replace(/[^\w./-]/g, "");
-  const fallback = result.status === "pr-fallback";
-  const head = fallback
-    ? "⚠️ **agent-orch: PR FALLBACK** — this change is approved and green; orch opened a PR because it could not auto-land it. Details below."
+  const deferred = result.status === "merge-deferred";
+  const head = deferred
+    ? "⚠️ **agent-orch: MERGE DEFERRED** — this change is approved and green; orch opened a PR because it could not auto-land it. Details below."
     : "🛑 **agent-orch: ESCALATED** — orch gave up, no merge";
-  // On the fallback path result.reason is already teaching-toned markdown (see
+  // On the deferred path result.reason is already teaching-toned markdown (see
   // demoteReason in finalize.js) — render it as its own block instead of after a
   // flat `reason:` label, which would jam a markdown heading onto one line.
-  const lines = fallback
+  const lines = deferred
     ? [head, "", `branch: ${b}`, `rounds: ${Number(result.rounds) || 0}`, "", String(result.reason)]
     : [head, "", `branch: ${b}`, `reason: ${result.reason}`, `rounds: ${Number(result.rounds) || 0}`];
-  if (!fallback) {
+  if (!deferred) {
     // §3f: reviewer prose stays out of the public comment (it can carry
     // attacker-controlled content from repo/task text); the full disagreement
     // is already on disk from notify.escalate() — point the maintainer at it.

@@ -36,7 +36,7 @@ export async function finalize(ctx, deps) {
   }
 
   if (!lock.acquireBlocking(orchDir, "merge.lock")) {
-    return demote(ctx, deps, demoteReason(ctx, { trigger: "merge-lock timeout" })); // never acquired → don't touch the worktree
+    return demote(ctx, deps, { trigger: "lock" }); // never acquired → don't touch the worktree
   }
   try {
     const baseBranch = cfg.baseBranch || "main";
@@ -47,10 +47,10 @@ export async function finalize(ctx, deps) {
     // and lets GitHub advance the base branch through the PR.
     const sync = git.syncMainFromOrigin(repo, baseBranch);
     if (!sync.ok) {
-      return demote(ctx, deps, demoteReason(ctx, {
-        trigger: "main-sync-failed",
+      return demote(ctx, deps, {
+        trigger: "sync",
         mergeReason: sync.reason,
-      }));
+      });
     }
 
     const integrationBranch = cfg.integrationBranch || "orch/integration";
@@ -58,10 +58,10 @@ export async function finalize(ctx, deps) {
     git.syncWorktreeToIntegration(integration, integrationBranch);
     const integrationSync = git.reconcileIntegrationToBase(integration, baseBranch);
     if (!integrationSync.ok) {
-      return demote(ctx, deps, demoteReason(ctx, {
-        trigger: "main-sync-failed",
+      return demote(ctx, deps, {
+        trigger: "sync",
         mergeReason: integrationSync.reason,
-      }));
+      });
     }
 
     // Guard 1: file-overlap with live in-flight peers only, read under the lock so it
@@ -79,12 +79,12 @@ export async function finalize(ctx, deps) {
     const integrationTip = git.git(["rev-parse", "HEAD"], integration);
     const overlap = overlapDetails(paths, peerPaths, peerEntries);
     if (overlap.any) {
-      return demote(ctx, deps, demoteReason(ctx, {
+      return demote(ctx, deps, {
         trigger: "overlap",
         integrationBranch,
         integrationTip,
         overlap,
-      }));
+      });
     }
 
     const preSha = integrationTip; // integration tip pre-merge
@@ -95,25 +95,25 @@ export async function finalize(ctx, deps) {
     const message = closes ? `Merge ${branch}\n\nCloses #${closes}` : null;
     const m = git.mergeInWorktree(integration, branch, cfg.merge, message);
     if (!m.ok) {
-      return demote(ctx, deps, demoteReason(ctx, {
-        trigger: "conflict",
+      return demote(ctx, deps, {
+        trigger: "dirty-merge",
         integrationBranch,
         integrationTip: preSha,
         mergeReason: m.reason,
         advice: m.advice,
-      }));
+      });
     }
 
     // Guard 2: re-run the test gate against integrated branch state.
     const { pass } = gate.run(testCmd, integration);
     if (!pass) {
       git.git(["reset", "--hard", preSha], integration); // roll integration back
-      return demote(ctx, deps, demoteReason(ctx, {
-        trigger: "post-merge-test-fail",
+      return demote(ctx, deps, {
+        trigger: "integration-test",
         integrationBranch,
         integrationTip: preSha,
         integrationGate: "failed",
-      }));
+      });
     }
 
     // Patch-per-merge version bump + CHANGELOG entry, so a merged sha always
@@ -200,12 +200,11 @@ function demoteReason(ctx, details) {
   const { baseSha, paths, rounds, testCmd } = ctx;
   const integ = details.integrationBranch || "integration";
   const out = [
-    "## Why this PR exists",
+    `## Merge deferred: ${details.trigger}`,
     "",
-    "This change is **approved** — the agents agreed after review — and **green**: the test gate " +
-    `(\`${testCmd}\`) passed on the branch. orch could not land it automatically, so it fell back to ` +
-    "opening this pull request. That fallback path (\"PR-fallback\") means the work is sound; it only " +
-    "lost the automatic-landing step, usually to a race with another cycle that landed first.",
+    `Automatic landing was deferred by the \`${details.trigger}\` safety guard. This change is ` +
+    `**approved** — the agents agreed after review — and **green**: the test gate (\`${testCmd}\`) ` +
+    "passed on the branch. The work is intact and waiting for the blocked landing step to be resolved.",
     "",
     "## What blocked the automatic landing",
     "",
@@ -249,7 +248,7 @@ function blockedSection(details) {
     }
     return lines;
   }
-  if (details.trigger === "conflict") {
+  if (details.trigger === "dirty-merge") {
     const mergeReason = String(details.mergeReason || "").trim();
     const conflicts = conflictPaths(details.mergeReason);
     const lines = [
@@ -271,7 +270,7 @@ function blockedSection(details) {
     );
     return lines;
   }
-  if (details.trigger === "post-merge-test-fail") {
+  if (details.trigger === "integration-test") {
     return [
       "**Post-merge test failure.** The branch merged cleanly, but the test suite went red on the combined " +
       "tree — the two changes are individually green yet conflict in behaviour. orch reset the integration " +
@@ -280,7 +279,7 @@ function blockedSection(details) {
       "integration gate: failed after merge; integration was reset to the pre-merge tip.",
     ];
   }
-  if (details.trigger === "merge-lock timeout") {
+  if (details.trigger === "lock") {
     return [
       "**Merge-lock timeout.** Another merge held the lock past the timeout, so this cycle never got to " +
       "touch the integration worktree. Nothing is wrong with the branch itself.",
@@ -288,7 +287,7 @@ function blockedSection(details) {
       "merge lock: timed out before touching the integration worktree.",
     ];
   }
-  if (details.trigger === "main-sync-failed") {
+  if (details.trigger === "sync") {
     return [
       "**Main out of sync.** orch could not fast-forward local main to origin, so it refused to land " +
       "against a possibly stale base rather than risk a bad merge.",
@@ -303,13 +302,13 @@ function nextStep(trigger) {
   switch (trigger) {
     case "overlap":
       return "next action: inspect the listed overlap, rebase or refresh the branch if needed, then rerun orch review before merging.";
-    case "conflict":
+    case "dirty-merge":
       return "next action: resolve the merge conflict, then rerun orch review.";
-    case "post-merge-test-fail":
+    case "integration-test":
       return "next action: fix the integrated test failure, then rerun orch review.";
-    case "merge-lock timeout":
+    case "lock":
       return "next action: retry after the active merge finishes.";
-    case "main-sync-failed":
+    case "sync":
       return "next action: inspect local main versus origin/main, then rerun orch review after main is synchronized.";
     default:
       return "next action: review the branch manually, then rerun orch review.";
@@ -328,20 +327,29 @@ function oneLine(value = "") {
   return String(value).replace(/\s+/g, " ").trim();
 }
 
-async function demote(ctx, deps, reason) {
+async function demote(ctx, deps, details) {
   const { orchDir, branch, sid, rounds, runStats } = ctx;
   const { github, notify } = deps;
   const usage = totalUsage(runStats);
+  const reason = demoteReason(ctx, details);
   const r = await github.demote({ ...ctx, reason });
   notify.recordRun(orchDir, {
-    ts: new Date().toISOString(), branch, sid, verdict: "pr-fallback", reason, rounds,
+    ts: new Date().toISOString(), branch, sid, verdict: "merge-deferred", trigger: details.trigger, reason, rounds,
     ...(usage.tokens ? { tokens: usage.tokens } : {}),
     ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
     ...(r.prUrl ? { prUrl: r.prUrl } : {}),
   });
+  const peer = details.trigger === "overlap" && details.overlap?.peers?.length
+    ? `; collides with ${details.overlap.peers.map((e) => `peer ${e.sid} on ${list(e.paths)}`).join("; ")}`
+    : details.trigger === "overlap" && details.overlap?.peer?.length
+      ? `; collides with a peer on ${list(details.overlap.peer)}`
+      : "";
+  const outcome = r.prUrl ? `opened PR ${r.prUrl}` : "kept the branch locally (no remote)";
+  const summary = `${outcome}${peer}. Vetted: agents AGREE, tests green, security clean.`;
   return {
-    status: "pr-fallback",
-    reason: r.prUrl ? `${reason} → PR ${r.prUrl}` : `${reason} → escalated locally (no remote)`,
+    status: "merge-deferred",
+    trigger: details.trigger,
+    reason: `${summary}\n${reason}`,
     prUrl: r.prUrl,
   };
 }
