@@ -111,6 +111,21 @@ jobs:
           git commit -m "chore(release): v$NEXT"
           git push origin "$BRANCH"
 
+          # From here on the branch (and, once created, the PR) exist on the
+          # remote. The happy path's `gh pr merge --delete-branch` cleans them
+          # up — but only if the merge SUCCEEDS. The likely failure is the
+          # --admin merge being denied for the bot identity by branch
+          # protection (#340), which left the step failing AFTER the branch was
+          # pushed, orphaning a fresh chore/bump-cc-* branch on every push to
+          # main. This ERR trap deletes the branch (closing the PR too, if it
+          # got created) on any failure below, then set -e propagates the
+          # nonzero exit so the underlying merge block stays visible in CI.
+          cleanup_orphan() {
+            gh pr close "$BRANCH" --delete-branch 2>/dev/null \
+              || git push origin --delete "$BRANCH" 2>/dev/null || true
+          }
+          trap cleanup_orphan ERR
+
           gh pr create --title "chore(release): v$NEXT" \
             --body "Automated merge-bump — this merge to main landed without orch's own release.autoBump path." \
             --base main --head "$BRANCH"
