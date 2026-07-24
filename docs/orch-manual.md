@@ -940,7 +940,10 @@ orch review my-branch --reviewer "codex, claude high"
   that's your own CI's job now. Separately, this repo's own
   `.github/workflows/version-bump.yml` bumps the merge counter for any merge
   to `main` that doesn't already carry its own version change, regardless of
-  merge path.
+  merge path. That's the intended model — it's idempotent, so an orch
+  integration merge (which already bumped) is skipped and the version moves
+  exactly once per landing; only non-orch landings (e.g. direct-to-main PRs)
+  get the workflow bump.
 - **"I ran `orch review` just to get a second opinion, and it merged the
   branch!"** That's correct, and by design (§2.6) — `orch review` skips only
   the *authoring* step; agreement + green tests + a clean security scan still
