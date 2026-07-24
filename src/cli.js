@@ -219,9 +219,10 @@ scope:
 # Security scan (deterministic merge gate)
 # ===================================================================
 # Globs exempt from the security scan — for committed build artifacts
-# (minified bundles false-positive as subprocess spawns, #334). Empty by
-# default: everything is scanned. Exempting a path skips ALL security
-# rules for it, so list only generated files, never authored code.
+# (minified bundles false-positive as subprocess spawns, #334). Exempting a
+# path skips ALL security rules for it, so list only generated files, never
+# authored code. Empty by default, but empty is not "everything is scanned":
+# markdown and \`docs/**\` paths are dropped before the scan runs.
 #
 # security:
 #   ignore:

@@ -3,7 +3,12 @@
 // post-merge re-test), and either lands the merge into the integration branch
 // plus its PR bridge or demotes the branch to a PR / local escalation. The
 // engine calls this via deps.finalize so it stays a pure state machine.
+//
+// After a clean land, Tier-1 redrive (#350) also rebases + re-gates any peer that
+// was demoted for overlapping this cycle — serial under the same merge.lock so
+// N deferred peers never re-race. True line conflicts stay deferred for a human.
 
+import * as deferredDefault from "./deferred.js";
 import { totalUsage } from "./usage.js";
 
 const ISSUE_URL_BASE = "https://github.com/bbk1ng/agent-orch/issues";
@@ -18,6 +23,7 @@ function changelogEntry(ctx) {
 export async function finalize(ctx, deps) {
   const { repo, orchDir, branch, sid, paths, testCmd, cfg, rounds, closes, runStats } = ctx;
   const { git, gate, lock, inflight, github, notify } = deps;
+  const deferred = deps.deferred || deferredDefault;
   const usage = totalUsage(runStats);
 
   // cfg.merge === "pr": opt out of direct-to-main. No local merge, no merge.lock —
@@ -79,6 +85,13 @@ export async function finalize(ctx, deps) {
     const integrationTip = git.git(["rev-parse", "HEAD"], integration);
     const overlap = overlapDetails(paths, peerPaths, peerEntries);
     if (overlap.any) {
+      // Queue for post-land redrive when a blocking peer merges (#350). Only the
+      // overlap trigger is mechanical (stale base); conflicts stay human-only.
+      deferred.record?.(orchDir, {
+        sid, branch, paths, testCmd, baseSha: ctx.baseSha, rounds, closes,
+        title: ctx.title, task: ctx.task,
+        peerSids: overlap.peers.map((e) => e.sid).filter(Boolean),
+      });
       return demote(ctx, deps, {
         trigger: "overlap",
         integrationBranch,
@@ -87,92 +100,193 @@ export async function finalize(ctx, deps) {
       });
     }
 
-    const preSha = integrationTip; // integration tip pre-merge
-    // `orch issue <n>`: stamp `Closes #n` in the no-ff merge commit so the issue
-    // auto-closes once GitHub merges the integration PR. ponytail: ff-only has no merge commit
-    // to carry it, so it won't auto-close — default is no-ff; demote PR covers the
-    // fallback. The number is our own int, not attacker text — safe to interpolate.
-    const message = closes ? `Merge ${branch}\n\nCloses #${closes}` : null;
-    const m = git.mergeInWorktree(integration, branch, cfg.merge, message);
-    if (!m.ok) {
-      return demote(ctx, deps, {
-        trigger: "dirty-merge",
-        integrationBranch,
-        integrationTip: preSha,
-        mergeReason: m.reason,
-        advice: m.advice,
-      });
-    }
-
-    // Guard 2: re-run the test gate against integrated branch state.
-    const { pass } = gate.run(testCmd, integration);
-    if (!pass) {
-      git.git(["reset", "--hard", preSha], integration); // roll integration back
-      return demote(ctx, deps, {
-        trigger: "integration-test",
-        integrationBranch,
-        integrationTip: preSha,
-        integrationGate: "failed",
-      });
-    }
-
-    // Patch-per-merge version bump + CHANGELOG entry, so a merged sha always
-    // maps to a bumped `orch --version`. Opt-in via release.autoBump: a generic
-    // orchestrator must not edit downstream release files by default.
-    // Best-effort: never blocks the merge.
-    if (cfg.release?.autoBump) git.bumpVersion(integration, changelogEntry(ctx));
-
-    const sha = git.git(["rev-parse", "HEAD"], integration);
-    const localIntegration = git.git(["rev-parse", integrationBranch], repo);
-    if (localIntegration !== sha) {
-      notify.resetKpi?.(orchDir);
-      throw new Error(
-        `orch: merge commit ${sha} was built in the integration worktree but ${integrationBranch} ` +
-        `is still at ${localIntegration} — refusing to report a false "merged"`,
-      );
-    }
-    let pr;
-    try {
-      pr = await github.openIntegrationPr(ctx, deps);
-    } catch (e) {
-      notify.escalate?.(orchDir, integrationBranch,
-        `# Escalation — ${integrationBranch}\n\nThe local integration branch is green, but the PR bridge failed after the merge landed locally: ${e.message}\n`);
-      pr = { prUrl: null };
-    }
-    const shortSha = git.git(["rev-parse", "--short", "HEAD"], integration);
-    notify.recordRun(orchDir, {
-      ts: new Date().toISOString(), branch, sid, verdict: "merged", sha: shortSha, rounds,
-      ...(pr.prUrl ? { prUrl: pr.prUrl } : {}),
-      ...(usage.tokens ? { tokens: usage.tokens } : {}),
-      ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
+    const landed = await landIntoIntegration(ctx, deps, {
+      integration, integrationBranch, baseBranch, preSha: integrationTip,
     });
-    notify.cleanupReviews(orchDir, branch);
-    // The cycle's `pr/*` head has served its whole purpose now that its content is
-    // on the integration branch — drop the remote copy so origin doesn't accumulate
-    // one orphan per cycle (#339). Only reached on the merged path: demote and
-    // `merge: pr` return earlier and keep their open-PR head untouched.
-    //
-    // Gated on pr.prUrl for a reason: `openIntegrationPr` is the ONLY step that
-    // pushes the integration branch to origin (github.js), and it can throw (caught
-    // above → prUrl null). On that failure origin/integration is stale — the merged
-    // content lives only on the local branch — so deleting the `pr/*` head would
-    // destroy the sole remote copy of just-landed work, in the exact state a human
-    // is being told to recover from. prUrl truthy ⇒ the push succeeded ⇒ origin has
-    // the content ⇒ the head is safe to drop. Also guarded against ever deleting a
-    // protected ref, and best-effort so it never undoes a merge that already landed.
-    if (pr.prUrl && branch && branch !== integrationBranch && branch !== baseBranch) {
-      git.deleteRemoteBranch?.(repo, branch);
-    }
-    return {
-      status: "merged",
-      reason: pr.prUrl
-        ? `agreed + green + integrated → PR ${pr.prUrl}`
-        : "agreed + green + integrated locally; PR bridge unavailable",
-      sha: shortSha,
-      prUrl: pr.prUrl,
-    };
+    if (landed.status !== "merged") return landed;
+
+    // Post-land: serially redrive overlap-deferred peers under this same lock.
+    // Best-effort — a redrive bug must never undo a merge that already landed.
+    try {
+      await redriveDeferredPeers(ctx, deps, {
+        integration, integrationBranch, baseBranch,
+        landed: { sid, paths },
+        deferred,
+      });
+    } catch { /* primary land stands */ }
+
+    return landed;
   } finally {
     lock.releaseLock(orchDir, "merge.lock");
+  }
+}
+
+// Merge + Guard 2 + record. Caller holds merge.lock and has the integration
+// worktree synced. Shared by the primary land path and Tier-1 peer redrive.
+// `quietFail` (redrive path): on conflict/gate-fail do not demote again — the
+// peer already has a merge-deferred PR from its first demote; just leave it.
+async function landIntoIntegration(ctx, deps, { integration, integrationBranch, baseBranch, preSha, quietFail = false }) {
+  const { repo, orchDir, branch, sid, testCmd, cfg, rounds, closes, runStats } = ctx;
+  const { git, gate, github, notify } = deps;
+  const usage = totalUsage(runStats);
+
+  // `orch issue <n>`: stamp `Closes #n` in the no-ff merge commit so the issue
+  // auto-closes once GitHub merges the integration PR. ponytail: ff-only has no merge commit
+  // to carry it, so it won't auto-close — default is no-ff; demote PR covers the
+  // fallback. The number is our own int, not attacker text — safe to interpolate.
+  const message = closes ? `Merge ${branch}\n\nCloses #${closes}` : null;
+  const m = git.mergeInWorktree(integration, branch, cfg.merge, message);
+  if (!m.ok) {
+    if (quietFail) return { status: "merge-deferred", trigger: "dirty-merge", reason: m.reason || "conflict" };
+    return demote(ctx, deps, {
+      trigger: "dirty-merge",
+      integrationBranch,
+      integrationTip: preSha,
+      mergeReason: m.reason,
+      advice: m.advice,
+    });
+  }
+
+  // Guard 2: re-run the test gate against integrated branch state.
+  const { pass } = gate.run(testCmd, integration);
+  if (!pass) {
+    git.git(["reset", "--hard", preSha], integration); // roll integration back
+    if (quietFail) return { status: "merge-deferred", trigger: "integration-test", reason: "post-merge-test-fail" };
+    return demote(ctx, deps, {
+      trigger: "integration-test",
+      integrationBranch,
+      integrationTip: preSha,
+      integrationGate: "failed",
+    });
+  }
+
+  // Patch-per-merge version bump + CHANGELOG entry, so a merged sha always
+  // maps to a bumped `orch --version`. Opt-in via release.autoBump: a generic
+  // orchestrator must not edit downstream release files by default.
+  // Best-effort: never blocks the merge.
+  if (cfg.release?.autoBump) git.bumpVersion(integration, changelogEntry(ctx));
+
+  const sha = git.git(["rev-parse", "HEAD"], integration);
+  const localIntegration = git.git(["rev-parse", integrationBranch], repo);
+  if (localIntegration !== sha) {
+    notify.resetKpi?.(orchDir);
+    throw new Error(
+      `orch: merge commit ${sha} was built in the integration worktree but ${integrationBranch} ` +
+      `is still at ${localIntegration} — refusing to report a false "merged"`,
+    );
+  }
+  let pr;
+  try {
+    pr = await github.openIntegrationPr(ctx, deps);
+  } catch (e) {
+    notify.escalate?.(orchDir, integrationBranch,
+      `# Escalation — ${integrationBranch}\n\nThe local integration branch is green, but the PR bridge failed after the merge landed locally: ${e.message}\n`);
+    pr = { prUrl: null };
+  }
+  const shortSha = git.git(["rev-parse", "--short", "HEAD"], integration);
+  notify.recordRun(orchDir, {
+    ts: new Date().toISOString(), branch, sid, verdict: "merged", sha: shortSha, rounds,
+    ...(pr.prUrl ? { prUrl: pr.prUrl } : {}),
+    ...(usage.tokens ? { tokens: usage.tokens } : {}),
+    ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
+  });
+  notify.cleanupReviews(orchDir, branch);
+  // The cycle's `pr/*` head has served its whole purpose now that its content is
+  // on the integration branch — drop the remote copy so origin doesn't accumulate
+  // one orphan per cycle (#339). Only reached on the merged path: demote and
+  // `merge: pr` return earlier and keep their open-PR head untouched.
+  //
+  // Gated on pr.prUrl for a reason: `openIntegrationPr` is the ONLY step that
+  // pushes the integration branch to origin (github.js), and it can throw (caught
+  // above → prUrl null). On that failure origin/integration is stale — the merged
+  // content lives only on the local branch — so deleting the `pr/*` head would
+  // destroy the sole remote copy of just-landed work, in the exact state a human
+  // is being told to recover from. prUrl truthy ⇒ the push succeeded ⇒ origin has
+  // the content ⇒ the head is safe to drop. Also guarded against ever deleting a
+  // protected ref, and best-effort so it never undoes a merge that already landed.
+  if (pr.prUrl && branch && branch !== integrationBranch && branch !== baseBranch) {
+    git.deleteRemoteBranch?.(repo, branch);
+  }
+  return {
+    status: "merged",
+    reason: pr.prUrl
+      ? `agreed + green + integrated → PR ${pr.prUrl}`
+      : "agreed + green + integrated locally; PR bridge unavailable",
+    sha: shortSha,
+    prUrl: pr.prUrl,
+  };
+}
+
+// After a cycle lands, redrive every overlap-deferred peer it unblocked. Holds
+// the caller's merge.lock; peers never fan out in parallel (no thundering herd).
+// A peer that fails redrive once stays deferred for a human — never loops.
+async function redriveDeferredPeers(ctx, deps, { integration, integrationBranch, baseBranch, landed, deferred }) {
+  const { repo, orchDir, cfg } = ctx;
+  const { git, gate, inflight, notify } = deps;
+  if (typeof deferred?.list !== "function") return;
+
+  // Seeds of "what just became available": the primary land, then any peer we
+  // successfully redrive (so C deferred on B can heal after B heals on A).
+  const unblocked = [{ sid: landed.sid, paths: landed.paths || [] }];
+  const seen = new Set();
+
+  while (unblocked.length) {
+    const blocker = unblocked.shift();
+    const peers = deferred.list(orchDir)
+      .filter((e) => !seen.has(e.sid))
+      .filter((e) => deferred.eligibleForRedrive?.(e) !== false)
+      .filter((e) => deferred.blockedByLand?.(e, blocker));
+
+    for (const peer of peers) {
+      seen.add(peer.sid);
+
+      // Still blocked by a live in-flight cycle → leave queued; do not burn an attempt.
+      const live = typeof inflight.listLive === "function"
+        ? inflight.listLive(orchDir).filter((e) => e.sid !== peer.sid)
+        : [];
+      const livePaths = live.length
+        ? live.flatMap((e) => e.paths || [])
+        : (typeof inflight.peerPaths === "function" ? inflight.peerPaths(orchDir, peer.sid) : []);
+      if (overlapDetails(peer.paths || [], livePaths, live).any) continue;
+
+      // Consume one redrive attempt up front so a crash mid-redrive cannot loop.
+      deferred.markAttempt?.(orchDir, peer.sid);
+
+      git.syncWorktreeToIntegration(integration, integrationBranch);
+      const preSha = git.git(["rev-parse", "HEAD"], integration);
+
+      if (typeof git.rebaseBranchOnto === "function") {
+        const rb = git.rebaseBranchOnto(repo, orchDir, peer.branch, integrationBranch);
+        if (!rb.ok) continue; // stays deferred; demote PR from first demote still open
+      }
+
+      const peerCtx = {
+        repo, orchDir,
+        branch: peer.branch,
+        sid: peer.sid,
+        paths: peer.paths || [],
+        testCmd: peer.testCmd || ctx.testCmd,
+        cfg,
+        rounds: peer.rounds || 1,
+        closes: peer.closes ?? null,
+        baseSha: peer.baseSha || null,
+        title: peer.title || null,
+        task: peer.task || null,
+        runStats: [],
+      };
+
+      // Re-gate is mandatory: never blind-merge a rebased branch. quietFail keeps
+      // the existing demote PR — a second demote would only reopen noise.
+      const result = await landIntoIntegration(peerCtx, deps, {
+        integration, integrationBranch, baseBranch, preSha, quietFail: true,
+      });
+      if (result.status === "merged") {
+        deferred.remove?.(orchDir, peer.sid);
+        unblocked.push({ sid: peer.sid, paths: peer.paths || [] });
+        notify.phase?.("merge", `redrove ${peer.branch} after overlap`);
+      }
+      // else: stayed merge-deferred; attempt already marked, human owns it
+    }
   }
 }
 

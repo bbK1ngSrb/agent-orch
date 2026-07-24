@@ -141,12 +141,17 @@ test("integration PR bridge failure after local merge → records merged and esc
 
 test("path overlap with a peer → merge-deferred (no merge attempted)", async () => {
   let merged = false;
+  const deferredRecords = [];
   const { deps, recorded } = baseDeps({
     inflight: {
       listLive: () => [{ sid: "peer-2", paths: ["src/a.js"] }],
       peerPaths: () => { throw new Error("listLive should provide peer details"); },
     },
     git: { ...baseDeps().deps.git, mergeInWorktree: () => { merged = true; return { ok: true }; } },
+    deferred: {
+      record: (_d, e) => deferredRecords.push(e),
+      list: () => [],
+    },
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merge-deferred");
@@ -165,6 +170,103 @@ test("path overlap with a peer → merge-deferred (no merge attempted)", async (
   assert.equal(recorded[0].verdict, "merge-deferred");
   assert.equal(recorded[0].trigger, "overlap");
   assert.match(recorded[0].reason, /peer overlap: peer-2: src\/a\.js/);
+  // Overlap demote queues the cycle for post-land redrive (#350).
+  assert.equal(deferredRecords.length, 1);
+  assert.equal(deferredRecords[0].sid, "1");
+  assert.deepEqual(deferredRecords[0].peerSids, ["peer-2"]);
+});
+
+test("post-land redrive: deferred peer is rebased + gated + landed under the same lock (#350)", async () => {
+  const lockOps = [];
+  const rebased = [];
+  const mergedBranches = [];
+  const removed = [];
+  const deferredPeer = {
+    sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
+    rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+  };
+  const { deps, recorded } = baseDeps({
+    lock: {
+      acquireBlocking: () => { lockOps.push("acquire"); return true; },
+      releaseLock: () => { lockOps.push("release"); },
+    },
+    inflight: { listLive: () => [], peerPaths: () => [] },
+    git: {
+      ...baseDeps().deps.git,
+      rebaseBranchOnto: (_repo, _orch, branch, onto) => {
+        rebased.push({ branch, onto });
+        return { ok: true };
+      },
+      mergeInWorktree: (_path, branch) => {
+        mergedBranches.push(branch);
+        return { ok: true, reason: "merged" };
+      },
+      // HEAD advances per land so the integration-branch check passes twice.
+      git: (args, cwd) => {
+        if (args[0] === "rev-parse") {
+          if (args[1] === "--short") return "abc1234";
+          // worktree HEAD and repo branch tip must agree after each land
+          if (cwd === "/integ" || args[1] === "orch/integration") {
+            return `sha-${mergedBranches.length || 1}`;
+          }
+          return "deadbee";
+        }
+        return "";
+      },
+    },
+    deferred: {
+      list: () => (removed.includes(deferredPeer.sid) ? [] : [deferredPeer]),
+      eligibleForRedrive: (e) => (e.redriveAttempts || 0) < 1,
+      blockedByLand: (e, landed) => e.peerSids?.includes(landed.sid) || e.paths.some((p) => (landed.paths || []).includes(p)),
+      markAttempt: () => { deferredPeer.redriveAttempts += 1; },
+      remove: (_d, sid) => { removed.push(sid); },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.deepEqual(mergedBranches, ["pr/claude/x-1", "pr/codex/b-2"]);
+  assert.deepEqual(rebased, [{ branch: "pr/codex/b-2", onto: "orch/integration" }]);
+  assert.deepEqual(removed, ["2"]);
+  // Both lands recorded as merged; lock acquired once (serial under one hold).
+  assert.equal(recorded.filter((e) => e.verdict === "merged").length, 2);
+  assert.equal(recorded[1].sid, "2");
+  assert.deepEqual(lockOps, ["acquire", "release"]);
+});
+
+test("post-land redrive: rebase conflict leaves peer deferred (no second demote) (#350)", async () => {
+  let demoteCalls = 0;
+  const deferredPeer = {
+    sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
+    rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+  };
+  const { deps, recorded } = baseDeps({
+    inflight: { listLive: () => [], peerPaths: () => [] },
+    github: {
+      ...baseDeps().deps.github,
+      demote: async () => { demoteCalls += 1; return { prUrl: "https://x/pr/1" }; },
+    },
+    git: {
+      ...baseDeps().deps.git,
+      rebaseBranchOnto: () => ({ ok: false, reason: "CONFLICT" }),
+      mergeInWorktree: (_p, branch) => {
+        // Only the primary land should merge; redrive aborts at rebase.
+        if (branch !== "pr/claude/x-1") throw new Error("should not merge deferred peer");
+        return { ok: true, reason: "merged" };
+      },
+    },
+    deferred: {
+      list: () => [deferredPeer],
+      eligibleForRedrive: () => true,
+      blockedByLand: () => true,
+      markAttempt: () => { deferredPeer.redriveAttempts += 1; },
+      remove: () => { throw new Error("must not remove on failed redrive"); },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(recorded.filter((e) => e.verdict === "merged").length, 1);
+  assert.equal(demoteCalls, 0); // quietFail — existing demote PR stands
+  assert.equal(deferredPeer.redriveAttempts, 1);
 });
 
 test("merge conflict → merge-deferred", async () => {

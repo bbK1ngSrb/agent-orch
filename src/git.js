@@ -342,6 +342,32 @@ export function reconcileIntegrationToBase(integrationPath, base = "main") {
   }
 }
 
+// Replay `branch`'s commits onto `onto` (typically orch/integration after a peer
+// landed). Used by finalize's Tier-1 redrive of overlap-demoted peers (#350).
+// Runs in a temporary worktree so the caller's integration worktree stays put.
+// On conflict: abort the rebase, drop the temp worktree, leave `branch` untouched.
+export function rebaseBranchOnto(repo, orchDir, branch, onto) {
+  if (!branch || !onto || branch === onto) {
+    return { ok: false, reason: "rebaseBranchOnto: invalid branch/onto" };
+  }
+  const path = join(orchDir, "wt", `rebase-${String(branch).replace(/[^\w.-]+/g, "_")}`);
+  gitTry(["worktree", "remove", "--force", path], repo);
+  rmSync(path, { recursive: true, force: true });
+  const add = gitTry(["worktree", "add", "--", path, branch], repo);
+  if (!add.ok) return { ok: false, reason: add.out.trim() || "worktree add failed" };
+  try {
+    const rb = gitTry(["rebase", onto], path);
+    if (!rb.ok) {
+      gitTry(["rebase", "--abort"], path);
+      return { ok: false, reason: rb.out.trim() || "rebase failed" };
+    }
+    return { ok: true };
+  } finally {
+    gitTry(["worktree", "remove", "--force", path], repo);
+    rmSync(path, { recursive: true, force: true });
+  }
+}
+
 // Merge `branch` into the worktree's checked-out main. On any failure, abort so
 // the worktree is left clean for the next finalize.
 export function mergeInWorktree(integrationPath, branch, mode, message = null) {

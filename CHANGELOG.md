@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.206 — 2026-07-24
+- Auto-rebase + re-gate merge-deferred peers after a cycle lands (Tier-1 self-progress, no resolver) (closes [#350](https://github.com/bbk1ng/agent-orch/issues/350))
+
+## v0.4.205 — 2026-07-24
+- docs: expose security.ignore in orch.example.yml and state the built-in docs exemption honestly (closes [#352](https://github.com/bbk1ng/agent-orch/issues/352))
+
 ## v0.4.204 — 2026-07-24
 - split issue 345 per kimi review in pr/claude/security-floor-report-the-real-guardrail-434415-0
 - rename the `pr-fallback` verdict to `merge-deferred` and add a top-level run `trigger` (`overlap`, `dirty-merge`, `integration-test`, `lock`, or `sync`) (closes [#349](https://github.com/bbk1ng/agent-orch/issues/349))
