@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.204 — 2026-07-24
+- split issue 345 per kimi review in pr/claude/security-floor-report-the-real-guardrail-434415-0
+
 ## v0.4.203 — 2026-07-24
 - automated merge-bump (version-bump.yml safety net)
 

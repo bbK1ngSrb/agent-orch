@@ -1192,6 +1192,36 @@ test("pr rejects a non-numeric PR number", async () => {
   await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
 });
 
+test("--merge is rejected outside `orch pr`", async () => {
+  // Only runPr reads flags.merge. Everywhere else the flag parsed and vanished,
+  // which read to a human as "run and merge" while the cycle merged on its own
+  // config default. Reject loudly instead of dropping it.
+  // Includes the commands that return early (version/help/upgrade): the guard
+  // has to sit ahead of those returns, or they exit 0 with the flag dropped —
+  // exactly the silent lie the guard exists to prevent.
+  // Split from #345 per kimi review on the overbundled security-floor branch:
+  // this CLI guard lands alone so it is not gated on scanner review.
+  const argvs = [
+    ["issue", "42", "--merge"], ["task", "x", "--merge"], ["review", "b", "--merge"],
+    ["version", "--merge"], ["help", "--merge"],
+    ["upgrade", "--merge"], ["update", "--merge"],
+    // ...including on `pr` itself: --help/--version short-circuit main() before
+    // runPr, so `orch pr 42 --merge --help` would print usage and exit 0 having
+    // merged nothing. Asking to merge and asking what the tool is are
+    // contradictory requests; neither one silently wins.
+    ["pr", "42", "--merge", "--help"], ["pr", "42", "--merge", "-h"], ["pr", "42", "--merge", "--version"],
+  ];
+  for (const argv of argvs) {
+    await assert.rejects(
+      () => runMainCapture(argv, { upgradeDeps: { exec: () => assert.fail("upgrade ran despite --merge") } }),
+      /--merge is only valid with 'orch pr <number>'/,
+    );
+  }
+  // ...and the flag stays legal where it is actually consumed: `pr` gets past
+  // the guard and fails on its own usage check instead.
+  await assert.rejects(() => runMainCapture(["pr", "abc", "--merge"]), /usage: orch pr <number>/);
+});
+
 test("dashboard rejects a non-numeric or non-positive --limit", async () => {
   await assert.rejects(() => runMainCapture(["dashboard", "--limit", "nope"]), /--limit must be a positive integer/);
   await assert.rejects(() => runMainCapture(["dashboard", "--limit", "0"]), /--limit must be a positive integer/);
