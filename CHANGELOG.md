@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.205 — 2026-07-24
+- docs: expose security.ignore in orch.example.yml and state the built-in docs exemption honestly (closes [#352](https://github.com/bbk1ng/agent-orch/issues/352))
+
 ## v0.4.204 — 2026-07-24
 - split issue 345 per kimi review in pr/claude/security-floor-report-the-real-guardrail-434415-0
 
