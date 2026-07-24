@@ -81,6 +81,30 @@ scope:
 
 
 # ===================================================================
+# Security floor (optional)
+# ===================================================================
+# The deterministic scan runs over the ADDED lines of the final diff and
+# escalates on any hit, even after AGREE + green tests.
+#
+# SHARP EDGE: exempting a path skips EVERY security rule for it — list only
+# generated/committed build artifacts (e.g. a minified bundle, where a regex
+# match call in generated text reads exactly like a subprocess spawn),
+# never authored code. Kept separate from scope.ignore on purpose: dropping
+# a file from a line COUNT is routine hygiene, dropping it from the security
+# floor is a security decision that deserves its own explicit opt-in.
+#
+# The default empty list does NOT mean "everything is scanned":
+# markdown and `docs/**` paths are dropped before the scan runs (mirroring
+# docs.paths), so a guardrail file that happens to live under `docs/` is not
+# scanned today — a scanner path-fix is tracked separately. Full reference:
+# docs/orch-manual.md.
+#
+# security:
+#   ignore:                             # default: [] (no path exempted)
+#     - dist/**
+
+
+# ===================================================================
 # GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> baseBranch)
 # ===================================================================
 github:
