@@ -464,6 +464,27 @@ test("audit preserves an explicit DISAGREE from a nonzero agent (not agentError)
   assert.equal(v.agentError, undefined);
 });
 
+test("audit escalates when a crashed agent only echoed the review prompt", async () => {
+  // Real failure mode: `codex exec` rejects a bad model id with a 400 but echoes
+  // the rendered review prompt first. That prompt spells out the verdict
+  // vocabulary ("- `DISAGREE` followed by a one-paragraph reason…"), which the
+  // parser's word-boundary fallback used to read as a genuine rejection —
+  // dispatching revise rounds against stderr noise. Unanchored + nonzero must
+  // take the #33 agentError escalation instead.
+  const adapter = makeCliAdapter({
+    name: "echo-boom",
+    bin: process.execPath,
+    buildArgs: () => nodeScript(
+      "console.log('- `AGREE` followed by a one-paragraph reason, if the change should merge.');" +
+      "console.log('- `DISAGREE` followed by a one-paragraph reason listing concrete findings.');" +
+      "process.stderr.write('ERROR: model not supported\\n'); process.exit(1)"),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+  assert.equal(v.agentError, true, "an echoed prompt is not a review — escalate, don't revise");
+  assert.match(v.reason, /agent exited nonzero/);
+});
+
 test("audit surfaces the agent's actual error in the DISAGREE reason (#31)", async () => {
   // A nonzero exit must carry WHY it failed (e.g. a bad model id) into the
   // reason, not just a generic sentinel — otherwise the escalation is undiagnosable.
