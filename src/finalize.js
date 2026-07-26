@@ -32,6 +32,7 @@ export async function finalize(ctx, deps) {
     const r = await github.openPr(ctx, deps);
     notify.recordRun(orchDir, {
       ts: new Date().toISOString(), branch, sid, verdict: r.prUrl ? "pr" : "escalated", rounds,
+      closes: closes ?? null,
       ...(usage.tokens ? { tokens: usage.tokens } : {}),
       ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
       ...(r.prUrl ? { prUrl: r.prUrl } : {}),
@@ -186,6 +187,11 @@ async function landIntoIntegration(ctx, deps, { integration, integrationBranch, 
   const shortSha = git.git(["rev-parse", "--short", "HEAD"], integration);
   notify.recordRun(orchDir, {
     ts: new Date().toISOString(), branch, sid, verdict: "merged", sha: shortSha, rounds,
+    // This context's OWN issue — a redriven peer (below) is a different issue
+    // than the cycle that unblocked it, so the record must carry the peer's.
+    // Always emit the key, `null` included: an `orch task` peer HAS no issue, and
+    // the realDeps stamp keys on the key's PRESENCE, not on a non-null value.
+    closes: closes ?? null,
     ...(pr.prUrl ? { prUrl: pr.prUrl } : {}),
     ...(usage.tokens ? { tokens: usage.tokens } : {}),
     ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
@@ -442,13 +448,14 @@ function oneLine(value = "") {
 }
 
 async function demote(ctx, deps, details) {
-  const { orchDir, branch, sid, rounds, runStats } = ctx;
+  const { orchDir, branch, sid, rounds, closes, runStats } = ctx;
   const { github, notify } = deps;
   const usage = totalUsage(runStats);
   const reason = demoteReason(ctx, details);
   const r = await github.demote({ ...ctx, reason });
   notify.recordRun(orchDir, {
     ts: new Date().toISOString(), branch, sid, verdict: "merge-deferred", trigger: details.trigger, reason, rounds,
+    closes: closes ?? null,
     ...(usage.tokens ? { tokens: usage.tokens } : {}),
     ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
     ...(r.prUrl ? { prUrl: r.prUrl } : {}),
