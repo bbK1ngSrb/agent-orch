@@ -60,8 +60,11 @@ function unquoteGitPath(s) {
 // matches no header and no `b/` side. Any producer feeding scanDiff MUST pass
 // these flags so the prefixes are what the parser expects regardless of config.
 // `--no-ext-diff` is here for the same reason: an external diff driver replaces
-// git's output wholesale.
-export const SECURITY_DIFF_ARGS = ["--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"];
+// git's output wholesale. So is `--no-textconv`: a textconv driver
+// (`.gitattributes` + `diff.<driver>.textconv`) filters file CONTENTS before
+// diffing, so the content rules would scan the filter's output instead of the
+// real change — `--no-ext-diff` does not disable it.
+export const SECURITY_DIFF_ARGS = ["--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
 
 function abPath(s) {
   const m = unquoteGitPath(s.trim()).match(/^[ab]\/([\s\S]*)$/);
@@ -86,19 +89,30 @@ function headerPath(l) {
 // `copy from` is deliberately NOT matched: a copy does not modify its source,
 // so flagging that path is a false guardrail-touch.
 //
-// Paths may contain spaces, making git's own line ambiguous; the greedy `.+`
-// takes the LAST ` b/` (or ` "b/`), which is right for the same-path and
-// no-space cases. A path that literally contains ` b/` mis-splits and then
-// fails the guardrail globs — fail-OPEN, but it needs a guardrail file named
-// e.g. `.github/workflows/x b/y.yml` to reach, and the exact `rename from`/`to`
-// lines cover the rename case regardless.
-const DIFF_GIT_RE = /^diff --git .+ ("?b\/.*)$/;
+// Paths may contain spaces, so git's own line has no delimiter marking where
+// the a-side ends and the b-side begins — a single guessed split point is
+// unsound: a path containing a literal ` b/` (e.g. a mode-only change to
+// `.github/workflows/x b/ci.yml`) mis-splits and then fails the guardrail
+// globs, failing OPEN. Instead of guessing, EVERY ` b/` (or ` "b/`) position
+// is tried as the split and each candidate b-side is checked. The true b-side
+// is always among the candidates, and a spurious extra candidate can only
+// over-flag — fail closed, the safe direction for the floor.
+const DIFF_GIT_PREFIX = "diff --git ";
+const DIFF_GIT_SPLIT_RE = / (?="?b\/)/g;
 const RENAME_RE = /^rename (?:from|to) (.+)$/;
-function structuralPath(l) {
-  const g = l.match(DIFF_GIT_RE);
-  if (g) return abPath(g[1]);
+function structuralPaths(l) {
+  if (l.startsWith(DIFF_GIT_PREFIX)) {
+    const out = [];
+    DIFF_GIT_SPLIT_RE.lastIndex = 0;
+    let m;
+    while ((m = DIFF_GIT_SPLIT_RE.exec(l))) {
+      const p = abPath(l.slice(m.index + 1));
+      if (p) out.push(p);
+    }
+    return out;
+  }
   const r = l.match(RENAME_RE);
-  return r ? unquoteGitPath(r[1]) : null;
+  return r ? [unquoteGitPath(r[1])] : [];
 }
 
 // The path-based floor: the same protected set orch enforces at intake, plus
@@ -168,7 +182,7 @@ export function scanDiff(diffText, { ignore = [] } = {}) {
   // `ignore`: a guardrail file is never a build artifact.
   const seen = new Set();
   for (const l of String(diffText).split("\n")) {
-    const paths = [headerPath(l), structuralPath(l)];
+    const paths = [headerPath(l), ...structuralPaths(l)];
     for (const p of paths) {
       if (p && !seen.has(p) && isGuardrailPath(p)) {
         seen.add(p);
