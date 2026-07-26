@@ -97,18 +97,19 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
 });
 
-test("reviseCap docs describe total review rounds, not post-DISAGREE revisions only", () => {
-  // Engine starts round at 1 and escalates when round >= reviseCap, so the cap
+test("roundCap docs describe total review rounds, not post-DISAGREE revisions only", () => {
+  // Engine starts round at 1 and escalates when round >= roundCap, so the cap
   // counts the initial review. "author-revise rounds after a DISAGREE" would
   // under-count by one and mislead capacity planning (default 3 → 3 reviews /
-  // 2 revisions, not 4 / 3).
+  // 2 revisions, not 4 / 3). roundCap is the renamed key (#370); reviseCap is
+  // now only the deprecated alias, so the docs must describe roundCap while
+  // still telling readers reviseCap still works.
   assert.doesNotMatch(manual, /author-revise rounds happen after a\s+`DISAGREE`/i);
-  assert.match(manual, /total number of review rounds[\s\S]{0,80}initial review/i);
-  assert.match(manual, /reviseCap - 1|revisions are\s+therefore `reviseCap - 1`/i);
-  assert.match(manual, /3 reviews and at\s+most 2 revisions/i);
+  assert.match(manual, /initial review is round\s+one, so 3 buys 3 reviews and 2 revisions/i);
+  assert.match(manual, /old\s+name `reviseCap` still works/i);
   for (const src of [exampleConfig, read("src/cli.js")]) {
-    assert.match(src, /reviseCap:.*max review rounds incl\. the first/);
-    assert.doesNotMatch(src, /reviseCap:.*max revise rounds before escalation/);
+    assert.match(src, /roundCap:.*max review rounds incl\. the first/);
+    assert.doesNotMatch(src, /roundCap:.*max revise rounds before escalation/);
   }
   assert.match(
     read("src/config-wizard.js"),

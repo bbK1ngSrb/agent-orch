@@ -57,7 +57,7 @@ function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gateP
 
 const opts = {
   task: "do x", branch: "pr/auth/x", authorName: "auth", reviewerName: "rev",
-  cfg: { reviseCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
+  cfg: { roundCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
   orchDir: "/o", repo: "/r", worktree: "/wt",
 };
 
@@ -92,7 +92,7 @@ test("review rounds persist raw reviewer output alongside parsed verdicts", asyn
   const deps = makeDeps({
     verdicts: [{ decision: "DISAGREE", reason: "unparseable verdict", raw: "soft error on stderr" }],
   });
-  await runCycle({ ...opts, cfg: { ...opts.cfg, reviseCap: 1 } }, deps);
+  await runCycle({ ...opts, cfg: { ...opts.cfg, roundCap: 1 } }, deps);
   assert.equal(deps._calls.rawRounds.length, 1);
   assert.equal(deps._calls.rawRounds[0].round, 1);
   assert.match(deps._calls.rawRounds[0].content, /## rev/);
@@ -106,7 +106,7 @@ test("review outcomes are logged with terminal status and defect flag", async ()
       rev2: [{ decision: "DISAGREE", reason: "bug", raw: "" }],
     },
   });
-  const r = await runCycle({ ...opts, reviewerNames: ["rev", "rev2"], cfg: { ...opts.cfg, reviseCap: 1 } }, deps);
+  const r = await runCycle({ ...opts, reviewerNames: ["rev", "rev2"], cfg: { ...opts.cfg, roundCap: 1 } }, deps);
   assert.equal(r.status, "escalated");
   assert.deepEqual(deps._calls.reviewLog.map((entry) => ({
     branch: entry.branch,
@@ -226,8 +226,8 @@ test("merge wipes reviews + records the run; escalation keeps them", async () =>
   assert.equal(stalled._calls.cleaned, undefined); // reviews survive for arbitration
 });
 
-test("DISAGREE until cap -> escalated after reviseCap rounds", async () => {
-  // reviseCap is total review rounds (initial included), not post-DISAGREE
+test("DISAGREE until cap -> escalated after roundCap rounds", async () => {
+  // roundCap is total review rounds (initial included), not post-DISAGREE
   // revisions: default 3 → 3 audits / 2 author revises, then escalate.
   const deps = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "no", raw: "" }] });
   const r = await runCycle(opts, deps);
@@ -245,7 +245,7 @@ test("DISAGREE escalation diffs against cfg.baseBranch", async () => {
   let diffArgs = null;
   const deps = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "no", raw: "" }] });
   deps.git.git = (args) => { diffArgs = args; return "diff summary"; };
-  const r = await runCycle({ ...opts, cfg: { ...opts.cfg, baseBranch: "dev", reviseCap: 1 } }, deps);
+  const r = await runCycle({ ...opts, cfg: { ...opts.cfg, baseBranch: "dev", roundCap: 1 } }, deps);
   assert.equal(r.status, "escalated");
   assert.deepEqual(diffArgs, ["diff", "--stat", "dev...pr/auth/x"]);
 });
@@ -410,7 +410,7 @@ test("AGREE + green → finalize lands the merge (status merged)", async () => {
   const res = await runCycle({
     mode: "task", task: "do x", branch: "pr/claude/x-1", sid: "1",
     authorName: "claude", reviewerName: "claude",
-    cfg: { reviseCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
+    cfg: { roundCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
     orchDir: "/o", repo: "/r", worktree: "/o/wt/x",
   }, deps);
   assert.equal(res.status, "merged");
@@ -444,7 +444,7 @@ test("task mode threads cfg.baseBranch through base-sensitive engine calls", asy
   const res = await runCycle({
     mode: "task", task: "do x", branch: "pr/claude/x-1", sid: "1",
     authorName: "claude", reviewerName: "claude",
-    cfg: { reviseCap: 3, baseBranch: "dev", merge: "ff-only", test: "auto", scope: { maxLines: 10, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
+    cfg: { roundCap: 3, baseBranch: "dev", merge: "ff-only", test: "auto", scope: { maxLines: 10, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
     orchDir: "/o", repo: "/r", worktree: "/o/wt/x",
   }, deps);
 
@@ -480,7 +480,7 @@ test("AGREE + green but finalize demotes → status merge-deferred", async () =>
   const res = await runCycle({
     mode: "task", task: "do x", branch: "pr/claude/x-1", sid: "1",
     authorName: "claude", reviewerName: "claude",
-    cfg: { reviseCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
+    cfg: { roundCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md", "docs/**", "**/*.md"] } },
     orchDir: "/o", repo: "/r", worktree: "/o/wt/x",
   }, deps);
   assert.equal(res.status, "merge-deferred");

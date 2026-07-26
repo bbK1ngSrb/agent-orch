@@ -181,7 +181,8 @@ agents:
 # Cycle
 # ===================================================================
 test: auto                              # "auto" detects the test command, or set one, e.g. "pytest -q"
-reviseCap: 3                            # max review rounds incl. the first (positive int); default: 3
+roundCap: 3                             # max review rounds incl. the first, before escalation (positive int); default: 3
+                                        # (reviseCap is the deprecated alias for this key)
 stageTimeout: 25                        # per-stage wall-clock cap in minutes; 0 disables; default: 25
 concurrency: 4                          # max concurrent cycles per repo dir; over-cap launches exit; default: 4
 baseBranch: main                        # trunk orch reads/diffs/PRs against (e.g. dev if main is deploy-only); default: main

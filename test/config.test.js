@@ -70,7 +70,7 @@ test("load() round-trips plural role specs (flow list with internal spaces)", ()
 test("empty dir yields defaults", () => {
   const c = load(tmp());
   assert.deepEqual(c.agents, ["claude", "codex"]);
-  assert.equal(c.reviseCap, 3);
+  assert.equal(c.roundCap, 3);
   assert.equal(c.merge, "no-ff");
   assert.equal(c.scope.maxLines, 0);
 });
@@ -129,8 +129,8 @@ test("load() accepts an override path (--config-file) layered on top of orch.yml
 test("load() override path applies even with no repo orch.yml", () => {
   const d = tmp();
   const override = join(d, "custom.yml");
-  writeFileSync(override, "reviseCap: 7\n");
-  assert.equal(load(d, override).reviseCap, 7);
+  writeFileSync(override, "roundCap: 7\n");
+  assert.equal(load(d, override).roundCap, 7);
 });
 
 test("load() throws when --config-file path does not exist", () => {
@@ -417,4 +417,52 @@ test("security.ignore rejects non-list and empty-string globs (#334)", () => {
   const empty = tmp();
   writeFileSync(join(empty, "orch.yml"), 'security:\n  ignore:\n    - ""\n');
   assert.throws(() => load(empty), /security\.ignore must be an array/);
+});
+
+// --- roundCap / reviseCap alias -------------------------------------------
+// `roundCap` counts total review rounds (the initial review is round one).
+// `reviseCap` is the old spelling: still honoured so published orch.yml files
+// keep working, but normalised onto roundCap with a deprecation warning.
+function captureWarnings(fn) {
+  const seen = [];
+  const original = console.warn;
+  console.warn = (...args) => seen.push(args.join(" "));
+  try { return { result: fn(), warnings: seen }; } finally { console.warn = original; }
+}
+
+test("deprecated reviseCap still sets roundCap, with a warning", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "reviseCap: 7\n");
+  const { result: c, warnings } = captureWarnings(() => load(d));
+  assert.equal(c.roundCap, 7);
+  assert.equal(c.reviseCap, undefined); // normalised away: one source of truth
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /deprecated reviseCap/);
+});
+
+test("both keys in one file: roundCap wins and the conflict is warned about", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "roundCap: 4\nreviseCap: 9\n");
+  const { result: c, warnings } = captureWarnings(() => load(d));
+  assert.equal(c.roundCap, 4);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /sets both roundCap and reviseCap/);
+});
+
+test("--config-file reviseCap still overrides an orch.yml roundCap", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "roundCap: 4\n");
+  const override = join(d, "custom.yml");
+  writeFileSync(override, "reviseCap: 2\n");
+  const { result: c } = captureWarnings(() => load(d, override));
+  assert.equal(c.roundCap, 2); // the layer the operator passed last wins, alias or not
+});
+
+test("a bad value is reported under the key the operator actually wrote", () => {
+  const old = tmp();
+  writeFileSync(join(old, "orch.yml"), "reviseCap: 0\n");
+  assert.throws(() => captureWarnings(() => load(old)), /reviseCap must be a positive integer/);
+  const now = tmp();
+  writeFileSync(join(now, "orch.yml"), "roundCap: 0\n");
+  assert.throws(() => load(now), /roundCap must be a positive integer/);
 });
