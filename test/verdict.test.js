@@ -51,3 +51,23 @@ test("last line-leading token wins over earlier line-leading ones", () => {
   assert.equal(v.decision, "AGREE");
   assert.match(v.reason, /tests added/);
 });
+
+test("reports whether the verdict was line-anchored or fallback-matched", () => {
+  assert.equal(parseVerdict("AGREE looks good").anchored, true);
+  assert.equal(parseVerdict("I would DISAGREE with that").anchored, false);
+  assert.equal(parseVerdict("no verdict here").anchored, false);
+});
+
+test("an echoed review prompt parses as an UNanchored DISAGREE", () => {
+  // A crashed CLI that echoes the rendered review prompt reproduces the verdict
+  // vocabulary from prompts/review.md. Nothing was reviewed, so the match must
+  // be reported as fallback-only — audit() keys its crash fail-safe on that.
+  const echoed =
+    "user\nEnd your response with EXACTLY ONE verdict token on its own line:\n" +
+    "- `AGREE` followed by a one-paragraph reason, if the change should merge.\n" +
+    "- `DISAGREE` followed by a one-paragraph reason listing concrete findings.\n\n" +
+    'ERROR: {"type":"error","status":400}';
+  const v = parseVerdict(echoed);
+  assert.equal(v.decision, "DISAGREE");
+  assert.equal(v.anchored, false, "the token came from the echoed prompt, not a review");
+});

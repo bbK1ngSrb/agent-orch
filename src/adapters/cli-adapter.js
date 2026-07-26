@@ -320,7 +320,12 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       // A nonzero agent that still printed an explicit DISAGREE gave a real,
       // actionable review finding — keep it (don't bury it as "agent exited").
       // An AGREE from a crashed agent is untrusted and falls through to below.
-      if (!ok && parsed.decision === "DISAGREE" && parsed.reason !== "unparseable verdict") return { ...parsed, raw: captured, usage };
+      // `anchored` is required: on a failed run a word-boundary-only match is
+      // usually the CLI echoing the review prompt (which spells out the verdict
+      // vocabulary) rather than answering it, and treating that as an editorial
+      // DISAGREE burns every revise round on stderr noise instead of taking the
+      // #33 agentError escalation. Only a verdict that leads its own line counts.
+      if (!ok && parsed.anchored && parsed.decision === "DISAGREE" && parsed.reason !== "unparseable verdict") return { ...parsed, raw: captured, usage };
       // Nonzero with no usable verdict (#33): flag it `agentError` so the engine
       // escalates instead of asking the author to revise a non-code failure.
       // Surface WHY it died (#31): a bad model id / missing flag lives in `out` —
