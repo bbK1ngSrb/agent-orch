@@ -4,7 +4,7 @@ import { runCycle } from "../src/engine.js";
 import { SECURITY_DIFF_ARGS } from "../src/security-review.js";
 
 function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
-  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], rounds: [], rawRounds: [], reviewLog: [] };
+  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], phases: [], rounds: [], rawRounds: [], reviewLog: [] };
   const reviewerCache = new Map();
   const reviewerFor = (name) => {
     if (!reviewerCache.has(name)) {
@@ -41,7 +41,8 @@ function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gateP
     gate: { detect: () => testCmd, run: () => ({ pass: gatePass, log: "" }) },
     scope: { count: () => 0 },
     notify: {
-      phase() {}, writeRound(_orchDir, _branch, round, content) { calls.rounds.push({ round, content }); return "p"; },
+      phase(label, detail, status) { calls.phases.push({ label, detail, status }); },
+      writeRound(_orchDir, _branch, round, content) { calls.rounds.push({ round, content }); return "p"; },
       writeRoundRaw(_orchDir, _branch, round, content) { calls.rawRounds.push({ round, content }); return "rp"; },
       buildDecisionBrief: () => "brief", escalate() { return "d"; },
       recordRun(_dir, entry) { calls.recorded = entry; },
@@ -66,6 +67,36 @@ test("AGREE + green gate -> merged", async () => {
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "merged");
   assert.equal(deps._calls.authors, 1);
+});
+
+test("author and reviewers emit one-line completion results", async () => {
+  const deps = makeDeps({
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }],
+    reviewerVerdicts: {
+      rev: [{ decision: "AGREE", reason: "first line\nsecond line", raw: "" }],
+      rev2: [{ decision: "DISAGREE", reason: "x".repeat(240), raw: "" }],
+    },
+  });
+  await runCycle({
+    ...opts,
+    reviewerNames: ["rev", "rev2"],
+    cfg: { ...opts.cfg, roundCap: 1 },
+  }, deps);
+
+  assert.deepEqual(
+    deps._calls.phases.filter((p) => p.label === "author" && p.status),
+    [{ label: "author", detail: "auth completed", status: "ok" }],
+  );
+  const reviews = deps._calls.phases.filter((p) => p.label === "review" && p.status);
+  assert.equal(reviews.length, 2);
+  assert.deepEqual(reviews[0], {
+    label: "review",
+    detail: "rev round 1 — AGREE: first line second line",
+    status: "ok",
+  });
+  assert.match(reviews[1].detail, /^rev2 round 1 — DISAGREE: x+…$/);
+  assert.equal(reviews[1].detail.length, 200);
+  assert.equal(reviews[1].status, "fail");
 });
 
 test("merged result carries author and reviewer run statistics", async () => {
