@@ -232,15 +232,28 @@ function recommend(findings, mergeCmd) {
     + `flagged line there is confirmed benign.`;
 }
 
-// Rank a finding for display: a hit INSIDE a guardrail file is the line that
-// justifies the human gate, so it leads; authored (non-test) code next; a bare
-// path string in a test fixture last. An unknown path counts as authored —
-// the floor errs toward "look at this". Stable sort keeps insertion order
-// within a rank.
+// Rank a finding for display (every rule, including secret-read — #365). A hit
+// INSIDE a guardrail file is the line that justifies the human gate, so it
+// leads; authored (non-test) code next; a bare path string in a test fixture
+// last. An unknown path counts as authored — the floor errs toward "look at
+// this". Stable sort keeps insertion order within a rank.
 function findingRank({ file }) {
   if (isGuardrailPath(file)) return 0;
   if (!isTestFile(file)) return 1;
   return 2;
+}
+
+// Location tag for one shown finding. The path always comes from the diff's
+// `+++ b/<path>` context (or the path-based floor), never from text inside the
+// matched line — a fixture that embeds `file: "src/engine.js"` must still tag
+// as the test file that contains that string (#365). Test paths get an explicit
+// "(fixture)" marker so a skimmer cannot confuse a nested `file:` in the line
+// body with the finding's real location.
+function findingLocation(f) {
+  if (!f.file) return "";
+  return isTestFile(f.file)
+    ? `\`${f.file}\` (fixture): `
+    : `\`${f.file}\`: `;
 }
 
 // Render a scanDiff() DISAGREE for humans. Returns:
@@ -265,9 +278,11 @@ export function formatSecurityFindings(findings, { maxPerRule = 5, maxLen = 100,
 
   const clip = (s) => (s.length > maxLen ? s.slice(0, maxLen - 1) + "…" : s);
   const sections = [...byRule].map(([rule, map]) => {
+    // Rank applies to every rule (guardrail-touch, secret-read, …): real edits
+    // lead, fixture-only mentions sink, then maxPerRule clips the tail.
     const entries = [...map.values()].sort((a, b) => findingRank(a) - findingRank(b));
     const shown = entries.slice(0, maxPerRule)
-      .map((f) => `    ${f.file ? `\`${f.file}\`: ` : ""}${clip(f.line)}`);
+      .map((f) => `    ${findingLocation(f)}${clip(f.line)}`);
     if (entries.length > maxPerRule) shown.push(`    …and ${entries.length - maxPerRule} more`);
     return `- **${rule}** — ${RULE_BLURB[rule] || "matched a risky pattern"}:\n${shown.join("\n")}`;
   });
@@ -280,7 +295,9 @@ export function formatSecurityFindings(findings, { maxPerRule = 5, maxLen = 100,
     "it cannot be talked out of a DISAGREE — it is the last gate before merge. Any",
     "diff touching a guardrail path is flagged, and any added line containing a",
     "risky pattern — whether real code or a string that merely *mentions* the",
-    "pattern (a test fixture, a documentation example). It fails **closed**:",
+    "pattern (a test fixture, a documentation example). Within each rule, findings",
+    "are listed real-edit first and test fixtures last, each tagged with the file",
+    "the line actually lives in (fixtures are marked). It fails **closed**:",
     "it would rather over-block than let something slip through.",
     "",
     "**What tripped it:**",
