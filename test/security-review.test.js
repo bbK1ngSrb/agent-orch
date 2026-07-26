@@ -352,6 +352,30 @@ new mode 100755`;
   ]);
 });
 
+// A path containing a literal ` b/` makes git's `diff --git` line ambiguous:
+// no single split point is right for every case. Trying EVERY ` b/` position
+// as the split puts the true path among the candidates, so a mode-only change
+// to such a guardrail file can no longer mis-split its way to AGREE.
+test("mode-only change to a guardrail path containing a literal ' b/' is flagged", () => {
+  const d = `diff --git a/.github/workflows/x b/ci.yml b/.github/workflows/x b/ci.yml
+old mode 100644
+new mode 100755`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/x b/ci.yml" },
+  ]);
+});
+
+// …and the same ambiguity on an ORDINARY path must not over-flag: none of the
+// candidate splits is a guardrail path, so the change stays AGREE.
+test("mode-only change to an ordinary path containing ' b/' stays AGREE", () => {
+  const d = `diff --git a/src/x b/y.js b/src/x b/y.js
+old mode 100644
+new mode 100755`;
+  assert.equal(scanDiff(d).decision, "AGREE");
+});
+
 // A copy does NOT modify its source, so `copy from <guardrail path>` must not
 // trip the floor — unlike `rename from`, where the old path really did change.
 test("copying a guardrail file OUT to an ordinary path stays AGREE", () => {
@@ -536,4 +560,34 @@ test("SECURITY_DIFF_ARGS keeps the floor working under diff.noprefix", () => {
   const guarded = git(["diff", ...SECURITY_DIFF_ARGS, "main...feature"], repo);
   assert.equal(scanDiff(guarded).decision, "DISAGREE");
   assert.equal(scanDiff(guarded).findings[0].file, ".github/workflows/ci.yml");
+});
+
+// Regression (real git): `--no-ext-diff` does NOT disable textconv — a
+// `.gitattributes` driver plus `diff.<driver>.textconv` filters file contents
+// before diffing, so the content rules would scan the filter's output and an
+// added `process.env.GITHUB_TOKEN` line disappears from the diff. The producer
+// must pin `--no-textconv` via SECURITY_DIFF_ARGS.
+test("SECURITY_DIFF_ARGS keeps the floor working under a textconv driver", () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-secdiff-"));
+  git(["init", "-b", "main"], repo);
+  git(["config", "user.email", "t@t"], repo);
+  git(["config", "user.name", "t"], repo);
+  writeFileSync(join(repo, ".gitattributes"), "*.js diff=redact\n");
+  git(["config", "diff.redact.textconv", "echo REDACTED"], repo);  // blanks file contents
+  mkdirSync(join(repo, "src"), { recursive: true });
+  writeFileSync(join(repo, "src/x.js"), "export const a = 1;\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "init"], repo);
+  git(["switch", "-c", "feature"], repo);
+  writeFileSync(join(repo, "src/x.js"), "export const a = 1;\nconst k = process.env.GITHUB_TOKEN;\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "add token read"], repo);
+
+  const unguarded = git(["diff", "main...feature"], repo);
+  assert.equal(scanDiff(unguarded).decision, "AGREE", "documents the fail-open the flag closes");
+
+  const guarded = git(["diff", ...SECURITY_DIFF_ARGS, "main...feature"], repo);
+  const r = scanDiff(guarded);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "env-read" && f.file === "src/x.js"));
 });
