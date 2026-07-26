@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCycle } from "../src/engine.js";
+import { SECURITY_DIFF_ARGS } from "../src/security-review.js";
 
 function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
   const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], rounds: [], rawRounds: [], reviewLog: [] };
@@ -580,6 +581,21 @@ test("§3e: risky final diffs escalate at the merge boundary, never finalize", a
     assert.ok(r.reason.includes(rule), `${rule}: reason names the tripped rule`);
     assert.notEqual(deps._calls.finalized, true, `${rule}: must escalate before finalize`);
   }
+});
+
+// The final-diff read must pin git's a//b/ prefixes: `diff.noprefix=true` is valid
+// repo config that drops them, and scanDiff's path floor then sees no header and no
+// b/ side — a mode-only guardrail edit would sail through. Asserting the argv here
+// keeps engine.js from drifting away from the parser's contract.
+test("§3e: the final-diff read pins the prefixes scanDiff parses", async () => {
+  let argv = null;
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => {
+    if (args[0] === "diff" && !args.includes("--stat")) { argv = args; return ""; }
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
+  await runCycle(opts, deps);
+  for (const flag of SECURITY_DIFF_ARGS) assert.ok(argv.includes(flag), `final diff passes ${flag}`);
 });
 
 test("§3e: a risky diff on the noMerge PR-bridge path escalates instead of approving", async () => {
