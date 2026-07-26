@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { parse } from "yaml";
 import { DEFAULTS, load, validate } from "../src/config.js";
-import { OPTION_CATALOG, applyAnswer, applyChoice, configToYaml, runConfigWizard, validateCatalog } from "../src/config-wizard.js";
+import { OPTION_CATALOG, applyAnswer, applyChoice, configToYaml, loadTarget, runConfigWizard, validateCatalog } from "../src/config-wizard.js";
 
 function tmp() { return mkdtempSync(join(tmpdir(), "orch-wizard-")); }
 
@@ -111,4 +111,38 @@ test("editing the deprecated alias re-drives conflictResolution", () => {
   const saved = parse(configToYaml(cfg));
   assert.equal(saved.main.conflictResolution, "auto");
   assert.equal(Object.hasOwn(saved.main, "autoResolveConflicts"), false);
+});
+
+test("alias-only reviseCap keeps its value through a wizard save", () => {
+  // Codex: saving an existing reviseCap-only config must not reset the cap to DEFAULTS' 3.
+  const d = tmp();
+  mkdirSync(join(d, ".orch"), { recursive: true });
+  const file = join(d, ".orch", "orch.yml");
+  writeFileSync(file, "reviseCap: 7\n");
+  const cfg = loadTarget(file);
+  assert.equal(cfg.roundCap, 7);
+  assert.equal(Object.hasOwn(cfg, "reviseCap"), false);
+
+  const yaml = configToYaml(cfg);
+  assert.equal(Object.hasOwn(parse(yaml), "reviseCap"), false);
+  writeFileSync(file, yaml);
+  assert.equal(load(d).roundCap, 7);
+});
+
+test("wizard save keeps roundCap when a file names both keys", () => {
+  const d = tmp();
+  mkdirSync(join(d, ".orch"), { recursive: true });
+  const file = join(d, ".orch", "orch.yml");
+  writeFileSync(file, "roundCap: 5\nreviseCap: 7\n");
+  const saved = parse(configToYaml(loadTarget(file)));
+  assert.equal(saved.roundCap, 5);
+  assert.equal(Object.hasOwn(saved, "reviseCap"), false);
+});
+
+test("a bad alias value is reported under the key the operator typed", () => {
+  const d = tmp();
+  mkdirSync(join(d, ".orch"), { recursive: true });
+  const file = join(d, ".orch", "orch.yml");
+  writeFileSync(file, "reviseCap: 0\n");
+  assert.throws(() => loadTarget(file), /reviseCap must be a positive integer/);
 });

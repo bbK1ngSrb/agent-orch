@@ -213,14 +213,20 @@ function mergeConfig(user = {}) {
   };
 }
 
-function loadTarget(target) {
+export function loadTarget(target) {
   if (existsSync(target)) {
     const user = parse(readFileSync(target, "utf8")) || {};
     const cfg = mergeConfig(user);
+    // Fold the deprecated `reviseCap` into roundCap the way load() does. mergeConfig
+    // would otherwise leave DEFAULTS' roundCap next to the operator's reviseCap, and
+    // the wizard would serialize both — silently resetting the cap to 3 on reload.
+    const aliasOnly = !Object.hasOwn(user, "roundCap") && Object.hasOwn(user, "reviseCap");
+    if (aliasOnly) cfg.roundCap = user.reviseCap;
+    delete cfg.reviseCap; // never write the alias back out
     // Same userMain tracking as load() so alias-only files map to conflictResolution: auto
     // instead of DEFAULTS' manual mode winning as "explicit".
     normalizeMainConfig(cfg, user.main || {}, {});
-    validate(cfg);
+    validate(cfg, aliasOnly ? "reviseCap" : "roundCap");
     return cfg;
   }
   return normalizeWizardConfig(cloneConfig(DEFAULTS));
