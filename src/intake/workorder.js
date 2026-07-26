@@ -69,9 +69,10 @@ export function validateWorkOrder(obj) {
 // the author is told to treat as reference, not instructions. Two layers keep
 // attacker text from closing the block early: the fence markers carry a
 // per-prompt random nonce (and the frame says so), so the real terminator is
-// unguessable; and neutralizeFence defangs any exact or near-miss copy of a
-// marker inside the attacker text, so even a guessed spelling never reaches
-// the model as a live marker.
+// unguessable; and neutralizeFence defangs whitespace/case near-miss
+// spellings of a marker inside the attacker text. Non-whitespace joins (e.g.
+// "END-UNTRUSTED-REFERENCE" or newline-broken spellings) are NOT defanged —
+// they are quoted verbatim, and the nonce is what keeps them harmless.
 function neutralizeFence(s) {
   // Defang fence-marker near-misses (case/whitespace variants). A model may
   // honour near-miss spellings as terminators, so over-matching is correct.
