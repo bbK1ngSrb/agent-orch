@@ -227,10 +227,14 @@ test("merge wipes reviews + records the run; escalation keeps them", async () =>
 });
 
 test("DISAGREE until cap -> escalated after reviseCap rounds", async () => {
+  // reviseCap is total review rounds (initial included), not post-DISAGREE
+  // revisions: default 3 → 3 audits / 2 author revises, then escalate.
   const deps = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "no", raw: "" }] });
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "escalated");
   assert.equal(r.rounds, 3);
+  assert.equal(deps._calls.audits, 3);
+  assert.equal(deps._calls.authors, 3); // 1 initial author + 2 revises
   // Editorial rejection stays DISAGREE in the metrics log (#299) — not ERROR.
   assert.ok(deps._calls.reviewLog.length >= 1);
   assert.equal(deps._calls.reviewLog[0].decision, "DISAGREE");

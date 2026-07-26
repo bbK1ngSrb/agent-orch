@@ -714,7 +714,7 @@ agents:                          # rotation pool when no explicit roles set
 
 # === Cycle ===
 test: auto                       # or an explicit command, e.g. "pytest -q"
-reviseCap: 3                     # max revise rounds before escalation
+reviseCap: 3                     # max review rounds incl. the first
 stageTimeout: 25                 # per-stage wall-clock cap, minutes; 0 = off
 concurrency: 4                   # max concurrent cycles per repo dir
 baseBranch: main                 # trunk orch reads/diffs/opens PRs against; e.g. dev if main is deploy-only
@@ -781,10 +781,11 @@ release:
   reviewer that didn't write it. Set matching CLI flags
   (`--author`/`--reviewer` or `--authors`/`--reviewers`) to override per-run
   without editing the file.
-- **`reviseCap`** — how many author-revise rounds happen after a
-  `DISAGREE` before the cycle gives up and escalates. Raise it if your
-  reviewers tend to converge slowly; lower it to fail fast and escalate to a
-  human sooner.
+- **`reviseCap`** — total number of review rounds (the initial review
+  included) before the cycle gives up and escalates. Author revisions are
+  therefore `reviseCap - 1`: with the default `3`, you get 3 reviews and at
+  most 2 revisions. Raise it if your reviewers tend to converge slowly; lower
+  it to fail fast and escalate to a human sooner.
 - **`stageTimeout`** — kills a stalled author or review stage (whole process
   group, wall-clock, not CPU time) rather than hanging forever on a wedged
   agent CLI. `0` disables it — not recommended in CI.
