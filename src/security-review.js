@@ -1,10 +1,11 @@
 import { globToRegExp } from "./scope.js";
+import { DEFAULT_PROTECTED } from "./intake/allowlist.js";
 
-// §3e: independent security gate. Static scan of ADDED diff lines for the
-// classes of behavior that exfiltrate or self-modify, regardless of whether the
-// change satisfies the (attacker-influenced) acceptance_criteria. The LLM
-// reviewer can be fooled (Residual #3); this deterministic floor cannot be
-// talked out of a DISAGREE.
+// §3e: independent security gate. Static scan of the diff's CHANGED PATHS and
+// ADDED lines for the classes of behavior that exfiltrate or self-modify,
+// regardless of whether the change satisfies the (attacker-influenced)
+// acceptance_criteria. The LLM reviewer can be fooled (Residual #3); this
+// deterministic floor cannot be talked out of a DISAGREE.
 export const SECURITY_RULES = [
   { rule: "env-read", re: /process\.env|import\.meta\.env|os\.environ|\$\{?GITHUB_TOKEN/ },
   { rule: "secret-read", re: /\.orch\/|id_rsa|\.ssh\/|secrets?\.|\.pem\b|PRIVATE KEY/i },
@@ -29,6 +30,45 @@ function isDocsPath(file) {
   return false;
 }
 
+// Git C-quotes paths containing non-ASCII or control characters in diff headers
+// (`+++ "b/caf\303\251.yml"`), so unquote before the a//b/ prefix is stripped —
+// a quoted guardrail path must not slip past the path-based floor.
+function unquoteGitPath(s) {
+  if (s.length < 2 || !s.startsWith('"') || !s.endsWith('"')) return s;
+  // Octal escapes are the raw bytes of the UTF-8 path — decode them as bytes.
+  const latin1 = s.slice(1, -1).replace(/\\([0-7]{3}|.)/g, (_, esc) => {
+    if (/^[0-7]{3}$/.test(esc)) return String.fromCharCode(parseInt(esc, 8));
+    if (esc === "n") return "\n";
+    if (esc === "t") return "\t";
+    return esc;
+  });
+  return Buffer.from(latin1, "latin1").toString("utf8");
+}
+
+// Parse a `--- a/<path>` / `+++ b/<path>` header into a repo-relative path
+// (null for /dev/null or non-header lines). Reading BOTH headers matters: a
+// deleted guardrail file has no added lines to scan — only its `--- a/` header
+// carries the path.
+function headerPath(l) {
+  if (!l.startsWith("--- ") && !l.startsWith("+++ ")) return null;
+  const p = unquoteGitPath(l.slice(4).trim());
+  if (p === "/dev/null") return null;
+  // Only trust the standard a//b/ prefixes; anything else is an unknown path,
+  // which content scanning treats as scannable (fail closed).
+  const m = p.match(/^[ab]\/([\s\S]*)$/);
+  return m ? m[1] : null;
+}
+
+// The path-based floor: the same protected set orch enforces at intake, plus
+// docs/CODEOWNERS — the third GitHub-valid CODEOWNERS location, which the docs
+// exemption above would otherwise swallow. The globs are anchored, so
+// examples/CODEOWNERS or a random `workflows/` dir do NOT match; only the live
+// root / .github/ / docs/ guardrail locations trip it.
+const GUARDRAIL_PATH_RES = [...DEFAULT_PROTECTED, "docs/CODEOWNERS"].map(globToRegExp);
+function isGuardrailPath(file) {
+  return !!file && GUARDRAIL_PATH_RES.some((re) => re.test(file));
+}
+
 // Yield added content lines paired with the current +++ b/<path> file context.
 // Docs files are skipped — only code (and unknown-path) lines are scannable. The
 // file travels with each line so a finding can say WHERE it came from — that is
@@ -38,7 +78,7 @@ function addedCodeLines(diffText) {
   let file = null;
   for (const l of String(diffText).split("\n")) {
     if (l.startsWith("+++ ")) {
-      file = l.startsWith("+++ b/") ? l.slice(6) : null;
+      file = headerPath(l);
       continue;
     }
     if (l.startsWith("+") && !l.startsWith("+++") && !isDocsPath(file)) {
@@ -77,6 +117,19 @@ function isSubprocessCall(line, regexVars) {
 // timing keep a same-cycle diff from widening its own exemptions.
 export function scanDiff(diffText, { ignore = [] } = {}) {
   const findings = [];
+  // Path-based floor (#345): touching a guardrail path trips guardrail-touch
+  // regardless of added-line content — an ERR trap with no trigger string, or a
+  // pure deletion with no added lines at all, would otherwise stay silent. Read
+  // BOTH `--- a/` and `+++ b/` headers so deletions are caught. Not subject to
+  // `ignore`: a guardrail file is never a build artifact.
+  const seen = new Set();
+  for (const l of String(diffText).split("\n")) {
+    const p = headerPath(l);
+    if (p && !seen.has(p) && isGuardrailPath(p)) {
+      seen.add(p);
+      findings.push({ rule: "guardrail-touch", line: "guardrail path changed", file: p });
+    }
+  }
   const ignoreRes = ignore.map(globToRegExp);
   const entries = addedCodeLines(diffText)
     .filter(({ file }) => !(file && ignoreRes.some((re) => re.test(file))));
@@ -133,41 +186,55 @@ function recommend(findings, mergeCmd) {
     + `flagged line there is confirmed benign.`;
 }
 
+// Rank a finding for display: a hit INSIDE a guardrail file is the line that
+// justifies the human gate, so it leads; authored (non-test) code next; a bare
+// path string in a test fixture last. An unknown path counts as authored —
+// the floor errs toward "look at this". Stable sort keeps insertion order
+// within a rank.
+function findingRank({ file }) {
+  if (isGuardrailPath(file)) return 0;
+  if (!isTestFile(file)) return 1;
+  return 2;
+}
+
 // Render a scanDiff() DISAGREE for humans. Returns:
 //   summary — one line for run logs and the CLI status line (kept short),
 //   detail  — an educational markdown note for the escalation a person reads.
 // The raw findings list repeats and interleaves rules; here we DEDUPE identical
-// lines, GROUP by rule, and CLIP long snippets so the note stays scannable. The
-// detail explains *why* the scan can fire on lines that aren't dangerous (it
+// (file, line) pairs, GROUP by rule, RANK real edits above fixtures, TAG each
+// shown line with its file, and CLIP long snippets so the note stays scannable.
+// The detail explains *why* the scan can fire on lines that aren't dangerous (it
 // matches added text, so a fixture that merely mentions a pattern trips it) and
 // then gives a COMPUTED recommendation — a bare "decision needed" is useless
 // friction, so the note names the likely verdict and the concrete next step.
 export function formatSecurityFindings(findings, { maxPerRule = 5, maxLen = 100, mergeCmd = null } = {}) {
-  const byRule = new Map(); // rule -> Set of unique offending lines (insertion-ordered)
-  for (const { rule, line } of findings) {
-    if (!byRule.has(rule)) byRule.set(rule, new Set());
-    byRule.get(rule).add(line);
+  const byRule = new Map(); // rule -> Map of dedupe key -> finding (insertion-ordered)
+  for (const f of findings) {
+    if (!byRule.has(f.rule)) byRule.set(f.rule, new Map());
+    byRule.get(f.rule).set(`${f.file ?? ""}${f.line}`, f);
   }
-  const total = [...byRule.values()].reduce((n, s) => n + s.size, 0);
-  const counts = [...byRule].map(([rule, s]) => `${rule} ×${s.size}`).join(", ");
+  const total = [...byRule.values()].reduce((n, m) => n + m.size, 0);
+  const counts = [...byRule].map(([rule, m]) => `${rule} ×${m.size}`).join(", ");
   const summary = `security scan blocked the merge — ${total} finding${total === 1 ? "" : "s"} (${counts})`;
 
   const clip = (s) => (s.length > maxLen ? s.slice(0, maxLen - 1) + "…" : s);
-  const sections = [...byRule].map(([rule, set]) => {
-    const lines = [...set];
-    const shown = lines.slice(0, maxPerRule).map((l) => `    ${clip(l)}`);
-    if (lines.length > maxPerRule) shown.push(`    …and ${lines.length - maxPerRule} more`);
+  const sections = [...byRule].map(([rule, map]) => {
+    const entries = [...map.values()].sort((a, b) => findingRank(a) - findingRank(b));
+    const shown = entries.slice(0, maxPerRule)
+      .map((f) => `    ${f.file ? `\`${f.file}\`: ` : ""}${clip(f.line)}`);
+    if (entries.length > maxPerRule) shown.push(`    …and ${entries.length - maxPerRule} more`);
     return `- **${rule}** — ${RULE_BLURB[rule] || "matched a risky pattern"}:\n${shown.join("\n")}`;
   });
 
   const detail = [
     "## Security scan blocked the merge",
     "",
-    "orch runs a **deterministic security floor** over the added lines of the final diff,",
-    "independent of the LLM reviewer. Unlike the reviewer it cannot be talked out of a",
-    "DISAGREE — it is the last gate before merge. It matches *text*, so it flags any added",
-    "line containing a risky pattern whether that line is real code or a string that merely",
-    "*mentions* the pattern (a test fixture, a documentation example). It fails **closed**:",
+    "orch runs a **deterministic security floor** over the changed paths and added",
+    "lines of the final diff, independent of the LLM reviewer. Unlike the reviewer",
+    "it cannot be talked out of a DISAGREE — it is the last gate before merge. Any",
+    "diff touching a guardrail path is flagged, and any added line containing a",
+    "risky pattern — whether real code or a string that merely *mentions* the",
+    "pattern (a test fixture, a documentation example). It fails **closed**:",
     "it would rather over-block than let something slip through.",
     "",
     "**What tripped it:**",
