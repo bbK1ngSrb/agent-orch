@@ -730,12 +730,21 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
   }
 }
 
-export function realDeps() {
+// `closes` (the GitHub issue an `orch issue` run works on) is stamped onto every
+// runs.jsonl entry this cycle writes, by wrapping notify.recordRun once here
+// instead of at each of the four call sites in engine.js/finalize.js. runs.jsonl
+// is the only per-branch record that BOTH outlives the finished cycle (resume,
+// checkpoint and inflight records are all cleared on return) and carries the
+// outcome, so it is what priorStagedBranches reads back on the next run.
+export function realDeps({ closes = null } = {}) {
   const ghShell = (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString();
+  const notifyDep = closes
+    ? { ...notify, recordRun: (dir, entry) => notify.recordRun(dir, { ...entry, closes }) }
+    : notify;
   const ghDeps = {
     gh: ghShell,
     git: git.git,
-    notify,
+    notify: notifyDep,
     log: (m) => process.stderr.write(`▶ ${m}\n`),
     resolveIntegrationConflict,
   };
@@ -744,8 +753,8 @@ export function realDeps() {
     openPr: (ctx) => openPr(ctx, ghDeps),
     openIntegrationPr: (ctx) => openIntegrationPr(ctx, ghDeps),
   };
-  const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify });
-  return { adapters, git, gate, scope, notify, inflight, finalize: finalizeDep, checkpoint, reviewLog };
+  const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify: notifyDep });
+  return { adapters, git, gate, scope, notify: notifyDep, inflight, finalize: finalizeDep, checkpoint, reviewLog };
 }
 function dryDeps() {
   const verdict = { decision: "AGREE", reason: "(dry-run: assumed agree)", raw: "" };
@@ -888,6 +897,54 @@ export function resolveTaskBranch(ctx, deps = { git, resume }) {
   const branch = `pr/${authorName}/${slugify(task)}-${sid}`;
   if (!dry) r.record(orchDir, task, authorName, { branch, sid });
   return { sid, branch, resume: false };
+}
+
+// Branches an EARLIER run already staged for this issue, newest run per branch,
+// so `orch issue <n>` can say "work for #n is already sitting here" instead of
+// silently staging a second branch (most important after an escalation — that is
+// exactly the work someone means to come back to).
+//
+// The join key is the ISSUE NUMBER, persisted on the run record by realDeps().
+// It is deliberately NOT the branch slug: the slug comes from the issue TITLE,
+// so editing the title between runs makes the old branch invisible, and two
+// issues with the same title make one issue's run claim the other's branch.
+// Records written before the number was persisted have nothing but the slug to
+// go on — those are still reported, flagged `uncertain`, because a hedged
+// "this may be yours" is honest where a slug guess presented as fact is not.
+export function priorStagedBranches({ repo, orchDir, closes, task }, deps = { git }) {
+  let lines;
+  try { lines = readFileSync(join(orchDir, "runs.jsonl"), "utf8").split("\n"); }
+  catch { return []; } // no run history yet
+  const slugPrefix = `${slugify(task)}-`;
+  const byBranch = new Map();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let e;
+    try { e = JSON.parse(line); } catch { continue; } // partial/corrupt line
+    if (!e.branch) continue;
+    const uncertain = e.closes == null;
+    if (uncertain) {
+      const [, , tail] = e.branch.split("/"); // pr/<agent>/<slug>-<sid>
+      if (!tail || !tail.startsWith(slugPrefix)) continue;
+    } else if (Number(e.closes) !== Number(closes)) continue;
+    byBranch.set(e.branch, { branch: e.branch, sid: e.sid, verdict: e.verdict, reason: e.reason, uncertain });
+  }
+  // A branch that no longer exists is finished work, not staged work.
+  return [...byBranch.values()].filter((e) => deps.git.branchExists(repo, e.branch));
+}
+
+export function formatPriorStagedBranches(closes, entries) {
+  if (!entries.length) return null;
+  const out = [`orch: issue #${closes} already has ${entries.length} staged branch${entries.length === 1 ? "" : "es"} from an earlier run:`];
+  for (const e of entries) {
+    const reason = String(e.reason || "").split("\n")[0].slice(0, 120);
+    const hedge = e.uncertain ? "  [no issue number recorded — matched by title, may belong to another issue]" : "";
+    out.push(`  ${e.branch} — ${e.verdict || "unknown"}${reason ? `: ${reason}` : ""}${hedge}`);
+    if (e.sid) out.push(`    inspect: git log ${e.branch}   resume: orch continue ${e.sid}`);
+  }
+  out.push("  this run stages a NEW branch. A re-run rotates the author and regenerates the diff, so a security-floor");
+  out.push("  escalation repeats only if the fresh diff touches the same protected paths.");
+  return out.join("\n");
 }
 
 // `orch agent build <name>` self-bootstraps a missing adapter: a work order
@@ -1150,6 +1207,10 @@ export async function main(argv, deps = {}) {
       authorPrompt = buildAuthorPrompt(wo);
       closes = Number(n);
       workOrder = wo;
+      // Warn only — never block: the operator decides whether to resume, inspect
+      // or stage another branch.
+      const prior = priorStagedBranches({ repo, orchDir, closes, task });
+      if (prior.length) console.log(formatPriorStagedBranches(closes, prior));
     } else if (mode === "task") {
       // §3a/§3b: a --file task is UNTRUSTED intake — it must be a JSON work order,
       // validated for shape, then wrapped in a neutralized fence the author treats
@@ -1266,7 +1327,7 @@ export async function main(argv, deps = {}) {
         }
       }
       try {
-        const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
+        const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps({ closes: run.closes })));
         results.push(result);
         // Cycle returned (any terminal status) → drop the resume + checkpoint records.
         // A quota throw skips this line, leaving both for the next run to resume (#24).
@@ -1456,7 +1517,7 @@ export async function main(argv, deps = {}) {
       }
     }
     try {
-      const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
+      const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps({ closes })));
       if (!dry) {
         checkpoint.clear(orchDir, sid);
         // Codex review (#125 stalemate): the original `orch task` run that

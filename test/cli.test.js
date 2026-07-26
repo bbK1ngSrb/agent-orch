@@ -6,7 +6,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -2647,4 +2647,99 @@ test("summaryLine keeps a multi-line reason out of the parenthetical, appended b
   const [firstLine, ...restLines] = out.split("\n");
   assert.match(firstLine, /^orch \(dry\): b: merge-deferred \(dirty-merge\) — opened PR https:\/\/x\/pr\/7\. Vetted: agents AGREE, tests green, security clean; completed after 1 round\(s\); cost \$0$/);
   assert.equal(restLines.join("\n"), reason.split("\n").slice(1).join("\n"));
+});
+
+// #N: `orch issue <n>` used to stage a second branch for an issue that already
+// had one, silently. The join key is the ISSUE NUMBER persisted on the run
+// record — NOT the branch slug, which is derived from the (editable) title.
+function stagePriorRun(repo, branch, entry) {
+  gitDep.git(["branch", branch], repo);
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "runs.jsonl"),
+    JSON.stringify({ ts: "2026-07-26T00:00:00Z", branch, sid: "9999-0", verdict: "escalated", reason: "security scan blocked the merge — 1 finding (guardrail-touch ×1)", ...entry }) + "\n");
+}
+
+function issueGh(number, title) {
+  return (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ number, title, body: "why this matters", state: "OPEN" });
+    if (args[0] === "issue" && args[1] === "comment") return "";
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+}
+
+const escalatingDeps = () => ({ ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate", sha: "x" }) });
+
+test("orch issue <n> warns about a branch a prior run staged for the same issue (title unchanged)", async () => {
+  const saved = process.exitCode;
+  const repo = initGitRepo();
+  stagePriorRun(repo, "pr/claude/stale-base-9999-0", { closes: 52 });
+  try {
+    const logs = await runMainInRepo(repo, ["issue", "52"],
+      { cycleDeps: escalatingDeps(), githubDeps: () => ({ gh: issueGh(52, "stale base") }) });
+    const out = logs.join("\n");
+    assert.match(out, /issue #52 already has 1 staged branch/);
+    assert.match(out, /pr\/claude\/stale-base-9999-0 — escalated/);
+    assert.match(out, /orch continue 9999-0/);
+    assert.doesNotMatch(out, /may belong to another issue/);
+  } finally {
+    process.exitCode = saved;
+  }
+});
+
+test("orch issue <n> still finds the prior branch after the issue title was edited", async () => {
+  const saved = process.exitCode;
+  const repo = initGitRepo();
+  // Branch slug is from the OLD title; the issue now has a different one.
+  stagePriorRun(repo, "pr/claude/stale-base-9999-0", { closes: 52 });
+  try {
+    const logs = await runMainInRepo(repo, ["issue", "52"],
+      { cycleDeps: escalatingDeps(), githubDeps: () => ({ gh: issueGh(52, "orch bases cycles on a stale local main") }) });
+    assert.match(logs.join("\n"), /issue #52 already has 1 staged branch[\s\S]*pr\/claude\/stale-base-9999-0/);
+  } finally {
+    process.exitCode = saved;
+  }
+});
+
+test("orch issue <n> does not claim another issue's branch that happens to share the slug", async () => {
+  const saved = process.exitCode;
+  const repo = initGitRepo();
+  stagePriorRun(repo, "pr/claude/stale-base-9999-0", { closes: 362 });
+  try {
+    const logs = await runMainInRepo(repo, ["issue", "999"],
+      { cycleDeps: escalatingDeps(), githubDeps: () => ({ gh: issueGh(999, "stale base") }) });
+    assert.doesNotMatch(logs.join("\n"), /already has \d+ staged branch/);
+  } finally {
+    process.exitCode = saved;
+  }
+});
+
+test("a legacy branch with no persisted issue number is reported, flagged uncertain", () => {
+  const repo = initGitRepo();
+  const branch = "pr/claude/stale-base-9999-0";
+  stagePriorRun(repo, branch, {}); // pre-fix record: no `closes`
+  const found = priorStagedBranches({ repo, orchDir: join(repo, ".orch"), closes: 52, task: "stale base" });
+  assert.deepEqual(found.map((e) => [e.branch, e.uncertain]), [[branch, true]]);
+  assert.match(formatPriorStagedBranches(52, found), /may belong to another issue/);
+});
+
+test("priorStagedBranches skips a branch that no longer exists", () => {
+  const repo = initGitRepo();
+  stagePriorRun(repo, "pr/claude/stale-base-9999-0", { closes: 52 });
+  gitDep.git(["branch", "-D", "pr/claude/stale-base-9999-0"], repo);
+  assert.deepEqual(priorStagedBranches({ repo, orchDir: join(repo, ".orch"), closes: 52, task: "stale base" }), []);
+});
+
+test("realDeps stamps the issue number onto every run record it writes", () => {
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-closes-"));
+  realDeps({ closes: 52 }).notify.recordRun(orchDir, { branch: "pr/claude/x-1-0", sid: "1-0", verdict: "escalated" });
+  const entry = JSON.parse(readFileSync(join(orchDir, "runs.jsonl"), "utf8").trim());
+  assert.equal(entry.closes, 52);
+});
+
+test("the prior-branch notice does not claim a re-run is futile", () => {
+  const out = formatPriorStagedBranches(52, [{ branch: "pr/claude/x-1-0", sid: "1-0", verdict: "escalated", reason: "security scan blocked the merge" }]);
+  assert.doesNotMatch(out, /cannot change|deterministic|no point|futile/i);
+  assert.match(out, /rotates the author and regenerates the diff/);
 });
