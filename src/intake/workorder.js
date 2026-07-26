@@ -70,10 +70,13 @@ const FENCE_BEGIN = "BEGIN UNTRUSTED REFERENCE";
 const FENCE_END = "END UNTRUSTED REFERENCE";
 
 function neutralizeFence(s) {
-  // Defang any literal fence markers an attacker embeds in their text.
-  return String(s)
-    .replaceAll(FENCE_END, "END_UNTRUSTED_REFERENCE_")
-    .replaceAll(FENCE_BEGIN, "BEGIN_UNTRUSTED_REFERENCE_");
+  // Defang fence-marker near-misses (case/whitespace variants). A model may
+  // honour near-miss spellings as terminators, so over-matching is correct.
+  // Regex is inline so a shared /g lastIndex cannot leak across calls.
+  return String(s).replace(
+    /\b(BEGIN|END)\s+UNTRUSTED\s+REFERENCE\b/gi,
+    (_, which) => `${which.toUpperCase()}_UNTRUSTED_REFERENCE_`,
+  );
 }
 
 export function buildAuthorPrompt(workOrder) {
