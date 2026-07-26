@@ -410,6 +410,61 @@ test("review TTY progress accumulates dots and round markers across rounds", asy
   }
 });
 
+// Parallel reviewers (engine Promise.all) must not share one module-level strip:
+// each keeps its own progress identity, and concurrent TTY beats fall back to
+// line-per-beat so labels/elapsed stay attributable instead of flickering one \r line.
+test("parallel reviewers keep separate TTY progress and fall back to line-per-beat", async () => {
+  const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
+  const priorWrite = process.stderr.write;
+  const priorIsTTY = process.stderr.isTTY;
+  const writes = [];
+  process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  _resetReviewProgress();
+  try {
+    const slow = (name) => makeCliAdapter({
+      name,
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 55)"),
+    });
+    const a = slow("alpha");
+    const b = slow("beta");
+    const wd = tmpdir();
+    await Promise.all([
+      a.audit("pr/x/y", wd, { round: 1 }),
+      b.audit("pr/x/y", wd, { round: 1 }),
+    ]);
+    const joined = writes.join("");
+    assert.ok(joined.includes("alpha auditing"), "alpha progress must be attributable");
+    assert.ok(joined.includes("beta auditing"), "beta progress must be attributable");
+    // Under concurrency the strip falls back to newline-per-beat (non-CR form).
+    const concurrentBeats = writes.filter((w) =>
+      w.includes("still running") && (w.includes("alpha") || w.includes("beta")));
+    assert.ok(concurrentBeats.length >= 2, "expected line-per-beat progress from both reviewers");
+    for (const beat of concurrentBeats) {
+      assert.ok(beat.endsWith("\n"), "concurrent beats must be line-per-beat, not CR rewrites");
+      assert.ok(!beat.includes("\r"), "concurrent beats must not fight over one CR line");
+    }
+    // Shared state would interleave both labels into one strip's dots; with
+    // per-label state, each beat names exactly one reviewer.
+    for (const beat of concurrentBeats) {
+      const hasAlpha = beat.includes("alpha");
+      const hasBeta = beat.includes("beta");
+      assert.equal(hasAlpha !== hasBeta, true, `beat must name one reviewer, got: ${JSON.stringify(beat)}`);
+    }
+  } finally {
+    _resetReviewProgress();
+    if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
+    else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
+    process.stderr.write = priorWrite;
+    Object.defineProperty(process.stderr, "isTTY", { value: priorIsTTY, configurable: true });
+  }
+});
+
 test("author fails fast when a stage exceeds stageTimeout, even if the child ignores SIGTERM (#56)", async () => {
   // The real failure: codex exec wedges on the backend and never exits. The
   // watchdog must kill by stage WALL-CLOCK and force a failure. A child that

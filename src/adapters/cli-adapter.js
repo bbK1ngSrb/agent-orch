@@ -67,13 +67,20 @@ const WHIMSY_WORDS = [
 ];
 // Erase-to-EOL for in-place TTY rewrites (same raw ANSI as src/tui/screen.js).
 const ERASE_TO_EOL = "\x1b[K";
-// Multi-round review strip continuity (TTY only). Dots + elapsed span rounds;
-// round numbers are stamped into the strip when a new round starts.
-let reviewProgress = null;
+// Multi-round review strip continuity (TTY only), keyed by agent label so
+// parallel reviewers (Promise.all in engine) do not share one strip. Dots +
+// elapsed span sequential rounds of the *same* reviewer; round numbers are
+// stamped into that reviewer's strip when a new round starts.
+/** @type {Map<string, {started: number, beats: number, dots: string, currentRound: number}>} */
+const reviewProgressByLabel = new Map();
+// Concurrent TTY progress writers: when >1, fall back to line-per-beat so
+// agents do not fight over a single CR-rewritten line.
+let activeTtyProgress = 0;
 
 /** @internal test helper — clears multi-round review progress state. */
 export function _resetReviewProgress() {
-  reviewProgress = null;
+  reviewProgressByLabel.clear();
+  activeTtyProgress = 0;
 }
 
 function whimsyWord(beatIndex) {
@@ -87,16 +94,19 @@ export function formatProgressBeat({ tty, stage, label, word, dots, elapsed }) {
   return `\r▸ ${stage}  ${label}   ${word}${dots}      ${elapsed}${ERASE_TO_EOL}`;
 }
 
-function beginProgressState(stage, round, started) {
+function beginProgressState(stage, round, started, label) {
   // Continuity only when the engine threads a numeric round (review rounds).
   if (stage === "review" && Number.isFinite(round)) {
-    if (round === 1 || !reviewProgress) {
-      reviewProgress = { started, beats: 0, dots: String(round), currentRound: round };
-    } else if (round !== reviewProgress.currentRound) {
-      reviewProgress.currentRound = round;
-      reviewProgress.dots += String(round);
+    const key = String(label || "");
+    let state = reviewProgressByLabel.get(key);
+    if (round === 1 || !state) {
+      state = { started, beats: 0, dots: String(round), currentRound: round };
+      reviewProgressByLabel.set(key, state);
+    } else if (round !== state.currentRound) {
+      state.currentRound = round;
+      state.dots += String(round);
     }
-    return reviewProgress;
+    return state;
   }
   return { started, beats: 0, dots: "" };
 }
@@ -115,7 +125,8 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     const round = runOpts.round;
     // isTTY only: headless/logged runs must keep newline-per-beat (no CR/ANSI).
     const tty = Boolean(process.stderr.isTTY);
-    const progress = tty ? beginProgressState(stage, round, started) : null;
+    const progress = tty ? beginProgressState(stage, round, started, label) : null;
+    if (tty) activeTtyProgress += 1;
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -135,6 +146,7 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
       if (timer) clearInterval(timer);
       if (watchdog) clearTimeout(watchdog);
       endProgressLine();
+      if (tty) activeTtyProgress = Math.max(0, activeTtyProgress - 1);
       resolve(result);
     };
     // detached (POSIX only): the child leads its own process group, so a stalled
@@ -167,6 +179,19 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
       progress.dots += ".";
       const word = whimsyWord(progress.beats - 1);
       const elapsed = formatElapsed(Date.now() - progress.started);
+      // Single writer: in-place CR rewrite. Concurrent writers (parallel
+      // reviewers): line-per-beat so each agent's dots/elapsed stay attributable
+      // and strips do not flicker over one shared terminal line.
+      if (activeTtyProgress > 1) {
+        if (wroteProgress && !endedProgressLine) {
+          process.stderr.write("\n");
+          endedProgressLine = true;
+        }
+        process.stderr.write(formatProgressBeat({
+          tty: false, stage, label, word, dots: progress.dots, elapsed,
+        }));
+        return;
+      }
       process.stderr.write(formatProgressBeat({ tty: true, stage, label, word, dots: progress.dots, elapsed }));
       wroteProgress = true;
     }, progressIntervalMs());
