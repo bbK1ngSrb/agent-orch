@@ -465,6 +465,61 @@ test("parallel reviewers keep separate TTY progress and fall back to line-per-be
   }
 });
 
+// Staggered finish: concurrent path latches endedProgressLine when closing the
+// shared CR strip. When one reviewer exits early, the survivor resumes CR
+// rewrite and must clear that latch so its finish still emits a trailing \n —
+// otherwise the next phase line glues onto the stale strip.
+test("survivor TTY progress ends with newline after concurrency drops 2→1", async () => {
+  const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
+  const priorWrite = process.stderr.write;
+  const priorIsTTY = process.stderr.isTTY;
+  const writes = [];
+  process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  _resetReviewProgress();
+  try {
+    const early = makeCliAdapter({
+      name: "early",
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 35)"),
+    });
+    const late = makeCliAdapter({
+      name: "late",
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 120)"),
+    });
+    const wd = tmpdir();
+    await Promise.all([
+      early.audit("pr/x/y", wd, { round: 1 }),
+      late.audit("pr/x/y", wd, { round: 1 }),
+    ]);
+    // Concurrent window: both emit line-per-beat (non-CR).
+    const concurrentBeats = writes.filter((w) =>
+      w.includes("still running") && (w.includes("early") || w.includes("late")));
+    assert.ok(concurrentBeats.length >= 1, "expected concurrent line-per-beat while both alive");
+    // After early exits, late resumes solo CR rewrite.
+    const survivorCr = writes.filter((w) => w.includes("\r▸") && w.includes("late auditing"));
+    assert.ok(survivorCr.length >= 1, "survivor must resume in-place CR progress after peer exits");
+    // Survivor finish must terminate the CR strip so the next phase line is clean.
+    assert.ok(writes.some((w) => w === "\n"), "survivor finish must emit trailing newline after CR progress");
+    // Last CR beat must be followed by a standalone newline (not glued phase text).
+    const lastCrIdx = writes.findLastIndex((w) => w.includes("\r▸") && w.includes("late auditing"));
+    assert.ok(lastCrIdx >= 0);
+    const afterCr = writes.slice(lastCrIdx + 1);
+    assert.ok(afterCr.some((w) => w === "\n"), "terminating newline must follow survivor's last CR beat");
+  } finally {
+    _resetReviewProgress();
+    if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
+    else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
+    process.stderr.write = priorWrite;
+    Object.defineProperty(process.stderr, "isTTY", { value: priorIsTTY, configurable: true });
+  }
+});
+
 test("author fails fast when a stage exceeds stageTimeout, even if the child ignores SIGTERM (#56)", async () => {
   // The real failure: codex exec wedges on the backend and never exits. The
   // watchdog must kill by stage WALL-CLOCK and force a failure. A child that

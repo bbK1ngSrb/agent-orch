@@ -194,6 +194,10 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
       }
       process.stderr.write(formatProgressBeat({ tty: true, stage, label, word, dots: progress.dots, elapsed }));
       wroteProgress = true;
+      // CR strip is open again (including after concurrency drops 2→1). Clear the
+      // latch so finish emits a terminating newline; otherwise the next phase line
+      // glues onto the survivor's stale strip.
+      endedProgressLine = false;
     }, progressIntervalMs());
     timer.unref?.();
     // #56 watchdog: a hard wall-clock cap. On expiry, kill the whole tree
