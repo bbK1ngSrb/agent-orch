@@ -485,6 +485,80 @@ test("audit escalates when a crashed agent only echoed the review prompt", async
   assert.match(v.reason, /agent exited nonzero/);
 });
 
+test("audit escalates when a successful agent only echoed the review prompt", async () => {
+  // Exit 0, but the output is the rendered review prompt verbatim — the
+  // reviewer never ran. The prompt's own instruction bullets contain AGREE /
+  // DISAGREE, so the unanchored fallback would otherwise read them as a real
+  // verdict and drive pointless revise rounds against a dead reviewer.
+  const adapter = makeCliAdapter({
+    name: "echo-ok",
+    bin: process.execPath,
+    buildArgs: (prompt) => [...nodeScript("process.stdout.write(process.argv[1])"), prompt],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+  assert.equal(v.agentError, true, "a pure prompt echo is not a review — escalate, don't revise");
+  assert.match(v.reason, /only echoed the review prompt/);
+});
+
+test("audit keeps a genuine AGREE sitting between quoted prompt bullets", async () => {
+  // A reviewer that quotes its own instructions is normal. A line-leading
+  // AGREE between the two quoted bullets is a real verdict, not an echo —
+  // it must survive the echo strip and parse as AGREE with no agentError.
+  const out = [
+    "Reviewer notes, quoting the instructions for clarity:",
+    "- `AGREE` followed by a one-paragraph reason, if the change should merge.",
+    "AGREE",
+    "The change is correct and well tested.",
+    "- `DISAGREE` followed by a one-paragraph reason listing concrete findings.",
+    "",
+  ].join("\n");
+  const adapter = makeCliAdapter({
+    name: "quoting-reviewer",
+    bin: process.execPath,
+    buildArgs: () => nodeScript(`process.stdout.write(${JSON.stringify(out)})`),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.equal(v.agentError, undefined);
+});
+
+test("audit keeps a genuine AGREE before a trailing full-prompt recap", async () => {
+  // Verdict first, then a debug dump of the whole prompt. The recap contains
+  // the prompt's verdict bullets, but the leading AGREE is genuine and must
+  // parse as AGREE with no agentError.
+  const out = [
+    "AGREE",
+    "The change is correct and well tested.",
+    "",
+    "--- (debug: prompt recap below) ---",
+    "You are an adversarial code reviewer. Audit the branch `pr/x/y` against `main`.",
+    "- `AGREE` followed by a one-paragraph reason, if the change should merge.",
+    "- `DISAGREE` followed by a one-paragraph reason listing concrete findings.",
+    "",
+  ].join("\n");
+  const adapter = makeCliAdapter({
+    name: "recap-reviewer",
+    bin: process.execPath,
+    buildArgs: () => nodeScript(`process.stdout.write(${JSON.stringify(out)})`),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.equal(v.agentError, undefined);
+});
+
+test("audit keeps an ordinary DISAGREE with a real reason (no agentError)", async () => {
+  const adapter = makeCliAdapter({
+    name: "real-disagree",
+    bin: process.execPath,
+    buildArgs: () => nodeScript("console.log('DISAGREE the parser drops empty lines')"),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+  assert.match(v.reason, /drops empty lines/);
+  assert.equal(v.agentError, undefined);
+});
+
 test("audit surfaces the agent's actual error in the DISAGREE reason (#31)", async () => {
   // A nonzero exit must carry WHY it failed (e.g. a bad model id) into the
   // reason, not just a generic sentinel — otherwise the escalation is undiagnosable.
