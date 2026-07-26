@@ -333,6 +333,68 @@ new mode 100755`;
   ]);
 });
 
+// Real `git diff` output: git C-quotes each side of the `diff --git` line
+// independently, so a non-ASCII path arrives as `"a/…" "b/…"` — and a mode-only
+// change emits no `---`/`+++` and no rename lines, leaving that one line as the
+// only record of the path.
+test("mode-only change to a QUOTED (non-ASCII) guardrail path is flagged", () => {
+  const d = `diff --git "a/.github/workflows/caf\\303\\251.yml" "b/.github/workflows/caf\\303\\251.yml"
+old mode 100644
+new mode 100755`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/café.yml" },
+  ]);
+});
+
+// A copy does NOT modify its source, so `copy from <guardrail path>` must not
+// trip the floor — unlike `rename from`, where the old path really did change.
+test("copying a guardrail file OUT to an ordinary path stays AGREE", () => {
+  const d = `diff --git "a/.github/workflows/caf\\303\\251.yml" b/tmp-ci.yml
+old mode 100755
+new mode 100644
+similarity index 100%
+copy from ".github/workflows/caf\\303\\251.yml"
+copy to tmp-ci.yml`;
+  assert.equal(scanDiff(d).decision, "AGREE");
+});
+
+// A PARTIAL copy (<100% similarity) does emit `---`/`+++`, so the pre-existing
+// header scan still flags the source. That FP is out of scope here — the header
+// path predates the structural parse and errs toward escalation — but pin it so
+// the difference between the two copy forms is visible rather than assumed.
+test("partial copy out of a guardrail path still trips the pre-existing header scan", () => {
+  const d = `diff --git "a/.github/workflows/caf\\303\\251.yml" b/tmp-ci.yml
+similarity index 80%
+copy from ".github/workflows/caf\\303\\251.yml"
+copy to tmp-ci.yml
+--- "a/.github/workflows/caf\\303\\251.yml"
++++ b/tmp-ci.yml
+@@ -6,3 +6,4 @@ jobs:
+       - run: echo bye
++      - run: echo extra`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/café.yml" },
+  ]);
+});
+
+// …but the suppression must not swallow the destination: copying a file INTO a
+// guardrail path adds a live workflow and still has to be flagged.
+test("copying an ordinary file INTO a guardrail path is flagged", () => {
+  const d = `diff --git a/src/a.js b/.github/workflows/copied.yml
+similarity index 100%
+copy from src/a.js
+copy to .github/workflows/copied.yml`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/copied.yml" },
+  ]);
+});
+
 test("renaming an ordinary file stays AGREE", () => {
   const d = `diff --git a/src/a.js b/src/b.js
 similarity index 100%

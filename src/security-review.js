@@ -49,33 +49,45 @@ function unquoteGitPath(s) {
 // (null for /dev/null or non-header lines). Reading BOTH headers matters: a
 // deleted guardrail file has no added lines to scan — only its `--- a/` header
 // carries the path.
-function headerPath(l) {
-  if (!l.startsWith("--- ") && !l.startsWith("+++ ")) return null;
-  const p = unquoteGitPath(l.slice(4).trim());
-  if (p === "/dev/null") return null;
-  // Only trust the standard a//b/ prefixes; anything else is an unknown path,
-  // which content scanning treats as scannable (fail closed).
-  const m = p.match(/^[ab]\/([\s\S]*)$/);
+// Unquote and strip the `a/` / `b/` prefix git puts on both sides of a header.
+// Only the standard prefixes are trusted; anything else (including /dev/null)
+// is an unknown path, which content scanning treats as scannable (fail closed).
+function abPath(s) {
+  const m = unquoteGitPath(s.trim()).match(/^[ab]\/([\s\S]*)$/);
   return m ? m[1] : null;
 }
 
+function headerPath(l) {
+  if (!l.startsWith("--- ") && !l.startsWith("+++ ")) return null;
+  return abPath(l.slice(4));
+}
+
 // A pure rename (100% similarity) or a mode-only change carries NO `---`/`+++`
-// headers — git emits only the `diff --git a/<old> b/<new>` line plus, for a
-// rename/copy, `rename from`/`rename to`. Parse those too, both sides: moving a
-// file OUT of a guardrail path matters as much as moving one in. Paths may
-// contain spaces, so the `a/`…` b/` split is greedy — the last ` b/` wins, which
-// is right for the same-path and no-space cases and harmless otherwise (a
-// mis-split path simply fails the guardrail globs, and the rename lines below
-// carry the exact paths anyway). C-quoted `diff --git "a/…" "b/…"` lines are
-// likewise left to the rename lines, which quote one path each.
-const DIFF_GIT_RE = /^diff --git a\/(.*) b\/(.*)$/;
-const RENAME_RE = /^(?:rename|copy) (?:from|to) (.+)$/;
-function structuralPaths(l) {
+// headers — git emits only the `diff --git <a-side> <b-side>` line plus, for a
+// rename, `rename from`/`rename to`. Each side is C-quoted independently when it
+// holds non-ASCII/control bytes, so the sides can be mixed
+// (`diff --git "a/café.yml" b/plain.yml`); the pattern accepts either form.
+//
+// Only the b-side is read here. It is enough: the a-side of a modify/delete
+// already comes from the `--- a/` header, and for a rename the OLD path — which
+// matters as much as the new one, since moving a workflow out detaches a
+// required check — comes from the exact, unambiguous `rename from` line.
+// `copy from` is deliberately NOT matched: a copy does not modify its source,
+// so flagging that path is a false guardrail-touch.
+//
+// Paths may contain spaces, making git's own line ambiguous; the greedy `.+`
+// takes the LAST ` b/` (or ` "b/`), which is right for the same-path and
+// no-space cases. A path that literally contains ` b/` mis-splits and then
+// fails the guardrail globs — fail-OPEN, but it needs a guardrail file named
+// e.g. `.github/workflows/x b/y.yml` to reach, and the exact `rename from`/`to`
+// lines cover the rename case regardless.
+const DIFF_GIT_RE = /^diff --git .+ ("?b\/.*)$/;
+const RENAME_RE = /^rename (?:from|to) (.+)$/;
+function structuralPath(l) {
   const g = l.match(DIFF_GIT_RE);
-  if (g) return [unquoteGitPath(g[1]), unquoteGitPath(g[2])];
+  if (g) return abPath(g[1]);
   const r = l.match(RENAME_RE);
-  if (r) return [unquoteGitPath(r[1])];
-  return [];
+  return r ? unquoteGitPath(r[1]) : null;
 }
 
 // The path-based floor: the same protected set orch enforces at intake, plus
@@ -145,7 +157,7 @@ export function scanDiff(diffText, { ignore = [] } = {}) {
   // `ignore`: a guardrail file is never a build artifact.
   const seen = new Set();
   for (const l of String(diffText).split("\n")) {
-    const paths = [headerPath(l), ...structuralPaths(l)];
+    const paths = [headerPath(l), structuralPath(l)];
     for (const p of paths) {
       if (p && !seen.has(p) && isGuardrailPath(p)) {
         seen.add(p);
