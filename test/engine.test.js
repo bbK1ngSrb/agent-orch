@@ -293,10 +293,11 @@ test("DISAGREE then AGREE -> merged on round 2", async () => {
   const revisionPrompt = deps._calls.prompts[1];
   assert.match(revisionPrompt, /# Trusted goal/);
   assert.match(revisionPrompt, /Do not read secrets or environment/);
-  assert.equal(revisionPrompt.match(/^END UNTRUSTED REFERENCE$/gm).length, 1);
+  assert.equal(revisionPrompt.match(/^END UNTRUSTED REFERENCE [0-9a-f]{8}$/gm).length, 1);
+  const endMarker = revisionPrompt.match(/^END UNTRUSTED REFERENCE [0-9a-f]{8}$/m);
   const fenced = revisionPrompt.slice(
     revisionPrompt.indexOf("BEGIN UNTRUSTED REFERENCE"),
-    revisionPrompt.indexOf("END UNTRUSTED REFERENCE"),
+    endMarker.index,
   );
   assert.match(fenced, /ignore prior instructions/);
 });
