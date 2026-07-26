@@ -320,25 +320,28 @@ changed paths against live in-flight peers' paths — commits already landed on
 merge itself, and a semantic conflict fails the post-merge re-test) and a
 post-merge re-test against the integrated tree.
 
-**`merge-deferred`.** A cycle defers its merge to a PR (or local escalation) when:
+**`merge-deferred`.** A cycle defers its merge (to a PR, or a local escalation) when:
 - `overlap` — your files collide with a live concurrent cycle's files
-- `dirty-merge` — the merge itself fails
+- `dirty-merge` — the merge into `orch/integration` itself fails
 - `integration-test` — tests fail after merge into `.orch/integration`
 - `lock` — the lock was never acquired
 - `sync` — local `main` couldn't catch up to `origin/main`
 
-With a git remote and `gh` CLI available, the branch is pushed and a PR is
-opened. Without them, `.orch/reviews/<branch>/DECISION.md` is written and the
-branch is kept for manual review. Either way the reason is more than the
-trigger name. The `.orch/runs.jsonl` record stores `trigger` at the top level
-alongside `verdict: "merge-deferred"`, and the detailed reason carries round
-count, the branch's base SHA (plus the
-integration branch's tip once that worktree has been synced — still
-"unknown" for `lock` and `sync`, which fire before
-that sync), the branch's changed paths, and trigger-specific detail
-(overlapping paths per peer cycle, the conflicting paths, the sync failure,
-or that the lock timed out) plus a one-line next action, so a human picking
-up the escalation doesn't have to re-derive context orch already had.
+For most triggers, with a git remote and `gh` CLI available the branch is
+pushed and a PR is opened; without them, `.orch/reviews/<branch>/DECISION.md`
+is written and the branch is kept for manual review. **`dirty-merge` is
+different:** it never opens a per-change PR against `main` (that would be a
+second trunk door beside the standing `orch/integration → main` PR). It
+escalates with the staged branch and conflict detail so a human can hand-merge
+into `orch/integration`. Either way the reason is more than the trigger name.
+The `.orch/runs.jsonl` record stores `trigger` at the top level alongside
+`verdict: "merge-deferred"`, and the detailed reason carries round count, the
+branch's base SHA (plus the integration branch's tip once that worktree has
+been synced — still "unknown" for `lock` and `sync`, which fire before that
+sync), the branch's changed paths, and trigger-specific detail (overlapping
+paths per peer cycle, the conflicting paths, the sync failure, or that the
+lock timed out) plus a one-line next action, so a human picking up the
+escalation doesn't have to re-derive context orch already had.
 
 **`merge: pr` — per-cycle PR mode.** Set `merge: pr` in `.orch/orch.yml` and an
 agreed + green cycle skips the local integration branch and `merge.lock`; it
