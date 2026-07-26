@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.207 — 2026-07-26
+- reviseCap is documented as counting revise rounds but the code counts total review rounds — off-by-one in the manual and --help text (closes [#369](https://github.com/bbk1ng/agent-orch/issues/369))
+
 ## v0.4.206 — 2026-07-24
 - Auto-rebase + re-gate merge-deferred peers after a cycle lands (Tier-1 self-progress, no resolver) (closes [#350](https://github.com/bbk1ng/agent-orch/issues/350))
 
