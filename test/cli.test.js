@@ -2773,6 +2773,18 @@ test("realDeps stamps the issue number onto every run record it writes", () => {
   assert.equal(entry.closes, 52);
 });
 
+test("realDeps never overwrites a record that already carries its own issue number", () => {
+  // A redriven deferred peer belongs to a DIFFERENT issue than the cycle that
+  // unblocked it; stamping this run's number on it is cross-issue misattribution.
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-closes-peer-"));
+  const { notify: n } = realDeps({ closes: 362 });
+  n.recordRun(orchDir, { branch: "pr/codex/b-2-0", sid: "2-0", verdict: "merged", closes: 999 });
+  // An explicit null is an answer too: an `orch task` peer has no issue at all.
+  n.recordRun(orchDir, { branch: "pr/codex/c-3-0", sid: "3-0", verdict: "merged", closes: null });
+  const entries = readFileSync(join(orchDir, "runs.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(entries.map((e) => e.closes), [999, null]);
+});
+
 test("the prior-branch notice does not claim a re-run is futile", () => {
   const out = formatPriorStagedBranches(52, [{ branch: "pr/claude/x-1-0", sid: "1-0", verdict: "escalated", reason: "security scan blocked the merge" }]);
   assert.doesNotMatch(out, /cannot change|deterministic|no point|futile/i);

@@ -730,16 +730,24 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
   }
 }
 
-// `closes` (the GitHub issue an `orch issue` run works on) is stamped onto every
-// runs.jsonl entry this cycle writes, by wrapping notify.recordRun once here
-// instead of at each of the four call sites in engine.js/finalize.js. runs.jsonl
-// is the only per-branch record that BOTH outlives the finished cycle (resume,
-// checkpoint and inflight records are all cleared on return) and carries the
-// outcome, so it is what priorStagedBranches reads back on the next run.
+// `closes` (the GitHub issue an `orch issue` run works on) is stamped onto the
+// runs.jsonl entries this cycle writes. runs.jsonl is the only per-branch record
+// that BOTH outlives the finished cycle (resume, checkpoint and inflight records
+// are all cleared on return) and carries the outcome, so it is what
+// priorStagedBranches reads back on the next run.
+//
+// This wrapper is only a FALLBACK for call sites that state no issue (engine.js,
+// which always records THIS cycle); a record that carries `closes` is left alone.
+// One cycle can write records for OTHER issues: after it lands, finalize.js
+// redrives every overlap-deferred peer under the same lock, and each peer carries
+// its own `closes` — including an explicit `null` for an `orch task` peer, which
+// has no issue at all. So the test is the key's PRESENCE, not a non-null value:
+// stamping this run's number over either kind of peer record is exactly the
+// cross-issue false attribution priorStagedBranches exists to prevent.
 export function realDeps({ closes = null } = {}) {
   const ghShell = (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString();
   const notifyDep = closes
-    ? { ...notify, recordRun: (dir, entry) => notify.recordRun(dir, { ...entry, closes }) }
+    ? { ...notify, recordRun: (dir, entry) => notify.recordRun(dir, "closes" in entry ? entry : { ...entry, closes }) }
     : notify;
   const ghDeps = {
     gh: ghShell,
