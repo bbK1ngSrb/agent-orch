@@ -59,6 +59,58 @@ function formatElapsed(ms) {
   return minutes ? `${minutes}m ${String(rest).padStart(2, "0")}s` : `${seconds}s`;
 }
 
+// Whimsy words are flavor, not telemetry: orch only sees the subprocess exit, so
+// it must not claim what the agent is "doing". Rotate every few heartbeats.
+const WHIMSY_WORDS = [
+  "percolating", "squinting", "grinding", "mulling", "pondering",
+  "ruminating", "noodling", "stewing", "tinkering", "brooding",
+];
+// Erase-to-EOL for in-place TTY rewrites (same raw ANSI as src/tui/screen.js).
+const ERASE_TO_EOL = "\x1b[K";
+// Multi-round review strip continuity (TTY only), keyed by agent label so
+// parallel reviewers (Promise.all in engine) do not share one strip. Dots +
+// elapsed span sequential rounds of the *same* reviewer; round numbers are
+// stamped into that reviewer's strip when a new round starts.
+/** @type {Map<string, {started: number, beats: number, dots: string, currentRound: number}>} */
+const reviewProgressByLabel = new Map();
+// Concurrent TTY progress writers: when >1, fall back to line-per-beat so
+// agents do not fight over a single CR-rewritten line.
+let activeTtyProgress = 0;
+
+/** @internal test helper — clears multi-round review progress state. */
+export function _resetReviewProgress() {
+  reviewProgressByLabel.clear();
+  activeTtyProgress = 0;
+}
+
+function whimsyWord(beatIndex) {
+  return WHIMSY_WORDS[Math.floor(beatIndex / 2) % WHIMSY_WORDS.length];
+}
+
+// Pure beat renderer. non-TTY keeps the historical line-per-beat form byte-for-
+// byte; TTY rewrites one line in place via CR + erase-to-EOL (no spinner dep).
+export function formatProgressBeat({ tty, stage, label, word, dots, elapsed }) {
+  if (!tty) return `… ${label} still running (${elapsed} elapsed)\n`;
+  return `\r▸ ${stage}  ${label}   ${word}${dots}      ${elapsed}${ERASE_TO_EOL}`;
+}
+
+function beginProgressState(stage, round, started, label) {
+  // Continuity only when the engine threads a numeric round (review rounds).
+  if (stage === "review" && Number.isFinite(round)) {
+    const key = String(label || "");
+    let state = reviewProgressByLabel.get(key);
+    if (round === 1 || !state) {
+      state = { started, beats: 0, dots: String(round), currentRound: round };
+      reviewProgressByLabel.set(key, state);
+    } else if (round !== state.currentRound) {
+      state.currentRound = round;
+      state.dots += String(round);
+    }
+    return state;
+  }
+  return { started, beats: 0, dots: "" };
+}
+
 function appendCapturedOutput(buffer, chunk) {
   const next = buffer + String(chunk);
   if (next.length <= MAX_AGENT_OUTPUT_CHARS) return next;
@@ -69,16 +121,32 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
     const timeoutMs = stageTimeoutMs(runOpts.stageTimeoutMs);
+    const stage = runOpts.stage || "agent";
+    const round = runOpts.round;
+    // isTTY only: headless/logged runs must keep newline-per-beat (no CR/ANSI).
+    const tty = Boolean(process.stderr.isTTY);
+    const progress = tty ? beginProgressState(stage, round, started, label) : null;
+    if (tty) activeTtyProgress += 1;
     let stdout = "";
     let stderr = "";
     let settled = false;
     let timer = null;
     let watchdog = null;
+    let wroteProgress = false;
+    let endedProgressLine = false;
+    const endProgressLine = () => {
+      if (tty && wroteProgress && !endedProgressLine) {
+        process.stderr.write("\n");
+        endedProgressLine = true;
+      }
+    };
     const finish = (result) => {
       if (settled) return;
       settled = true;
       if (timer) clearInterval(timer);
       if (watchdog) clearTimeout(watchdog);
+      endProgressLine();
+      if (tty) activeTtyProgress = Math.max(0, activeTtyProgress - 1);
       resolve(result);
     };
     // detached (POSIX only): the child leads its own process group, so a stalled
@@ -103,7 +171,33 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     const child = spawn(spec.bin, spec.args, { cwd, detached: !IS_WINDOWS, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     if (child.pid != null) liveChildren.add(child.pid);
     timer = setInterval(() => {
-      process.stderr.write(`… ${label} still running (${formatElapsed(Date.now() - started)} elapsed)\n`);
+      if (!tty) {
+        process.stderr.write(`… ${label} still running (${formatElapsed(Date.now() - started)} elapsed)\n`);
+        return;
+      }
+      progress.beats += 1;
+      progress.dots += ".";
+      const word = whimsyWord(progress.beats - 1);
+      const elapsed = formatElapsed(Date.now() - progress.started);
+      // Single writer: in-place CR rewrite. Concurrent writers (parallel
+      // reviewers): line-per-beat so each agent's dots/elapsed stay attributable
+      // and strips do not flicker over one shared terminal line.
+      if (activeTtyProgress > 1) {
+        if (wroteProgress && !endedProgressLine) {
+          process.stderr.write("\n");
+          endedProgressLine = true;
+        }
+        process.stderr.write(formatProgressBeat({
+          tty: false, stage, label, word, dots: progress.dots, elapsed,
+        }));
+        return;
+      }
+      process.stderr.write(formatProgressBeat({ tty: true, stage, label, word, dots: progress.dots, elapsed }));
+      wroteProgress = true;
+      // CR strip is open again (including after concurrency drops 2→1). Clear the
+      // latch so finish emits a terminating newline; otherwise the next phase line
+      // glues onto the survivor's stale strip.
+      endedProgressLine = false;
     }, progressIntervalMs());
     timer.unref?.();
     // #56 watchdog: a hard wall-clock cap. On expiry, kill the whole tree
@@ -113,6 +207,7 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     // in uninterruptible-sleep on NFS where even SIGKILL doesn't reap promptly.
     watchdog = timeoutMs > 0 ? setTimeout(() => {
       const elapsed = Date.now() - started;
+      endProgressLine();
       process.stderr.write(`… ${label} TIMED OUT after ${formatElapsed(elapsed)} — killing stalled stage\n`);
       // Liveness-gated: only signal a still-running child's tree. Once settled or
       // exited the pid may be recycled, and killing a stranger's tree is unsafe.
@@ -266,6 +361,25 @@ function detail(out) {
   return tail ? `: ${tail.slice(-300)}` : "";
 }
 
+// True when a successful agent's output is nothing more than its own review
+// prompt echoed back (a crashed/no-op reviewer that still exits 0). The prompt
+// itself contains AGREE/DISAGREE in its instruction bullets, so a bare echo
+// would otherwise parse as a real verdict. Strip each prompt line that carries
+// a verdict token out of a scratch copy of the output: a genuine line-leading
+// verdict is never a substring of the prompt, so it survives the strip, and
+// any surviving verdict-shaped text means the run was not a pure echo.
+function onlyEchoedVerdictPrompt(output, prompt) {
+  let remainder = String(output ?? "");
+  let echoed = false;
+  for (const line of String(prompt).split(/\r?\n/)) {
+    const fragment = line.trim();
+    if (!/\b(?:AGREE|DISAGREE)\b/i.test(fragment) || !remainder.includes(fragment)) continue;
+    remainder = remainder.replaceAll(fragment, "");
+    echoed = true;
+  }
+  return echoed && !/\b(?:AGREE|DISAGREE)\b/i.test(remainder);
+}
+
 function normalizeCapabilities(capabilities = {}) {
   return { model: Boolean(capabilities.model), effort: Boolean(capabilities.effort) };
 }
@@ -287,7 +401,10 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       // Author must succeed; a failure here is a hard error (no commits made).
       assertSupported(name, capabilitySupport, opts);
       const args = buildArgs(render("author", { task }), wd, opts);
-      const result = await runAgent(adapter.bin, args, wd, `${name} authoring`, { stageTimeoutMs: opts.stageTimeoutMs });
+      const result = await runAgent(adapter.bin, args, wd, `${name} authoring`, {
+        stageTimeoutMs: opts.stageTimeoutMs,
+        stage: "author",
+      });
       if (!result.ok) throw new Error(result.out || `Command failed: ${adapter.bin}`);
       const out = result.out;
       const usage = parseRunUsage(out, modelFromArgs(args, opts));
@@ -307,10 +424,23 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
       assertSupported(name, capabilitySupport, opts);
-      const args = buildArgs(render("review", { branch }), wd, opts);
-      const { out, raw, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, { stageTimeoutMs: opts.stageTimeoutMs });
+      // `prompt` stays a named binding: the echo detector below compares the
+      // captured output against it (#360).
+      const prompt = render("review", { branch });
+      const args = buildArgs(prompt, wd, opts);
+      const { out, raw, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, {
+        stageTimeoutMs: opts.stageTimeoutMs,
+        stage: "review",
+        round: opts.round,
+      });
       const captured = raw || out;
       const usage = parseRunUsage(captured, modelFromArgs(args, opts));
+      // A reviewer that exits 0 but only echoed its own prompt back never
+      // reviewed anything — escalate as agentError instead of parsing the
+      // prompt's own verdict vocabulary as a real DISAGREE.
+      if (ok && onlyEchoedVerdictPrompt(captured, prompt)) {
+        return { decision: "DISAGREE", reason: "only echoed the review prompt", agentError: true, raw: captured, usage };
+      }
       const parsed = parseVerdict(out);
       if (ok && parsed.reason === "unparseable verdict") {
         const parsedRaw = parseVerdict(captured);

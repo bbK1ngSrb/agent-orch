@@ -5,6 +5,14 @@ import { scanDiff, formatSecurityFindings, SECURITY_DIFF_ARGS } from "./security
 import { formatUsage, totalUsage } from "./usage.js";
 
 const RAW_OUTPUT_TAIL_CHARS = 12_000;
+const STAGE_RESULT_MAX_CHARS = 200;
+
+function oneLineStageResult(detail) {
+  const line = String(detail).replace(/\s+/g, " ").trim();
+  return line.length > STAGE_RESULT_MAX_CHARS
+    ? `${line.slice(0, STAGE_RESULT_MAX_CHARS - 1)}…`
+    : line;
+}
 
 function rawOutputTail(raw) {
   const text = String(raw ?? "");
@@ -96,6 +104,7 @@ export async function runCycle(opts, deps) {
         // fenced prompt; free-text tasks pass through unchanged.
         const authored = await author.author(opts.authorPrompt || task, worktree, authorOpts);
         recordUsage("author", author.name, authored, authorOpts.model);
+        notify.phase("author", `${author.name} completed`, "ok");
       }
 
       // Scope gate (optional).
@@ -112,7 +121,7 @@ export async function runCycle(opts, deps) {
     if (inflight) inflight.setPaths(orchDir, sid, git.changedFiles(repo, branch, baseBranch), baseSha);
 
     // Review mode escalates on first DISAGREE; task mode revises up to the cap.
-    const cap = mode === "review" ? 1 : cfg.reviseCap;
+    const cap = mode === "review" ? 1 : cfg.roundCap;
 
     // Resolve the test command once.
     const testCmd = cfg.test === "auto" ? gate.detect(worktree) : cfg.test;
@@ -161,7 +170,7 @@ export async function runCycle(opts, deps) {
         const verdicts = await Promise.all(reviewers.map(async (reviewer) => ({
           reviewer: reviewer.name,
           model: reviewer.opts.model,
-          ...(await reviewer.adapter.audit(branch, worktree, reviewer.opts)),
+          ...(await reviewer.adapter.audit(branch, worktree, { ...reviewer.opts, round })),
         })));
         for (const v of verdicts) recordUsage("reviewer", v.reviewer, v, v.model);
         const disagree = verdicts.filter((v) => v.decision !== "AGREE");
@@ -180,7 +189,12 @@ export async function runCycle(opts, deps) {
           decision: disagree.length ? "DISAGREE" : "AGREE",
           reason: verdicts.map((v) => `## ${v.reviewer}\n\n${v.decision}: ${v.reason}`).join("\n\n"),
         };
-        notify.phase("review", verdict.decision === "AGREE" ? "AGREE" : "DISAGREE", verdict.decision === "AGREE" ? "ok" : "fail");
+        for (const v of verdicts) {
+          const decision = v.decision === "AGREE" ? "AGREE" : "DISAGREE";
+          notify.phase("review",
+            oneLineStageResult(`${v.reviewer} round ${round} — ${decision}: ${v.reason || "(no reason)"}`),
+            decision === "AGREE" ? "ok" : "fail");
+        }
         notify.writeRound(orchDir, branch, round,
           `# Round ${round}\n\nVerdict: ${verdict.decision}\n\nCost: ${formatUsage(totalUsage(runStats))}\n\n${verdict.reason}\n`);
         notify.writeRoundRaw?.(orchDir, branch, round, roundRawOutput(verdicts));

@@ -12,7 +12,14 @@ import { buildArgs as geminiArgs } from "../src/adapters/gemini.js";
 import { buildArgs as grokArgs } from "../src/adapters/grok.js";
 import { buildArgs as kimiArgs } from "../src/adapters/kimi.js";
 import { get } from "../src/adapters/index.js";
-import { makeCliAdapter, isUsageLimit, parseRunUsage, MAX_AGENT_OUTPUT_CHARS } from "../src/adapters/cli-adapter.js";
+import {
+  makeCliAdapter,
+  isUsageLimit,
+  parseRunUsage,
+  MAX_AGENT_OUTPUT_CHARS,
+  formatProgressBeat,
+  _resetReviewProgress,
+} from "../src/adapters/cli-adapter.js";
 
 // Fake-agent fixtures spawn `node -e <script>` instead of `sh -c <script>`.
 // A shell (and printf/cat/trap/exit) is POSIX-only — this repo's own CI
@@ -271,11 +278,40 @@ test("audit does not let successful stderr override a parseable stdout verdict",
   assert.match(v.raw, /warning mentions DISAGREE/);
 });
 
-test("audit emits elapsed progress while the agent is still running", async () => {
+test("formatProgressBeat keeps non-TTY line-per-beat form byte-for-byte", () => {
+  assert.equal(
+    formatProgressBeat({
+      tty: false,
+      stage: "review",
+      label: "slow auditing",
+      word: "percolating",
+      dots: "...",
+      elapsed: "30s",
+    }),
+    "… slow auditing still running (30s elapsed)\n",
+  );
+});
+
+test("formatProgressBeat rewrites one TTY line with stage, whimsy, dots, elapsed", () => {
+  const line = formatProgressBeat({
+    tty: true,
+    stage: "author",
+    label: "claude authoring",
+    word: "percolating",
+    dots: "......",
+    elapsed: "6m 30s",
+  });
+  assert.equal(line, "\r▸ author  claude authoring   percolating......      6m 30s\x1b[K");
+  assert.ok(!line.endsWith("\n"), "TTY beat must not append a newline (in-place rewrite)");
+});
+
+test("audit emits elapsed progress while the agent is still running (non-TTY)", async () => {
   const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
   const priorWrite = process.stderr.write;
+  const priorIsTTY = process.stderr.isTTY;
   const writes = [];
   process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  Object.defineProperty(process.stderr, "isTTY", { value: false, configurable: true });
   process.stderr.write = (chunk) => {
     writes.push(String(chunk));
     return true;
@@ -288,11 +324,199 @@ test("audit emits elapsed progress while the agent is still running", async () =
     });
     const v = await adapter.audit("pr/x/y", tmpdir());
     assert.equal(v.decision, "AGREE");
-    assert.match(writes.join(""), /slow auditing still running .* elapsed/);
+    const joined = writes.join("");
+    assert.match(joined, /slow auditing still running .* elapsed/);
+    assert.ok(!joined.includes("\r"), "non-TTY must not emit carriage returns");
+    assert.ok(!joined.includes("\x1b["), "non-TTY must not emit ANSI escapes");
   } finally {
     if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
     else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
     process.stderr.write = priorWrite;
+    Object.defineProperty(process.stderr, "isTTY", { value: priorIsTTY, configurable: true });
+  }
+});
+
+test("audit rewrites one live TTY progress line with stage + whimsy + elapsed", async () => {
+  const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
+  const priorWrite = process.stderr.write;
+  const priorIsTTY = process.stderr.isTTY;
+  const writes = [];
+  process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  _resetReviewProgress();
+  try {
+    const adapter = makeCliAdapter({
+      name: "slow",
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 60)"),
+    });
+    const v = await adapter.audit("pr/x/y", tmpdir(), { round: 1 });
+    assert.equal(v.decision, "AGREE");
+    const progress = writes.filter((w) => w.includes("\r▸"));
+    assert.ok(progress.length >= 1, "expected at least one in-place progress beat");
+    assert.match(progress[0], /^\r▸ review  slow auditing   \w+1\.+\s+\d/);
+    assert.ok(progress[0].includes("\x1b[K"), "TTY beat erases to end of line");
+    // Later beats rewrite the same line (no newline between them).
+    for (const beat of progress) {
+      assert.ok(!beat.includes("\n"), "progress beats stay on one line until finish");
+    }
+    // Finish ends the strip so the next phase line is clean.
+    assert.ok(writes.some((w) => w === "\n"), "finish must emit a trailing newline after TTY progress");
+  } finally {
+    _resetReviewProgress();
+    if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
+    else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
+    process.stderr.write = priorWrite;
+    Object.defineProperty(process.stderr, "isTTY", { value: priorIsTTY, configurable: true });
+  }
+});
+
+test("review TTY progress accumulates dots and round markers across rounds", async () => {
+  const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
+  const priorWrite = process.stderr.write;
+  const priorIsTTY = process.stderr.isTTY;
+  const writes = [];
+  process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  _resetReviewProgress();
+  try {
+    const adapter = makeCliAdapter({
+      name: "slow",
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 45)"),
+    });
+    await adapter.audit("pr/x/y", tmpdir(), { round: 1 });
+    await adapter.audit("pr/x/y", tmpdir(), { round: 2 });
+    const progress = writes.filter((w) => w.includes("\r▸"));
+    assert.ok(progress.length >= 2, "expected progress across both rounds");
+    // At least one beat from round 2 must show both round markers and more dots.
+    const late = progress[progress.length - 1];
+    assert.match(late, /1\.+2\.+/);
+    assert.match(late, /^\r▸ review  slow auditing/);
+  } finally {
+    _resetReviewProgress();
+    if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
+    else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
+    process.stderr.write = priorWrite;
+    Object.defineProperty(process.stderr, "isTTY", { value: priorIsTTY, configurable: true });
+  }
+});
+
+// Parallel reviewers (engine Promise.all) must not share one module-level strip:
+// each keeps its own progress identity, and concurrent TTY beats fall back to
+// line-per-beat so labels/elapsed stay attributable instead of flickering one \r line.
+test("parallel reviewers keep separate TTY progress and fall back to line-per-beat", async () => {
+  const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
+  const priorWrite = process.stderr.write;
+  const priorIsTTY = process.stderr.isTTY;
+  const writes = [];
+  process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  _resetReviewProgress();
+  try {
+    const slow = (name) => makeCliAdapter({
+      name,
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 55)"),
+    });
+    const a = slow("alpha");
+    const b = slow("beta");
+    const wd = tmpdir();
+    await Promise.all([
+      a.audit("pr/x/y", wd, { round: 1 }),
+      b.audit("pr/x/y", wd, { round: 1 }),
+    ]);
+    const joined = writes.join("");
+    assert.ok(joined.includes("alpha auditing"), "alpha progress must be attributable");
+    assert.ok(joined.includes("beta auditing"), "beta progress must be attributable");
+    // Under concurrency the strip falls back to newline-per-beat (non-CR form).
+    const concurrentBeats = writes.filter((w) =>
+      w.includes("still running") && (w.includes("alpha") || w.includes("beta")));
+    assert.ok(concurrentBeats.length >= 2, "expected line-per-beat progress from both reviewers");
+    for (const beat of concurrentBeats) {
+      assert.ok(beat.endsWith("\n"), "concurrent beats must be line-per-beat, not CR rewrites");
+      assert.ok(!beat.includes("\r"), "concurrent beats must not fight over one CR line");
+    }
+    // Shared state would interleave both labels into one strip's dots; with
+    // per-label state, each beat names exactly one reviewer.
+    for (const beat of concurrentBeats) {
+      const hasAlpha = beat.includes("alpha");
+      const hasBeta = beat.includes("beta");
+      assert.equal(hasAlpha !== hasBeta, true, `beat must name one reviewer, got: ${JSON.stringify(beat)}`);
+    }
+  } finally {
+    _resetReviewProgress();
+    if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
+    else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
+    process.stderr.write = priorWrite;
+    Object.defineProperty(process.stderr, "isTTY", { value: priorIsTTY, configurable: true });
+  }
+});
+
+// Staggered finish: concurrent path latches endedProgressLine when closing the
+// shared CR strip. When one reviewer exits early, the survivor resumes CR
+// rewrite and must clear that latch so its finish still emits a trailing \n —
+// otherwise the next phase line glues onto the stale strip.
+test("survivor TTY progress ends with newline after concurrency drops 2→1", async () => {
+  const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
+  const priorWrite = process.stderr.write;
+  const priorIsTTY = process.stderr.isTTY;
+  const writes = [];
+  process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  _resetReviewProgress();
+  try {
+    const early = makeCliAdapter({
+      name: "early",
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 35)"),
+    });
+    const late = makeCliAdapter({
+      name: "late",
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 120)"),
+    });
+    const wd = tmpdir();
+    await Promise.all([
+      early.audit("pr/x/y", wd, { round: 1 }),
+      late.audit("pr/x/y", wd, { round: 1 }),
+    ]);
+    // Concurrent window: both emit line-per-beat (non-CR).
+    const concurrentBeats = writes.filter((w) =>
+      w.includes("still running") && (w.includes("early") || w.includes("late")));
+    assert.ok(concurrentBeats.length >= 1, "expected concurrent line-per-beat while both alive");
+    // After early exits, late resumes solo CR rewrite.
+    const survivorCr = writes.filter((w) => w.includes("\r▸") && w.includes("late auditing"));
+    assert.ok(survivorCr.length >= 1, "survivor must resume in-place CR progress after peer exits");
+    // Survivor finish must terminate the CR strip so the next phase line is clean.
+    assert.ok(writes.some((w) => w === "\n"), "survivor finish must emit trailing newline after CR progress");
+    // Last CR beat must be followed by a standalone newline (not glued phase text).
+    const lastCrIdx = writes.findLastIndex((w) => w.includes("\r▸") && w.includes("late auditing"));
+    assert.ok(lastCrIdx >= 0);
+    const afterCr = writes.slice(lastCrIdx + 1);
+    assert.ok(afterCr.some((w) => w === "\n"), "terminating newline must follow survivor's last CR beat");
+  } finally {
+    _resetReviewProgress();
+    if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
+    else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
+    process.stderr.write = priorWrite;
+    Object.defineProperty(process.stderr, "isTTY", { value: priorIsTTY, configurable: true });
   }
 });
 
@@ -483,6 +707,80 @@ test("audit escalates when a crashed agent only echoed the review prompt", async
   assert.equal(v.decision, "DISAGREE");
   assert.equal(v.agentError, true, "an echoed prompt is not a review — escalate, don't revise");
   assert.match(v.reason, /agent exited nonzero/);
+});
+
+test("audit escalates when a successful agent only echoed the review prompt", async () => {
+  // Exit 0, but the output is the rendered review prompt verbatim — the
+  // reviewer never ran. The prompt's own instruction bullets contain AGREE /
+  // DISAGREE, so the unanchored fallback would otherwise read them as a real
+  // verdict and drive pointless revise rounds against a dead reviewer.
+  const adapter = makeCliAdapter({
+    name: "echo-ok",
+    bin: process.execPath,
+    buildArgs: (prompt) => [...nodeScript("process.stdout.write(process.argv[1])"), prompt],
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+  assert.equal(v.agentError, true, "a pure prompt echo is not a review — escalate, don't revise");
+  assert.match(v.reason, /only echoed the review prompt/);
+});
+
+test("audit keeps a genuine AGREE sitting between quoted prompt bullets", async () => {
+  // A reviewer that quotes its own instructions is normal. A line-leading
+  // AGREE between the two quoted bullets is a real verdict, not an echo —
+  // it must survive the echo strip and parse as AGREE with no agentError.
+  const out = [
+    "Reviewer notes, quoting the instructions for clarity:",
+    "- `AGREE` followed by a one-paragraph reason, if the change should merge.",
+    "AGREE",
+    "The change is correct and well tested.",
+    "- `DISAGREE` followed by a one-paragraph reason listing concrete findings.",
+    "",
+  ].join("\n");
+  const adapter = makeCliAdapter({
+    name: "quoting-reviewer",
+    bin: process.execPath,
+    buildArgs: () => nodeScript(`process.stdout.write(${JSON.stringify(out)})`),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.equal(v.agentError, undefined);
+});
+
+test("audit keeps a genuine AGREE before a trailing full-prompt recap", async () => {
+  // Verdict first, then a debug dump of the whole prompt. The recap contains
+  // the prompt's verdict bullets, but the leading AGREE is genuine and must
+  // parse as AGREE with no agentError.
+  const out = [
+    "AGREE",
+    "The change is correct and well tested.",
+    "",
+    "--- (debug: prompt recap below) ---",
+    "You are an adversarial code reviewer. Audit the branch `pr/x/y` against `main`.",
+    "- `AGREE` followed by a one-paragraph reason, if the change should merge.",
+    "- `DISAGREE` followed by a one-paragraph reason listing concrete findings.",
+    "",
+  ].join("\n");
+  const adapter = makeCliAdapter({
+    name: "recap-reviewer",
+    bin: process.execPath,
+    buildArgs: () => nodeScript(`process.stdout.write(${JSON.stringify(out)})`),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "AGREE");
+  assert.equal(v.agentError, undefined);
+});
+
+test("audit keeps an ordinary DISAGREE with a real reason (no agentError)", async () => {
+  const adapter = makeCliAdapter({
+    name: "real-disagree",
+    bin: process.execPath,
+    buildArgs: () => nodeScript("console.log('DISAGREE the parser drops empty lines')"),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+  assert.match(v.reason, /drops empty lines/);
+  assert.equal(v.agentError, undefined);
 });
 
 test("audit surfaces the agent's actual error in the DISAGREE reason (#31)", async () => {

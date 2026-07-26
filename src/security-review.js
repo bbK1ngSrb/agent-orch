@@ -60,8 +60,11 @@ function unquoteGitPath(s) {
 // matches no header and no `b/` side. Any producer feeding scanDiff MUST pass
 // these flags so the prefixes are what the parser expects regardless of config.
 // `--no-ext-diff` is here for the same reason: an external diff driver replaces
-// git's output wholesale.
-export const SECURITY_DIFF_ARGS = ["--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"];
+// git's output wholesale. So is `--no-textconv`: a textconv driver
+// (`.gitattributes` + `diff.<driver>.textconv`) filters file CONTENTS before
+// diffing, so the content rules would scan the filter's output instead of the
+// real change — `--no-ext-diff` does not disable it.
+export const SECURITY_DIFF_ARGS = ["--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
 
 function abPath(s) {
   const m = unquoteGitPath(s.trim()).match(/^[ab]\/([\s\S]*)$/);
@@ -86,19 +89,30 @@ function headerPath(l) {
 // `copy from` is deliberately NOT matched: a copy does not modify its source,
 // so flagging that path is a false guardrail-touch.
 //
-// Paths may contain spaces, making git's own line ambiguous; the greedy `.+`
-// takes the LAST ` b/` (or ` "b/`), which is right for the same-path and
-// no-space cases. A path that literally contains ` b/` mis-splits and then
-// fails the guardrail globs — fail-OPEN, but it needs a guardrail file named
-// e.g. `.github/workflows/x b/y.yml` to reach, and the exact `rename from`/`to`
-// lines cover the rename case regardless.
-const DIFF_GIT_RE = /^diff --git .+ ("?b\/.*)$/;
+// Paths may contain spaces, so git's own line has no delimiter marking where
+// the a-side ends and the b-side begins — a single guessed split point is
+// unsound: a path containing a literal ` b/` (e.g. a mode-only change to
+// `.github/workflows/x b/ci.yml`) mis-splits and then fails the guardrail
+// globs, failing OPEN. Instead of guessing, EVERY ` b/` (or ` "b/`) position
+// is tried as the split and each candidate b-side is checked. The true b-side
+// is always among the candidates, and a spurious extra candidate can only
+// over-flag — fail closed, the safe direction for the floor.
+const DIFF_GIT_PREFIX = "diff --git ";
+const DIFF_GIT_SPLIT_RE = / (?="?b\/)/g;
 const RENAME_RE = /^rename (?:from|to) (.+)$/;
-function structuralPath(l) {
-  const g = l.match(DIFF_GIT_RE);
-  if (g) return abPath(g[1]);
+function structuralPaths(l) {
+  if (l.startsWith(DIFF_GIT_PREFIX)) {
+    const out = [];
+    DIFF_GIT_SPLIT_RE.lastIndex = 0;
+    let m;
+    while ((m = DIFF_GIT_SPLIT_RE.exec(l))) {
+      const p = abPath(l.slice(m.index + 1));
+      if (p) out.push(p);
+    }
+    return out;
+  }
   const r = l.match(RENAME_RE);
-  return r ? unquoteGitPath(r[1]) : null;
+  return r ? [unquoteGitPath(r[1])] : [];
 }
 
 // The path-based floor: the same protected set orch enforces at intake, plus
@@ -168,7 +182,7 @@ export function scanDiff(diffText, { ignore = [] } = {}) {
   // `ignore`: a guardrail file is never a build artifact.
   const seen = new Set();
   for (const l of String(diffText).split("\n")) {
-    const paths = [headerPath(l), structuralPath(l)];
+    const paths = [headerPath(l), ...structuralPaths(l)];
     for (const p of paths) {
       if (p && !seen.has(p) && isGuardrailPath(p)) {
         seen.add(p);
@@ -232,15 +246,28 @@ function recommend(findings, mergeCmd) {
     + `flagged line there is confirmed benign.`;
 }
 
-// Rank a finding for display: a hit INSIDE a guardrail file is the line that
-// justifies the human gate, so it leads; authored (non-test) code next; a bare
-// path string in a test fixture last. An unknown path counts as authored —
-// the floor errs toward "look at this". Stable sort keeps insertion order
-// within a rank.
+// Rank a finding for display (every rule, including secret-read — #365). A hit
+// INSIDE a guardrail file is the line that justifies the human gate, so it
+// leads; authored (non-test) code next; a bare path string in a test fixture
+// last. An unknown path counts as authored — the floor errs toward "look at
+// this". Stable sort keeps insertion order within a rank.
 function findingRank({ file }) {
   if (isGuardrailPath(file)) return 0;
   if (!isTestFile(file)) return 1;
   return 2;
+}
+
+// Location tag for one shown finding. The path always comes from the diff's
+// `+++ b/<path>` context (or the path-based floor), never from text inside the
+// matched line — a fixture that embeds `file: "src/engine.js"` must still tag
+// as the test file that contains that string (#365). Test paths get an explicit
+// "(fixture)" marker so a skimmer cannot confuse a nested `file:` in the line
+// body with the finding's real location.
+function findingLocation(f) {
+  if (!f.file) return "";
+  return isTestFile(f.file)
+    ? `\`${f.file}\` (fixture): `
+    : `\`${f.file}\`: `;
 }
 
 // Render a scanDiff() DISAGREE for humans. Returns:
@@ -265,9 +292,11 @@ export function formatSecurityFindings(findings, { maxPerRule = 5, maxLen = 100,
 
   const clip = (s) => (s.length > maxLen ? s.slice(0, maxLen - 1) + "…" : s);
   const sections = [...byRule].map(([rule, map]) => {
+    // Rank applies to every rule (guardrail-touch, secret-read, …): real edits
+    // lead, fixture-only mentions sink, then maxPerRule clips the tail.
     const entries = [...map.values()].sort((a, b) => findingRank(a) - findingRank(b));
     const shown = entries.slice(0, maxPerRule)
-      .map((f) => `    ${f.file ? `\`${f.file}\`: ` : ""}${clip(f.line)}`);
+      .map((f) => `    ${findingLocation(f)}${clip(f.line)}`);
     if (entries.length > maxPerRule) shown.push(`    …and ${entries.length - maxPerRule} more`);
     return `- **${rule}** — ${RULE_BLURB[rule] || "matched a risky pattern"}:\n${shown.join("\n")}`;
   });
@@ -280,7 +309,9 @@ export function formatSecurityFindings(findings, { maxPerRule = 5, maxLen = 100,
     "it cannot be talked out of a DISAGREE — it is the last gate before merge. Any",
     "diff touching a guardrail path is flagged, and any added line containing a",
     "risky pattern — whether real code or a string that merely *mentions* the",
-    "pattern (a test fixture, a documentation example). It fails **closed**:",
+    "pattern (a test fixture, a documentation example). Within each rule, findings",
+    "are listed real-edit first and test fixtures last, each tagged with the file",
+    "the line actually lives in (fixtures are marked). It fails **closed**:",
     "it would rather over-block than let something slip through.",
     "",
     "**What tripped it:**",

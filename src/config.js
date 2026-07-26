@@ -10,7 +10,8 @@ const DEFAULTS = {
   authors: null, // plural fixed authors; pairs with `reviewers`
   reviewers: null, // plural fixed reviewers; pairs with `authors`
   test: "auto",
-  reviseCap: 3,
+  roundCap: 3, // max review rounds, counting the initial review as round 1
+               // (so 3 = 3 reviews / 2 revisions). `reviseCap` is the deprecated alias.
   stageTimeout: 25, // #56: per-stage wall-clock cap in MINUTES; 0 disables. A stalled
                     // codex/claude stage is killed and the cycle fails (nonzero exit)
                     // instead of hanging forever on an infinite "still running" heartbeat.
@@ -51,7 +52,9 @@ const DEFAULTS = {
   },
 };
 
-export function validate(cfg) {
+// roundCapKey names the spelling the operator actually wrote, so an error about a
+// bad value never mentions a key that is absent from their config.
+export function validate(cfg, roundCapKey = "roundCap") {
   if (!Array.isArray(cfg.agents) || cfg.agents.length < 1)
     throw new Error("orch.yml: agents must be a non-empty list");
   if (!cfg.agents.every((agent) => typeof agent === "string" && /^\S+$/.test(agent)))
@@ -66,8 +69,8 @@ export function validate(cfg) {
     throw new Error("orch.yml: reviewers must be a non-empty list of strings");
   if (!["ff-only", "no-ff", "pr"].includes(cfg.merge))
     throw new Error("orch.yml: merge must be ff-only, no-ff, or pr");
-  if (!Number.isInteger(cfg.reviseCap) || cfg.reviseCap < 1)
-    throw new Error("orch.yml: reviseCap must be a positive integer");
+  if (!Number.isInteger(cfg.roundCap) || cfg.roundCap < 1)
+    throw new Error(`orch.yml: ${roundCapKey} must be a positive integer`);
   if (!Number.isInteger(cfg.stageTimeout) || cfg.stageTimeout < 0)
     throw new Error("orch.yml: stageTimeout must be a non-negative integer (minutes; 0 disables)");
   if (typeof cfg.baseBranch !== "string" || !cfg.baseBranch.trim())
@@ -161,6 +164,22 @@ export function configPath(dir) {
   return existsSync(preferred) ? preferred : join(dir, "orch.yml");
 }
 
+// `reviseCap` is the deprecated spelling of `roundCap`. Resolved per source (repo
+// orch.yml vs --config-file) rather than across the merged config: a --config-file
+// that says reviseCap must still beat an orch.yml that says roundCap, otherwise the
+// override is silently dropped — the exact failure the alias exists to prevent.
+// Returns { value, key } or null when this source names neither key.
+function pickRoundCap(source, label) {
+  const has = (k) => Object.prototype.hasOwnProperty.call(source, k);
+  if (has("roundCap") && has("reviseCap"))
+    console.warn(`orch: ${label} sets both roundCap and reviseCap; using roundCap and ignoring the deprecated reviseCap`);
+  else if (has("reviseCap"))
+    console.warn(`orch: ${label} uses deprecated reviseCap; rename it to roundCap (same meaning: total review rounds, initial review included)`);
+  if (has("roundCap")) return { value: source.roundCap, key: "roundCap" };
+  if (has("reviseCap")) return { value: source.reviseCap, key: "reviseCap" };
+  return null;
+}
+
 // overridePath (--config-file) layers on top of the repo's orch.yml, same
 // deep-merge rules — lets a run apply one-off settings without editing orch.yml.
 export function load(dir, overridePath) {
@@ -184,8 +203,14 @@ export function load(dir, overridePath) {
     docs: { ...DEFAULTS.docs, ...(user.docs || {}), ...(override.docs || {}) },
     release: { ...DEFAULTS.release, ...(user.release || {}), ...(override.release || {}) },
   };
+  // Both layers are consulted so each deprecated spelling gets its own warning.
+  const fromOverride = pickRoundCap(override, "--config-file");
+  const fromUser = pickRoundCap(user, "orch.yml");
+  const picked = fromOverride ?? fromUser;
+  delete cfg.reviseCap; // one source of truth downstream
+  cfg.roundCap = picked ? picked.value : DEFAULTS.roundCap;
   normalizeMainConfig(cfg, user.main || {}, override.main || {});
-  validate(cfg);
+  validate(cfg, picked?.key);
   return cfg;
 }
 
