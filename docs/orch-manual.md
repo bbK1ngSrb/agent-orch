@@ -30,7 +30,8 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    same machinery.
 2. **Cross-audit** — a *different* agent reviews the author's diff and returns
    `AGREE` or `DISAGREE`. If `DISAGREE`, the author revises and the review
-   repeats, up to `reviseCap` rounds (default 3) — except under `orch review`,
+   repeats, up to `roundCap` rounds (default 3) — the initial review is round
+   one, so 3 buys 3 reviews and 2 revisions — except under `orch review`,
    which has no author to revise and so escalates immediately on the first
    `DISAGREE` instead of looping.
 3. **Test-gate** — the repo's test command runs against the change. No green
@@ -714,7 +715,8 @@ agents:                          # rotation pool when no explicit roles set
 
 # === Cycle ===
 test: auto                       # or an explicit command, e.g. "pytest -q"
-reviseCap: 3                     # max revise rounds before escalation
+roundCap: 3                      # max review rounds (initial review = round 1)
+                                 # reviseCap is the deprecated alias for this key
 stageTimeout: 25                 # per-stage wall-clock cap, minutes; 0 = off
 concurrency: 4                   # max concurrent cycles per repo dir
 baseBranch: main                 # trunk orch reads/diffs/opens PRs against; e.g. dev if main is deploy-only
@@ -781,10 +783,13 @@ release:
   reviewer that didn't write it. Set matching CLI flags
   (`--author`/`--reviewer` or `--authors`/`--reviewers`) to override per-run
   without editing the file.
-- **`reviseCap`** — how many author-revise rounds happen after a
-  `DISAGREE` before the cycle gives up and escalates. Raise it if your
-  reviewers tend to converge slowly; lower it to fail fast and escalate to a
-  human sooner.
+- **`roundCap`** — how many review rounds a cycle gets before it gives up and
+  escalates. The *initial* review is round one, so `roundCap: 3` means three
+  reviews and at most two author revisions. Raise it if your reviewers tend to
+  converge slowly; lower it to fail fast and escalate to a human sooner. The old
+  name `reviseCap` still works: orch normalises it onto `roundCap` and prints a
+  deprecation warning. If both keys appear in the same file, `roundCap` wins and
+  the conflict is warned about rather than silently resolved.
 - **`stageTimeout`** — kills a stalled author or review stage (whole process
   group, wall-clock, not CPU time) rather than hanging forever on a wedged
   agent CLI. `0` disables it — not recommended in CI.

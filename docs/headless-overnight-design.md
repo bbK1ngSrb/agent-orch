@@ -17,7 +17,7 @@ only makes sense once you see the one problem it is built around.
 Today a single `orch` cycle is `author → cross-audit → test-gate → merge`
 (see `docs/orch-manual.md` for the full mental model). It has exactly one way
 to *not* finish cleanly: it stops and waits for a human. Reviewer disagreement
-past `reviseCap` and a red *in-cycle* test gate **escalate** — the cycle writes
+past `roundCap` and a red *in-cycle* test gate **escalate** — the cycle writes
 a local `DECISION.md` and halts (it does *not* open a PR). A merge conflict, a
 file overlap, or a red *post-merge integration re-test* instead **demotes** to a
 PR fallback (or the same decision file when there is no remote): the merged diff
@@ -157,8 +157,8 @@ least:
 - **≥ 2 convergent** failures (same assertion, diverse attempts) → park
   `convergent`, recording the contradiction (the assertion the spec cannot
   satisfy);
-- retry **cap** reached (a small budget, in the spirit of today's `reviseCap`
-  default of 3 — this detector carries its own knob, distinct from `reviseCap`)
+- retry **cap** reached (a small budget, in the spirit of today's `roundCap`
+  default of 3 — this detector carries its own knob, distinct from `roundCap`)
   without convergence → park `inconclusive`.
 
 `convergent` and `inconclusive` are distinct park reasons on purpose: the first

@@ -14,7 +14,7 @@ test("option catalog is consistent with DEFAULTS and validate()", () => {
   assert.equal(validateCatalog(), true);
   const keys = OPTION_CATALOG.flatMap((entry) => entry.keys);
   assert.deepEqual(keys, [
-    "agents", "author", "reviewer", "authors", "reviewers", "test", "reviseCap", "stageTimeout",
+    "agents", "author", "reviewer", "authors", "reviewers", "test", "roundCap", "stageTimeout",
     "baseBranch", "integrationBranch", "merge", "concurrency", "cheap.role", "cheap.paths",
     "scope.maxLines", "scope.ignore", "security.ignore", "github.mergeMethod", "github.autoMergePr",
     "main.autoMerge", "main.conflictResolution", "main.conflictResolutionResolvers",
@@ -35,18 +35,18 @@ test("applyChoice cycles enum and bool options", () => {
 test("answers assemble into a config validate accepts and YAML round-trips", () => {
   let cfg = DEFAULTS;
   cfg = applyAnswer(cfg, OPTION_CATALOG.find((entry) => entry.keys[0] === "merge"), "pr");
-  cfg = applyAnswer(cfg, OPTION_CATALOG.find((entry) => entry.keys[0] === "reviseCap"), "5");
+  cfg = applyAnswer(cfg, OPTION_CATALOG.find((entry) => entry.keys[0] === "roundCap"), "5");
   cfg = applyAnswer(cfg, OPTION_CATALOG.find((entry) => entry.keys[0] === "cheap.paths"), "*.md, docs/**");
   validate(cfg);
   const roundTrip = parse(configToYaml(cfg));
   assert.equal(roundTrip.merge, "pr");
-  assert.equal(roundTrip.reviseCap, 5);
+  assert.equal(roundTrip.roundCap, 5);
   assert.deepEqual(roundTrip.cheap.paths, ["*.md", "docs/**"]);
 });
 
 test("invalid answer is rejected before YAML is written", () => {
-  const revise = OPTION_CATALOG.find((entry) => entry.keys[0] === "reviseCap");
-  assert.throws(() => applyAnswer(DEFAULTS, revise, "0"), /reviseCap must be a positive integer/);
+  const revise = OPTION_CATALOG.find((entry) => entry.keys[0] === "roundCap");
+  assert.throws(() => applyAnswer(DEFAULTS, revise, "0"), /roundCap must be a positive integer/);
 });
 
 test("non-TTY config wizard exits clearly without hanging", async () => {

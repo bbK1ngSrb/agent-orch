@@ -112,7 +112,7 @@ export async function runCycle(opts, deps) {
     if (inflight) inflight.setPaths(orchDir, sid, git.changedFiles(repo, branch, baseBranch), baseSha);
 
     // Review mode escalates on first DISAGREE; task mode revises up to the cap.
-    const cap = mode === "review" ? 1 : cfg.reviseCap;
+    const cap = mode === "review" ? 1 : cfg.roundCap;
 
     // Resolve the test command once.
     const testCmd = cfg.test === "auto" ? gate.detect(worktree) : cfg.test;
