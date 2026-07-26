@@ -26,7 +26,7 @@ function baseDeps(over = {}) {
       demote: async () => ({ prUrl: "https://x/pr/1" }),
       openIntegrationPr: async () => ({ prUrl: "https://x/pr/99" }),
     },
-    notify: { recordRun: (d, e) => recorded.push(e), cleanupReviews: () => {} },
+    notify: { recordRun: (d, e) => recorded.push(e), cleanupReviews: () => {}, escalate: () => {} },
   };
   return { deps: { ...deps, ...over }, recorded };
 }
@@ -315,9 +315,11 @@ test("post-land redrive: rebase conflict leaves peer deferred (no second demote)
   assert.equal(deferredPeer.redriveAttempts, 1);
 });
 
-test("merge conflict → merge-deferred", async () => {
+test("merge conflict → merge-deferred (escalate, no per-change PR against main)", async () => {
   const mergeReason = "Auto-merging src/a.js\nCONFLICT (content): Merge conflict in src/a.js\nAutomatic merge failed";
-  const { deps } = baseDeps({
+  let demoteCalls = 0;
+  let escalated = null;
+  const { deps, recorded } = baseDeps({
     git: {
       ...baseDeps().deps.git,
       mergeInWorktree: () => ({
@@ -325,15 +327,34 @@ test("merge conflict → merge-deferred", async () => {
         reason: mergeReason,
       }),
     },
+    github: {
+      ...baseDeps().deps.github,
+      demote: async () => { demoteCalls += 1; return { prUrl: "https://x/pr/1" }; },
+    },
+    notify: {
+      recordRun: (d, e) => recorded.push(e),
+      cleanupReviews: () => {},
+      escalate: (orchDir, branch, brief) => { escalated = { branch, brief }; },
+    },
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merge-deferred");
   assert.equal(r.trigger, "dirty-merge");
+  assert.equal(r.prUrl, null); // never open a per-change agent PR against main
+  assert.equal(demoteCalls, 0); // github.demote is the PR-to-main path — must not run
+  assert.equal(escalated?.branch, "pr/claude/x-1");
+  assert.match(escalated.brief, /Do not open a PR from this branch to main/);
+  assert.match(escalated.brief, /hand-merge|Hand-merge/);
+  assert.match(escalated.brief, /orch\/integration/);
+  assert.match(r.reason, /escalated for hand-merge into orch\/integration/);
   assert.match(r.reason, /trigger \| dirty-merge/);
   assert.ok(r.reason.includes(`merge result:\n\`\`\`\n${mergeReason}\n\`\`\``));
   assert.match(r.reason, /<details><summary>raw merge output<\/summary>/); // dump collapsed, not headline
   assert.match(r.reason, /conflicting paths: src\/a\.js/);
-  assert.match(r.reason, /next action: resolve the merge conflict/);
+  assert.match(r.reason, /next action: hand-merge this branch into `orch\/integration`/);
+  assert.match(r.reason, /do not open a per-change PR against main/);
+  assert.equal(recorded[0].trigger, "dirty-merge");
+  assert.equal("prUrl" in recorded[0], false);
 });
 
 test("demote reason is teaching-toned markdown, not a raw machine dump", async () => {
@@ -373,15 +394,39 @@ test("post-merge test failure → reset + merge-deferred", async () => {
   assert.ok(resets.length === 1); // rolled main back to pre-merge sha
 });
 
-test("demote reason is forwarded to github.demote (final-review I2)", async () => {
+test("demote reason is forwarded to github.demote for non-dirty-merge triggers (final-review I2)", async () => {
+  // dirty-merge escalates without opening a PR; overlap still uses github.demote.
   let capturedCtx;
   const { deps } = baseDeps({
-    git: { ...baseDeps().deps.git, mergeInWorktree: () => ({ ok: false, reason: "CONFLICT" }) },
+    inflight: { peerPaths: () => ["src/a.js"] },
     github: { demote: async (c) => { capturedCtx = c; return { prUrl: "https://x/pr/1" }; } },
+    deferred: { record: () => {}, list: () => [] },
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merge-deferred");
-  assert.match(capturedCtx.reason, /trigger \| dirty-merge/); // reason threaded via { ...ctx, reason }
+  assert.equal(r.trigger, "overlap");
+  assert.match(capturedCtx.reason, /trigger \| overlap/); // reason threaded via { ...ctx, reason }
+});
+
+test("dirty-merge escalates with demote reason (no github.demote / no PR to main)", async () => {
+  let capturedBrief = null;
+  let demoteCalls = 0;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, mergeInWorktree: () => ({ ok: false, reason: "CONFLICT (content): Merge conflict in src/a.js" }) },
+    github: { demote: async () => { demoteCalls += 1; return { prUrl: "https://x/pr/1" }; } },
+    notify: {
+      recordRun: () => {},
+      cleanupReviews: () => {},
+      escalate: (_o, _b, brief) => { capturedBrief = brief; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.trigger, "dirty-merge");
+  assert.equal(demoteCalls, 0);
+  assert.equal(r.prUrl, null);
+  assert.match(capturedBrief, /trigger \| dirty-merge/);
+  assert.match(capturedBrief, /Do not open a PR from this branch to main/);
 });
 
 test("issue bridge: closes #N is stamped into the no-ff merge commit message", async () => {
@@ -403,11 +448,13 @@ test("no closes → merge message stays null (plain task path unchanged)", async
   assert.equal(mergeArgs.message, null);
 });
 
-test("issue bridge: closes #N reaches github.demote when a merge is blocked", async () => {
+test("issue bridge: closes #N reaches github.demote when a non-dirty-merge merge is blocked", async () => {
+  // Use overlap (still demotes via PR path); dirty-merge no longer calls github.demote.
   let capturedCtx;
   const { deps } = baseDeps({
-    git: { ...baseDeps().deps.git, mergeInWorktree: () => ({ ok: false, reason: "CONFLICT" }) },
+    inflight: { peerPaths: () => ["src/a.js"] },
     github: { demote: async (c) => { capturedCtx = c; return { prUrl: "https://x/pr/1" }; } },
+    deferred: { record: () => {}, list: () => [] },
   });
   await finalize({ ...ctx(), closes: 52 }, deps);
   assert.equal(capturedCtx.closes, 52);

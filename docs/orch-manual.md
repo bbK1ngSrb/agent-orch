@@ -550,8 +550,7 @@ formal review), stick with the default `no-ff` two-speed path instead.
 ### 3.4 `merge-deferred` (this can happen under *any* merge mode)
 
 Separately from `merge: pr`, **any** cycle — regardless of which `merge:`
-mode you've configured — can demote to a PR (or a local escalation if there's
-no remote/`gh`) when one of these triggers fires:
+mode you've configured — can demote when one of these triggers fires:
 
 | Trigger | Meaning |
 |---|---|
@@ -561,13 +560,21 @@ no remote/`gh`) when one of these triggers fires:
 | `lock` | The local merge lock was never acquired in time |
 | `sync` | Local `main` couldn't catch up to `origin/main` |
 
-With a remote and `gh` available, orch pushes the branch and opens a PR,
-carrying full context in the PR body: round count, base SHA, changed paths,
-and trigger-specific detail (the overlapping paths, the conflicting paths,
-etc.) plus a one-line suggested next action. Without a remote/`gh`, it writes
-`.orch/reviews/<branch>/DECISION.md` instead and keeps the branch for manual
-review. The `.orch/runs.jsonl` entry records `verdict: "merge-deferred"` and
-the cause as a top-level `trigger` field.
+For most triggers, with a remote and `gh` available orch pushes the branch and
+opens a PR, carrying full context in the PR body: round count, base SHA,
+changed paths, and trigger-specific detail (the overlapping paths, the
+conflicting paths, etc.) plus a one-line suggested next action. Without a
+remote/`gh`, it writes `.orch/reviews/<branch>/DECISION.md` instead and keeps
+the branch for manual review.
+
+**`dirty-merge` never opens a per-change PR against `main`.** That would
+create a second door into the trunk beside the standing
+`orch/integration → main` PR. Instead orch escalates with the staged branch
+and conflict detail so a human can hand-merge into `orch/integration`; the
+standing integration PR remains the only trunk gate.
+
+The `.orch/runs.jsonl` entry records `verdict: "merge-deferred"` and the cause
+as a top-level `trigger` field.
 
 **Takeaway:** `merge-deferred` is not a mode you choose — it's the safety net that
 catches a cycle whenever the fast local path can't complete cleanly, under
