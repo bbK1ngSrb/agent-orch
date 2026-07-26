@@ -97,6 +97,25 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
 });
 
+test("reviseCap docs describe total review rounds, not post-DISAGREE revisions only", () => {
+  // Engine starts round at 1 and escalates when round >= reviseCap, so the cap
+  // counts the initial review. "author-revise rounds after a DISAGREE" would
+  // under-count by one and mislead capacity planning (default 3 → 3 reviews /
+  // 2 revisions, not 4 / 3).
+  assert.doesNotMatch(manual, /author-revise rounds happen after a\s+`DISAGREE`/i);
+  assert.match(manual, /total number of review rounds[\s\S]{0,80}initial review/i);
+  assert.match(manual, /reviseCap - 1|revisions are\s+therefore `reviseCap - 1`/i);
+  assert.match(manual, /3 reviews and at\s+most 2 revisions/i);
+  for (const src of [exampleConfig, read("src/cli.js")]) {
+    assert.match(src, /reviseCap:.*max review rounds incl\. the first/);
+    assert.doesNotMatch(src, /reviseCap:.*max revise rounds before escalation/);
+  }
+  assert.match(
+    read("src/config-wizard.js"),
+    /Maximum review rounds including the first/,
+  );
+});
+
 test("orch.example.yml exposes security.ignore, commented out, with the sharp-edge warning", () => {
   // The escape hatch exists in the defaults but a user only ever sees the
   // example file, so it must appear there — and stay commented, since an
