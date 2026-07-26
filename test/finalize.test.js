@@ -233,6 +233,52 @@ test("post-land redrive: deferred peer is rebased + gated + landed under the sam
   assert.deepEqual(lockOps, ["acquire", "release"]);
 });
 
+// Peer #999 was deferred for overlapping issue #362's cycle. When #362 lands and
+// redrives it, the peer's runs.jsonl record must say 999 — priorStagedBranches
+// joins on that number, so a wrong one makes `orch issue 362` claim #999's branch.
+// `null` is the same bug with a nastier tell: an `orch task` peer has no issue, and
+// a stamped 362 is reported as #362's staged work WITHOUT the uncertainty hedge.
+for (const peerCloses of [999, null]) {
+  test(`post-land redrive: each land records its OWN issue (peer closes=${peerCloses}), not the redriving cycle's`, async () => {
+  const deferredPeer = {
+    sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
+    rounds: 1, peerSids: ["1"], redriveAttempts: 0, closes: peerCloses,
+  };
+  const mergedBranches = [];
+  const { deps, recorded } = baseDeps({
+    inflight: { listLive: () => [], peerPaths: () => [] },
+    git: {
+      ...baseDeps().deps.git,
+      rebaseBranchOnto: () => ({ ok: true }),
+      mergeInWorktree: (_path, branch) => { mergedBranches.push(branch); return { ok: true, reason: "merged" }; },
+      git: (args, cwd) => {
+        if (args[0] === "rev-parse") {
+          if (args[1] === "--short") return "abc1234";
+          if (cwd === "/integ" || args[1] === "orch/integration") return `sha-${mergedBranches.length || 1}`;
+          return "deadbee";
+        }
+        return "";
+      },
+    },
+    deferred: {
+      list: () => (deferredPeer.removed ? [] : [deferredPeer]),
+      eligibleForRedrive: (e) => (e.redriveAttempts || 0) < 1,
+      blockedByLand: (e, landed) => e.peerSids?.includes(landed.sid),
+      markAttempt: () => { deferredPeer.redriveAttempts += 1; },
+      remove: () => { deferredPeer.removed = true; },
+    },
+  });
+  // Same stamping realDeps() applies for `orch issue 362`: fallback only.
+  const raw = deps.notify.recordRun;
+  deps.notify = { ...deps.notify, recordRun: (d, e) => raw(d, "closes" in e ? e : { ...e, closes: 362 }) };
+
+  const r = await finalize({ ...ctx(), closes: 362 }, deps);
+  assert.equal(r.status, "merged");
+  assert.deepEqual(recorded.filter((e) => e.verdict === "merged").map((e) => [e.sid, e.closes]),
+    [["1", 362], ["2", peerCloses]]);
+  });
+}
+
 test("post-land redrive: rebase conflict leaves peer deferred (no second demote) (#350)", async () => {
   let demoteCalls = 0;
   const deferredPeer = {

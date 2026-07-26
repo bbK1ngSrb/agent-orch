@@ -64,6 +64,8 @@ export async function runCycle(opts, deps) {
   };
   const recordTerminal = (result) => {
     const usage = totalUsage(runStats);
+    // No `closes` here on purpose: runCycle only ever records THIS cycle, so the
+    // realDeps stamp fills it in. (Redrive enters at finalize, never through here.)
     notify.recordRun?.(orchDir, {
       ts: new Date().toISOString(), branch, sid, verdict: result.status, reason: result.reason, rounds: result.rounds,
       ...(usage.tokens ? { tokens: usage.tokens } : {}),

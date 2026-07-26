@@ -6,7 +6,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -2647,4 +2647,160 @@ test("summaryLine keeps a multi-line reason out of the parenthetical, appended b
   const [firstLine, ...restLines] = out.split("\n");
   assert.match(firstLine, /^orch \(dry\): b: merge-deferred \(dirty-merge\) — opened PR https:\/\/x\/pr\/7\. Vetted: agents AGREE, tests green, security clean; completed after 1 round\(s\); cost \$0$/);
   assert.equal(restLines.join("\n"), reason.split("\n").slice(1).join("\n"));
+});
+
+// #N: `orch issue <n>` used to stage a second branch for an issue that already
+// had one, silently. The join key is the ISSUE NUMBER persisted on the run
+// record — NOT the branch slug, which is derived from the (editable) title.
+function stagePriorRun(repo, branch, entry) {
+  gitDep.git(["branch", branch], repo);
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "runs.jsonl"),
+    JSON.stringify({ ts: "2026-07-26T00:00:00Z", branch, sid: "9999-0", verdict: "escalated", reason: "security scan blocked the merge — 1 finding (guardrail-touch ×1)", ...entry }) + "\n");
+}
+
+// A second run record for the same branch, as a later cycle (or `orch review`)
+// appends it.
+function appendRun(repo, branch, entry) {
+  const f = join(repo, ".orch", "runs.jsonl");
+  writeFileSync(f, readFileSync(f, "utf8") +
+    JSON.stringify({ ts: "2026-07-26T01:00:00Z", branch, sid: "9999-1", verdict: "escalated", reason: "stalemate", ...entry }) + "\n");
+}
+
+function issueGh(number, title) {
+  return (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ number, title, body: "why this matters", state: "OPEN" });
+    if (args[0] === "issue" && args[1] === "comment") return "";
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+}
+
+const escalatingDeps = () => ({ ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate", sha: "x" }) });
+
+test("orch issue <n> warns about a branch a prior run staged for the same issue (title unchanged)", async () => {
+  const saved = process.exitCode;
+  const repo = initGitRepo();
+  stagePriorRun(repo, "pr/claude/stale-base-9999-0", { closes: 52 });
+  try {
+    const logs = await runMainInRepo(repo, ["issue", "52"],
+      { cycleDeps: escalatingDeps(), githubDeps: () => ({ gh: issueGh(52, "stale base") }) });
+    const out = logs.join("\n");
+    assert.match(out, /issue #52 already has 1 staged branch/);
+    assert.match(out, /pr\/claude\/stale-base-9999-0 — escalated/);
+    assert.match(out, /orch review pr\/claude\/stale-base-9999-0/);
+    assert.doesNotMatch(out, /may belong to another issue/);
+  } finally {
+    process.exitCode = saved;
+  }
+});
+
+test("orch issue <n> still finds the prior branch after the issue title was edited", async () => {
+  const saved = process.exitCode;
+  const repo = initGitRepo();
+  // Branch slug is from the OLD title; the issue now has a different one.
+  stagePriorRun(repo, "pr/claude/stale-base-9999-0", { closes: 52 });
+  try {
+    const logs = await runMainInRepo(repo, ["issue", "52"],
+      { cycleDeps: escalatingDeps(), githubDeps: () => ({ gh: issueGh(52, "orch bases cycles on a stale local main") }) });
+    assert.match(logs.join("\n"), /issue #52 already has 1 staged branch[\s\S]*pr\/claude\/stale-base-9999-0/);
+  } finally {
+    process.exitCode = saved;
+  }
+});
+
+test("orch issue <n> does not claim another issue's branch that happens to share the slug", async () => {
+  const saved = process.exitCode;
+  const repo = initGitRepo();
+  stagePriorRun(repo, "pr/claude/stale-base-9999-0", { closes: 362 });
+  try {
+    const logs = await runMainInRepo(repo, ["issue", "999"],
+      { cycleDeps: escalatingDeps(), githubDeps: () => ({ gh: issueGh(999, "stale base") }) });
+    assert.doesNotMatch(logs.join("\n"), /already has \d+ staged branch/);
+  } finally {
+    process.exitCode = saved;
+  }
+});
+
+test("a legacy branch with no persisted issue number is reported, flagged uncertain", () => {
+  const repo = initGitRepo();
+  const branch = "pr/claude/stale-base-9999-0";
+  stagePriorRun(repo, branch, {}); // pre-fix record: no `closes`
+  const found = priorStagedBranches({ repo, orchDir: join(repo, ".orch"), closes: 52, task: "stale base" });
+  assert.deepEqual(found.map((e) => [e.branch, e.uncertain]), [[branch, true]]);
+  assert.match(formatPriorStagedBranches(52, found), /may belong to another issue/);
+});
+
+// Regression: `orch review <branch>` runs with no issue, so its run record has
+// no `closes`. Matching record-by-record let that one untagged record hand the
+// branch to any same-titled issue — the cross-issue false attribution the
+// number-based join exists to prevent. History is folded per branch first.
+test("a later untagged review record does not hand another issue's branch to a same-title issue", async () => {
+  const repo = initGitRepo();
+  const branch = "pr/claude/stale-base-9999-0";
+  const orchDir = join(repo, ".orch");
+  stagePriorRun(repo, branch, { closes: 362 });  // orch issue 362 staged it
+  appendRun(repo, branch, {});                   // orch review <branch> — no issue number
+
+  // Issue #999, same title → same slug: must NOT claim #362's branch.
+  assert.deepEqual(priorStagedBranches({ repo, orchDir, closes: 999, task: "stale base" }), []);
+  const saved = process.exitCode;
+  try {
+    const logs = await runMainInRepo(repo, ["issue", "999"],
+      { cycleDeps: escalatingDeps(), githubDeps: () => ({ gh: issueGh(999, "stale base") }) });
+    assert.doesNotMatch(logs.join("\n"), /already has \d+ staged branch/);
+  } finally {
+    process.exitCode = saved;
+  }
+
+  // ...and #362 still sees it, with no uncertainty hedge.
+  assert.deepEqual(priorStagedBranches({ repo, orchDir, closes: 362, task: "stale base" })
+    .map((e) => [e.branch, e.uncertain]), [[branch, false]]);
+});
+
+test("priorStagedBranches skips a branch that no longer exists", () => {
+  const repo = initGitRepo();
+  stagePriorRun(repo, "pr/claude/stale-base-9999-0", { closes: 52 });
+  gitDep.git(["branch", "-D", "pr/claude/stale-base-9999-0"], repo);
+  assert.deepEqual(priorStagedBranches({ repo, orchDir: join(repo, ".orch"), closes: 52, task: "stale base" }), []);
+});
+
+test("realDeps stamps the issue number onto every run record it writes", () => {
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-closes-"));
+  realDeps({ closes: 52 }).notify.recordRun(orchDir, { branch: "pr/claude/x-1-0", sid: "1-0", verdict: "escalated" });
+  const entry = JSON.parse(readFileSync(join(orchDir, "runs.jsonl"), "utf8").trim());
+  assert.equal(entry.closes, 52);
+});
+
+test("realDeps never overwrites a record that already carries its own issue number", () => {
+  // A redriven deferred peer belongs to a DIFFERENT issue than the cycle that
+  // unblocked it; stamping this run's number on it is cross-issue misattribution.
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-closes-peer-"));
+  const { notify: n } = realDeps({ closes: 362 });
+  n.recordRun(orchDir, { branch: "pr/codex/b-2-0", sid: "2-0", verdict: "merged", closes: 999 });
+  // An explicit null is an answer too: an `orch task` peer has no issue at all.
+  n.recordRun(orchDir, { branch: "pr/codex/c-3-0", sid: "3-0", verdict: "merged", closes: null });
+  const entries = readFileSync(join(orchDir, "runs.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(entries.map((e) => e.closes), [999, null]);
+});
+
+test("the prior-branch notice does not claim a re-run is futile", () => {
+  const out = formatPriorStagedBranches(52, [{ branch: "pr/claude/x-1-0", sid: "1-0", verdict: "escalated", reason: "security scan blocked the merge" }]);
+  assert.doesNotMatch(out, /cannot change|deterministic|no point|futile/i);
+  assert.match(out, /rotates the author and regenerates the diff/);
+});
+
+test("the issue number reaches realDeps, so this run's records are tagged for the next run", async () => {
+  const saved = process.exitCode;
+  const repo = initGitRepo();
+  let seen;
+  const realDepsSpy = (opts) => { seen = opts; return escalatingDeps(); };
+  try {
+    await runMainInRepo(repo, ["issue", "52"],
+      { cycleDeps: undefined, realDeps: realDepsSpy, githubDeps: () => ({ gh: issueGh(52, "stale base") }) });
+    assert.equal(seen?.closes, 52);
+  } finally {
+    process.exitCode = saved;
+  }
 });
