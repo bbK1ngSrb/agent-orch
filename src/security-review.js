@@ -8,7 +8,9 @@ import { DEFAULT_PROTECTED } from "./intake/allowlist.js";
 // deterministic floor cannot be talked out of a DISAGREE.
 export const SECURITY_RULES = [
   { rule: "env-read", re: /process\.env|import\.meta\.env|os\.environ|\$\{?GITHUB_TOKEN/ },
-  { rule: "secret-read", re: /\.orch\/|id_rsa|\.ssh\/|secrets?\.|\.pem\b|PRIVATE KEY/i },
+  // The dotenv alternative requires an opening quote so `process.env` — already
+  // covered by env-read — does not also fire here; only quoted file paths match.
+  { rule: "secret-read", re: /\.orch\/|id_rsa|\.ssh\/|secrets?\.|\.pem\b|PRIVATE KEY|["'`][^"'`]*\.env\b|credentials?\//i },
   { rule: "network", re: /\bfetch\s*\(|node:net\b|node:dns\b|node:https?\b|require\(\s*["']https?["']\s*\)|XMLHttpRequest|\.connect\s*\(/ },
   { rule: "guardrail-touch", re: /branchProtection|CODEOWNERS|orch-pr\.yml|workflows\// },
 ];
@@ -209,7 +211,7 @@ export function scanDiff(diffText, { ignore = [] } = {}) {
 // never seen the rule names should still understand what class of behavior the
 // scan objected to.
 const RULE_BLURB = {
-  "secret-read": "reads a secret or orch's own control state (`.orch/`, `.ssh/`, `.pem`, PRIVATE KEY)",
+  "secret-read": "reads a secret or orch's own control state (`.orch/`, `.ssh/`, `.pem`, dotenv file, `credentials/`, PRIVATE KEY)",
   "env-read": "reads environment variables or a GitHub token",
   network: "opens a network connection (fetch / net / dns / http)",
   subprocess: "spawns a subprocess (child_process / exec / spawn)",
