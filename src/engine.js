@@ -1,7 +1,7 @@
 import { isDocsOnly } from "./scope.js";
 import { checkPaths } from "./intake/allowlist.js";
 import { buildRevisionPrompt } from "./intake/workorder.js";
-import { scanDiff, formatSecurityFindings } from "./security-review.js";
+import { scanDiff, formatSecurityFindings, SECURITY_DIFF_ARGS } from "./security-review.js";
 import { formatUsage, totalUsage } from "./usage.js";
 
 const RAW_OUTPUT_TAIL_CHARS = 12_000;
@@ -222,7 +222,7 @@ export async function runCycle(opts, deps) {
         // Fail closed: a diff we cannot read is a diff we do not approve.
         let finalDiff;
         try {
-          finalDiff = git.git(["diff", `${baseBranch}...${branch}`], repo);
+          finalDiff = git.git(["diff", ...SECURITY_DIFF_ARGS, `${baseBranch}...${branch}`], repo);
         } catch (e) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
             `security scan: could not read the final diff (${e.message}) — failing closed, not merging`));

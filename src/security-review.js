@@ -52,6 +52,17 @@ function unquoteGitPath(s) {
 // Unquote and strip the `a/` / `b/` prefix git puts on both sides of a header.
 // Only the standard prefixes are trusted; anything else (including /dev/null)
 // is an unknown path, which content scanning treats as scannable (fail closed).
+// The parser above trusts git's canonical `a/`/`b/` prefixes, but those are a
+// *config-dependent* default: `diff.noprefix=true` drops them and
+// `diff.mnemonicPrefix=true` renames them (`c/`, `w/`, `i/`), so a repo-local
+// git config could silently blind the floor — e.g. a mode-only workflow change
+// emitting `diff --git .github/workflows/ci.yml .github/workflows/ci.yml`, which
+// matches no header and no `b/` side. Any producer feeding scanDiff MUST pass
+// these flags so the prefixes are what the parser expects regardless of config.
+// `--no-ext-diff` is here for the same reason: an external diff driver replaces
+// git's output wholesale.
+export const SECURITY_DIFF_ARGS = ["--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"];
+
 function abPath(s) {
   const m = unquoteGitPath(s.trim()).match(/^[ab]\/([\s\S]*)$/);
   return m ? m[1] : null;

@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scanDiff, formatSecurityFindings } from "../src/security-review.js";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { scanDiff, formatSecurityFindings, SECURITY_DIFF_ARGS } from "../src/security-review.js";
+import { git } from "../src/git.js";
 
 const clean = `--- a/src/config.js
 +++ b/src/config.js
@@ -447,4 +451,31 @@ test("formatSecurityFindings ranks authored code above test fixtures", () => {
   ];
   const { detail } = formatSecurityFindings(findings);
   assert.ok(detail.indexOf("`src/engine.js`:") < detail.indexOf("`test/x.test.js`:"));
+});
+
+// Regression (real git): the parser trusts `a/`/`b/` prefixes, but `diff.noprefix=true`
+// is valid config that drops them — a mode-only workflow change then emits only
+// `diff --git .github/workflows/ci.yml .github/workflows/ci.yml`, matching no header
+// and no `b/` side, so the floor would approve a guardrail edit. The producer must
+// pin the prefixes with SECURITY_DIFF_ARGS.
+test("SECURITY_DIFF_ARGS keeps the floor working under diff.noprefix", () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-secdiff-"));
+  git(["init", "-b", "main"], repo);
+  git(["config", "user.email", "t@t"], repo);
+  git(["config", "user.name", "t"], repo);
+  git(["config", "diff.noprefix", "true"], repo);            // valid config, defeats a/ b/
+  mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+  writeFileSync(join(repo, ".github/workflows/ci.yml"), "on: push\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "init"], repo);
+  git(["switch", "-c", "feature"], repo);
+  git(["update-index", "--chmod=+x", ".github/workflows/ci.yml"], repo);  // mode-only change
+  git(["commit", "-m", "chmod"], repo);
+
+  const unguarded = git(["diff", "main...feature"], repo);
+  assert.equal(scanDiff(unguarded).decision, "AGREE", "documents the fail-open the flags close");
+
+  const guarded = git(["diff", ...SECURITY_DIFF_ARGS, "main...feature"], repo);
+  assert.equal(scanDiff(guarded).decision, "DISAGREE");
+  assert.equal(scanDiff(guarded).findings[0].file, ".github/workflows/ci.yml");
 });
