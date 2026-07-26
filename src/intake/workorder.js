@@ -79,18 +79,7 @@ function neutralizeFence(s) {
   );
 }
 
-export function buildAuthorPrompt(workOrder) {
-  const ref = [
-    `title: ${neutralizeFence(workOrder.title)}`,
-    `problem: ${neutralizeFence(workOrder.problem)}`,
-    `repro_steps:`,
-    ...workOrder.repro_steps.map((s) => `  - ${neutralizeFence(s)}`),
-    `suspected_paths:`,
-    ...workOrder.suspected_paths.map((s) => `  - ${neutralizeFence(s)}`),
-    `acceptance_criteria:`,
-    ...workOrder.acceptance_criteria.map((s) => `  - ${neutralizeFence(s)}`),
-  ].join("\n");
-
+function frameUntrustedReference(ref) {
   return [
     `# Trusted goal`,
     `Resolve the reported defect in this repository with the smallest correct`,
@@ -104,4 +93,23 @@ export function buildAuthorPrompt(workOrder) {
     FENCE_END,
     ``,
   ].join("\n");
+}
+
+export function buildAuthorPrompt(workOrder) {
+  const ref = [
+    `title: ${neutralizeFence(workOrder.title)}`,
+    `problem: ${neutralizeFence(workOrder.problem)}`,
+    `repro_steps:`,
+    ...workOrder.repro_steps.map((s) => `  - ${neutralizeFence(s)}`),
+    `suspected_paths:`,
+    ...workOrder.suspected_paths.map((s) => `  - ${neutralizeFence(s)}`),
+    `acceptance_criteria:`,
+    ...workOrder.acceptance_criteria.map((s) => `  - ${neutralizeFence(s)}`),
+  ].join("\n");
+
+  return frameUntrustedReference(ref);
+}
+
+export function buildRevisionPrompt(reason) {
+  return frameUntrustedReference(`Revise per review findings:\n${neutralizeFence(reason)}`);
 }

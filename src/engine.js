@@ -1,5 +1,6 @@
 import { isDocsOnly } from "./scope.js";
 import { checkPaths } from "./intake/allowlist.js";
+import { buildRevisionPrompt } from "./intake/workorder.js";
 import { scanDiff, formatSecurityFindings } from "./security-review.js";
 import { formatUsage, totalUsage } from "./usage.js";
 
@@ -283,7 +284,7 @@ export async function runCycle(opts, deps) {
       }
 
       notify.phase("revise", `${author.name} revising (round ${round + 1})`);
-      const revised = await author.author(`Revise per review findings:\n${verdict.reason}`, worktree, authorOpts);
+      const revised = await author.author(buildRevisionPrompt(verdict.reason), worktree, authorOpts);
       recordUsage("author", author.name, revised, authorOpts.model);
       round += 1;
     }
