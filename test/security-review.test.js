@@ -296,6 +296,51 @@ test("guardrail DELETION (no added lines) is still flagged", () => {
   assert.ok(r.findings.some((f) => f.rule === "guardrail-touch" && f.file === ".github/workflows/ci.yml"));
 });
 
+test("pure rename of a guardrail file (100% similarity, no ---/+++ headers) is flagged", () => {
+  const d = `diff --git a/.github/workflows/ci.yml b/.github/workflows/ci2.yml
+similarity index 100%
+rename from .github/workflows/ci.yml
+rename to .github/workflows/ci2.yml`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  // BOTH sides matter: renaming a workflow away detaches a required check just
+  // as surely as renaming one in.
+  for (const p of [".github/workflows/ci.yml", ".github/workflows/ci2.yml"]) {
+    assert.ok(r.findings.some((f) => f.rule === "guardrail-touch" && f.file === p), p);
+  }
+});
+
+test("rename OUT of a guardrail path is flagged from the old side alone", () => {
+  const d = `diff --git a/.github/workflows/ci.yml b/tmp/ci.yml
+similarity index 100%
+rename from .github/workflows/ci.yml
+rename to tmp/ci.yml`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/ci.yml" },
+  ]);
+});
+
+test("mode-only change to a guardrail file (no ---/+++ headers) is flagged", () => {
+  const d = `diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+old mode 100644
+new mode 100755`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/ci.yml" },
+  ]);
+});
+
+test("renaming an ordinary file stays AGREE", () => {
+  const d = `diff --git a/src/a.js b/src/b.js
+similarity index 100%
+rename from src/a.js
+rename to src/b.js`;
+  assert.equal(scanDiff(d).decision, "AGREE");
+});
+
 test("quoted (non-ASCII) guardrail path header is still flagged", () => {
   const d = `--- "a/.github/workflows/caf\\303\\251.yml"
 +++ "b/.github/workflows/caf\\303\\251.yml"

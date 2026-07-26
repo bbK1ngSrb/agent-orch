@@ -59,6 +59,25 @@ function headerPath(l) {
   return m ? m[1] : null;
 }
 
+// A pure rename (100% similarity) or a mode-only change carries NO `---`/`+++`
+// headers — git emits only the `diff --git a/<old> b/<new>` line plus, for a
+// rename/copy, `rename from`/`rename to`. Parse those too, both sides: moving a
+// file OUT of a guardrail path matters as much as moving one in. Paths may
+// contain spaces, so the `a/`…` b/` split is greedy — the last ` b/` wins, which
+// is right for the same-path and no-space cases and harmless otherwise (a
+// mis-split path simply fails the guardrail globs, and the rename lines below
+// carry the exact paths anyway). C-quoted `diff --git "a/…" "b/…"` lines are
+// likewise left to the rename lines, which quote one path each.
+const DIFF_GIT_RE = /^diff --git a\/(.*) b\/(.*)$/;
+const RENAME_RE = /^(?:rename|copy) (?:from|to) (.+)$/;
+function structuralPaths(l) {
+  const g = l.match(DIFF_GIT_RE);
+  if (g) return [unquoteGitPath(g[1]), unquoteGitPath(g[2])];
+  const r = l.match(RENAME_RE);
+  if (r) return [unquoteGitPath(r[1])];
+  return [];
+}
+
 // The path-based floor: the same protected set orch enforces at intake, plus
 // docs/CODEOWNERS — the third GitHub-valid CODEOWNERS location, which the docs
 // exemption above would otherwise swallow. The globs are anchored, so
@@ -120,14 +139,18 @@ export function scanDiff(diffText, { ignore = [] } = {}) {
   // Path-based floor (#345): touching a guardrail path trips guardrail-touch
   // regardless of added-line content — an ERR trap with no trigger string, or a
   // pure deletion with no added lines at all, would otherwise stay silent. Read
-  // BOTH `--- a/` and `+++ b/` headers so deletions are caught. Not subject to
+  // BOTH `--- a/` and `+++ b/` headers so deletions are caught, plus the
+  // `diff --git` / `rename` lines so a pure rename — which emits no `---`/`+++`
+  // at all — is caught too. Not subject to
   // `ignore`: a guardrail file is never a build artifact.
   const seen = new Set();
   for (const l of String(diffText).split("\n")) {
-    const p = headerPath(l);
-    if (p && !seen.has(p) && isGuardrailPath(p)) {
-      seen.add(p);
-      findings.push({ rule: "guardrail-touch", line: "guardrail path changed", file: p });
+    const paths = [headerPath(l), ...structuralPaths(l)];
+    for (const p of paths) {
+      if (p && !seen.has(p) && isGuardrailPath(p)) {
+        seen.add(p);
+        findings.push({ rule: "guardrail-touch", line: "guardrail path changed", file: p });
+      }
     }
   }
   const ignoreRes = ignore.map(globToRegExp);
