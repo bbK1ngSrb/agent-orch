@@ -49,14 +49,56 @@ function unquoteGitPath(s) {
 // (null for /dev/null or non-header lines). Reading BOTH headers matters: a
 // deleted guardrail file has no added lines to scan — only its `--- a/` header
 // carries the path.
+// Unquote and strip the `a/` / `b/` prefix git puts on both sides of a header.
+// Only the standard prefixes are trusted; anything else (including /dev/null)
+// is an unknown path, which content scanning treats as scannable (fail closed).
+// The parser above trusts git's canonical `a/`/`b/` prefixes, but those are a
+// *config-dependent* default: `diff.noprefix=true` drops them and
+// `diff.mnemonicPrefix=true` renames them (`c/`, `w/`, `i/`), so a repo-local
+// git config could silently blind the floor — e.g. a mode-only workflow change
+// emitting `diff --git .github/workflows/ci.yml .github/workflows/ci.yml`, which
+// matches no header and no `b/` side. Any producer feeding scanDiff MUST pass
+// these flags so the prefixes are what the parser expects regardless of config.
+// `--no-ext-diff` is here for the same reason: an external diff driver replaces
+// git's output wholesale.
+export const SECURITY_DIFF_ARGS = ["--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"];
+
+function abPath(s) {
+  const m = unquoteGitPath(s.trim()).match(/^[ab]\/([\s\S]*)$/);
+  return m ? m[1] : null;
+}
+
 function headerPath(l) {
   if (!l.startsWith("--- ") && !l.startsWith("+++ ")) return null;
-  const p = unquoteGitPath(l.slice(4).trim());
-  if (p === "/dev/null") return null;
-  // Only trust the standard a//b/ prefixes; anything else is an unknown path,
-  // which content scanning treats as scannable (fail closed).
-  const m = p.match(/^[ab]\/([\s\S]*)$/);
-  return m ? m[1] : null;
+  return abPath(l.slice(4));
+}
+
+// A pure rename (100% similarity) or a mode-only change carries NO `---`/`+++`
+// headers — git emits only the `diff --git <a-side> <b-side>` line plus, for a
+// rename, `rename from`/`rename to`. Each side is C-quoted independently when it
+// holds non-ASCII/control bytes, so the sides can be mixed
+// (`diff --git "a/café.yml" b/plain.yml`); the pattern accepts either form.
+//
+// Only the b-side is read here. It is enough: the a-side of a modify/delete
+// already comes from the `--- a/` header, and for a rename the OLD path — which
+// matters as much as the new one, since moving a workflow out detaches a
+// required check — comes from the exact, unambiguous `rename from` line.
+// `copy from` is deliberately NOT matched: a copy does not modify its source,
+// so flagging that path is a false guardrail-touch.
+//
+// Paths may contain spaces, making git's own line ambiguous; the greedy `.+`
+// takes the LAST ` b/` (or ` "b/`), which is right for the same-path and
+// no-space cases. A path that literally contains ` b/` mis-splits and then
+// fails the guardrail globs — fail-OPEN, but it needs a guardrail file named
+// e.g. `.github/workflows/x b/y.yml` to reach, and the exact `rename from`/`to`
+// lines cover the rename case regardless.
+const DIFF_GIT_RE = /^diff --git .+ ("?b\/.*)$/;
+const RENAME_RE = /^rename (?:from|to) (.+)$/;
+function structuralPath(l) {
+  const g = l.match(DIFF_GIT_RE);
+  if (g) return abPath(g[1]);
+  const r = l.match(RENAME_RE);
+  return r ? unquoteGitPath(r[1]) : null;
 }
 
 // The path-based floor: the same protected set orch enforces at intake, plus
@@ -120,14 +162,18 @@ export function scanDiff(diffText, { ignore = [] } = {}) {
   // Path-based floor (#345): touching a guardrail path trips guardrail-touch
   // regardless of added-line content — an ERR trap with no trigger string, or a
   // pure deletion with no added lines at all, would otherwise stay silent. Read
-  // BOTH `--- a/` and `+++ b/` headers so deletions are caught. Not subject to
+  // BOTH `--- a/` and `+++ b/` headers so deletions are caught, plus the
+  // `diff --git` / `rename` lines so a pure rename — which emits no `---`/`+++`
+  // at all — is caught too. Not subject to
   // `ignore`: a guardrail file is never a build artifact.
   const seen = new Set();
   for (const l of String(diffText).split("\n")) {
-    const p = headerPath(l);
-    if (p && !seen.has(p) && isGuardrailPath(p)) {
-      seen.add(p);
-      findings.push({ rule: "guardrail-touch", line: "guardrail path changed", file: p });
+    const paths = [headerPath(l), structuralPath(l)];
+    for (const p of paths) {
+      if (p && !seen.has(p) && isGuardrailPath(p)) {
+        seen.add(p);
+        findings.push({ rule: "guardrail-touch", line: "guardrail path changed", file: p });
+      }
     }
   }
   const ignoreRes = ignore.map(globToRegExp);

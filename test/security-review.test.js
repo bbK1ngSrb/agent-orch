@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scanDiff, formatSecurityFindings } from "../src/security-review.js";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { scanDiff, formatSecurityFindings, SECURITY_DIFF_ARGS } from "../src/security-review.js";
+import { git } from "../src/git.js";
 
 const clean = `--- a/src/config.js
 +++ b/src/config.js
@@ -296,6 +300,113 @@ test("guardrail DELETION (no added lines) is still flagged", () => {
   assert.ok(r.findings.some((f) => f.rule === "guardrail-touch" && f.file === ".github/workflows/ci.yml"));
 });
 
+test("pure rename of a guardrail file (100% similarity, no ---/+++ headers) is flagged", () => {
+  const d = `diff --git a/.github/workflows/ci.yml b/.github/workflows/ci2.yml
+similarity index 100%
+rename from .github/workflows/ci.yml
+rename to .github/workflows/ci2.yml`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  // BOTH sides matter: renaming a workflow away detaches a required check just
+  // as surely as renaming one in.
+  for (const p of [".github/workflows/ci.yml", ".github/workflows/ci2.yml"]) {
+    assert.ok(r.findings.some((f) => f.rule === "guardrail-touch" && f.file === p), p);
+  }
+});
+
+test("rename OUT of a guardrail path is flagged from the old side alone", () => {
+  const d = `diff --git a/.github/workflows/ci.yml b/tmp/ci.yml
+similarity index 100%
+rename from .github/workflows/ci.yml
+rename to tmp/ci.yml`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/ci.yml" },
+  ]);
+});
+
+test("mode-only change to a guardrail file (no ---/+++ headers) is flagged", () => {
+  const d = `diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+old mode 100644
+new mode 100755`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/ci.yml" },
+  ]);
+});
+
+// Real `git diff` output: git C-quotes each side of the `diff --git` line
+// independently, so a non-ASCII path arrives as `"a/…" "b/…"` — and a mode-only
+// change emits no `---`/`+++` and no rename lines, leaving that one line as the
+// only record of the path.
+test("mode-only change to a QUOTED (non-ASCII) guardrail path is flagged", () => {
+  const d = `diff --git "a/.github/workflows/caf\\303\\251.yml" "b/.github/workflows/caf\\303\\251.yml"
+old mode 100644
+new mode 100755`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/café.yml" },
+  ]);
+});
+
+// A copy does NOT modify its source, so `copy from <guardrail path>` must not
+// trip the floor — unlike `rename from`, where the old path really did change.
+test("copying a guardrail file OUT to an ordinary path stays AGREE", () => {
+  const d = `diff --git "a/.github/workflows/caf\\303\\251.yml" b/tmp-ci.yml
+old mode 100755
+new mode 100644
+similarity index 100%
+copy from ".github/workflows/caf\\303\\251.yml"
+copy to tmp-ci.yml`;
+  assert.equal(scanDiff(d).decision, "AGREE");
+});
+
+// A PARTIAL copy (<100% similarity) does emit `---`/`+++`, so the pre-existing
+// header scan still flags the source. That FP is out of scope here — the header
+// path predates the structural parse and errs toward escalation — but pin it so
+// the difference between the two copy forms is visible rather than assumed.
+test("partial copy out of a guardrail path still trips the pre-existing header scan", () => {
+  const d = `diff --git "a/.github/workflows/caf\\303\\251.yml" b/tmp-ci.yml
+similarity index 80%
+copy from ".github/workflows/caf\\303\\251.yml"
+copy to tmp-ci.yml
+--- "a/.github/workflows/caf\\303\\251.yml"
++++ b/tmp-ci.yml
+@@ -6,3 +6,4 @@ jobs:
+       - run: echo bye
++      - run: echo extra`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/café.yml" },
+  ]);
+});
+
+// …but the suppression must not swallow the destination: copying a file INTO a
+// guardrail path adds a live workflow and still has to be flagged.
+test("copying an ordinary file INTO a guardrail path is flagged", () => {
+  const d = `diff --git a/src/a.js b/.github/workflows/copied.yml
+similarity index 100%
+copy from src/a.js
+copy to .github/workflows/copied.yml`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/copied.yml" },
+  ]);
+});
+
+test("renaming an ordinary file stays AGREE", () => {
+  const d = `diff --git a/src/a.js b/src/b.js
+similarity index 100%
+rename from src/a.js
+rename to src/b.js`;
+  assert.equal(scanDiff(d).decision, "AGREE");
+});
+
 test("quoted (non-ASCII) guardrail path header is still flagged", () => {
   const d = `--- "a/.github/workflows/caf\\303\\251.yml"
 +++ "b/.github/workflows/caf\\303\\251.yml"
@@ -340,4 +451,31 @@ test("formatSecurityFindings ranks authored code above test fixtures", () => {
   ];
   const { detail } = formatSecurityFindings(findings);
   assert.ok(detail.indexOf("`src/engine.js`:") < detail.indexOf("`test/x.test.js`:"));
+});
+
+// Regression (real git): the parser trusts `a/`/`b/` prefixes, but `diff.noprefix=true`
+// is valid config that drops them — a mode-only workflow change then emits only
+// `diff --git .github/workflows/ci.yml .github/workflows/ci.yml`, matching no header
+// and no `b/` side, so the floor would approve a guardrail edit. The producer must
+// pin the prefixes with SECURITY_DIFF_ARGS.
+test("SECURITY_DIFF_ARGS keeps the floor working under diff.noprefix", () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-secdiff-"));
+  git(["init", "-b", "main"], repo);
+  git(["config", "user.email", "t@t"], repo);
+  git(["config", "user.name", "t"], repo);
+  git(["config", "diff.noprefix", "true"], repo);            // valid config, defeats a/ b/
+  mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+  writeFileSync(join(repo, ".github/workflows/ci.yml"), "on: push\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "init"], repo);
+  git(["switch", "-c", "feature"], repo);
+  git(["update-index", "--chmod=+x", ".github/workflows/ci.yml"], repo);  // mode-only change
+  git(["commit", "-m", "chmod"], repo);
+
+  const unguarded = git(["diff", "main...feature"], repo);
+  assert.equal(scanDiff(unguarded).decision, "AGREE", "documents the fail-open the flags close");
+
+  const guarded = git(["diff", ...SECURITY_DIFF_ARGS, "main...feature"], repo);
+  assert.equal(scanDiff(guarded).decision, "DISAGREE");
+  assert.equal(scanDiff(guarded).findings[0].file, ".github/workflows/ci.yml");
 });
