@@ -266,6 +266,25 @@ function detail(out) {
   return tail ? `: ${tail.slice(-300)}` : "";
 }
 
+// True when a successful agent's output is nothing more than its own review
+// prompt echoed back (a crashed/no-op reviewer that still exits 0). The prompt
+// itself contains AGREE/DISAGREE in its instruction bullets, so a bare echo
+// would otherwise parse as a real verdict. Strip each prompt line that carries
+// a verdict token out of a scratch copy of the output: a genuine line-leading
+// verdict is never a substring of the prompt, so it survives the strip, and
+// any surviving verdict-shaped text means the run was not a pure echo.
+function onlyEchoedVerdictPrompt(output, prompt) {
+  let remainder = String(output ?? "");
+  let echoed = false;
+  for (const line of String(prompt).split(/\r?\n/)) {
+    const fragment = line.trim();
+    if (!/\b(?:AGREE|DISAGREE)\b/i.test(fragment) || !remainder.includes(fragment)) continue;
+    remainder = remainder.replaceAll(fragment, "");
+    echoed = true;
+  }
+  return echoed && !/\b(?:AGREE|DISAGREE)\b/i.test(remainder);
+}
+
 function normalizeCapabilities(capabilities = {}) {
   return { model: Boolean(capabilities.model), effort: Boolean(capabilities.effort) };
 }
@@ -307,10 +326,17 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       // F4: never throw, and never trust a crashed/nonzero agent. A failed run
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
       assertSupported(name, capabilitySupport, opts);
-      const args = buildArgs(render("review", { branch }), wd, opts);
+      const prompt = render("review", { branch });
+      const args = buildArgs(prompt, wd, opts);
       const { out, raw, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, { stageTimeoutMs: opts.stageTimeoutMs });
       const captured = raw || out;
       const usage = parseRunUsage(captured, modelFromArgs(args, opts));
+      // A reviewer that exits 0 but only echoed its own prompt back never
+      // reviewed anything — escalate as agentError instead of parsing the
+      // prompt's own verdict vocabulary as a real DISAGREE.
+      if (ok && onlyEchoedVerdictPrompt(captured, prompt)) {
+        return { decision: "DISAGREE", reason: "only echoed the review prompt", agentError: true, raw: captured, usage };
+      }
       const parsed = parseVerdict(out);
       if (ok && parsed.reason === "unparseable verdict") {
         const parsedRaw = parseVerdict(captured);
