@@ -2681,7 +2681,7 @@ test("orch issue <n> warns about a branch a prior run staged for the same issue 
     const out = logs.join("\n");
     assert.match(out, /issue #52 already has 1 staged branch/);
     assert.match(out, /pr\/claude\/stale-base-9999-0 — escalated/);
-    assert.match(out, /orch continue 9999-0/);
+    assert.match(out, /orch review pr\/claude\/stale-base-9999-0/);
     assert.doesNotMatch(out, /may belong to another issue/);
   } finally {
     process.exitCode = saved;
@@ -2742,4 +2742,18 @@ test("the prior-branch notice does not claim a re-run is futile", () => {
   const out = formatPriorStagedBranches(52, [{ branch: "pr/claude/x-1-0", sid: "1-0", verdict: "escalated", reason: "security scan blocked the merge" }]);
   assert.doesNotMatch(out, /cannot change|deterministic|no point|futile/i);
   assert.match(out, /rotates the author and regenerates the diff/);
+});
+
+test("the issue number reaches realDeps, so this run's records are tagged for the next run", async () => {
+  const saved = process.exitCode;
+  const repo = initGitRepo();
+  let seen;
+  const realDepsSpy = (opts) => { seen = opts; return escalatingDeps(); };
+  try {
+    await runMainInRepo(repo, ["issue", "52"],
+      { cycleDeps: undefined, realDeps: realDepsSpy, githubDeps: () => ({ gh: issueGh(52, "stale base") }) });
+    assert.equal(seen?.closes, 52);
+  } finally {
+    process.exitCode = saved;
+  }
 });

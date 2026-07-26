@@ -940,7 +940,10 @@ export function formatPriorStagedBranches(closes, entries) {
     const reason = String(e.reason || "").split("\n")[0].slice(0, 120);
     const hedge = e.uncertain ? "  [no issue number recorded — matched by title, may belong to another issue]" : "";
     out.push(`  ${e.branch} — ${e.verdict || "unknown"}${reason ? `: ${reason}` : ""}${hedge}`);
-    if (e.sid) out.push(`    inspect: git log ${e.branch}   resume: orch continue ${e.sid}`);
+    // NOT `orch continue <sid>`: that needs a checkpoint/inflight record, and
+    // both are cleared once a cycle returns — so it cannot resume a run that
+    // already reached a terminal status. `orch review` re-audits the branch.
+    out.push(`    inspect: git log ${e.branch}   re-audit: orch review ${e.branch}`);
   }
   out.push("  this run stages a NEW branch. A re-run rotates the author and regenerates the diff, so a security-floor");
   out.push("  escalation repeats only if the fresh diff touches the same protected paths.");
@@ -1327,7 +1330,7 @@ export async function main(argv, deps = {}) {
         }
       }
       try {
-        const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps({ closes: run.closes })));
+        const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes })));
         results.push(result);
         // Cycle returned (any terminal status) → drop the resume + checkpoint records.
         // A quota throw skips this line, leaving both for the next run to resume (#24).
