@@ -59,6 +59,48 @@ function formatElapsed(ms) {
   return minutes ? `${minutes}m ${String(rest).padStart(2, "0")}s` : `${seconds}s`;
 }
 
+// Whimsy words are flavor, not telemetry: orch only sees the subprocess exit, so
+// it must not claim what the agent is "doing". Rotate every few heartbeats.
+const WHIMSY_WORDS = [
+  "percolating", "squinting", "grinding", "mulling", "pondering",
+  "ruminating", "noodling", "stewing", "tinkering", "brooding",
+];
+// Erase-to-EOL for in-place TTY rewrites (same raw ANSI as src/tui/screen.js).
+const ERASE_TO_EOL = "\x1b[K";
+// Multi-round review strip continuity (TTY only). Dots + elapsed span rounds;
+// round numbers are stamped into the strip when a new round starts.
+let reviewProgress = null;
+
+/** @internal test helper — clears multi-round review progress state. */
+export function _resetReviewProgress() {
+  reviewProgress = null;
+}
+
+function whimsyWord(beatIndex) {
+  return WHIMSY_WORDS[Math.floor(beatIndex / 2) % WHIMSY_WORDS.length];
+}
+
+// Pure beat renderer. non-TTY keeps the historical line-per-beat form byte-for-
+// byte; TTY rewrites one line in place via CR + erase-to-EOL (no spinner dep).
+export function formatProgressBeat({ tty, stage, label, word, dots, elapsed }) {
+  if (!tty) return `… ${label} still running (${elapsed} elapsed)\n`;
+  return `\r▸ ${stage}  ${label}   ${word}${dots}      ${elapsed}${ERASE_TO_EOL}`;
+}
+
+function beginProgressState(stage, round, started) {
+  // Continuity only when the engine threads a numeric round (review rounds).
+  if (stage === "review" && Number.isFinite(round)) {
+    if (round === 1 || !reviewProgress) {
+      reviewProgress = { started, beats: 0, dots: String(round), currentRound: round };
+    } else if (round !== reviewProgress.currentRound) {
+      reviewProgress.currentRound = round;
+      reviewProgress.dots += String(round);
+    }
+    return reviewProgress;
+  }
+  return { started, beats: 0, dots: "" };
+}
+
 function appendCapturedOutput(buffer, chunk) {
   const next = buffer + String(chunk);
   if (next.length <= MAX_AGENT_OUTPUT_CHARS) return next;
@@ -69,16 +111,30 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
     const timeoutMs = stageTimeoutMs(runOpts.stageTimeoutMs);
+    const stage = runOpts.stage || "agent";
+    const round = runOpts.round;
+    // isTTY only: headless/logged runs must keep newline-per-beat (no CR/ANSI).
+    const tty = Boolean(process.stderr.isTTY);
+    const progress = tty ? beginProgressState(stage, round, started) : null;
     let stdout = "";
     let stderr = "";
     let settled = false;
     let timer = null;
     let watchdog = null;
+    let wroteProgress = false;
+    let endedProgressLine = false;
+    const endProgressLine = () => {
+      if (tty && wroteProgress && !endedProgressLine) {
+        process.stderr.write("\n");
+        endedProgressLine = true;
+      }
+    };
     const finish = (result) => {
       if (settled) return;
       settled = true;
       if (timer) clearInterval(timer);
       if (watchdog) clearTimeout(watchdog);
+      endProgressLine();
       resolve(result);
     };
     // detached (POSIX only): the child leads its own process group, so a stalled
@@ -103,7 +159,16 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     const child = spawn(spec.bin, spec.args, { cwd, detached: !IS_WINDOWS, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     if (child.pid != null) liveChildren.add(child.pid);
     timer = setInterval(() => {
-      process.stderr.write(`… ${label} still running (${formatElapsed(Date.now() - started)} elapsed)\n`);
+      if (!tty) {
+        process.stderr.write(`… ${label} still running (${formatElapsed(Date.now() - started)} elapsed)\n`);
+        return;
+      }
+      progress.beats += 1;
+      progress.dots += ".";
+      const word = whimsyWord(progress.beats - 1);
+      const elapsed = formatElapsed(Date.now() - progress.started);
+      process.stderr.write(formatProgressBeat({ tty: true, stage, label, word, dots: progress.dots, elapsed }));
+      wroteProgress = true;
     }, progressIntervalMs());
     timer.unref?.();
     // #56 watchdog: a hard wall-clock cap. On expiry, kill the whole tree
@@ -113,6 +178,7 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     // in uninterruptible-sleep on NFS where even SIGKILL doesn't reap promptly.
     watchdog = timeoutMs > 0 ? setTimeout(() => {
       const elapsed = Date.now() - started;
+      endProgressLine();
       process.stderr.write(`… ${label} TIMED OUT after ${formatElapsed(elapsed)} — killing stalled stage\n`);
       // Liveness-gated: only signal a still-running child's tree. Once settled or
       // exited the pid may be recycled, and killing a stranger's tree is unsafe.
@@ -287,7 +353,10 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       // Author must succeed; a failure here is a hard error (no commits made).
       assertSupported(name, capabilitySupport, opts);
       const args = buildArgs(render("author", { task }), wd, opts);
-      const result = await runAgent(adapter.bin, args, wd, `${name} authoring`, { stageTimeoutMs: opts.stageTimeoutMs });
+      const result = await runAgent(adapter.bin, args, wd, `${name} authoring`, {
+        stageTimeoutMs: opts.stageTimeoutMs,
+        stage: "author",
+      });
       if (!result.ok) throw new Error(result.out || `Command failed: ${adapter.bin}`);
       const out = result.out;
       const usage = parseRunUsage(out, modelFromArgs(args, opts));
@@ -308,7 +377,11 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       // is a fail-safe DISAGREE even if it printed AGREE before dying.
       assertSupported(name, capabilitySupport, opts);
       const args = buildArgs(render("review", { branch }), wd, opts);
-      const { out, raw, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, { stageTimeoutMs: opts.stageTimeoutMs });
+      const { out, raw, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, {
+        stageTimeoutMs: opts.stageTimeoutMs,
+        stage: "review",
+        round: opts.round,
+      });
       const captured = raw || out;
       const usage = parseRunUsage(captured, modelFromArgs(args, opts));
       const parsed = parseVerdict(out);

@@ -12,7 +12,14 @@ import { buildArgs as geminiArgs } from "../src/adapters/gemini.js";
 import { buildArgs as grokArgs } from "../src/adapters/grok.js";
 import { buildArgs as kimiArgs } from "../src/adapters/kimi.js";
 import { get } from "../src/adapters/index.js";
-import { makeCliAdapter, isUsageLimit, parseRunUsage, MAX_AGENT_OUTPUT_CHARS } from "../src/adapters/cli-adapter.js";
+import {
+  makeCliAdapter,
+  isUsageLimit,
+  parseRunUsage,
+  MAX_AGENT_OUTPUT_CHARS,
+  formatProgressBeat,
+  _resetReviewProgress,
+} from "../src/adapters/cli-adapter.js";
 
 // Fake-agent fixtures spawn `node -e <script>` instead of `sh -c <script>`.
 // A shell (and printf/cat/trap/exit) is POSIX-only — this repo's own CI
@@ -271,11 +278,40 @@ test("audit does not let successful stderr override a parseable stdout verdict",
   assert.match(v.raw, /warning mentions DISAGREE/);
 });
 
-test("audit emits elapsed progress while the agent is still running", async () => {
+test("formatProgressBeat keeps non-TTY line-per-beat form byte-for-byte", () => {
+  assert.equal(
+    formatProgressBeat({
+      tty: false,
+      stage: "review",
+      label: "slow auditing",
+      word: "percolating",
+      dots: "...",
+      elapsed: "30s",
+    }),
+    "… slow auditing still running (30s elapsed)\n",
+  );
+});
+
+test("formatProgressBeat rewrites one TTY line with stage, whimsy, dots, elapsed", () => {
+  const line = formatProgressBeat({
+    tty: true,
+    stage: "author",
+    label: "claude authoring",
+    word: "percolating",
+    dots: "......",
+    elapsed: "6m 30s",
+  });
+  assert.equal(line, "\r▸ author  claude authoring   percolating......      6m 30s\x1b[K");
+  assert.ok(!line.endsWith("\n"), "TTY beat must not append a newline (in-place rewrite)");
+});
+
+test("audit emits elapsed progress while the agent is still running (non-TTY)", async () => {
   const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
   const priorWrite = process.stderr.write;
+  const priorIsTTY = process.stderr.isTTY;
   const writes = [];
   process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  Object.defineProperty(process.stderr, "isTTY", { value: false, configurable: true });
   process.stderr.write = (chunk) => {
     writes.push(String(chunk));
     return true;
@@ -288,11 +324,89 @@ test("audit emits elapsed progress while the agent is still running", async () =
     });
     const v = await adapter.audit("pr/x/y", tmpdir());
     assert.equal(v.decision, "AGREE");
-    assert.match(writes.join(""), /slow auditing still running .* elapsed/);
+    const joined = writes.join("");
+    assert.match(joined, /slow auditing still running .* elapsed/);
+    assert.ok(!joined.includes("\r"), "non-TTY must not emit carriage returns");
+    assert.ok(!joined.includes("\x1b["), "non-TTY must not emit ANSI escapes");
   } finally {
     if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
     else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
     process.stderr.write = priorWrite;
+    Object.defineProperty(process.stderr, "isTTY", { value: priorIsTTY, configurable: true });
+  }
+});
+
+test("audit rewrites one live TTY progress line with stage + whimsy + elapsed", async () => {
+  const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
+  const priorWrite = process.stderr.write;
+  const priorIsTTY = process.stderr.isTTY;
+  const writes = [];
+  process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  _resetReviewProgress();
+  try {
+    const adapter = makeCliAdapter({
+      name: "slow",
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 60)"),
+    });
+    const v = await adapter.audit("pr/x/y", tmpdir(), { round: 1 });
+    assert.equal(v.decision, "AGREE");
+    const progress = writes.filter((w) => w.includes("\r▸"));
+    assert.ok(progress.length >= 1, "expected at least one in-place progress beat");
+    assert.match(progress[0], /^\r▸ review  slow auditing   \w+1\.+\s+\d/);
+    assert.ok(progress[0].includes("\x1b[K"), "TTY beat erases to end of line");
+    // Later beats rewrite the same line (no newline between them).
+    for (const beat of progress) {
+      assert.ok(!beat.includes("\n"), "progress beats stay on one line until finish");
+    }
+    // Finish ends the strip so the next phase line is clean.
+    assert.ok(writes.some((w) => w === "\n"), "finish must emit a trailing newline after TTY progress");
+  } finally {
+    _resetReviewProgress();
+    if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
+    else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
+    process.stderr.write = priorWrite;
+    Object.defineProperty(process.stderr, "isTTY", { value: priorIsTTY, configurable: true });
+  }
+});
+
+test("review TTY progress accumulates dots and round markers across rounds", async () => {
+  const priorInterval = process.env.ORCH_PROGRESS_INTERVAL_MS;
+  const priorWrite = process.stderr.write;
+  const priorIsTTY = process.stderr.isTTY;
+  const writes = [];
+  process.env.ORCH_PROGRESS_INTERVAL_MS = "10";
+  Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  _resetReviewProgress();
+  try {
+    const adapter = makeCliAdapter({
+      name: "slow",
+      bin: process.execPath,
+      buildArgs: () => nodeScript("setTimeout(() => process.stdout.write('AGREE ok\\n'), 45)"),
+    });
+    await adapter.audit("pr/x/y", tmpdir(), { round: 1 });
+    await adapter.audit("pr/x/y", tmpdir(), { round: 2 });
+    const progress = writes.filter((w) => w.includes("\r▸"));
+    assert.ok(progress.length >= 2, "expected progress across both rounds");
+    // At least one beat from round 2 must show both round markers and more dots.
+    const late = progress[progress.length - 1];
+    assert.match(late, /1\.+2\.+/);
+    assert.match(late, /^\r▸ review  slow auditing/);
+  } finally {
+    _resetReviewProgress();
+    if (priorInterval === undefined) delete process.env.ORCH_PROGRESS_INTERVAL_MS;
+    else process.env.ORCH_PROGRESS_INTERVAL_MS = priorInterval;
+    process.stderr.write = priorWrite;
+    Object.defineProperty(process.stderr, "isTTY", { value: priorIsTTY, configurable: true });
   }
 });
 
