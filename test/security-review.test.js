@@ -137,8 +137,8 @@ test("reading from a credentials directory → DISAGREE (secret-read)", () => {
   assert.ok(r.findings.some((f) => f.rule === "secret-read"));
 });
 
-test("process.env access does NOT also trip secret-read (env-read only)", () => {
-  const d = `+++ b/src/x.js\n+  const k = process.env.TOKEN;`;
+test("template-literal env access does NOT trip secret-read (env-read only)", () => {
+  const d = "+++ b/src/x.js\n+  log(`env=${process.env.NODE_ENV}`);";
   const r = scanDiff(d);
   assert.equal(r.decision, "DISAGREE");
   assert.ok(r.findings.some((f) => f.rule === "env-read"));

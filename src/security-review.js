@@ -10,7 +10,7 @@ export const SECURITY_RULES = [
   { rule: "env-read", re: /process\.env|import\.meta\.env|os\.environ|\$\{?GITHUB_TOKEN/ },
   // The dotenv alternative requires an opening quote so `process.env` — already
   // covered by env-read — does not also fire here; only quoted file paths match.
-  { rule: "secret-read", re: /\.orch\/|id_rsa|\.ssh\/|secrets?\.|\.pem\b|PRIVATE KEY|["'`][^"'`]*\.env\b|credentials?\//i },
+  { rule: "secret-read", re: /\.orch\/|id_rsa|\.ssh\/|secrets?\.|\.pem\b|PRIVATE KEY|["'`](?:[^"'`]*[/\\])?\.env\b|credentials?\//i },
   { rule: "network", re: /\bfetch\s*\(|node:net\b|node:dns\b|node:https?\b|require\(\s*["']https?["']\s*\)|XMLHttpRequest|\.connect\s*\(/ },
   { rule: "guardrail-touch", re: /branchProtection|CODEOWNERS|orch-pr\.yml|workflows\// },
 ];
