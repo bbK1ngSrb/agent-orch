@@ -430,7 +430,7 @@ test("path-based guardrail finding is not exempted by security.ignore", () => {
   assert.equal(scanDiff(d, { ignore: ["CODEOWNERS", "**"] }).decision, "DISAGREE");
 });
 
-// --- #345: rank real edits above fixtures, tag each line with its file ------
+// --- #345 / #365: rank real edits above fixtures, tag each line with its file
 test("formatSecurityFindings ranks a guardrail-path hit above a fixture-only mention", () => {
   const findings = [
     { rule: "guardrail-touch", line: "mention of .github/workflows/x.yml in a fixture", file: "test/x.test.js" },
@@ -438,9 +438,9 @@ test("formatSecurityFindings ranks a guardrail-path hit above a fixture-only men
   ];
   const { detail } = formatSecurityFindings(findings);
   const iReal = detail.indexOf("`.github/workflows/x.yml`: guardrail path changed");
-  const iFixture = detail.indexOf("`test/x.test.js`:");
+  const iFixture = detail.indexOf("`test/x.test.js` (fixture):");
   assert.ok(iReal !== -1, "guardrail hit tagged with its file");
-  assert.ok(iFixture !== -1, "fixture hit tagged with its file");
+  assert.ok(iFixture !== -1, "fixture hit tagged with its file + (fixture)");
   assert.ok(iReal < iFixture, "guardrail hit surfaces above the fixture");
 });
 
@@ -450,7 +450,65 @@ test("formatSecurityFindings ranks authored code above test fixtures", () => {
     { rule: "secret-read", line: "readFileSync('.orch/last-author')", file: "src/engine.js" },
   ];
   const { detail } = formatSecurityFindings(findings);
-  assert.ok(detail.indexOf("`src/engine.js`:") < detail.indexOf("`test/x.test.js`:"));
+  assert.ok(detail.indexOf("`src/engine.js`:") < detail.indexOf("`test/x.test.js` (fixture):"));
+  // Authored paths are plain; test paths are marked so a nested `file:` in the
+  // line body cannot be mistaken for the finding's location (#365).
+  assert.match(detail, /`src\/engine\.js`:\s*readFileSync/);
+  assert.match(detail, /`test\/x\.test\.js` \(fixture\):/);
+  assert.ok(!detail.includes("`src/engine.js` (fixture):"));
+});
+
+// #365: secret-read still matches text, so fixtures fire — but the *location*
+// must be the file the text lives in, and real reads must lead the report.
+test("secret-read fixture lines attribute to the test file, not nested paths in the line", () => {
+  // Real git-style outer diff of a test that embeds a mini-diff and a hand-built
+  // finding object mentioning src/engine.js — the sharp edge from #365.
+  const d = [
+    "diff --git a/test/security-review.test.js b/test/security-review.test.js",
+    "--- a/test/security-review.test.js",
+    "+++ b/test/security-review.test.js",
+    "@@ -1,0 +1,6 @@",
+    "+test(\"mixed\", () => {",
+    "+  const d = `+++ b/src/engine.js",
+    "++  const k = readFileSync(\".orch/last-author\");`;",
+    "+  const findings = [",
+    "+    { rule: \"secret-read\", line: \"readFileSync('.orch/last-author')\", file: \"src/engine.js\" },",
+    "+  ];",
+    "+});",
+  ].join("\n");
+  const r = scanDiff(d);
+  const secret = r.findings.filter((f) => f.rule === "secret-read");
+  assert.ok(secret.length >= 1, "fixture text still trips secret-read (not suppressed)");
+  for (const f of secret) {
+    assert.equal(f.file, "test/security-review.test.js",
+      `must attribute to the test file, got ${f.file} for line: ${f.line}`);
+    assert.notEqual(f.file, "src/engine.js");
+  }
+  const { detail } = formatSecurityFindings(r.findings);
+  assert.match(detail, /`test\/security-review\.test\.js` \(fixture\):/);
+  // Location tag is the test file — never a bare `src/engine.js:` lead-in.
+  assert.ok(!detail.includes("`src/engine.js`:"));
+});
+
+test("scanDiff+format: real secret-read leads fixture noise for the same rule", () => {
+  const d = [
+    "+++ b/src/engine.js",
+    "+  const k = readFileSync(\".orch/last-author\");",
+    "+++ b/test/security-review.test.js",
+    "+  // See .orch/orch.yml in a docs-only example",
+    "+  const probe = \"read .orch/x\";",
+  ].join("\n");
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  const secret = r.findings.filter((f) => f.rule === "secret-read");
+  assert.ok(secret.some((f) => f.file === "src/engine.js"));
+  assert.ok(secret.some((f) => f.file === "test/security-review.test.js"));
+  const { detail } = formatSecurityFindings(r.findings);
+  const iReal = detail.indexOf("`src/engine.js`:");
+  const iFixture = detail.indexOf("`test/security-review.test.js` (fixture):");
+  assert.ok(iReal !== -1, "real hit present");
+  assert.ok(iFixture !== -1, "fixture hit present and marked");
+  assert.ok(iReal < iFixture, "real secret-read surfaces above fixture mentions");
 });
 
 // Regression (real git): the parser trusts `a/`/`b/` prefixes, but `diff.noprefix=true`
