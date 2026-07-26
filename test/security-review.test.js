@@ -252,3 +252,92 @@ test("unknown-path lines (no +++ b/ header) are never ignorable", () => {
   const r = scanDiff(d, { ignore: ["**"] });
   assert.equal(r.decision, "DISAGREE");
 });
+
+// --- #345: path-based guardrail floor ---------------------------------------
+test("guardrail file flagged by PATH even with no trigger string in added lines", () => {
+  const d = `--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1,2 +1,3 @@
+ on: push
++  trap 'echo failed' ERR`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "guardrail-touch" && f.file === ".github/workflows/ci.yml"));
+});
+
+test("CODEOWNERS flagged at all three GitHub-valid locations", () => {
+  for (const p of ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"]) {
+    const d = `--- a/${p}\n+++ b/${p}\n@@ -1 +1 @@\n+* @bbk1ng`;
+    const r = scanDiff(d);
+    assert.equal(r.decision, "DISAGREE", p);
+    assert.ok(r.findings.some((f) => f.rule === "guardrail-touch" && f.file === p), p);
+  }
+});
+
+test("docs exemption does not swallow docs/CODEOWNERS (path scan × docs skip interaction)", () => {
+  // Content would be docs-skipped; the path-based floor must still fire.
+  const d = `--- a/docs/CODEOWNERS\n+++ b/docs/CODEOWNERS\n@@ -1 +1 @@\n+* @bbk1ng`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings, [{ rule: "guardrail-touch", line: "guardrail path changed", file: "docs/CODEOWNERS" }]);
+  // …while ordinary docs stay exempt.
+  const docs = `--- a/docs/guide.md\n+++ b/docs/guide.md\n@@ -1 +1 @@\n+See \\.orch/orch.yml.`;
+  assert.equal(scanDiff(docs).decision, "AGREE");
+});
+
+test("guardrail DELETION (no added lines) is still flagged", () => {
+  const d = `--- a/.github/workflows/ci.yml
++++ /dev/null
+@@ -1,2 +0,0 @@
+-on: push
+-jobs: {}`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "guardrail-touch" && f.file === ".github/workflows/ci.yml"));
+});
+
+test("quoted (non-ASCII) guardrail path header is still flagged", () => {
+  const d = `--- "a/.github/workflows/caf\\303\\251.yml"
++++ "b/.github/workflows/caf\\303\\251.yml"
+@@ -1 +1,2 @@
+ on: push
++  trap 'echo failed' ERR`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "guardrail-touch" && f.file === ".github/workflows/café.yml"));
+});
+
+test("path floor does not over-match guardrail names in arbitrary directories", () => {
+  for (const p of ["examples/CODEOWNERS", "sub/orch-pr.yml", "fixtures/workflows/ci.yml"]) {
+    const d = `--- a/${p}\n+++ b/${p}\n@@ -1 +1 @@\n+plain text, no risky strings`;
+    assert.equal(scanDiff(d).decision, "AGREE", p);
+  }
+});
+
+test("path-based guardrail finding is not exempted by security.ignore", () => {
+  const d = `--- a/CODEOWNERS\n+++ b/CODEOWNERS\n@@ -1 +1 @@\n+* @bbk1ng`;
+  assert.equal(scanDiff(d, { ignore: ["CODEOWNERS", "**"] }).decision, "DISAGREE");
+});
+
+// --- #345: rank real edits above fixtures, tag each line with its file ------
+test("formatSecurityFindings ranks a guardrail-path hit above a fixture-only mention", () => {
+  const findings = [
+    { rule: "guardrail-touch", line: "mention of .github/workflows/x.yml in a fixture", file: "test/x.test.js" },
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/x.yml" },
+  ];
+  const { detail } = formatSecurityFindings(findings);
+  const iReal = detail.indexOf("`.github/workflows/x.yml`: guardrail path changed");
+  const iFixture = detail.indexOf("`test/x.test.js`:");
+  assert.ok(iReal !== -1, "guardrail hit tagged with its file");
+  assert.ok(iFixture !== -1, "fixture hit tagged with its file");
+  assert.ok(iReal < iFixture, "guardrail hit surfaces above the fixture");
+});
+
+test("formatSecurityFindings ranks authored code above test fixtures", () => {
+  const findings = [
+    { rule: "secret-read", line: "read .orch/x", file: "test/x.test.js" },
+    { rule: "secret-read", line: "readFileSync('.orch/last-author')", file: "src/engine.js" },
+  ];
+  const { detail } = formatSecurityFindings(findings);
+  assert.ok(detail.indexOf("`src/engine.js`:") < detail.indexOf("`test/x.test.js`:"));
+});
