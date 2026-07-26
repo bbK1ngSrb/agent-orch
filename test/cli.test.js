@@ -2659,6 +2659,14 @@ function stagePriorRun(repo, branch, entry) {
     JSON.stringify({ ts: "2026-07-26T00:00:00Z", branch, sid: "9999-0", verdict: "escalated", reason: "security scan blocked the merge — 1 finding (guardrail-touch ×1)", ...entry }) + "\n");
 }
 
+// A second run record for the same branch, as a later cycle (or `orch review`)
+// appends it.
+function appendRun(repo, branch, entry) {
+  const f = join(repo, ".orch", "runs.jsonl");
+  writeFileSync(f, readFileSync(f, "utf8") +
+    JSON.stringify({ ts: "2026-07-26T01:00:00Z", branch, sid: "9999-1", verdict: "escalated", reason: "stalemate", ...entry }) + "\n");
+}
+
 function issueGh(number, title) {
   return (args) => {
     if (args[0] === "--version") return "gh 2";
@@ -2722,6 +2730,33 @@ test("a legacy branch with no persisted issue number is reported, flagged uncert
   const found = priorStagedBranches({ repo, orchDir: join(repo, ".orch"), closes: 52, task: "stale base" });
   assert.deepEqual(found.map((e) => [e.branch, e.uncertain]), [[branch, true]]);
   assert.match(formatPriorStagedBranches(52, found), /may belong to another issue/);
+});
+
+// Regression: `orch review <branch>` runs with no issue, so its run record has
+// no `closes`. Matching record-by-record let that one untagged record hand the
+// branch to any same-titled issue — the cross-issue false attribution the
+// number-based join exists to prevent. History is folded per branch first.
+test("a later untagged review record does not hand another issue's branch to a same-title issue", async () => {
+  const repo = initGitRepo();
+  const branch = "pr/claude/stale-base-9999-0";
+  const orchDir = join(repo, ".orch");
+  stagePriorRun(repo, branch, { closes: 362 });  // orch issue 362 staged it
+  appendRun(repo, branch, {});                   // orch review <branch> — no issue number
+
+  // Issue #999, same title → same slug: must NOT claim #362's branch.
+  assert.deepEqual(priorStagedBranches({ repo, orchDir, closes: 999, task: "stale base" }), []);
+  const saved = process.exitCode;
+  try {
+    const logs = await runMainInRepo(repo, ["issue", "999"],
+      { cycleDeps: escalatingDeps(), githubDeps: () => ({ gh: issueGh(999, "stale base") }) });
+    assert.doesNotMatch(logs.join("\n"), /already has \d+ staged branch/);
+  } finally {
+    process.exitCode = saved;
+  }
+
+  // ...and #362 still sees it, with no uncertainty hedge.
+  assert.deepEqual(priorStagedBranches({ repo, orchDir, closes: 362, task: "stale base" })
+    .map((e) => [e.branch, e.uncertain]), [[branch, false]]);
 });
 
 test("priorStagedBranches skips a branch that no longer exists", () => {

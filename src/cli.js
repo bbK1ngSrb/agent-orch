@@ -911,6 +911,13 @@ export function resolveTaskBranch(ctx, deps = { git, resume }) {
 // Records written before the number was persisted have nothing but the slug to
 // go on — those are still reported, flagged `uncertain`, because a hedged
 // "this may be yours" is honest where a slug guess presented as fact is not.
+//
+// Matching is per BRANCH, not per record: a branch's whole history is folded
+// first, and the slug fallback applies only when NO record for it carries an
+// issue number. Per-record matching reintroduced the false attribution this
+// warning exists to prevent — a later `orch review <branch>` writes a record
+// with no `closes` (review mode has no issue), so a same-titled issue would
+// match that one record and claim a branch already known to belong to another.
 export function priorStagedBranches({ repo, orchDir, closes, task }, deps = { git }) {
   let lines;
   try { lines = readFileSync(join(orchDir, "runs.jsonl"), "utf8").split("\n"); }
@@ -922,15 +929,24 @@ export function priorStagedBranches({ repo, orchDir, closes, task }, deps = { gi
     let e;
     try { e = JSON.parse(line); } catch { continue; } // partial/corrupt line
     if (!e.branch) continue;
-    const uncertain = e.closes == null;
-    if (uncertain) {
-      const [, , tail] = e.branch.split("/"); // pr/<agent>/<slug>-<sid>
-      if (!tail || !tail.startsWith(slugPrefix)) continue;
-    } else if (Number(e.closes) !== Number(closes)) continue;
-    byBranch.set(e.branch, { branch: e.branch, sid: e.sid, verdict: e.verdict, reason: e.reason, uncertain });
+    const prev = byBranch.get(e.branch);
+    // Newest record wins for the outcome, and for the issue number the newest
+    // record that CARRIES one wins — a later untagged record (a review run)
+    // never erases the number an earlier cycle stamped on this branch.
+    byBranch.set(e.branch, {
+      branch: e.branch, sid: e.sid, verdict: e.verdict, reason: e.reason,
+      closes: e.closes != null ? Number(e.closes) : prev?.closes ?? null,
+    });
   }
+  const matched = [...byBranch.values()].filter((e) => {
+    if (e.closes != null) return e.closes === Number(closes);
+    const [, , tail] = e.branch.split("/"); // pr/<agent>/<slug>-<sid>
+    return Boolean(tail) && tail.startsWith(slugPrefix);
+  });
   // A branch that no longer exists is finished work, not staged work.
-  return [...byBranch.values()].filter((e) => deps.git.branchExists(repo, e.branch));
+  return matched
+    .map((e) => ({ ...e, uncertain: e.closes == null }))
+    .filter((e) => deps.git.branchExists(repo, e.branch));
 }
 
 export function formatPriorStagedBranches(closes, entries) {
