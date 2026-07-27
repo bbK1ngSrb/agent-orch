@@ -531,7 +531,8 @@ auto-merge step is skipped, never the PR.
 **Consequence you should know:** `merge: pr` does not run orch's
 `release.autoBump` or CHANGELOG behavior described in §4.1 — those only apply
 to the local integration path. Unless the PR itself carries release-file
-changes, it lands without a version bump.
+changes, orch leaves the version unchanged; repository-specific CI may still
+apply its own release policy after the PR lands.
 
 **When to use it:**
 - Your branch protection rules require PR review on every change, with no
@@ -661,6 +662,11 @@ counter vs. publish counter) — this doc doesn't re-derive it.
 This is **best-effort**: a missing or unparsable `package.json`, or any
 write/commit failure here, is swallowed — it never blocks or unwinds a merge
 that already landed. Don't rely on it as a strict gate; it's a convenience.
+
+That describes orch itself. This repository also has
+`.github/workflows/version-bump.yml`, repository-specific CI that attempts a
+fallback merge bump after a push to `main` when the landing did not already
+change the version.
 
 ### 4.2 Auto docs-update on merge (opt-in)
 
@@ -1008,10 +1014,10 @@ orch review my-branch --reviewer "codex, claude high"
 - **"Why didn't my version get bumped?"** The bump is opt-in: set
   `release.autoBump: true` in `.orch/orch.yml` (it's off by default). Even
   then it only happens on the local integration path (`no-ff`/`ff-only`),
-  never under `merge: pr`. A landing outside the local integration path keeps
-  the existing package version unless it carries its own release-file change.
-  For this repo, the next deliberate release update is made by running
-  `node scripts/orch-release.js` by hand.
+  never under `merge: pr`. For a landing outside that path in this repository,
+  check the `version-bump.yml` Action, which attempts the repository-specific
+  fallback. `scripts/orch-release.js` is for deliberate publishes: it advances
+  the publish counter and is not recovery for a missed merge bump.
 - **"I ran `orch review` just to get a second opinion, and it merged the
   branch!"** That's correct, and by design (§2.6) — `orch review` skips only
   the *authoring* step; agreement + green tests + a clean security scan still

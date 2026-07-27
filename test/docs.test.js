@@ -156,17 +156,24 @@ test("docs document that the version bump on merge is opt-in via release.autoBum
     assert.match(doc, /[Oo]pt-in|off by default/);
   }
   // the FAQ answer must point at the flag, not just at merge modes
-  assert.match(manual, /"Why didn't my version get bumped\?"[\s\S]{0,200}release\.autoBump/);
+  const faqStart = manual.indexOf('"Why didn\'t my version get bumped?"');
+  const faq = manual.slice(faqStart, manual.indexOf('"I ran `orch review`', faqStart));
+  assert.match(faq, /release\.autoBump/);
 });
 
-test("docs do not promise a fallback bump outside the local integration path", () => {
+test("docs distinguish orch auto-bumps from this repository's CI fallback", () => {
   for (const doc of [readme, manual]) {
     assert.doesNotMatch(doc, /every merge is traceable to a version/);
     assert.doesNotMatch(doc, /version moves exactly once per landing/);
+    assert.match(doc, /version-bump\.yml/);
+    assert.match(doc, /attempts a\s+fallback merge bump/);
   }
-  assert.match(readme, /outside orch carries no version bump/);
-  assert.match(manual, /outside the local integration path keeps\s+the existing package version/);
-  assert.match(manual, /node scripts\/orch-release\.js/);
+  assert.match(readme, /repository-specific CI, not behavior provided by orch/);
+
+  const faqStart = manual.indexOf('"Why didn\'t my version get bumped?"');
+  const faq = manual.slice(faqStart, manual.indexOf('"I ran `orch review`', faqStart));
+  assert.match(faq, /check the `version-bump\.yml` Action/);
+  assert.match(faq, /not recovery for a missed merge bump/);
 });
 
 test("docs document main.autoMerge for the persistent integration PR", () => {
