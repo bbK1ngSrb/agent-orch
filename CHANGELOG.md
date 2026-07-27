@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.208 — 2026-07-26
+- dirty-merge fallback opens a per-change agent PR against main, which repo policy explicitly forbids (closes [#376](https://github.com/bbk1ng/agent-orch/issues/376))
+
 ## v0.4.207 — 2026-07-26
 - reviseCap is documented as counting revise rounds but the code counts total review rounds — off-by-one in the manual and --help text (closes [#369](https://github.com/bbk1ng/agent-orch/issues/369))
 

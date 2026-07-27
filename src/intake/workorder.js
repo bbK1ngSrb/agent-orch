@@ -71,8 +71,8 @@ export function validateWorkOrder(obj) {
 // per-prompt random nonce (and the frame says so), so the real terminator is
 // unguessable; and neutralizeFence defangs whitespace/case near-miss
 // spellings of a marker inside the attacker text. Non-whitespace joins (e.g.
-// "END-UNTRUSTED-REFERENCE" or newline-broken spellings) are NOT defanged —
-// they are quoted verbatim, and the nonce is what keeps them harmless.
+// zero-width characters or punctuation splicing a marker word) are NOT
+// defanged. They are quoted verbatim, and the nonce is what keeps them harmless.
 function neutralizeFence(s) {
   // Defang fence-marker near-misses (case/whitespace variants). A model may
   // honour near-miss spellings as terminators, so over-matching is correct.

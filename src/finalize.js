@@ -342,7 +342,7 @@ function demoteReason(ctx, details) {
     "",
     "## Next step",
     "",
-    nextStep(details.trigger),
+    nextStep(details.trigger, integ),
   ];
 
   return out.join("\n");
@@ -418,12 +418,17 @@ function blockedSection(details) {
   return [`trigger: ${details.trigger}`];
 }
 
-function nextStep(trigger) {
+function nextStep(trigger, integrationBranch = "orch/integration") {
   switch (trigger) {
     case "overlap":
       return "next action: inspect the listed overlap, rebase or refresh the branch if needed, then rerun orch review before merging.";
     case "dirty-merge":
-      return "next action: resolve the merge conflict, then rerun orch review.";
+      // Do not open a per-change PR against main — that is a second trunk door
+      // the standing integration PR exists to prevent. Hand-merge into the
+      // integration branch; the integration → main PR remains the only gate.
+      return `next action: hand-merge this branch into \`${integrationBranch}\` ` +
+        `(resolve conflicts there); do not open a per-change PR against main. ` +
+        `Land via the standing \`${integrationBranch} → main\` PR.`;
     case "integration-test":
       return "next action: fix the integrated test failure, then rerun orch review.";
     case "lock":
@@ -448,11 +453,31 @@ function oneLine(value = "") {
 }
 
 async function demote(ctx, deps, details) {
-  const { orchDir, branch, sid, rounds, closes, runStats } = ctx;
+  const { orchDir, branch, sid, rounds, closes, runStats, cfg } = ctx;
   const { github, notify } = deps;
   const usage = totalUsage(runStats);
   const reason = demoteReason(ctx, details);
-  const r = await github.demote({ ...ctx, reason });
+  const integrationBranch = details.integrationBranch || cfg?.integrationBranch || "orch/integration";
+
+  // dirty-merge: never open a per-change agent PR against main. That path is a
+  // second trunk door this repo forbids (CLAUDE.md); the standing
+  // orch/integration → main PR is the only human gate. Escalate with the staged
+  // branch + conflict detail so a human can hand-merge into integration — same
+  // pattern as security-floor / round-cap escalations.
+  let r;
+  if (details.trigger === "dirty-merge") {
+    notify.escalate(orchDir, branch,
+      `# Escalation — ${branch}\n\n` +
+      `Auto-merge demoted (\`dirty-merge\`). The agents agreed and tests are green, ` +
+      `but this branch conflicts with \`${integrationBranch}\`.\n\n` +
+      `**Do not open a PR from this branch to main.** Hand-merge it into ` +
+      `\`${integrationBranch}\` (resolve conflicts there), then land via the ` +
+      `standing \`${integrationBranch} → main\` PR.\n\n${reason}\n`);
+    r = { prUrl: null };
+  } else {
+    r = await github.demote({ ...ctx, reason });
+  }
+
   notify.recordRun(orchDir, {
     ts: new Date().toISOString(), branch, sid, verdict: "merge-deferred", trigger: details.trigger, reason, rounds,
     closes: closes ?? null,
@@ -465,7 +490,9 @@ async function demote(ctx, deps, details) {
     : details.trigger === "overlap" && details.overlap?.peer?.length
       ? `; collides with a peer on ${list(details.overlap.peer)}`
       : "";
-  const outcome = r.prUrl ? `opened PR ${r.prUrl}` : "kept the branch locally (no remote)";
+  const outcome = details.trigger === "dirty-merge"
+    ? `escalated for hand-merge into ${integrationBranch}`
+    : r.prUrl ? `opened PR ${r.prUrl}` : "kept the branch locally (no remote)";
   const summary = `${outcome}${peer}. Vetted: agents AGREE, tests green, security clean.`;
   return {
     status: "merge-deferred",

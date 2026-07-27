@@ -116,6 +116,35 @@ test("reading .ssh private key → DISAGREE (secret-read)", () => {
   assert.ok(r.findings.some((f) => f.rule === "secret-read"));
 });
 
+test("reading a dotenv file → DISAGREE (secret-read)", () => {
+  const d = `+++ b/src/x.js\n+  const k = readFileSync(".env");`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "secret-read"));
+});
+
+test("reading a dotenv variant path → DISAGREE (secret-read)", () => {
+  const d = `+++ b/src/x.js\n+  const k = readFileSync("../.env.production");`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "secret-read"));
+});
+
+test("reading from a credentials directory → DISAGREE (secret-read)", () => {
+  const d = `+++ b/src/x.js\n+  const k = readFileSync("credentials/token");`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "secret-read"));
+});
+
+test("template-literal env access does NOT trip secret-read (env-read only)", () => {
+  const d = "+++ b/src/x.js\n+  log(`env=${process.env.NODE_ENV}`);";
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "env-read"));
+  assert.ok(!r.findings.some((f) => f.rule === "secret-read"));
+});
+
 // --- FIX 4: guardrail-touch rule ---
 test("writing to a workflow file → DISAGREE (guardrail-touch)", () => {
   const d = `+++ b/src/x.js\n+  fs.writeFileSync(".github/workflows/ci.yml", x);`;
