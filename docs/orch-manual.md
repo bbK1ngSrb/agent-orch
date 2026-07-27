@@ -578,6 +578,51 @@ standing integration PR remains the only trunk gate.
 The `.orch/runs.jsonl` entry records `verdict: "merge-deferred"` and the cause
 as a top-level `trigger` field.
 
+**Automatic redrive of `overlap` deferrals — usually you do nothing.** An
+`overlap` deferral is the one trigger orch can often heal by itself, because
+nothing is actually *wrong* with the work: the peer cycle simply built its
+branch on an integration tip that another cycle was about to move, so merging
+it as-is would merge a stale result. Rather than throw that work away, orch
+parks the cycle in a small on-disk queue (`.orch/deferred/<sid>.json`). This
+applies to the local integration path (`no-ff`/`ff-only`) — under `merge: pr`
+there is no shared integration tip to collide on or rebase onto, so the
+`overlap` trigger never fires there in the first place.
+
+When the blocking cycle finishes merging — still holding `merge.lock`, so no
+peers ever fan out in parallel — orch walks that queue and, for every parked
+peer the land unblocked:
+
+1. **Rebases** the peer's branch onto the new `orch/integration` tip. A real
+   line conflict fails here and the peer simply stays deferred for a human.
+2. **Re-runs the full merge and the post-merge test gate.** A redriven merge is
+   *gated, not trusted*: rebasing can produce a tree that merges cleanly but
+   behaves wrongly (a "semantic conflict"), and only re-running the tests on the
+   integrated tree catches that. Nothing is merged on the strength of the
+   earlier, pre-rebase green run.
+3. **Cascades.** A peer that heals becomes a new "just landed" blocker itself,
+   so a cycle C that was deferred behind B gets redriven once B heals behind A.
+
+Two limits keep this from becoming a retry loop. A peer that is still blocked by
+a *live* in-flight cycle is left queued untouched (it hasn't used up anything —
+its turn comes when that cycle lands). And each peer gets exactly **one**
+automatic attempt (`MAX_REDRIVE_ATTEMPTS` in `src/deferred.js`); if that attempt
+fails the rebase, the merge, or the gate, the cycle stays `merge-deferred` and a
+human owns it from there. A failed redrive adds no extra noise: the escalation
+PR opened by the original demotion is left exactly as it was, rather than a
+second demote PR being opened beside it. A *successful* redrive usually retires
+it: the merged path deletes the cycle's remote `pr/*` head, and GitHub closes a
+PR whose head branch is gone. That cleanup is **conditional**, though — it only
+runs once the integration PR bridge has pushed `orch/integration` to origin. If
+that push or PR step fails, orch deliberately keeps the `pr/*` head (it is then
+the only remote copy of the just-landed work) and the original escalation PR
+stays open. So a redriven cycle can be merged locally and *still* show an open
+`merge-deferred` PR; that PR is a leftover of the bridge failure, not a sign the
+work was lost — check `.orch/runs.jsonl` for the cycle's `merged` record before
+acting on it.
+
+So the practical advice when you see an `overlap` deferral is: **wait for the
+blocking cycle to finish, then check again** before doing anything by hand.
+
 **Takeaway:** `merge-deferred` is not a mode you choose — it's the safety net that
 catches a cycle whenever the fast local path can't complete cleanly, under
 *any* `merge:` setting. `merge: pr` just makes "always a PR" the *primary*
@@ -953,9 +998,14 @@ orch review my-branch --reviewer "codex, claude high"
   land on `main`.
 - **"Two cycles I ran at once both ended `merge-deferred` instead of
   merging locally."** Check whether their changed files overlapped
-  (`overlap` trigger) — give them disjoint `--authors`/`--reviewers` and
-  disjoint file scopes, or accept `merge-deferred` as the correct safety
-  behavior for genuinely overlapping work.
+  (`overlap` trigger). If so, **usually you do nothing**: once the blocking
+  cycle lands, orch rebases the parked peer onto the new integration tip and
+  re-runs the merge and the test gate by itself (§3.4). Wait for the other
+  cycle to finish, then look again. Each peer gets one automatic attempt — if
+  that fails, or the trigger wasn't `overlap`, the deferral is yours to
+  resolve, and it is the correct safety behavior for genuinely overlapping
+  work. To avoid the deferral in the first place, give concurrent cycles
+  disjoint `--authors`/`--reviewers` and disjoint file scopes.
 - **"Why didn't my version get bumped?"** The bump is opt-in: set
   `release.autoBump: true` in `.orch/orch.yml` (it's off by default). Even
   then it only happens on the local integration path (`no-ff`/`ff-only`),

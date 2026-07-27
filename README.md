@@ -344,6 +344,17 @@ paths per peer cycle, the conflicting paths, the sync failure, or that the
 lock timed out) plus a one-line next action, so a human picking up the
 escalation doesn't have to re-derive context orch already had.
 
+**`overlap` deferrals usually heal themselves.** An overlap-deferred cycle is
+parked in `.orch/deferred/`, and when the cycle that blocked it lands, orch
+(on the local integration path — `merge: pr` has no shared tip to collide on)
+rebases the parked branch onto the new integration tip and **re-runs the merge
+and the post-merge test gate** — a redriven merge is gated, never trusted on
+its earlier green run. It cascades: a cycle deferred behind the one that just
+healed gets redriven too. Each peer gets one automatic attempt; if it fails the
+rebase, the merge, or the gate, the cycle stays `merge-deferred` for a human.
+So on `overlap`, wait for the blocking cycle to finish before fixing anything by
+hand (manual §3.4).
+
 **`merge: pr` — per-cycle PR mode.** Set `merge: pr` in `.orch/orch.yml` and an
 agreed + green cycle skips the local integration branch and `merge.lock`; it
 pushes that cycle branch and opens its own PR to `main` instead. This mode is
