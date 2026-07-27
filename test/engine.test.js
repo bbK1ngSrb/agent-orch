@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCycle } from "../src/engine.js";
-import { SECURITY_DIFF_ARGS } from "../src/security-review.js";
+import { SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "../src/security-review.js";
 
 function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
   const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], phases: [], rounds: [], rawRounds: [], reviewLog: [] };
@@ -624,14 +624,38 @@ test("§3e: risky final diffs escalate at the merge boundary, never finalize", a
 // b/ side — a mode-only guardrail edit would sail through. Asserting the argv here
 // keeps engine.js from drifting away from the parser's contract.
 test("§3e: the final-diff read pins the prefixes scanDiff parses", async () => {
-  let argv = null;
+  // Two reads now: the patch (content rules, prefix-pinned) and the structural
+  // `--raw -z` listing (path floor). Collect every diff argv and assert both are
+  // issued — the path floor must not silently lose its config-independent source.
+  const argvs = [];
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   deps.git.git = (args) => {
-    if (args[0] === "diff" && !args.includes("--stat")) { argv = args; return ""; }
+    if (args[0] === "diff" && !args.includes("--stat")) { argvs.push(args); return ""; }
     return args[0] === "rev-parse" ? "base" : "diff summary";
   };
   await runCycle(opts, deps);
-  for (const flag of SECURITY_DIFF_ARGS) assert.ok(argv.includes(flag), `final diff passes ${flag}`);
+  assert.ok(argvs.some((a) => SECURITY_DIFF_ARGS.every((f) => a.includes(f))),
+    "one read passes every SECURITY_DIFF_ARGS flag");
+  assert.ok(argvs.some((a) => SECURITY_RAW_ARGS.every((f) => a.includes(f))),
+    "one read passes every SECURITY_RAW_ARGS flag");
+});
+
+test("§3e: a guardrail path visible ONLY in the structural read still escalates", async () => {
+  // The patch text is empty (mode-only change under diff.noprefix leaves the text
+  // parse nothing to match); the `--raw -z` record is the only evidence, and the
+  // floor must still block the merge.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => {
+    if (args[0] === "diff" && !args.includes("--stat")) {
+      return args.includes("--raw") ? ":100644 100755 aaa bbb M\0.github/workflows/ci.yml\0" : "";
+    }
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /security scan/);
+  assert.ok(r.reason.includes("guardrail-touch"));
+  assert.notEqual(deps._calls.finalized, true);
 });
 
 test("§3e: a risky diff on the noMerge PR-bridge path escalates instead of approving", async () => {
