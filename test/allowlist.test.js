@@ -103,3 +103,24 @@ test("rejects an absolute path to a protected file (no fail-open on leading /)",
   assert.equal(r.ok, false);
   assert.deepEqual(r.violations, ["/src/gate.js"]);
 });
+
+// Protected paths whose names contain line terminators must still match the
+// anchored ** globs (globToRegExp uses [\s\S], not `.`).
+test("rejects workflow paths containing line terminators", () => {
+  for (const p of [
+    ".github/workflows/a\nb.yml",
+    ".github/workflows/a\rb.yml",
+    ".github/workflows/a\u2028b.yml",
+    ".github/workflows/a\u2029b.yml",
+  ]) {
+    const r = checkPaths([p]);
+    assert.equal(r.ok, false, JSON.stringify(p));
+    assert.deepEqual(r.violations, [p], JSON.stringify(p));
+  }
+});
+
+test("examples/CODEOWNERS is not a protected path (anchored globs)", () => {
+  const r = checkPaths(["examples/CODEOWNERS"]);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.violations, []);
+});

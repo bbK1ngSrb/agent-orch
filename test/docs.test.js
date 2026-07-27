@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ORCH_DOC } from "../src/cli.js";
+import { MAX_REDRIVE_ATTEMPTS } from "../src/deferred.js";
 
 const rootUrl = new URL("../", import.meta.url);
 const rootDir = fileURLToPath(rootUrl);
@@ -137,6 +138,10 @@ test("docs do not claim the security scan covers every added line", () => {
   }
   for (const doc of [readme, manual]) {
     assert.match(doc, /guardrail file[^.]{0,60}under `docs\/`/);
+    // Only `docs/CODEOWNERS` is a guardrail path under `docs/` (GUARDRAIL_PATH_RES
+    // in src/security-review.js), so the docs must name it rather than
+    // generalize to "guardrail files under `docs/`".
+    assert.match(doc, /`docs\/CODEOWNERS` trips a\s+`guardrail-touch` finding/);
   }
 });
 
@@ -256,4 +261,41 @@ test("CHANGELOG documents the latest merged fixes", () => {
   assert.match(unreleased, /numeric PR id/);
   assert.match(unreleased, /designer-template leftovers/);
   assert.match(unreleased, /escaping nested `<\/script>` close tags/);
+});
+
+test("docs document the automatic redrive of overlap-deferred cycles (#350)", () => {
+  // finalize.js redriveDeferredPeers() rebases + re-gates an overlap-deferred
+  // peer once the blocker lands. It shipped undocumented, and the FAQ told
+  // users the only options were manual restructuring or accepting the deferral
+  // as final — a user following that does work orch already does for them.
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /redriv/i);
+    // The redriven merge is re-gated, not trusted on its pre-rebase green run.
+    assert.match(doc, /post-merge test gate|re-runs the merge and the test gate/);
+    assert.match(doc, /gated, not(?: |\n *)trusted|gated, never(?: |\n *)trusted/);
+    assert.match(doc, /cascade|deferred behind/i);
+  }
+  // finalize() returns on `cfg.merge === "pr"` before the lock, the overlap
+  // guard, and deferred.record() — the redrive is local-integration-path only,
+  // and §3.4 otherwise reads as "any merge mode".
+  for (const doc of [readme, manual]) assert.match(doc, /`merge: pr`[\s\S]{0,40}no shared/);
+  // The one-attempt cap is a source constant; docs must not promise retries.
+  assert.equal(MAX_REDRIVE_ATTEMPTS, 1);
+  for (const doc of [readme, manual]) assert.match(doc, /one automatic attempt/);
+  // The `pr/*` head deletion in finalize.js is gated on `pr.prUrl` — a failed PR
+  // bridge keeps the head AND the escalation PR, so the manual must not promise
+  // cleanup unconditionally or a human reads a live PR as unfinished work.
+  const finalize = readFileSync(new URL("src/finalize.js", rootUrl), "utf8");
+  assert.match(finalize, /if \(pr\.prUrl && branch/);
+  const redrive = manual.slice(manual.indexOf("Automatic redrive of `overlap`"));
+  assert.match(redrive.slice(0, redrive.indexOf("\n**Takeaway")), /cleanup is \*\*conditional\*\*/);
+
+  // The FAQ entry must lead with "wait", not with hand-restructuring the runs.
+  const faq = manual.slice(manual.indexOf("Two cycles I ran at once"));
+  const entry = faq.slice(0, faq.indexOf("\n- **"));
+  assert.match(entry, /usually you do nothing/);
+  assert.ok(
+    entry.indexOf("usually you do nothing") < entry.indexOf("disjoint file scopes"),
+    "the FAQ must lead with the automatic redrive, not with manual disjoint scoping",
+  );
 });

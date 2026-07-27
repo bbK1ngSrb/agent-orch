@@ -197,10 +197,11 @@ diff itself can't be read, orch fails closed (escalates) rather than assuming
 the unseen patch is safe.
 
 It does not scan *every* added line, and the docs say so rather than
-overselling it: markdown and `docs/**` paths are dropped before the scan runs
-(prose can't execute a secret read), so a guardrail file living under `docs/`
-— a `docs/CODEOWNERS` — is not covered today; a scanner path-fix is tracked
-separately. On top of that built-in exemption, `security.ignore` in `orch.yml`
+overselling it: markdown and `docs/**` paths are dropped before the
+added-line content scan runs (prose can't execute a secret read). That
+exemption applies only to the content scan, though — a separate path-based
+floor over the *changed paths* still catches the guardrail file under `docs/`:
+a change to `docs/CODEOWNERS` trips a `guardrail-touch` finding today. On top of that built-in exemption, `security.ignore` in `orch.yml`
 lets you exempt paths yourself — commented out in `orch.example.yml`, because
 exempting a path skips *every* security rule for it and belongs only on
 generated build artifacts, never on authored code.
@@ -342,6 +343,17 @@ sync), the branch's changed paths, and trigger-specific detail (overlapping
 paths per peer cycle, the conflicting paths, the sync failure, or that the
 lock timed out) plus a one-line next action, so a human picking up the
 escalation doesn't have to re-derive context orch already had.
+
+**`overlap` deferrals usually heal themselves.** An overlap-deferred cycle is
+parked in `.orch/deferred/`, and when the cycle that blocked it lands, orch
+(on the local integration path — `merge: pr` has no shared tip to collide on)
+rebases the parked branch onto the new integration tip and **re-runs the merge
+and the post-merge test gate** — a redriven merge is gated, never trusted on
+its earlier green run. It cascades: a cycle deferred behind the one that just
+healed gets redriven too. Each peer gets one automatic attempt; if it fails the
+rebase, the merge, or the gate, the cycle stays `merge-deferred` for a human.
+So on `overlap`, wait for the blocking cycle to finish before fixing anything by
+hand (manual §3.4).
 
 **`merge: pr` — per-cycle PR mode.** Set `merge: pr` in `.orch/orch.yml` and an
 agreed + green cycle skips the local integration branch and `merge.lock`; it

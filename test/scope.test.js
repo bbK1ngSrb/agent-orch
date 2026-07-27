@@ -29,6 +29,28 @@ test("globToRegExp: ? matches exactly one non-slash path character", () => {
   assert.equal(re.test("docs/a/b.md"), false);
 });
 
+// ** must match line terminators — JS `.` does not (no s/dotAll flag), so a
+// protected path containing \n/\r/U+2028/U+2029 would miss and fail open.
+test("globToRegExp: ** matches paths containing line terminators", () => {
+  const re = globToRegExp(".github/workflows/**");
+  for (const p of [
+    ".github/workflows/a\nb.yml",
+    ".github/workflows/a\rb.yml",
+    ".github/workflows/a\u2028b.yml",
+    ".github/workflows/a\u2029b.yml",
+  ]) {
+    assert.equal(re.test(p), true, JSON.stringify(p));
+  }
+  assert.equal(re.test("examples/CODEOWNERS"), false);
+  assert.equal(re.test("CODEOWNERS"), false);
+});
+
+test("globToRegExp: * stops at / (single-segment only)", () => {
+  const re = globToRegExp("docs/*");
+  assert.equal(re.test("docs/a.md"), true);
+  assert.equal(re.test("docs/nested/a.md"), false);
+});
+
 test("isDocsOnly: docs.paths honors ? glob segments", () => {
   assert.equal(isDocsOnly(["docs/a.md"], ["docs/?.md"]), true);
   assert.equal(isDocsOnly(["docs/ab.md"], ["docs/?.md"]), false);

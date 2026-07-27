@@ -95,10 +95,11 @@ scope:
 # floor is a security decision that deserves its own explicit opt-in.
 #
 # The default empty list does NOT mean "everything is scanned":
-# markdown and `docs/**` paths are dropped before the scan runs (mirroring
-# docs.paths), so a guardrail file that happens to live under `docs/` is not
-# scanned today — a scanner path-fix is tracked separately. Full reference:
-# docs/orch-manual.md.
+# markdown and `docs/**` paths are dropped before the added-line content scan
+# runs (mirroring docs.paths). That exemption applies to the content scan
+# only — a separate path-based floor over the CHANGED PATHS still covers
+# guardrail files under `docs/`, so a change to `docs/CODEOWNERS` trips a
+# guardrail-touch finding. Full reference: docs/orch-manual.md.
 #
 # security:
 #   ignore:                             # default: [] (no path exempted)

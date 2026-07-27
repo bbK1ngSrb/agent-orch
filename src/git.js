@@ -38,9 +38,11 @@ export function gitTry(args, cwd) {
 }
 
 // Files changed on `branch` since its merge-base with the configured base branch.
+// -z + split on NUL so paths with newlines/control chars stay intact (git
+// C-quotes those without -z). No .trim() — POSIX allows leading/trailing spaces.
 export function changedFiles(repo, branch, base = "main") {
-  const out = gitTry(["diff", "--name-only", `${base}...${branch}`], repo);
-  return out.ok ? out.out.split("\n").map((s) => s.trim()).filter(Boolean) : [];
+  const out = gitTry(["diff", "--name-only", "-z", `${base}...${branch}`], repo);
+  return out.ok ? out.out.split("\0").filter(Boolean) : [];
 }
 
 export function branchExists(repo, branch) {

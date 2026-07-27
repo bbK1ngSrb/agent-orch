@@ -7,7 +7,10 @@ export function globToRegExp(glob) {
     .replace(/\*\*/g, DOUBLE_STAR)
     .replace(/\*/g, "[^/]*")
     .replace(/\?/g, "[^/]")
-    .replaceAll(DOUBLE_STAR, ".*");
+    // [\s\S] not . — JS `.` excludes line terminators (\n \r U+2028 U+2029)
+    // unless the s (dotAll) flag is set, so a protected path containing any of
+    // those would fail to match and the guardrail floor would return AGREE.
+    .replaceAll(DOUBLE_STAR, "[\\s\\S]*");
   return new RegExp("^" + re + "$");
 }
 

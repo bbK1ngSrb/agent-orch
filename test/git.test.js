@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, mergeInWorktree, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch } from "../src/git.js";
+import { checkPaths } from "../src/intake/allowlist.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-git-"));
@@ -237,6 +238,38 @@ test("changedFiles diffs against a custom base branch", () => {
   git(["merge", "feature"], repo);
   git(["checkout", "feature"], repo);
   assert.deepEqual(changedFiles(repo, "feature", "dev"), []);
+});
+
+// Drive changedFiles against real git output for paths that need -z (control
+// chars / C-quoting) and paths that would be corrupted by .trim(). Then feed
+// the result into checkPaths so §3c cannot silently allow a protected touch.
+test("changedFiles preserves newline-in-name paths from real git -z output", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "feature"], repo);
+  mkdirSync(join(repo, ".github", "workflows"), { recursive: true });
+  const weird = ".github/workflows/a\nb.yml";
+  writeFileSync(join(repo, weird), "on: push\n");
+  git(["add", "-A"], repo);
+  git(["commit", "-m", "weird workflow name"], repo);
+
+  const files = changedFiles(repo, "feature", "main");
+  assert.ok(files.includes(weird), `expected exact path in ${JSON.stringify(files)}`);
+  // Distinguishes a real Item-2 fix: checkPaths must see the real path bytes.
+  const prot = checkPaths(files);
+  assert.equal(prot.ok, false);
+  assert.ok(prot.violations.includes(weird));
+});
+
+test("changedFiles preserves leading and trailing spaces in filenames", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "feature"], repo);
+  writeFileSync(join(repo, " leading.txt"), "x\n");
+  writeFileSync(join(repo, "trailing.txt "), "y\n");
+  git(["add", "-A"], repo);
+  git(["commit", "-m", "spaced names"], repo);
+
+  const files = changedFiles(repo, "feature", "main").sort();
+  assert.deepEqual(files, [" leading.txt", "trailing.txt "]);
 });
 
 test("ensureIntegrationWorktree branches the fresh integration branch off a custom base", () => {
