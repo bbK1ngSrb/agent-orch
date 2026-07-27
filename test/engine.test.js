@@ -681,6 +681,21 @@ test("§3e: an unreadable final diff fails closed — escalate, never finalize",
   assert.notEqual(deps._calls.finalized, true);
 });
 
+test("§3e: an unreadable STRUCTURAL read fails closed too", async () => {
+  // The patch read succeeds, the `--raw -z` read throws: scanning would then run
+  // on a partial view of the changed paths, so it must escalate instead.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => {
+    if (args[0] === "diff" && args.includes("--raw")) throw new Error("boom");
+    if (args[0] === "diff" && !args.includes("--stat")) return "";
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /failing closed/);
+  assert.notEqual(deps._calls.finalized, true);
+});
+
 test("§3e: a clean final diff still finalizes normally", async () => {
   const deps = withFinalDiff(
     makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] }),

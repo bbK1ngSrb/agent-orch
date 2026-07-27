@@ -719,3 +719,29 @@ test("omitting rawPaths leaves scanDiff byte-identical to the text-only floor", 
   assert.deepEqual(scanDiff(text, { ignore: [] }).findings, expected);
   assert.deepEqual(scanDiff(text, { rawPaths: [] }).findings, expected);
 });
+
+test("a real git rename yields BOTH sides through rawPaths", () => {
+  // #364's originating case, on real git output: a 100%-similarity move of a
+  // workflow file. Asserting the parsed paths (not just the findings) means a
+  // desync in the R-record layout shows up here rather than silently eating the
+  // NEXT record — the fail-open this whole change exists to close.
+  const repo = mkdtempSync(join(tmpdir(), "orch-secraw-mv-"));
+  git(["init", "-b", "main"], repo);
+  git(["config", "user.email", "t@t"], repo);
+  git(["config", "user.name", "t"], repo);
+  mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+  mkdirSync(join(repo, "docs"), { recursive: true });
+  writeFileSync(join(repo, ".github/workflows/ci.yml"), "on: push\njobs: {}\n");
+  writeFileSync(join(repo, "docs/keep.md"), "x\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "init"], repo);
+  git(["switch", "-c", "feature"], repo);
+  git(["mv", ".github/workflows/ci.yml", "docs/ci.yml"], repo);
+  git(["commit", "-m", "move the workflow out"], repo);
+
+  const rawPaths = parseRawPaths(git(["diff", ...SECURITY_RAW_ARGS, "main...feature"], repo));
+  assert.deepEqual(rawPaths.sort(), [".github/workflows/ci.yml", "docs/ci.yml"]);
+  const r = scanDiff(git(["diff", ...SECURITY_DIFF_ARGS, "main...feature"], repo), { rawPaths });
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.file === ".github/workflows/ci.yml"), "old path flagged");
+});
