@@ -159,21 +159,14 @@ test("docs document that the version bump on merge is opt-in via release.autoBum
   assert.match(manual, /"Why didn't my version get bumped\?"[\s\S]{0,200}release\.autoBump/);
 });
 
-test("docs resolve the version-bump.yml policy question: it is the intended, idempotent safety net (#340)", () => {
-  // The "no bump-on-merge Action" note and version-bump.yml contradicted each
-  // other about when the version moves. The resolved model: the workflow is
-  // deliberate and idempotent — it skips landings that already carry their own
-  // version change, so the version moves exactly once per merge (orch's
-  // integration bump when present, the workflow otherwise), and direct-to-main
-  // PRs are bumped by design. The prose must state that, not leave two
-  // competing authorities documented.
+test("docs do not promise a fallback bump outside the local integration path", () => {
   for (const doc of [readme, manual]) {
-    assert.match(doc, /version-bump\.yml/);
-    assert.match(doc, /idempotent/);
+    assert.doesNotMatch(doc, /every merge is traceable to a version/);
+    assert.doesNotMatch(doc, /version moves exactly once per landing/);
   }
-  assert.match(readme, /moves\s+the\s+version\s+exactly\s+once|version\s+moves\s+exactly\s+once/);
-  assert.match(readme, /[Dd]irect-to-main\s+PRs\s+are\s+bumped\s+by\s+design/);
-  assert.match(manual, /version\s+moves\s+exactly\s+once|moves\s+the\s+version\s+exactly\s+once/);
+  assert.match(readme, /outside orch carries no version bump/);
+  assert.match(manual, /outside the local integration path keeps\s+the existing package version/);
+  assert.match(manual, /node scripts\/orch-release\.js/);
 });
 
 test("docs document main.autoMerge for the persistent integration PR", () => {
