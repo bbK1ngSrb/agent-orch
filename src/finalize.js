@@ -235,6 +235,15 @@ async function redriveDeferredPeers(ctx, deps, { integration, integrationBranch,
   // successfully redrive (so C deferred on B can heal after B heals on A).
   const unblocked = [{ sid: landed.sid, paths: landed.paths || [] }];
   const seen = new Set();
+  // Sids whose work is already ON the integration branch: this cycle, plus every
+  // peer we redrive below. Their `.orch/inflight` records are still live here —
+  // the landing cycle only deregisters after finalize() returns — but a landed
+  // change is not an unlanded peer, and the same policy as the Guard 1 comment
+  // above applies: overlap with what already landed is not a demote reason.
+  // Without this, the blocker itself always shows up in the live-peer scan on
+  // exactly the paths that caused the deferral, so no peer is ever redriven.
+  // We hold merge.lock, so the exclusions are only "us" + "peers we just landed".
+  const landedSids = new Set([landed.sid]);
 
   while (unblocked.length) {
     const blocker = unblocked.shift();
@@ -247,10 +256,14 @@ async function redriveDeferredPeers(ctx, deps, { integration, integrationBranch,
       seen.add(peer.sid);
 
       // Still blocked by a live in-flight cycle → leave queued; do not burn an attempt.
-      const live = typeof inflight.listLive === "function"
-        ? inflight.listLive(orchDir).filter((e) => e.sid !== peer.sid)
+      const hasListLive = typeof inflight.listLive === "function";
+      const live = hasListLive
+        ? inflight.listLive(orchDir).filter((e) => e.sid !== peer.sid && !landedSids.has(e.sid))
         : [];
-      const livePaths = live.length
+      // Only fall back to peerPaths when listLive is unavailable: peerPaths filters
+      // by sid alone, so using it when the filtered list is merely empty would let
+      // the landed sids back in through the back door.
+      const livePaths = hasListLive
         ? live.flatMap((e) => e.paths || [])
         : (typeof inflight.peerPaths === "function" ? inflight.peerPaths(orchDir, peer.sid) : []);
       if (overlapDetails(peer.paths || [], livePaths, live).any) continue;
@@ -288,6 +301,7 @@ async function redriveDeferredPeers(ctx, deps, { integration, integrationBranch,
       });
       if (result.status === "merged") {
         deferred.remove?.(orchDir, peer.sid);
+        landedSids.add(peer.sid); // merged only — a failed redrive is still unlanded
         unblocked.push({ sid: peer.sid, paths: peer.paths || [] });
         notify.phase?.("merge", `redrove ${peer.branch} after overlap`);
       }

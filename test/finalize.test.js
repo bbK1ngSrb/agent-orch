@@ -233,6 +233,74 @@ test("post-land redrive: deferred peer is rebased + gated + landed under the sam
   assert.deepEqual(lockOps, ["acquire", "release"]);
 });
 
+// The landing cycle deregisters from `.orch/inflight` only AFTER finalize() returns
+// (cli.js), so during redrive its own record is still live — on exactly the paths
+// that caused the peer's deferral. If the live-peer scan counts it, no peer is ever
+// redriven in a real run. These two tests pin both halves: the blocker must not
+// block, a genuinely live third cycle must.
+function redriveDeps(deferredPeer, listLive) {
+  const mergedBranches = [];
+  const removed = [];
+  const { deps, recorded } = baseDeps({
+    inflight: { listLive, peerPaths: () => [] },
+    git: {
+      ...baseDeps().deps.git,
+      rebaseBranchOnto: () => ({ ok: true }),
+      mergeInWorktree: (_path, branch) => {
+        mergedBranches.push(branch);
+        return { ok: true, reason: "merged" };
+      },
+      git: (args, cwd) => {
+        if (args[0] === "rev-parse") {
+          if (args[1] === "--short") return "abc1234";
+          if (cwd === "/integ" || args[1] === "orch/integration") return `sha-${mergedBranches.length || 1}`;
+          return "deadbee";
+        }
+        return "";
+      },
+    },
+    deferred: {
+      list: () => (removed.includes(deferredPeer.sid) ? [] : [deferredPeer]),
+      eligibleForRedrive: (e) => (e.redriveAttempts || 0) < 1,
+      blockedByLand: (e, landed) => e.peerSids?.includes(landed.sid) || e.paths.some((p) => (landed.paths || []).includes(p)),
+      markAttempt: () => { deferredPeer.redriveAttempts += 1; },
+      remove: (_d, sid) => { removed.push(sid); },
+    },
+  });
+  return { deps, recorded, mergedBranches, removed };
+}
+
+test("post-land redrive: the landing cycle's own live inflight record does not block its peer (#350)", async () => {
+  const deferredPeer = {
+    sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
+    rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+  };
+  // ctx().sid — still registered, on the overlapping path, exactly as in a real run.
+  const { deps, mergedBranches, removed } = redriveDeps(deferredPeer, () => [{ sid: "1", paths: ["src/a.js"] }]);
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.deepEqual(mergedBranches, ["pr/claude/x-1", "pr/codex/b-2"]);
+  assert.deepEqual(removed, ["2"]);
+});
+
+test("post-land redrive: a third live cycle on the same path still blocks the peer (#350)", async () => {
+  const deferredPeer = {
+    sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js", "src/b.js"], testCmd: "npm test",
+    rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+  };
+  // sid 3 touches src/b.js only: no overlap with the landing cycle (so the primary
+  // land still happens), but it does overlap the deferred peer.
+  const { deps, mergedBranches, removed } = redriveDeps(deferredPeer, () => [
+    { sid: "1", paths: ["src/a.js"] },  // the landing cycle — must not block
+    { sid: "3", paths: ["src/b.js"] },  // a genuinely live peer — must block
+  ]);
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.deepEqual(mergedBranches, ["pr/claude/x-1"]);
+  assert.deepEqual(removed, []);
+  assert.equal(deferredPeer.redriveAttempts, 0); // still queued; no attempt burned
+});
+
 // Peer #999 was deferred for overlapping issue #362's cycle. When #362 lands and
 // redrives it, the peer's runs.jsonl record must say 999 — priorStagedBranches
 // joins on that number, so a wrong one makes `orch issue 362` claim #999's branch.
