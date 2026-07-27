@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.209 — 2026-07-27
+- security-review: the guardrail path floor reads git's structural diff (`git diff --raw -z`) alongside the header-text parse and takes the union — header parsing alone failed open five ways (`diff.noprefix`/mnemonic prefixes, C-quoted paths, a path containing a literal `" b/"`, and mode-only changes with no `---`/`+++` headers). A failed structural read now fails closed rather than open, and rename/copy records contribute both paths (closes [#372](https://github.com/bbk1ng/agent-orch/issues/372))
+- security-review: `globToRegExp` compiled `**` to `.*`, which in JavaScript never matches a line terminator, and `changedFiles` read `diff --name-only` without `-z` — so a protected path whose filename legally contains `\n`, `\r`, U+2028 or U+2029 matched no glob and the floor reported that nothing protected was touched. `**` now compiles to `[\s\S]*`, and `changedFiles` reads `-z` and splits on NUL with no `.trim()`, which also stops corrupting filenames with leading or trailing spaces (closes [#383](https://github.com/bbk1ng/agent-orch/issues/383))
+- finalize: the automatic redrive of overlap-deferred cycles never ran. A cycle deregisters from `.orch/inflight` only after `finalize()` returns, so the live-peer scan inside `finalize()` always matched the landing cycle itself on exactly the paths that caused the deferral. Already-landed sids are now excluded from that scan (closes [#387](https://github.com/bbk1ng/agent-orch/issues/387))
+- docs: the security scan's two gates are described separately — the added-line content scan still exempts markdown and `docs/**`, but the path-based floor over changed paths has covered `docs/CODEOWNERS` since #366, so the README, manual and `orch.example.yml` no longer claim a hole that is closed (closes [#386](https://github.com/bbk1ng/agent-orch/issues/386))
+
 ## v0.4.208 — 2026-07-26
 - dirty-merge fallback opens a per-change agent PR against main, which repo policy explicitly forbids (closes [#376](https://github.com/bbk1ng/agent-orch/issues/376))
 
