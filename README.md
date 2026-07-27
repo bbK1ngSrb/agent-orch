@@ -391,16 +391,11 @@ else moves. Commits as `chore(release): vX.Y.Z`. Best-effort: a
 missing/unparsable `package.json` or any write/commit failure is swallowed —
 it never blocks or unwinds a merge that already landed.
 
-A separate CI workflow (`.github/workflows/version-bump.yml`) bumps the merge
-counter for any merge to `main` that lands WITHOUT going through orch's
-integration path — e.g. a direct-to-main PR — so every merge is traceable to
-a version regardless of how it landed. This is the deliberate versioning
-model, not a second competing authority: the workflow is idempotent and skips
-any landing that already carries its own version change, so each merge moves
-the version exactly once — via orch's integration-path bump when present, via
-the workflow otherwise. Direct-to-main PRs are bumped by design. If the
-workflow's own bump merge fails, it deletes its `chore/bump-cc-*` branch
-instead of orphaning it (#340).
+The merge counter moves automatically only through orch's local integration
+path when `release.autoBump` is enabled. A landing through `merge: pr` or
+outside orch carries no version bump unless the landing includes one itself;
+otherwise the package version remains unchanged until the release script is
+run by hand.
 
 The publish counter never bumps automatically. Run `node
 scripts/orch-release.js` by hand at actual release time — it snaps the patch
