@@ -48,9 +48,10 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    markdown and `docs/**` paths are dropped before the added-line content
    scan runs (mirroring `docs.paths`), because prose cannot execute a secret
    read at runtime. That exemption applies to the content scan only — a
-   separate path-based floor over the *changed paths* still covers guardrail
-   files under `docs/`, so a change to `docs/CODEOWNERS` trips a
-   `guardrail-touch` finding today. Second, files matching a `security.ignore` glob (default:
+   separate path-based floor over the *changed paths* still covers the
+   guardrail file under `docs/`: a change to `docs/CODEOWNERS` trips a
+   `guardrail-touch` finding today. Second, files matching a `security.ignore`
+   glob (default:
    none) — an escape hatch for committed build artifacts like minified
    bundles, where pattern-matching on generated text false-positives (a
    `RegExp#exec()` call in minified code reads exactly like a subprocess
