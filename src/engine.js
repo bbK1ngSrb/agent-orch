@@ -1,7 +1,7 @@
 import { isDocsOnly } from "./scope.js";
 import { checkPaths } from "./intake/allowlist.js";
 import { buildRevisionPrompt } from "./intake/workorder.js";
-import { scanDiff, formatSecurityFindings, SECURITY_DIFF_ARGS } from "./security-review.js";
+import { scanDiff, formatSecurityFindings, parseRawPaths, SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "./security-review.js";
 import { formatUsage, totalUsage } from "./usage.js";
 
 const RAW_OUTPUT_TAIL_CHARS = 12_000;
@@ -236,14 +236,19 @@ export async function runCycle(opts, deps) {
         // reviewer can be talked out of a DISAGREE; this scan cannot. It runs
         // before the noMerge return so the PR-bridge approval is gated too.
         // Fail closed: a diff we cannot read is a diff we do not approve.
-        let finalDiff;
+        // Two reads of the same diff: the PATCH (added lines, for the content
+        // rules) and the STRUCTURAL `--raw -z` listing (changed paths, for the
+        // guardrail floor — no prefix/quoting config can blind it). Both are in
+        // the one try: a partial view is not a view we scan on.
+        let finalDiff, rawPaths;
         try {
           finalDiff = git.git(["diff", ...SECURITY_DIFF_ARGS, `${baseBranch}...${branch}`], repo);
+          rawPaths = parseRawPaths(git.git(["diff", ...SECURITY_RAW_ARGS, `${baseBranch}...${branch}`], repo));
         } catch (e) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
             `security scan: could not read the final diff (${e.message}) — failing closed, not merging`));
         }
-        const security = scanDiff(finalDiff, { ignore: cfg.security?.ignore ?? [] });
+        const security = scanDiff(finalDiff, { ignore: cfg.security?.ignore ?? [], rawPaths });
         if (security.decision !== "AGREE") {
           // summary → the concise reason kept in run logs / the CLI status line;
           // detail → the grouped, deduped, educational note a human reads.

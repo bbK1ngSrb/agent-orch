@@ -56,17 +56,47 @@ function unquoteGitPath(s) {
 // is an unknown path, which content scanning treats as scannable (fail closed).
 // The parser above trusts git's canonical `a/`/`b/` prefixes, but those are a
 // *config-dependent* default: `diff.noprefix=true` drops them and
-// `diff.mnemonicPrefix=true` renames them (`c/`, `w/`, `i/`), so a repo-local
-// git config could silently blind the floor — e.g. a mode-only workflow change
-// emitting `diff --git .github/workflows/ci.yml .github/workflows/ci.yml`, which
-// matches no header and no `b/` side. Any producer feeding scanDiff MUST pass
-// these flags so the prefixes are what the parser expects regardless of config.
-// `--no-ext-diff` is here for the same reason: an external diff driver replaces
-// git's output wholesale. So is `--no-textconv`: a textconv driver
-// (`.gitattributes` + `diff.<driver>.textconv`) filters file CONTENTS before
-// diffing, so the content rules would scan the filter's output instead of the
-// real change — `--no-ext-diff` does not disable it.
+// `diff.mnemonicPrefix=true` renames them (`c/`, `w/`, `i/`). These flags pin
+// them back, so the TEXT parse sees the shape it models. That text parse is now
+// the SECONDARY of the floor's two path sources: the primary is the structural
+// read below (`SECURITY_RAW_ARGS` + `parseRawPaths`), which does not depend on
+// prefix configuration at all. The floor takes the union of the two, so it can
+// only ever flag more paths than either source alone.
+// These flags stay mandatory for the CONTENT rules, which have no structural
+// alternative — only the patch text carries added lines. `--no-ext-diff`:
+// an external diff driver replaces git's output wholesale. `--no-textconv`:
+// a textconv driver (`.gitattributes` + `diff.<driver>.textconv`) filters file
+// CONTENTS before diffing, so the content rules would scan the filter's output
+// instead of the real change — `--no-ext-diff` does not disable it.
 export const SECURITY_DIFF_ARGS = ["--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
+
+// The STRUCTURAL read of the same diff: one NUL-delimited record per changed
+// file, each carrying an explicit status code (`M`, `A`, `D`, `R100`, `C75`,
+// `T`) and the raw path bytes. Because `-z` is in play, paths are not C-quoted
+// and records carry their own delimiter, so none of the text parse's quoting /
+// prefix / where-does-the-a-side-end ambiguities exist here.
+export const SECURITY_RAW_ARGS = ["--no-ext-diff", "--raw", "-z", "--find-renames"];
+
+// Turn `git diff --raw -z` output into the changed repo-relative paths.
+// Each record is a `:<modes> <shas> <status>` field followed by one path field —
+// or TWO for a rename/copy (`R100`, `C75`). Both sides of a rename are returned:
+// moving a workflow file OUT of `.github/workflows/` detaches a required check,
+// so the old path matters as much as the new one. Malformed or truncated input
+// never throws; whatever parsed is returned (the floor's other source still runs).
+export function parseRawPaths(rawText) {
+  const out = [];
+  const toks = String(rawText ?? "").split("\0");
+  for (let i = 0; i < toks.length; i++) {
+    if (!toks[i].startsWith(":")) continue;
+    const status = toks[i].slice(toks[i].lastIndexOf(" ") + 1);
+    const n = /^[RC]/.test(status) ? 2 : 1;
+    for (let k = 0; k < n && i + 1 < toks.length; k++) {
+      const p = toks[++i];
+      if (p) out.push(p);
+    }
+  }
+  return out;
+}
 
 function abPath(s) {
   const m = unquoteGitPath(s.trim()).match(/^[ab]\/([\s\S]*)$/);
@@ -173,7 +203,15 @@ function isSubprocessCall(line, regexVars) {
 // everything); an unknown path (no `+++ b/` header) is never ignorable, and the
 // config itself lives in `.orch/` where the secret-read rule + config load
 // timing keep a same-cycle diff from widening its own exemptions.
-export function scanDiff(diffText, { ignore = [] } = {}) {
+//
+// `rawPaths` (#383): the paths from the structural read (`parseRawPaths` over
+// `git diff` + SECURITY_RAW_ARGS). The guardrail floor runs over the UNION of
+// those and the paths the text parse derives, deduped, so each guardrail path
+// still yields exactly one finding. Union, not replacement: the structural
+// source removes the config-dependence, the text source stays as belt-and-
+// braces, and the floor can only flag more than before, never fewer. Omitting
+// it leaves behaviour identical to the text-only floor.
+export function scanDiff(diffText, { ignore = [], rawPaths = [] } = {}) {
   const findings = [];
   // Path-based floor (#345): touching a guardrail path trips guardrail-touch
   // regardless of added-line content — an ERR trap with no trigger string, or a
@@ -183,14 +221,15 @@ export function scanDiff(diffText, { ignore = [] } = {}) {
   // at all — is caught too. Not subject to
   // `ignore`: a guardrail file is never a build artifact.
   const seen = new Set();
-  for (const l of String(diffText).split("\n")) {
-    const paths = [headerPath(l), ...structuralPaths(l)];
-    for (const p of paths) {
-      if (p && !seen.has(p) && isGuardrailPath(p)) {
-        seen.add(p);
-        findings.push({ rule: "guardrail-touch", line: "guardrail path changed", file: p });
-      }
+  const flagPath = (p) => {
+    if (p && !seen.has(p) && isGuardrailPath(p)) {
+      seen.add(p);
+      findings.push({ rule: "guardrail-touch", line: "guardrail path changed", file: p });
     }
+  };
+  for (const p of rawPaths) flagPath(p);
+  for (const l of String(diffText).split("\n")) {
+    for (const p of [headerPath(l), ...structuralPaths(l)]) flagPath(p);
   }
   const ignoreRes = ignore.map(globToRegExp);
   const entries = addedCodeLines(diffText)
