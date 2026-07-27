@@ -45,11 +45,13 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    even after `AGREE` and green tests. If the final diff itself can't be read,
    orch fails closed and escalates rather than assuming an unseen patch is
    safe. Two things are outside the scan. First, a built-in path exemption:
-   markdown and `docs/**` paths are dropped before the scan runs (mirroring
-   `docs.paths`), because prose cannot execute a secret read at runtime — so
-   a guardrail file that happens to live under `docs/` (a `docs/CODEOWNERS`)
-   is **not** scanned today; a scanner path-fix for that carve-out is tracked
-   separately. Second, files matching a `security.ignore` glob (default:
+   markdown and `docs/**` paths are dropped before the added-line content
+   scan runs (mirroring `docs.paths`), because prose cannot execute a secret
+   read at runtime. That exemption applies to the content scan only — a
+   separate path-based floor over the *changed paths* still covers the
+   guardrail file under `docs/`: a change to `docs/CODEOWNERS` trips a
+   `guardrail-touch` finding today. Second, files matching a `security.ignore`
+   glob (default:
    none) — an escape hatch for committed build artifacts like minified
    bundles, where pattern-matching on generated text false-positives (a
    `RegExp#exec()` call in minified code reads exactly like a subprocess

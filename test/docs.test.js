@@ -137,6 +137,10 @@ test("docs do not claim the security scan covers every added line", () => {
   }
   for (const doc of [readme, manual]) {
     assert.match(doc, /guardrail file[^.]{0,60}under `docs\/`/);
+    // Only `docs/CODEOWNERS` is a guardrail path under `docs/` (GUARDRAIL_PATH_RES
+    // in src/security-review.js), so the docs must name it rather than
+    // generalize to "guardrail files under `docs/`".
+    assert.match(doc, /`docs\/CODEOWNERS` trips a\s+`guardrail-touch` finding/);
   }
 });
 
