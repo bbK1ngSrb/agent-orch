@@ -278,6 +278,14 @@ test("docs document the automatic redrive of overlap-deferred cycles (#350)", ()
   // The one-attempt cap is a source constant; docs must not promise retries.
   assert.equal(MAX_REDRIVE_ATTEMPTS, 1);
   for (const doc of [readme, manual]) assert.match(doc, /one automatic attempt/);
+  // The `pr/*` head deletion in finalize.js is gated on `pr.prUrl` — a failed PR
+  // bridge keeps the head AND the escalation PR, so the manual must not promise
+  // cleanup unconditionally or a human reads a live PR as unfinished work.
+  const finalize = readFileSync(new URL("src/finalize.js", rootUrl), "utf8");
+  assert.match(finalize, /if \(pr\.prUrl && branch/);
+  const redrive = manual.slice(manual.indexOf("Automatic redrive of `overlap`"));
+  assert.match(redrive.slice(0, redrive.indexOf("\n**Takeaway")), /cleanup is \*\*conditional\*\*/);
+
   // The FAQ entry must lead with "wait", not with hand-restructuring the runs.
   const faq = manual.slice(manual.indexOf("Two cycles I ran at once"));
   const entry = faq.slice(0, faq.indexOf("\n- **"));

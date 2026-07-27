@@ -607,9 +607,16 @@ automatic attempt (`MAX_REDRIVE_ATTEMPTS` in `src/deferred.js`); if that attempt
 fails the rebase, the merge, or the gate, the cycle stays `merge-deferred` and a
 human owns it from there. A failed redrive adds no extra noise: the escalation
 PR opened by the original demotion is left exactly as it was, rather than a
-second demote PR being opened beside it. A *successful* redrive retires it —
-the merged path deletes the cycle's remote `pr/*` head, and GitHub closes a PR
-whose head branch is gone.
+second demote PR being opened beside it. A *successful* redrive usually retires
+it: the merged path deletes the cycle's remote `pr/*` head, and GitHub closes a
+PR whose head branch is gone. That cleanup is **conditional**, though — it only
+runs once the integration PR bridge has pushed `orch/integration` to origin. If
+that push or PR step fails, orch deliberately keeps the `pr/*` head (it is then
+the only remote copy of the just-landed work) and the original escalation PR
+stays open. So a redriven cycle can be merged locally and *still* show an open
+`merge-deferred` PR; that PR is a leftover of the bridge failure, not a sign the
+work was lost — check `.orch/runs.jsonl` for the cycle's `merged` record before
+acting on it.
 
 So the practical advice when you see an `overlap` deferral is: **wait for the
 blocking cycle to finish, then check again** before doing anything by hand.
