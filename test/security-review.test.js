@@ -478,6 +478,22 @@ test("path floor does not over-match guardrail names in arbitrary directories", 
   }
 });
 
+// Guardrail paths whose names contain line terminators: text headers cannot
+// carry them (split on \n), but rawPaths from `git diff --raw -z` can. ** must
+// match those bytes or the floor returns AGREE for a real protected-path touch.
+test("rawPaths: protected path with line terminators → guardrail-touch", () => {
+  for (const p of [
+    ".github/workflows/a\nb.yml",
+    ".github/workflows/a\rb.yml",
+    ".github/workflows/a\u2028b.yml",
+    ".github/workflows/a\u2029b.yml",
+  ]) {
+    const r = scanDiff("", { rawPaths: [p] });
+    assert.equal(r.decision, "DISAGREE", JSON.stringify(p));
+    assert.ok(r.findings.some((f) => f.rule === "guardrail-touch" && f.file === p), JSON.stringify(p));
+  }
+});
+
 test("path-based guardrail finding is not exempted by security.ignore", () => {
   const d = `--- a/CODEOWNERS\n+++ b/CODEOWNERS\n@@ -1 +1 @@\n+* @bbk1ng`;
   assert.equal(scanDiff(d, { ignore: ["CODEOWNERS", "**"] }).decision, "DISAGREE");
