@@ -325,6 +325,46 @@ export function syncWorktreeToIntegration(integrationPath, branch = "orch/integr
   git(["clean", "-fd"], integrationPath);
 }
 
+// A human can land work straight on origin/<integration> — that is the documented
+// recovery when a cycle escalates on the protected-path floor and orch may not
+// merge the fix itself. Local would otherwise stay stale, the next cycle would
+// build on the wrong base, and `openIntegrationPr`'s push would be rejected as
+// non-fast-forward. Fast-forward the local branch onto origin before landing;
+// never rewrite, and escalate on a real divergence — the merge base is ambiguous
+// there and a human has to choose.
+export function reconcileIntegrationToOrigin(integrationPath, branch = "orch/integration") {
+  const ref = originRef(branch);
+  const fetched = fetchOriginMain(integrationPath, {
+    base: branch,
+    // Force only the remote-tracking ref: it is a mirror of origin by definition,
+    // so a force-pushed origin should still land here as data, not as a fetch error.
+    fetch: () => gitTry(["fetch", "origin", `+${branch}:${ref}`], integrationPath),
+  });
+  if (!fetched.ok) {
+    // No origin, or the branch does not exist there yet (first cycle in a repo):
+    // nothing to reconcile against, and local is authoritative.
+    if (fetched.missingOrigin || /couldn't find remote ref/i.test(fetched.reason || ""))
+      return { ok: true, updated: false, skipped: true };
+    return { ok: false, reason: `could not fetch origin/${branch}: ${fetched.reason}` };
+  }
+
+  const head = git(["rev-parse", "HEAD"], integrationPath);
+  const remote = git(["rev-parse", ref], integrationPath);
+  if (head === remote) return { ok: true, updated: false };
+  // Local ahead of origin — the normal case between a land and its push.
+  if (gitTry(["merge-base", "--is-ancestor", ref, "HEAD"], integrationPath).ok)
+    return { ok: true, updated: false };
+  if (!gitTry(["merge-base", "--is-ancestor", "HEAD", ref], integrationPath).ok)
+    return { ok: false, reason: `local ${branch} has diverged from origin/${branch}; reconcile it before running orch` };
+  try {
+    git(["merge", "--ff-only", ref], integrationPath);
+    return { ok: true, updated: true, from: head, to: remote };
+  } catch (e) {
+    const reason = (e.stderr || e.stdout || e.message || "").toString().trim();
+    return { ok: false, reason: `could not fast-forward ${branch} to origin/${branch}: ${reason}` };
+  }
+}
+
 // If GitHub advanced the base branch after the last integration PR merge,
 // integration can be cleanly behind it. Fast-forward that safe prefix case
 // before landing more local work; never rewrite or discard integration commits.
