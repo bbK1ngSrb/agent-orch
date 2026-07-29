@@ -44,3 +44,27 @@ export function checkPaths(changedFiles, protectedGlobs = DEFAULT_PROTECTED) {
   });
   return { ok: violations.length === 0, violations };
 }
+
+// Intake-time text scan (#394): a work order that NAMES a protected path almost
+// always requires a change to it, and checkPaths rejects such a diff at review
+// time — so the run is a guaranteed stalemate discovered only after the round
+// cap has burned a full author + audit cycle. This is a cheap literal scan, not
+// intent detection: tokenise the free text and report any token that is (or
+// points into) a protected path. A bare mention of a protected `dir/**` stem
+// (".github/workflows") matches too, since `**` needs a trailing segment.
+// Returns the matched path mentions, de-duplicated.
+export function findProtectedMentions(text, protectedGlobs = DEFAULT_PROTECTED) {
+  const res = protectedGlobs.map(globToRegExp);
+  const stems = protectedGlobs.filter((g) => g.endsWith("/**")).map((g) => g.slice(0, -3));
+  const mentions = new Set();
+  for (const raw of String(text).split(/[\s"'`()\[\]{}<>]+/)) {
+    // Strip sentence punctuation glued to a path token; keep leading dots
+    // (.github/...) and let normalizePath handle /, ./, a/, b/ prefixes.
+    const token = raw.replace(/^[,:;]+|[,.;:]+$/g, "");
+    if (!token || token.split("/").some((seg) => seg === "..")) continue;
+    const norm = normalizePath(token);
+    if (!norm) continue;
+    if (res.some((re) => re.test(norm)) || stems.includes(norm)) mentions.add(norm);
+  }
+  return [...mentions];
+}

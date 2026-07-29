@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkPaths, DEFAULT_PROTECTED } from "../src/intake/allowlist.js";
+import { checkPaths, findProtectedMentions, DEFAULT_PROTECTED } from "../src/intake/allowlist.js";
 
 test("allows ordinary source and test paths", () => {
   const r = checkPaths(["src/config.js", "test/config.test.js", "README.md"]);
@@ -123,4 +123,43 @@ test("examples/CODEOWNERS is not a protected path (anchored globs)", () => {
   const r = checkPaths(["examples/CODEOWNERS"]);
   assert.equal(r.ok, true);
   assert.deepEqual(r.violations, []);
+});
+
+// --- findProtectedMentions: intake-time literal scan of work-order text (#394) ---
+test("finds a workflow path named in prose", () => {
+  const m = findProtectedMentions("Remove `.github/workflows/version-bump.yml` and update the docs.");
+  assert.deepEqual(m, [".github/workflows/version-bump.yml"]);
+});
+
+test("finds a bare protected directory stem mention", () => {
+  const m = findProtectedMentions("stop everything under .github/workflows please");
+  assert.deepEqual(m, [".github/workflows"]);
+});
+
+test("finds protected files named with surrounding punctuation", () => {
+  const m = findProtectedMentions("delete (src/gate.js), bump package.json.");
+  assert.deepEqual(m.sort(), ["package.json", "src/gate.js"]);
+});
+
+test("ignores ordinary paths and prose", () => {
+  const m = findProtectedMentions("fix the retry logic in src/engine.js and test/engine.test.js");
+  assert.deepEqual(m, []);
+});
+
+test("does not match an unanchored lookalike (examples/CODEOWNERS)", () => {
+  assert.deepEqual(findProtectedMentions("add examples/CODEOWNERS to the scaffold"), []);
+});
+
+test("strips ./ and leading-slash prefixes before matching", () => {
+  assert.deepEqual(findProtectedMentions("edit ./package.json"), ["package.json"]);
+  assert.deepEqual(findProtectedMentions("edit /src/verdict.js"), ["src/verdict.js"]);
+});
+
+test("de-duplicates repeated mentions", () => {
+  const m = findProtectedMentions("src/notify.js is broken; see src/notify.js");
+  assert.deepEqual(m, ["src/notify.js"]);
+});
+
+test("empty text yields no mentions", () => {
+  assert.deepEqual(findProtectedMentions(""), []);
 });
