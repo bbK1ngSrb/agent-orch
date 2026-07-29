@@ -34,8 +34,6 @@ function makeDeps({ verdict = { decision: "AGREE", reason: "both intents preserv
     git(args) {
       calls.push(["git", ...args]);
       if (args[0] === "rev-parse" && args[1] === "HEAD") return "pre";
-      // Match production -z listing: NUL-separated paths (no newline split).
-      if (args[0] === "diff") return resolved ? "" : `${conflictPath}\0`;
       return "";
     },
     gitTry(args) {
@@ -44,6 +42,9 @@ function makeDeps({ verdict = { decision: "AGREE", reason: "both intents preserv
         resolved = false;
         return { ok: false, out: `CONFLICT (content): Merge conflict in ${conflictPath}` };
       }
+      // Match production: -z listing via gitTry (no .trim()) so leading-space
+      // paths stay exact for the metaOnly whitelist.
+      if (args[0] === "diff") return { ok: true, out: resolved ? "" : `${conflictPath}\0` };
       if (args[0] === "rev-parse") return { ok: true, out: "" };
       return { ok: true, out: "" };
     },
@@ -151,9 +152,8 @@ test("metadata-only auto resolution can run with a single resolver and no review
   assert.ok(deps.calls.some((c) => c[0] === "git" && c[1] === "push" && c[3] === "orch/integration"));
 });
 
-// Crafted unmerged path = allowed paths joined by newline. Without -z, splitting
-// on \n would make metaOnly true and skip the reviewer; with -z the single path
-// is not in the whitelist, so a reviewer is required.
+// Crafted unmerged path = allowed paths joined by newline. With -z the single
+// path is not in the whitelist, so a reviewer is required.
 test("newline-joined allowed paths do not count as metadata-only (require reviewer)", async () => {
   const forged = "CHANGELOG.md\npackage.json";
   const deps = makeDeps({ conflictPath: forged });
@@ -175,9 +175,34 @@ test("newline-joined allowed paths do not count as metadata-only (require review
   assert.match(result.reason, /no conflict reviewer configured/);
   assert.ok(!deps.calls.some((c) => c[0] === "author"), "must not auto-resolve before requiring a reviewer");
   assert.ok(!deps.calls.some((c) => c[0] === "git" && c[1] === "push"));
-  // Production listing must pass -z so NUL-split keeps the forged path whole.
+  // Production listing must use gitTry + -z (no .trim()) like changedFiles / #383.
   assert.ok(
-    deps.calls.some((c) => c[0] === "git" && c[1] === "diff" && c.includes("-z") && c.includes("--diff-filter=U")),
-    "unmerged listing must use -z",
+    deps.calls.some((c) => c[0] === "gitTry" && c[1] === "diff" && c.includes("-z") && c.includes("--diff-filter=U")),
+    "unmerged listing must use gitTry with -z",
   );
+});
+
+// Leading-space path that equals a whitelist entry after .trim(). Routing the
+// listing through git() would strip the space and fake metaOnly; gitTry keeps
+// the exact path so auto mode still requires a reviewer.
+test("leading-space path does not fake metadata-only whitelist hit", async () => {
+  const deps = makeDeps({ conflictPath: " CHANGELOG.md" });
+  const singleAgentCfg = cfg({
+    conflictResolutionResolvers: [{ agent: "claude", model: null, effort: null }],
+    autoResolveConflictPaths: ["CHANGELOG.md"],
+  });
+  singleAgentCfg.agents = ["claude"];
+  const result = await resolveIntegrationConflict({
+    repo: "/repo",
+    orchDir: tmp(),
+    cfg: singleAgentCfg,
+    branch: "orch/integration",
+    base: "main",
+    testCmd: "npm test",
+  }, deps);
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /no conflict reviewer configured/);
+  assert.ok(!deps.calls.some((c) => c[0] === "author"), "must not treat trimmed path as metadata-only");
+  assert.ok(!deps.calls.some((c) => c[0] === "git" && c[1] === "push"));
 });
