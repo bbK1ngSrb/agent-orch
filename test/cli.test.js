@@ -411,6 +411,97 @@ test("--file rejects a JSON object that fails work-order shape", async () => {
   await assert.rejects(() => main(["task", "--file", f, "--dry"]), /work order/i);
 });
 
+// #394: a work order that names a protected path is unsatisfiable — the guard
+// rejects the diff every round — so intake refuses before any agent runs.
+test("task refuses at intake when the text names a protected path", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-protected-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await assert.rejects(
+      () => main(["task", "remove .github/workflows/version-bump.yml and tidy the docs", "--dry"]),
+      /refusing to run: the task names protected path\(s\): \.github\/workflows\/version-bump\.yml/,
+    );
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("task --file refuses at intake when the work order names a protected path", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-protected-"));
+  const f = join(d, "wo.json");
+  writeFileSync(f, JSON.stringify({
+    title: "stop the merge-bump automation",
+    problem: "Delete `.github/workflows/version-bump.yml` and clean up its tests.",
+    repro_steps: [],
+    suspected_paths: [".github/workflows/version-bump.yml"],
+    acceptance_criteria: ["workflow gone"],
+  }));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await assert.rejects(
+      () => main(["task", "--file", f, "--dry"]),
+      /refusing to run.*hand-land/s,
+    );
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("issue refuses at intake when the issue body names a protected path", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-protected-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    const gh = (args) => args[0] === "--version" ? "gh 2"
+      : JSON.stringify({ number: 394, title: "remove stale workflow", body: "Please delete .github/workflows/version-bump.yml", state: "OPEN" });
+    await assert.rejects(
+      () => main(["issue", "394", "--dry"], { githubDeps: () => ({ gh }) }),
+      /refusing to run: the task names protected path\(s\)/,
+    );
+  } finally {
+    chdir(prev);
+  }
+});
+
+// #395: the intake scan is literal, so an incidental mention of a protected
+// path (package.json is on the list and is named by ordinary work orders)
+// would otherwise be an unappealable lockout. --allow-protected is the
+// operator's explicit acknowledgement; the merge-time guard still applies.
+test("--allow-protected runs past the intake refusal", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-protected-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    let err = null;
+    try {
+      await main(["task", "orch reads the version from package.json at startup — the log line is wrong", "--dry", "--allow-protected"]);
+    } catch (e) {
+      err = e;
+    }
+    // It may still fail for unrelated reasons in a bare tmpdir; what must NOT
+    // survive the override is the intake refusal itself.
+    assert.doesNotMatch(String(err?.message || ""), /refusing to run/);
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("without the override the same incidental mention still refuses", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-protected-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await assert.rejects(
+      () => main(["task", "orch reads the version from package.json at startup — the log line is wrong", "--dry"]),
+      /refusing to run: the task names protected path\(s\): package\.json/,
+    );
+  } finally {
+    chdir(prev);
+  }
+});
+
 import { fetchIssueWorkOrder, requireGhAuth } from "../src/cli.js";
 
 test("requireGhAuth fails fast with a clear error when gh is not authenticated", () => {

@@ -13,6 +13,7 @@ function baseDeps(over = {}) {
       syncMainFromOrigin: () => ({ ok: true }),
       ensureIntegrationWorktree: () => "/integ",
       syncWorktreeToIntegration: () => {},
+      reconcileIntegrationToOrigin: () => ({ ok: true, updated: false }),
       reconcileIntegrationToBase: () => ({ ok: true, updated: false }),
       mergeInWorktree: () => ({ ok: true, reason: "merged" }),
       bumpVersion: () => "0.1.1",
@@ -751,6 +752,24 @@ test("local main ahead of origin at merge time → merge-deferred (orch never pu
   assert.equal(r.trigger, "sync");
   assert.match(r.reason, /trigger \| sync/);
   assert.match(r.reason, /ahead of origin/);
+  assert.equal(merged, false);
+  assert.equal(recorded[0].verdict, "merge-deferred");
+  assert.equal(recorded[0].trigger, "sync");
+});
+
+test("integration diverged from its own origin at merge time → merge-deferred (no merge on an ambiguous base)", async () => {
+  let merged = false;
+  const { deps, recorded } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      reconcileIntegrationToOrigin: () => ({ ok: false, reason: "local orch/integration has diverged from origin/orch/integration" }),
+      mergeInWorktree: () => { merged = true; return { ok: true }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.trigger, "sync");
+  assert.match(r.reason, /diverged from origin\/orch\/integration/);
   assert.equal(merged, false);
   assert.equal(recorded[0].verdict, "merge-deferred");
   assert.equal(recorded[0].trigger, "sync");

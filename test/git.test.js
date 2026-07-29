@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitTry, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, mergeInWorktree, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch } from "../src/git.js";
+import { git, gitTry, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, reconcileIntegrationToOrigin, mergeInWorktree, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch } from "../src/git.js";
 import { checkPaths } from "../src/intake/allowlist.js";
 
 function newRepo() {
@@ -388,6 +388,77 @@ test("reconcileIntegrationToBase never rewrites integration-only commits", () =>
   assert.equal(r.updated, false);
   assert.equal(r.skipped, "not-fast-forward");
   assert.equal(git(["rev-parse", "orch/integration"], repo), before);
+});
+
+// Shared setup for the origin-reconcile tests: a repo whose integration branch
+// exists on origin, plus a peer clone standing in for the human who hand-lands
+// an escalated fix straight on origin/orch/integration.
+function integrationWithOrigin() {
+  const repo = newRepo();
+  const remote = addOrigin(repo);
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  git(["push", "-u", "origin", "orch/integration"], repo);
+  const peer = cloneRemote(remote);
+  git(["checkout", "orch/integration"], peer);
+  return { repo, integ, peer };
+}
+
+test("reconcileIntegrationToOrigin fast-forwards integration onto a hand-landed origin commit", () => {
+  const { repo, integ, peer } = integrationWithOrigin();
+  commitFile(peer, "handlanded.txt", "escalation fix\n", "hand-landed escalation fix");
+  git(["push", "origin", "orch/integration"], peer);
+  syncWorktreeToIntegration(integ);
+
+  const r = reconcileIntegrationToOrigin(integ);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.updated, true);
+  // The branch ref — not just worktree HEAD — must move: the push that failed in
+  // the reported defect reads refs/heads/orch/integration.
+  assert.equal(
+    git(["rev-parse", "orch/integration"], repo),
+    git(["rev-parse", "refs/remotes/origin/orch/integration"], repo),
+  );
+  assert.equal(readFileSync(join(integ, "handlanded.txt"), "utf8"), "escalation fix\n");
+});
+
+test("reconcileIntegrationToOrigin is a no-op when local integration is ahead of origin", () => {
+  const { repo, integ } = integrationWithOrigin();
+  commitFile(integ, "local.txt", "local\n", "local land not yet pushed");
+  const before = git(["rev-parse", "orch/integration"], repo);
+
+  const r = reconcileIntegrationToOrigin(integ);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.updated, false);
+  // Not the no-remote-branch skip: origin has the branch, so the fetch really ran.
+  assert.equal(r.skipped, undefined);
+  assert.equal(git(["rev-parse", "orch/integration"], repo), before);
+});
+
+test("reconcileIntegrationToOrigin refuses a divergence instead of discarding either side", () => {
+  const { repo, integ, peer } = integrationWithOrigin();
+  commitFile(peer, "remote.txt", "remote\n", "hand-landed on origin");
+  git(["push", "origin", "orch/integration"], peer);
+  commitFile(integ, "local.txt", "local\n", "landed only locally");
+  const before = git(["rev-parse", "orch/integration"], repo);
+
+  const r = reconcileIntegrationToOrigin(integ);
+
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /diverged/);
+  assert.equal(git(["rev-parse", "orch/integration"], repo), before);
+});
+
+test("reconcileIntegrationToOrigin skips when origin has no integration branch yet", () => {
+  const repo = newRepo();
+  addOrigin(repo);
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+
+  const r = reconcileIntegrationToOrigin(integ);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.skipped, true);
 });
 
 test("ff-only merge fails when integration moved past the branch base", () => {
