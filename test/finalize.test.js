@@ -757,6 +757,24 @@ test("local main ahead of origin at merge time → merge-deferred (orch never pu
   assert.equal(recorded[0].trigger, "sync");
 });
 
+test("integration diverged from its own origin at merge time → merge-deferred (no merge on an ambiguous base)", async () => {
+  let merged = false;
+  const { deps, recorded } = baseDeps({
+    git: {
+      ...baseDeps().deps.git,
+      reconcileIntegrationToOrigin: () => ({ ok: false, reason: "local orch/integration has diverged from origin/orch/integration" }),
+      mergeInWorktree: () => { merged = true; return { ok: true }; },
+    },
+  });
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.trigger, "sync");
+  assert.match(r.reason, /diverged from origin\/orch\/integration/);
+  assert.equal(merged, false);
+  assert.equal(recorded[0].verdict, "merge-deferred");
+  assert.equal(recorded[0].trigger, "sync");
+});
+
 test("merge-lock timeout → merge-deferred without touching the worktree", async () => {
   let ensured = false;
   let releaseCalls = 0;

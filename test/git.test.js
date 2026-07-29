@@ -431,6 +431,8 @@ test("reconcileIntegrationToOrigin is a no-op when local integration is ahead of
 
   assert.equal(r.ok, true);
   assert.equal(r.updated, false);
+  // Not the no-remote-branch skip: origin has the branch, so the fetch really ran.
+  assert.equal(r.skipped, undefined);
   assert.equal(git(["rev-parse", "orch/integration"], repo), before);
 });
 
