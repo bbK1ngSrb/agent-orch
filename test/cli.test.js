@@ -465,6 +465,43 @@ test("issue refuses at intake when the issue body names a protected path", async
   }
 });
 
+// #395: the intake scan is literal, so an incidental mention of a protected
+// path (package.json is on the list and is named by ordinary work orders)
+// would otherwise be an unappealable lockout. --allow-protected is the
+// operator's explicit acknowledgement; the merge-time guard still applies.
+test("--allow-protected runs past the intake refusal", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-protected-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    let err = null;
+    try {
+      await main(["task", "orch reads the version from package.json at startup — the log line is wrong", "--dry", "--allow-protected"]);
+    } catch (e) {
+      err = e;
+    }
+    // It may still fail for unrelated reasons in a bare tmpdir; what must NOT
+    // survive the override is the intake refusal itself.
+    assert.doesNotMatch(String(err?.message || ""), /refusing to run/);
+  } finally {
+    chdir(prev);
+  }
+});
+
+test("without the override the same incidental mention still refuses", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-protected-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await assert.rejects(
+      () => main(["task", "orch reads the version from package.json at startup — the log line is wrong", "--dry"]),
+      /refusing to run: the task names protected path\(s\): package\.json/,
+    );
+  } finally {
+    chdir(prev);
+  }
+});
+
 import { fetchIssueWorkOrder, requireGhAuth } from "../src/cli.js";
 
 test("requireGhAuth fails fast with a clear error when gh is not authenticated", () => {

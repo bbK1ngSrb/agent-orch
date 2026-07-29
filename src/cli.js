@@ -376,6 +376,7 @@ export function parse(argv) {
       cheap: { type: "boolean" }, // force author+reviewer to orch.yml cheap.role for this run
       file: { type: "string" },
       "config-file": { type: "string" }, // load a .yml file, layered on top of orch.yml for this run
+      "allow-protected": { type: "boolean" }, // #395: run despite a protected-path mention at intake
       "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
       "no-banner": { type: "boolean" },
       link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
@@ -1271,17 +1272,34 @@ export async function main(argv, deps = {}) {
     // was structurally decided at intake. Refuse now, with the path and the
     // remedy in the message. Literal scan, not intent detection: an incidental
     // mention can be reworded, a required change must be hand-landed.
+    //
+    // #395: the scan is deliberately literal, so it cannot tell "delete
+    // package.json" from "orch reads the version from package.json" — and
+    // several protected entries (package.json, package-lock.json) are named in
+    // passing by perfectly ordinary work orders. A refusal with no way past it
+    // would turn that false positive into a lockout, so `--allow-protected` is
+    // the operator's explicit acknowledgement that they have read the mention
+    // and judged it incidental (or accepted that the result must be
+    // hand-landed). It only skips THIS intake scan: the review-time floor in
+    // engine.js still refuses to merge a diff that really touches a protected
+    // path, so the override can waste a cycle but can never land a guardrail
+    // change.
     if (mode === "task") {
       const intakeText = workOrder
         ? [workOrder.title, workOrder.problem, ...workOrder.repro_steps, ...workOrder.suspected_paths, ...workOrder.acceptance_criteria].join("\n")
         : task;
       const mentions = findProtectedMentions(intakeText);
-      if (mentions.length) {
+      if (mentions.length && flags["allow-protected"]) {
+        console.error(
+          `orch: --allow-protected: proceeding despite protected-path mention(s): ${mentions.join(", ")}\n` +
+          `      if the change really needs to touch one, the merge-time guard will still refuse it.`,
+        );
+      } else if (mentions.length) {
         throw new Error(
           `refusing to run: the task names protected path(s): ${mentions.join(", ")}\n` +
           `orch cannot author changes to protected paths — the review-time guard rejects such a diff, ` +
           `so this run could only end in stalemate. Make the change directly (hand-land it), ` +
-          `or reword the task if the mention is incidental.`,
+          `reword the task if the mention is incidental, or pass --allow-protected to run anyway.`,
         );
       }
     }
@@ -1707,6 +1725,7 @@ Options:
   --reviewers <roles>   Set comma-separated reviewers.
   --cheap               Use cheap.role; cheap.paths can auto-route work orders.
   --config-file <file>  Config YAML path; with config, write there.
+  --allow-protected     Run even if the work order names a protected path.
   --dry                 Plan without shelling out or changing git.
   --check               With upgrade, check latest version without installing.
   --link                With init, link .orch/ORCH.md from agent docs.
