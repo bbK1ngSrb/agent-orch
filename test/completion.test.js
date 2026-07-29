@@ -9,6 +9,7 @@ test("BASH_COMPLETION registers the completion function for orch", () => {
   assert.match(BASH_COMPLETION, /upgrade update/);
   assert.match(BASH_COMPLETION, /--check/);
   assert.match(BASH_COMPLETION, /--check-history/);
+  assert.match(BASH_COMPLETION, /--allow-protected/);
 });
 
 test("installCompletion writes the script under <home>/.orch and reports the path", () => {
