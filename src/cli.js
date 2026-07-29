@@ -679,7 +679,10 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
         gitDep.git(["push", "origin", branch], integration);
         return { ok: true, summary: `merged origin/${base} cleanly` };
       }
-      conflicts = gitDep.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
+      // -z + split on NUL so paths with embedded newlines stay intact (same
+      // defect class as changedFiles / #383: without -z, git C-quotes control
+      // chars and splitting on \n can fake a metaOnly whitelist hit).
+      conflicts = gitDep.git(["diff", "--name-only", "-z", "--diff-filter=U"], integration).split("\0").filter(Boolean);
       if (!conflicts.length) return fail((merge.out || "merge failed").trim());
 
       const metaOnly = conflicts.length > 0 && conflicts.every((p) => allowed.has(p));
@@ -696,7 +699,7 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
         continue;
       }
 
-      const remaining = gitDep.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
+      const remaining = gitDep.git(["diff", "--name-only", "-z", "--diff-filter=U"], integration).split("\0").filter(Boolean);
       if (remaining.length) continue;
       if (gitDep.gitTry(["rev-parse", "-q", "--verify", "MERGE_HEAD"], integration).ok) {
         gitDep.git(["commit", "--no-edit"], integration);

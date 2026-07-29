@@ -34,7 +34,8 @@ function makeDeps({ verdict = { decision: "AGREE", reason: "both intents preserv
     git(args) {
       calls.push(["git", ...args]);
       if (args[0] === "rev-parse" && args[1] === "HEAD") return "pre";
-      if (args[0] === "diff") return resolved ? "" : `${conflictPath}\n`;
+      // Match production -z listing: NUL-separated paths (no newline split).
+      if (args[0] === "diff") return resolved ? "" : `${conflictPath}\0`;
       return "";
     },
     gitTry(args) {
@@ -148,4 +149,35 @@ test("metadata-only auto resolution can run with a single resolver and no review
   assert.ok(deps.calls.some((c) => c[0] === "author" && c[1] === "claude"));
   assert.ok(!deps.calls.some((c) => c[0] === "audit"), "metadata-only single-agent path does not require a reviewer");
   assert.ok(deps.calls.some((c) => c[0] === "git" && c[1] === "push" && c[3] === "orch/integration"));
+});
+
+// Crafted unmerged path = allowed paths joined by newline. Without -z, splitting
+// on \n would make metaOnly true and skip the reviewer; with -z the single path
+// is not in the whitelist, so a reviewer is required.
+test("newline-joined allowed paths do not count as metadata-only (require reviewer)", async () => {
+  const forged = "CHANGELOG.md\npackage.json";
+  const deps = makeDeps({ conflictPath: forged });
+  const singleAgentCfg = cfg({
+    conflictResolutionResolvers: [{ agent: "claude", model: null, effort: null }],
+    autoResolveConflictPaths: ["CHANGELOG.md", "package.json"],
+  });
+  singleAgentCfg.agents = ["claude"];
+  const result = await resolveIntegrationConflict({
+    repo: "/repo",
+    orchDir: tmp(),
+    cfg: singleAgentCfg,
+    branch: "orch/integration",
+    base: "main",
+    testCmd: "npm test",
+  }, deps);
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /no conflict reviewer configured/);
+  assert.ok(!deps.calls.some((c) => c[0] === "author"), "must not auto-resolve before requiring a reviewer");
+  assert.ok(!deps.calls.some((c) => c[0] === "git" && c[1] === "push"));
+  // Production listing must pass -z so NUL-split keeps the forged path whole.
+  assert.ok(
+    deps.calls.some((c) => c[0] === "git" && c[1] === "diff" && c.includes("-z") && c.includes("--diff-filter=U")),
+    "unmerged listing must use -z",
+  );
 });

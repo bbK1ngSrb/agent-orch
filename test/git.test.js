@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, mergeInWorktree, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch } from "../src/git.js";
+import { git, gitTry, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, mergeInWorktree, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch } from "../src/git.js";
 import { checkPaths } from "../src/intake/allowlist.js";
 
 function newRepo() {
@@ -270,6 +270,46 @@ test("changedFiles preserves leading and trailing spaces in filenames", () => {
 
   const files = changedFiles(repo, "feature", "main").sort();
   assert.deepEqual(files, [" leading.txt", "trailing.txt "]);
+});
+
+// Real-git drive of the same -z unmerged listing used by resolveIntegrationConflict
+// (cli.js). A conflicted path that is exactly allowed-paths joined by newlines
+// must stay one intact path so the metaOnly whitelist cannot treat fragments as
+// separate allowed files. Without -z, git C-quotes the path — also wrong for a
+// string compare against allowed, and a future quotePath/raw change could tear
+// on the real embedded newline.
+test("unmerged -z listing preserves newline-in-name conflicted paths from real git", () => {
+  const repo = newRepo();
+  const forged = "CHANGELOG.md\npackage.json";
+  const allowed = new Set(["CHANGELOG.md", "package.json"]);
+
+  // Side A (main) and side B (feature) add different content at the same path
+  // → add/add conflict on merge.
+  git(["checkout", "-b", "feature"], repo);
+  writeFileSync(join(repo, forged), "feature side\n");
+  git(["add", "-A"], repo);
+  git(["commit", "-m", "forged path on feature"], repo);
+
+  git(["checkout", "main"], repo);
+  writeFileSync(join(repo, forged), "main side\n");
+  git(["add", "-A"], repo);
+  git(["commit", "-m", "forged path on main"], repo);
+
+  const merge = gitTry(["merge", "--no-edit", "feature"], repo);
+  assert.equal(merge.ok, false, "merge must conflict");
+
+  // Same command + parse as src/cli.js conflict listing (via git() which trims).
+  const conflicts = git(["diff", "--name-only", "-z", "--diff-filter=U"], repo).split("\0").filter(Boolean);
+  assert.ok(conflicts.includes(forged), `expected exact path in ${JSON.stringify(conflicts)}`);
+  assert.equal(conflicts.length, 1, "forged path must not tear into two entries");
+  const metaOnly = conflicts.length > 0 && conflicts.every((p) => allowed.has(p));
+  assert.equal(metaOnly, false, "forged newline-joined path must not pass the metaOnly whitelist");
+
+  // Without -z, git C-quotes control chars — quoted form is not the real path
+  // and is not in allowed either; -z is what makes the listing path-true.
+  const quoted = git(["diff", "--name-only", "--diff-filter=U"], repo);
+  assert.notEqual(quoted, forged);
+  assert.ok(!allowed.has(quoted.replace(/\n$/, "")), "C-quoted listing must not match an allowed path");
 });
 
 test("ensureIntegrationWorktree branches the fresh integration branch off a custom base", () => {
