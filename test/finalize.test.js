@@ -13,6 +13,7 @@ function baseDeps(over = {}) {
       syncMainFromOrigin: () => ({ ok: true }),
       ensureIntegrationWorktree: () => "/integ",
       syncWorktreeToIntegration: () => {},
+      reconcileIntegrationToOrigin: () => ({ ok: true, updated: false }),
       reconcileIntegrationToBase: () => ({ ok: true, updated: false }),
       mergeInWorktree: () => ({ ok: true, reason: "merged" }),
       bumpVersion: () => "0.1.1",

@@ -63,6 +63,13 @@ export async function finalize(ctx, deps) {
     const integrationBranch = cfg.integrationBranch || "orch/integration";
     const integration = git.ensureIntegrationWorktree(repo, orchDir, integrationBranch, baseBranch);
     git.syncWorktreeToIntegration(integration, integrationBranch);
+    const originSync = git.reconcileIntegrationToOrigin(integration, integrationBranch);
+    if (!originSync.ok) {
+      return demote(ctx, deps, {
+        trigger: "sync",
+        mergeReason: originSync.reason,
+      });
+    }
     const integrationSync = git.reconcileIntegrationToBase(integration, baseBranch);
     if (!integrationSync.ok) {
       return demote(ctx, deps, {
