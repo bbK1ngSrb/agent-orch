@@ -679,7 +679,10 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
         gitDep.git(["push", "origin", branch], integration);
         return { ok: true, summary: `merged origin/${base} cleanly` };
       }
-      conflicts = gitDep.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
+      // Same as changedFiles / #383: -z + NUL-split, via gitTry so .trim() cannot
+      // collapse a leading-space path into a metaOnly whitelist hit.
+      const listed = gitDep.gitTry(["diff", "--name-only", "-z", "--diff-filter=U"], integration);
+      conflicts = listed.ok ? listed.out.split("\0").filter(Boolean) : [];
       if (!conflicts.length) return fail((merge.out || "merge failed").trim());
 
       const metaOnly = conflicts.length > 0 && conflicts.every((p) => allowed.has(p));
@@ -696,7 +699,8 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
         continue;
       }
 
-      const remaining = gitDep.git(["diff", "--name-only", "--diff-filter=U"], integration).split("\n").filter(Boolean);
+      const remainingListed = gitDep.gitTry(["diff", "--name-only", "-z", "--diff-filter=U"], integration);
+      const remaining = remainingListed.ok ? remainingListed.out.split("\0").filter(Boolean) : [];
       if (remaining.length) continue;
       if (gitDep.gitTry(["rev-parse", "-q", "--verify", "MERGE_HEAD"], integration).ok) {
         gitDep.git(["commit", "--no-edit"], integration);

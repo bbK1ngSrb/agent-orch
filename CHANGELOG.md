@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.210 — 2026-07-29
+- conflict listing splits git output on newlines — a crafted filename can fake a metadata-only conflict and skip the reviewer (closes [#390](https://github.com/bbk1ng/agent-orch/issues/390))
+
 ## v0.4.209 — 2026-07-27
 - security-review: the guardrail path floor reads git's structural diff (`git diff --raw -z`) alongside the header-text parse and takes the union — header parsing alone failed open five ways (`diff.noprefix`/mnemonic prefixes, C-quoted paths, a path containing a literal `" b/"`, and mode-only changes with no `---`/`+++` headers). A failed structural read now fails closed rather than open, and rename/copy records contribute both paths (closes [#372](https://github.com/bbk1ng/agent-orch/issues/372))
 - security-review: `globToRegExp` compiled `**` to `.*`, which in JavaScript never matches a line terminator, and `changedFiles` read `diff --name-only` without `-z` — so a protected path whose filename legally contains `\n`, `\r`, U+2028 or U+2029 matched no glob and the floor reported that nothing protected was touched. `**` now compiles to `[\s\S]*`, and `changedFiles` reads `-z` and splits on NUL with no `.trim()`, which also stops corrupting filenames with leading or trailing spaces (closes [#383](https://github.com/bbk1ng/agent-orch/issues/383))
