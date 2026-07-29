@@ -27,6 +27,7 @@ import * as checkpoint from "./checkpoint.js";
 import * as reviewLog from "./review-log.js";
 import { finalize } from "./finalize.js";
 import { validateWorkOrder, buildAuthorPrompt, issueToWorkOrder } from "./intake/workorder.js";
+import { findProtectedMentions } from "./intake/allowlist.js";
 import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.js";
 import { finishRun } from "./complete.js";
 import { detectAgents, formatDetection } from "./detect.js";
@@ -1261,6 +1262,28 @@ export async function main(argv, deps = {}) {
     } else {
       reviewBranch = rest[0];
       if (!reviewBranch) throw new Error("usage: orch review <branch>");
+    }
+
+    // §3c intake scan (#394): a task whose text names a protected path almost
+    // always requires a change to it — and orch can never author one, since the
+    // review-time guard (checkPaths) rejects such a diff every round. Running
+    // anyway burns a full author + audit cycle and ends in a "stalemate" that
+    // was structurally decided at intake. Refuse now, with the path and the
+    // remedy in the message. Literal scan, not intent detection: an incidental
+    // mention can be reworded, a required change must be hand-landed.
+    if (mode === "task") {
+      const intakeText = workOrder
+        ? [workOrder.title, workOrder.problem, ...workOrder.repro_steps, ...workOrder.suspected_paths, ...workOrder.acceptance_criteria].join("\n")
+        : task;
+      const mentions = findProtectedMentions(intakeText);
+      if (mentions.length) {
+        throw new Error(
+          `refusing to run: the task names protected path(s): ${mentions.join(", ")}\n` +
+          `orch cannot author changes to protected paths — the review-time guard rejects such a diff, ` +
+          `so this run could only end in stalemate. Make the change directly (hand-land it), ` +
+          `or reword the task if the mention is incidental.`,
+        );
+      }
     }
 
     // Cheap-agent dispatch: --cheap forces cfg.cheap.role ad hoc; without the
