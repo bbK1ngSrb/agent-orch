@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.216 — 2026-07-30
+- tag-release now tags every version a push introduces, not just the final one (closes #409)
+
 ## v0.4.215 — 2026-07-30
 - auto-docs ms7hmnqz0 update documentation to reflect the latest merged changes
 
