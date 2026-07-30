@@ -302,6 +302,7 @@ test-gate is the governing review.
 - \`orch review <branch>\`           audit an existing branch (no author)
 - \`orch continue <sid>\`            resume an interrupted/stalled cycle from its checkpoint
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
+- \`orch release "<entry>"\`         bump version + CHANGELOG after a hand-landed escalation
 - \`orch agent add <name>\`          add an agent to the rotation pool
 - \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
 - \`orch dashboard [--json] [--limit <n>] [--check-history]\`
@@ -325,7 +326,9 @@ round. The scan is textual, so pass \`--allow-protected\` when the mention is
 incidental. A change that really must touch a guardrail is either hand-authored
 without orch, or run with \`--allow-protected\` to have orch stage it — the cycle
 then escalates at \`guardrail-touch\` instead of merging, and you review that staged
-branch and merge it by hand. Without the flag nothing runs, so there is no branch
+branch and merge it by hand. A hand-merged escalation never enters finalize, so
+the version bump and CHANGELOG entry are skipped — close the recovery with
+\`orch release "<entry>"\`. Without the flag nothing runs, so there is no branch
 to review.
 
 Run \`orch --help\` for the full flag list.
