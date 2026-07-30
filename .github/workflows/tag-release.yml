@@ -26,8 +26,16 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # oldest-first `<sha> <tag>` lines, so tags land in version order
-          node scripts/release-tags.js "$BEFORE" "$AFTER" > /tmp/release-tags
+          # Oldest-first `<sha> <tag>` lines, so tags land in version order. The
+          # script is deliberately trusted repo code on main (post-review), which
+          # is why a job holding `contents: write` may run it — do not route
+          # agent-authored or PR-head code through this step.
+          #
+          # The design proposes liberally and lets `ls-remote` filter: the range
+          # walk follows merges, so it can re-propose an already-tagged version,
+          # and the tip is always proposed even when no release commit matched.
+          # The per-tag existence check below is what makes that safe — keep it
+          # inside the loop if you ever tighten the range.
           while read -r SHA TAG; do
             [ -n "${TAG:-}" ] || continue
             if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
@@ -36,4 +44,4 @@ jobs:
             fi
             git tag -a "$TAG" -m "$TAG" "$SHA"
             git push origin "$TAG"
-          done < /tmp/release-tags
+          done <<< "$(node scripts/release-tags.js "$BEFORE" "$AFTER")"
