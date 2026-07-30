@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.220 — 2026-07-30
+- auto-docs ms7mnjbi0 update documentation to reflect the latest merged changes
+
 ## v0.4.219 — 2026-07-30
 - auto-docs ms7midpr0 update documentation to reflect the latest merged changes
 
