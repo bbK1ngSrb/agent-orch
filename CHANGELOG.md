@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.218 — 2026-07-30
+- orch runs the full review loop on an empty author diff, then reports it as "stalemate after cap" (closes [#412](https://github.com/bbk1ng/agent-orch/issues/412))
+
 ## v0.4.217 — 2026-07-30
 - tag-release now fails loudly when release-tags.js crashes instead of tagging nothing (closes #415)
 
