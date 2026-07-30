@@ -1708,6 +1708,30 @@ export async function main(argv, deps = {}) {
     return;
   }
 
+  // Human-side counterpart of finalize()'s post-merge bump: when a cycle
+  // escalates (e.g. guardrail-touch) and a human hand-merges onto
+  // orch/integration, finalize never runs, so the version/CHANGELOG stay
+  // frozen. `orch release` does that bookkeeping alone. No tag — tagging is
+  // CI's job (#409). Recovery on failure restores only the files the bump
+  // wrote, never a whole-tree reset (see bumpVersion recovery: "written-files").
+  if (command === "release") {
+    const entry = rest.join(" ").trim();
+    if (!entry) throw new Error('usage: orch release "<changelog entry>"');
+    const dirty = git.gitTry(["status", "--porcelain"], repo);
+    if (!dirty.ok) throw new Error(`orch release: git status failed: ${dirty.out.trim() || "unknown error"}`);
+    const dirtyLines = dirty.out.split("\n").map((l) => l.trimEnd()).filter(Boolean);
+    if (dirtyLines.length) {
+      const files = dirtyLines.map((l) => l.slice(3).trim() || l).join("\n");
+      throw new Error(
+        `orch release: working tree is dirty — commit or stash first.\n${files}`,
+      );
+    }
+    const version = git.bumpVersion(repo, entry, { recovery: "written-files" });
+    if (!version) throw new Error("orch release: version bump failed (is package.json present and valid?)");
+    console.log(`orch release: chore(release): v${version}`);
+    return;
+  }
+
   printUsage();
 }
 
@@ -1727,6 +1751,7 @@ Commands:
   review <branch>       Audit an existing branch without merging.
   continue <sid>        Resume an interrupted/stalled cycle from its checkpoint.
   pr <number>           Review a GitHub PR; add --merge to merge if approved.
+  release "entry"       Bump version + CHANGELOG after a hand-landed escalation.
   dashboard             Live status TUI; --once prints the static one-shot.
   upgrade, update       Self-update the global npm install.
   completion [bash]     Print the bash completion script (default: bash).
@@ -1761,6 +1786,7 @@ Examples:
   orch task "add input validation" --reviewer "codex"
   orch task --file work-order.json --cheap
   orch issue 42
+  orch release "hand-landed guardrail fix (closes #N)"
   orch dashboard --json --limit 5
 
 Full docs: see .orch/ORCH.md in initialized repos and the README.`);
