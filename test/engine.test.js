@@ -216,14 +216,16 @@ test("docsOnly is read BEFORE finalize (ff merge empties main...branch)", async 
   assert.equal(changedFilesCalledWhenFinalizeRan, true, "changedFiles must run before finalize");
 });
 
-test("merged result stamps noop=true for an empty diff (loop-guard for no-op merges)", async () => {
-  // A no-op merge yields changedFiles=[] -> isDocsOnly returns false. Without the
-  // noop flag the guard would re-spawn a docs-update forever on an empty diff.
+test("empty author diff escalates before review", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: [] });
   const r = await runCycle(opts, deps);
-  assert.equal(r.status, "merged");
-  assert.equal(r.noop, true);
-  assert.equal(r.docsOnly, false);
+  assert.equal(r.status, "escalated");
+  assert.equal(r.reason, "author produced no changes — nothing to review");
+  assert.equal(r.rounds, 1);
+  assert.equal(deps._calls.authors, 1);
+  assert.equal(deps._calls.audits, 0);
+  assert.equal(deps._calls.finalized, undefined);
+  assert.equal(deps._calls.recorded.reason, r.reason);
 });
 
 test("AGREE + red gate -> escalated, no merge", async () => {
@@ -270,6 +272,17 @@ test("DISAGREE until cap -> escalated after roundCap rounds", async () => {
   assert.ok(deps._calls.reviewLog.length >= 1);
   assert.equal(deps._calls.reviewLog[0].decision, "DISAGREE");
   assert.equal(deps._calls.reviewLog[0].agentError, false);
+});
+
+test("empty diff after revision escalates before another review", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "no", raw: "" }] });
+  deps.git.changedFiles = () => deps._calls.authors > 1 ? [] : ["src/a.js"];
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "escalated");
+  assert.equal(r.reason, "author produced no changes — nothing to review");
+  assert.equal(r.rounds, 2);
+  assert.equal(deps._calls.authors, 2);
+  assert.equal(deps._calls.audits, 1);
 });
 
 test("DISAGREE escalation diffs against cfg.baseBranch", async () => {
@@ -409,6 +422,15 @@ test("review mode never invokes the author (F1)", async () => {
   const r = await runCycle({ ...opts, mode: "review" }, deps);
   assert.equal(r.status, "merged");
   assert.equal(deps._calls.authors, 0); // no author step, no revise
+});
+
+test("review mode rejects an empty branch before audit", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], changed: [] });
+  const r = await runCycle({ ...opts, mode: "review" }, deps);
+  assert.equal(r.status, "escalated");
+  assert.equal(r.reason, "author produced no changes — nothing to review");
+  assert.equal(deps._calls.authors, 0);
+  assert.equal(deps._calls.audits, 0);
 });
 
 test("review mode escalates on first DISAGREE without revising (F1)", async () => {

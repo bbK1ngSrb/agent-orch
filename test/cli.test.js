@@ -1378,7 +1378,7 @@ function fakeCycleDeps() {
   const verdict = { decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-test-review", tokens: 20 } };
   return {
     adapters: { get: (name) => ({ name, async author() { return { usage: { model: "gpt-test-author", tokens: 40 } }; }, async audit() { return verdict; } }) },
-    git: gitDep,
+    git: { ...gitDep, changedFiles: () => ["a.txt"] },
     gate: { detect: () => "true", run: () => ({ pass: true, log: "" }) },
     scope: { count: () => 0 },
     notify: { phase() {}, writeRound() {}, escalate() {}, buildDecisionBrief() { return ""; } },
