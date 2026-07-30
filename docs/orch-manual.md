@@ -33,7 +33,13 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    repeats, up to `roundCap` rounds (default 3) — the initial review is round
    one, so 3 buys 3 reviews and 2 revisions — except under `orch review`,
    which has no author to revise and so escalates immediately on the first
-   `DISAGREE` instead of looping.
+   `DISAGREE` instead of looping. Before every round the engine checks the
+   branch still differs from the base branch: an empty diff (the author
+   produced nothing, or a revision undid the change) escalates immediately
+   with "author produced no changes — nothing to review" rather than spending
+   a review round on nothing or merging an empty result. Under `orch review`
+   the same check rejects an already-merged or empty branch before the audit
+   runs.
 3. **Test-gate** — the repo's test command runs against the change. No green
    tests, no merge, no exceptions.
 4. **Security scan** — a deterministic pattern scan (`scanDiff` in
@@ -67,8 +73,9 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    is the authoring step. Only `orch pr` stops short of a local merge — it
    reports its verdict and leaves GitHub to own the actual merge (§2.7).
 
-If any stage fails — reviewer disagreement past the cap, red tests, a risky
-security-scan finding, a merge conflict — the cycle does not merge. It
+If any stage fails — reviewer disagreement past the cap, an empty author diff,
+red tests, a risky security-scan finding, a merge conflict — the cycle does
+not merge. It
 **escalates**: it either opens a PR for a human to look at, or writes a local
 decision file and keeps the branch around. Nothing is silently discarded.
 
