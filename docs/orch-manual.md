@@ -452,6 +452,66 @@ source <(orch completion bash)
 - **`--no-tidy`** — skip the post-merge tidy (see §4.5) and leave every
   branch and checkout exactly as the cycle left them.
 - **`--no-banner`** — suppress the startup banner (for scripts and logs).
+- **`--allow-protected`** — run a `task`/`issue` even though the work order text
+  names a protected path, instead of being refused at intake. See §2.14.
+
+### 2.14 The protected-path intake refusal
+
+Before `orch task` / `orch issue` starts the cycle — no author agent runs, no
+branch or worktree is created, no run is recorded — orch scans the work order
+**text** for mentions of a *protected path*. A protected path is an entry on the
+hardcoded denylist `DEFAULT_PROTECTED` in `src/intake/allowlist.js`: orch's own
+guardrail machinery (`src/gate.js`, `src/verdict.js`, `src/notify.js`,
+`src/security-review.js`, `src/intake/**`), CI wiring (`.github/workflows/**`,
+`.github/actions/**`), `package.json`, `package-lock.json`, `CODEOWNERS` and
+`.github/CODEOWNERS`, `Dockerfile`, `sandbox/**`. It is a denylist and
+deliberately not config-driven, so an ordinary new file never needs a config
+edit to be writable.
+
+If the scan hits, orch refuses:
+
+```console
+$ orch task "tighten the glob in src/security-review.js"
+orch: refusing to run: the task names protected path(s): src/security-review.js
+orch cannot author changes to protected paths — the review-time guard rejects such a diff, so this run could only end in stalemate. Make the change directly (hand-land it), reword the task if the mention is incidental, or pass --allow-protected to run anyway.
+```
+
+The refusal happens at intake rather than after three rounds because a work order
+that **genuinely requires** a change to a protected path is **unsatisfiable by
+construction**. Two independent floors protect the denylist, and they do not fire
+in the order the names might suggest:
+
+1. **The security scan's `guardrail-touch` floor fires first.** `scanDiff` in
+   `src/security-review.js` (§1.1 step 4) matches changed paths against the same
+   protected set (plus `docs/CODEOWNERS`). One finding means `DISAGREE` with no
+   severity threshold. In the engine that escalate sits *above* the merge-boundary
+   path check, so an ordinary protected-path diff never reaches step 2.
+2. **`checkPaths` is the merge-boundary backstop.** It runs once on the final
+   diff, past AGREE and green, only if the security scan already said AGREE. It
+   is still load-bearing: it is the only of the two that fails closed on a `..`
+   path-traversal segment, which the security floor's anchored globs would not
+   match. Do not read "merge-boundary path floor" as "checkPaths is what blocks a
+   normal guardrail edit" — for that case, `guardrail-touch` already escalated.
+
+So intake refuses early: running the cycle would burn author + audit work only to
+hit `guardrail-touch` on the first otherwise-agreeing round. Diagnostic
+consequence — nothing started, so there is no run in `orch dashboard`, no branch,
+and no `.orch/reviews/<branch>/DECISION.md`. The stderr line is the only artifact.
+
+`--allow-protected` exists because the scan is **textual** and can false-positive —
+an incidental mention of a filename should not lock you out. That is its main
+case. The flag skips *only* the intake scan; it cannot make orch **land** a
+guardrail change. A real protected-path diff still hits `guardrail-touch` and
+escalates.
+
+A change that genuinely must touch a guardrail has exactly two routes:
+
+1. **Hand-author it** without orch (the right default for a small guardrail tweak).
+2. **`--allow-protected` to have orch stage it.** The flag skips only the intake
+   scan, so the cycle runs, then escalates at `guardrail-touch`, leaving the
+   branch and its `DECISION.md` for a hand review and hand merge.
+
+Without the flag neither route produces a branch, because nothing starts.
 
 ---
 

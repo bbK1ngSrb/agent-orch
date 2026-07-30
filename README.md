@@ -170,7 +170,10 @@ setting only `--author(s)` without a reviewer is rejected the same as before.
 Other flags: `--cheap` forces `orch.yml`'s `cheap.role` (e.g. a local llm) for one
 `task`/`issue` run — set `cheap.paths` to auto-route matching `--file`/`orch issue`
 work orders without the flag; `--config-file <path.yml>` layers a custom YAML file
-on top of `orch.yml` for one run; `--no-banner` suppresses the startup banner.
+on top of `orch.yml` for one run; `--no-banner` suppresses the startup banner;
+`--allow-protected` runs a `task`/`issue` whose work order text names a protected path
+(orch's guardrail denylist), which intake otherwise refuses before the cycle starts —
+see the manual §2.14.
 
 ## Config (`.orch/orch.yml`, all optional)
 See `orch.example.yml`. Most repos need no config. A bare `orch.yml` at the
