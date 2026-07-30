@@ -200,6 +200,14 @@ test("roundCap docs describe total review rounds, not post-DISAGREE revisions on
   );
 });
 
+test("manual documents the empty-diff escalation before review", () => {
+  // engine.js checks changedFiles before every review round and escalates with
+  // "author produced no changes — nothing to review" instead of reviewing or
+  // merging an empty diff; in review mode the same check runs before the audit.
+  assert.match(manual, /author produced no changes — nothing to review/);
+  assert.match(manual, /empty author diff/);
+});
+
 test("orch.example.yml exposes security.ignore, commented out, with the sharp-edge warning", () => {
   // The escape hatch exists in the defaults but a user only ever sees the
   // example file, so it must appear there — and stay commented, since an
