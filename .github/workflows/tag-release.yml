@@ -36,6 +36,13 @@ jobs:
           # and the tip is always proposed even when no release commit matched.
           # The per-tag existence check below is what makes that safe — keep it
           # inside the loop if you ever tighten the range.
+          #
+          # Assign first, loop second (#415). `set -e` aborts on a failing simple
+          # command; a substitution in a redirection word (`done <<< "$(node …)"`)
+          # is not one, so a crashed script used to leave an empty herestring, a
+          # loop that tagged nothing, and a green check. An assignment IS a simple
+          # command, so errexit sees the exit code here.
+          TAGS="$(node scripts/release-tags.js "$BEFORE" "$AFTER")"
           while read -r SHA TAG; do
             [ -n "${TAG:-}" ] || continue
             if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
@@ -44,4 +51,4 @@ jobs:
             fi
             git tag -a "$TAG" -m "$TAG" "$SHA"
             git push origin "$TAG"
-          done <<< "$(node scripts/release-tags.js "$BEFORE" "$AFTER")"
+          done <<< "$TAGS"
