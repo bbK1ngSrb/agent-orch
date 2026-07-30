@@ -371,36 +371,39 @@ export function linkOrchDoc(repo, agents = [], deps = {}) {
   return targets;
 }
 
+// Single source of truth for the flag set: parse() uses it, and tests assert
+// printUsage() and src/completion.js cover every key so the three can't drift.
+export const PARSE_OPTIONS = {
+  dry: { type: "boolean" },
+  version: { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+  merge: { type: "boolean" },
+  author: { type: "string" },
+  reviewer: { type: "string" },
+  authors: { type: "string" },
+  reviewers: { type: "string" },
+  cheap: { type: "boolean" }, // force author+reviewer to orch.yml cheap.role for this run
+  file: { type: "string" },
+  "config-file": { type: "string" }, // load a .yml file, layered on top of orch.yml for this run
+  "allow-protected": { type: "boolean" }, // #395: run despite a protected-path mention at intake
+  "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
+  "no-banner": { type: "boolean" },
+  link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
+  json: { type: "boolean" }, // dashboard: machine-readable output
+  limit: { type: "string" }, // dashboard: run-history entries to show
+  "check-history": { type: "boolean" }, // dashboard: show stale red rows as resolved (view only) when branches are gone
+  once: { type: "boolean" }, // dashboard: force the static one-shot print instead of the live TUI
+  plain: { type: "boolean" }, // dashboard: alias of --once
+  "refresh-ms": { type: "string" }, // dashboard: live TUI poll interval (default 1000)
+  check: { type: "boolean" }, // upgrade: check latest version without installing
+  pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
+};
+
 export function parse(argv) {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: {
-      dry: { type: "boolean" },
-      version: { type: "boolean" },
-      help: { type: "boolean", short: "h" },
-      merge: { type: "boolean" },
-      author: { type: "string" },
-      reviewer: { type: "string" },
-      authors: { type: "string" },
-      reviewers: { type: "string" },
-      cheap: { type: "boolean" }, // force author+reviewer to orch.yml cheap.role for this run
-      file: { type: "string" },
-      "config-file": { type: "string" }, // load a .yml file, layered on top of orch.yml for this run
-      "allow-protected": { type: "boolean" }, // #395: run despite a protected-path mention at intake
-      "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
-      "no-banner": { type: "boolean" },
-      link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
-      json: { type: "boolean" }, // dashboard: machine-readable output
-      limit: { type: "string" }, // dashboard: run-history entries to show
-      "check-history": { type: "boolean" }, // dashboard: show stale red rows as resolved (view only) when branches are gone
-      once: { type: "boolean" }, // dashboard: force the static one-shot print instead of the live TUI
-      plain: { type: "boolean" }, // dashboard: alias of --once
-      "refresh-ms": { type: "string" }, // dashboard: live TUI poll interval (default 1000)
-      check: { type: "boolean" }, // upgrade: check latest version without installing
-      pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
-
-    },
+    options: PARSE_OPTIONS,
   });
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
 }
@@ -1766,6 +1769,7 @@ Options:
   --reviewer <role>     Set reviewer as "<agent> [model] [effort]".
   --reviewers <roles>   Set comma-separated reviewers.
   --cheap               Use cheap.role; cheap.paths can auto-route work orders.
+  --file <file>         With task, read the work order from a JSON file.
   --config-file <file>  Config YAML path; with config, write there.
   --allow-protected     Run even if the work order names a protected path.
   --dry                 Plan without shelling out or changing git.
