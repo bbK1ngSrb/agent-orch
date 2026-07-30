@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.224 — 2026-07-30
+- tag-release cannot push a tag whose history contains a workflow-file change: GITHUB_TOKEN is refused, and v0.4.216 was left untagged (closes [#416](https://github.com/bbk1ng/agent-orch/issues/416))
+
 ## v0.4.223 — 2026-07-30
 - auto-docs ms7n5j200 update documentation to reflect the latest merged changes
 
