@@ -33,7 +33,13 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    repeats, up to `roundCap` rounds (default 3) — the initial review is round
    one, so 3 buys 3 reviews and 2 revisions — except under `orch review`,
    which has no author to revise and so escalates immediately on the first
-   `DISAGREE` instead of looping.
+   `DISAGREE` instead of looping. Before every round the engine checks the
+   branch still differs from the base branch: an empty diff (the author
+   produced nothing, or a revision undid the change) escalates immediately
+   with "author produced no changes — nothing to review" rather than spending
+   a review round on nothing or merging an empty result. Under `orch review`
+   the same check rejects an already-merged or empty branch before the audit
+   runs.
 3. **Test-gate** — the repo's test command runs against the change. No green
    tests, no merge, no exceptions.
 4. **Security scan** — a deterministic pattern scan (`scanDiff` in
@@ -67,10 +73,16 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    is the authoring step. Only `orch pr` stops short of a local merge — it
    reports its verdict and leaves GitHub to own the actual merge (§2.7).
 
-If any stage fails — reviewer disagreement past the cap, red tests, a risky
-security-scan finding, a merge conflict — the cycle does not merge. It
+If any stage fails — reviewer disagreement past the cap, an empty author diff,
+red tests, a risky security-scan finding, a merge conflict — the cycle does
+not merge. It
 **escalates**: it either opens a PR for a human to look at, or writes a local
 decision file and keeps the branch around. Nothing is silently discarded.
+
+One failure mode never reaches the review loop at all: if the author's branch
+has an empty diff against the base, the cycle escalates immediately with
+"author produced no changes — nothing to review" instead of spending
+`roundCap` rounds asking reviewers to approve nothing.
 
 ### 1.2 Two branches you need to know about
 
@@ -551,7 +563,11 @@ orch release "hand-landed guardrail fix (closes #403)"
 - Recovers only the files it wrote if the bump fails partway — no whole-tree
   reset, so nothing of yours is discarded.
 - Does **not** create or push a git tag: tagging is CI's job on push, and a
-  local tag would race it.
+  local tag would race it. The tag-release workflow derives the tags from the
+  push's commit range (`scripts/release-tags.js`), so a push carrying several
+  `chore(release)` commits gets every version tagged, not just the tip — and
+  the job fails loudly if that derivation crashes rather than silently
+  tagging nothing.
 
 It needs no cycle, no agents, and no `.orch/` state — it is pure git and file
 bookkeeping, and orch never calls it for you.
