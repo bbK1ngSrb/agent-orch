@@ -159,7 +159,7 @@ orch task "fix the flaky login test"
 - `orch pr <n> [--merge]` — audit a GitHub PR, comment the verdict, optionally merge via `gh`.
 - `orch agent build <name> [--pr]` — an unregistered agent name scaffolds `src/adapters/<name>.js` through orch's own author → audit → test pipeline, isolated in its own worktree/branch. Default lands on that local branch only; `--pr` opens a PR instead.
 - `orch continue <sid>` — resume an interrupted or stalled cycle (crash, hard kill, usage-limit abort) from its checkpoint, reattaching the same branch/author instead of re-authoring from scratch. If the saved branch is gone, stale local resume state is cleared; if it exists only as `origin/<branch>`, check it out locally first. `orch` tells you the `sid` to use when a cycle dies mid-way.
-- `orch release "<changelog entry>"` — after a human hand-merges an escalated branch onto `orch/integration`, run the same version bump + CHANGELOG bookkeeping that `finalize()` would have done on a clean merge. Requires a clean working tree; does not create a git tag (CI tags on push). See the manual's escalation-recovery procedure.
+- `orch release "<changelog entry>"` — run the version bump + CHANGELOG bookkeeping by hand, e.g. after a human hand-merges an escalated branch onto `orch/integration`. It always bumps and never consults `release.autoBump`, so it is only *recovery* in a repo that set `release.autoBump: true`; under the default `false` a clean merge writes no release commit either and there is nothing to recover. Requires a clean working tree; does not create a git tag (CI tags on push). See the manual's escalation-recovery procedure.
 - `orch dashboard [--json] [--limit N] [--check-history] [--once|--plain] [--refresh-ms N]` — read-only view of live cycle status/stage, streaming log tail, run history, and success-rate metrics. In a real interactive terminal (stdout and stdin both a TTY) with no `--json`/`--once`/`--plain`, it opens a live full-screen TUI that polls and redraws every `--refresh-ms` (default `1000`). Any scriptable context — `--json`, `--once`/`--plain`, a piped/redirected stream, or a non-TTY session — instead prints the static one-shot render, byte-identical to earlier versions, so cron/CI output stays diffable. `--check-history` shows stale red history rows as resolved when their branches are gone — a view-only reconciliation that leaves the run-history file unchanged.
 - `orch completion [bash]` / `orch completion install` — print the bash completion script or rewrite `~/.orch/completion.bash`.
 Add `--reviewer name` or `--reviewers a,b` to override review agents for
@@ -345,8 +345,10 @@ different:** it never opens a per-change PR against `main` (that would be a
 second trunk door beside the standing `orch/integration → main` PR). It
 escalates with the staged branch and conflict detail so a human can hand-merge
 into `orch/integration`. After that hand-merge is pushed to
-`origin/orch/integration`, close the recovery with `orch release "<entry>"` so
-the version bump and CHANGELOG line still land (finalize never ran). The next
+`origin/orch/integration`, a repo running `release.autoBump: true` closes the
+recovery with `orch release "<entry>"` so the version bump and CHANGELOG line
+still land (finalize never ran). Under the default `release.autoBump: false`
+there is no bookkeeping to recover — skip it. The next
 cycle normally fast-forwards its local integration branch automatically. A
 genuine divergence instead demotes with `sync`. Either way the reason is more
 than the trigger name.
