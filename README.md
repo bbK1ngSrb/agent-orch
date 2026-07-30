@@ -424,19 +424,20 @@ merge never re-triggers another one — and when the merge was a no-op (empty di
 nothing to update, which would otherwise re-spawn forever). A mixed code+docs
 merge triggers once.
 
-**Two surfaces, no double-fire:**
-- Local merges (`orch task`/`orch review`) — handled inside `orch` (above). No
-  GitHub event, so only this surface sees them.
-- GitHub PR merges (`orch pr --merge`, GitHub UI) — handled by the
-  `.github/workflows/orch-docs.yml` Action (on `pull_request` closed+merged),
-  which runs the same docs-update on the self-hosted `orch` runner and pushes to
-  `main`. It applies the same docs-only loop guard.
+**One surface.** Local merges (`orch task`/`orch review`/`orch pr --merge`) are
+handled inside `orch`, as described above. A merge performed entirely on
+GitHub — the web UI's merge button — produces no local orch run, so nothing
+refreshes the docs for it; that gap is deliberate. There was once a companion
+Action (`orch-docs.yml`) covering it, but it required a self-hosted runner
+carrying the agent CLIs and their keys, and a workflow whose labels match no
+registered runner does not fail — it queues silently until GitHub cancels it.
+Over its whole life it completed zero runs while appearing to be a working
+safety net, so it was deleted in v0.4.211 (#402). If you merge on GitHub and
+want the docs caught up, run a docs task locally.
 
 **Portability:** the in-tool behavior ships inside `orch` — any standalone repo
-gets it by setting `docs.autoUpdate: true`. The Action is a copy-paste template:
-drop `orch-docs.yml` into another repo (e.g. printseek). It just needs `orch` on
-the runner's PATH — the `npm install -g .` step assumes the repo vendors orch; a
-repo that doesn't should install orch from an orch checkout instead.
+gets it by setting `docs.autoUpdate: true`. Nothing to copy, no runner to
+provision.
 
 ## License
 [PolyForm Noncommercial 1.0.0](LICENSE) — non-commercial use only; commercial use forbidden.

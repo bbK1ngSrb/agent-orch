@@ -677,10 +677,21 @@ touched *only* docs files (so the docs-update's own merge doesn't re-spawn
 itself forever), and when the merge was a no-op diff. A mixed code+docs merge
 triggers once.
 
-Two independent surfaces implement this, so it fires whichever way a merge
-happens: local merges (`orch task`/`orch review`) are handled inside `orch`
-itself; GitHub-side PR merges (`orch pr --merge`, or a human clicking merge
-on GitHub) are handled by the `.github/workflows/orch-docs.yml` Action.
+One surface implements this: it lives inside `orch` itself, so any merge orch
+performs locally (`orch task`, `orch review`, `orch pr --merge`) triggers it. A
+merge done purely in GitHub's web UI never reaches orch, so nothing refreshes
+the docs for it — run a docs task by hand if you merge that way.
+
+There used to be a second, GitHub-side surface (an `orch-docs.yml` Action). It
+was removed in v0.4.211 because it never worked: it required a *self-hosted
+runner* — a machine you register with the repo, needed here because the agent
+CLIs and their API keys cannot live on GitHub's hosted images — and none was
+ever registered. A job whose labels match no runner does not fail; it queues
+until GitHub cancels it at roughly 24 hours. So the Action reported neither
+success nor failure for its entire life while the repo's docs quietly drifted.
+The lesson generalizes: automation that fails loudly is nearly harmless, but
+automation that silently never runs is worse than none, because people stop
+doing the work by hand on the assumption that it is covered.
 
 **When to turn it on:** repos where documentation reliably drifts from code
 and you're willing to spend an extra cycle's worth of agent time per merge to

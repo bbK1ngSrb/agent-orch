@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ORCH_DOC } from "../src/cli.js";
@@ -226,12 +226,17 @@ test("docs explain stale `orch continue` resume handling", () => {
   }
 });
 
-test("the GitHub-merge surface (orch-docs Action) exists and is documented", () => {
-  const wf = read(".github/workflows/orch-docs.yml");
-  assert.match(wf, /pull_request/);
-  assert.match(wf, /merged == true/);
-  assert.match(wf, /orch task/);
-  assert.match(readme, /orch-docs\.yml/);
+test("the deleted orch-docs Action is not claimed anywhere (#402)", () => {
+  // orch-docs.yml needed a self-hosted runner labelled `orch`; none was ever
+  // registered, so every dispatch queued until GitHub cancelled it — 28
+  // cancelled runs, zero successes, and no failure signal. It was deleted in
+  // v0.4.211 and doc refresh now belongs solely to orch's local surface
+  // (`docs.autoUpdate`). This test is inverted on purpose: the failure mode
+  // worth guarding is a doc that promises an automation the repo does not have.
+  assert.equal(existsSync(new URL(".github/workflows/orch-docs.yml", rootUrl)), false);
+  // Naming the workflow *path* is how a doc presents it as live; both docs may
+  // still mention the bare filename while explaining that it was removed.
+  for (const doc of [readme, manual]) assert.doesNotMatch(doc, /workflows\/orch-docs\.yml/);
 });
 
 test("CODE_OF_CONDUCT gives an actionable private contact for enforcement", () => {
