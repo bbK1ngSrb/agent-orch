@@ -1,7 +1,14 @@
 # Changelog
 
+## v0.4.211 — 2026-07-30
+- intake: a work order that names a protected path is refused before the cycle starts, instead of running to a three-round stalemate the guardrail floor made inevitable. `--allow-protected` overrides, because the scan is textual and an incidental mention of a filename should not lock you out (closes [#395](https://github.com/bbk1ng/agent-orch/issues/395))
+- finalize: local `orch/integration` is fast-forwarded from `origin/orch/integration` before landing. A human who hand-merges an escalated branch straight onto origin (the documented recovery) left the local ref behind, and the next cycle merged onto that stale base, passed the gate — a stale tree is self-consistent — then had its PR push rejected as non-fast-forward, blaming the PR bridge instead of the base. Genuine divergence now demotes rather than guessing at a merge base (closes [#396](https://github.com/bbk1ng/agent-orch/issues/396))
+- ci: `orch-docs.yml` deleted. It required a self-hosted runner labelled `orch` and none was ever registered, so every dispatch queued until GitHub cancelled it — 28 cancelled runs, zero successes, and no failure signal to say the doc refresh was not happening. Doc refresh now belongs solely to orch's local surface (`docs.autoUpdate` in `.orch/orch.yml`), which runs where the agent CLIs actually live (closes [#402](https://github.com/bbk1ng/agent-orch/issues/402))
+- release: this entry also covers the two items above landing untraced. Both were hand-merged after escalating on the guardrail path floor, and the version bump lives inside `finalize()`, so neither bumped the version nor wrote a changelog line — see [#403](https://github.com/bbk1ng/agent-orch/issues/403) for the structural fix
+
 ## v0.4.210 — 2026-07-29
 - conflict listing splits git output on newlines — a crafted filename can fake a metadata-only conflict and skip the reviewer (closes [#390](https://github.com/bbk1ng/agent-orch/issues/390))
+- ci: `version-bump.yml` removed, and three doc surfaces that described it as a working safety net corrected. The Action never completed a bump and could not: GitHub Actions lacked permission to open its bump PR (closes [#394](https://github.com/bbk1ng/agent-orch/issues/394), [#388](https://github.com/bbk1ng/agent-orch/issues/388))
 
 ## v0.4.209 — 2026-07-27
 - security-review: the guardrail path floor reads git's structural diff (`git diff --raw -z`) alongside the header-text parse and takes the union — header parsing alone failed open five ways (`diff.noprefix`/mnemonic prefixes, C-quoted paths, a path containing a literal `" b/"`, and mode-only changes with no `---`/`+++` headers). A failed structural read now fails closed rather than open, and rename/copy records contribute both paths (closes [#372](https://github.com/bbk1ng/agent-orch/issues/372))
