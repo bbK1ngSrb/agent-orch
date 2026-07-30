@@ -1270,8 +1270,9 @@ export async function main(argv, deps = {}) {
     }
 
     // §3c intake scan (#394): a task whose text names a protected path almost
-    // always requires a change to it — and orch can never author one, since the
-    // review-time guard (checkPaths) rejects such a diff every round. Running
+    // always requires a change to it — and orch can never land one, since the
+    // security scan's `guardrail-touch` floor (security-review.js) escalates
+    // such a diff on the first otherwise-agreeing round. Running
     // anyway burns a full author + audit cycle and ends in a "stalemate" that
     // was structurally decided at intake. Refuse now, with the path and the
     // remedy in the message. Literal scan, not intent detection: an incidental
@@ -1284,10 +1285,11 @@ export async function main(argv, deps = {}) {
     // would turn that false positive into a lockout, so `--allow-protected` is
     // the operator's explicit acknowledgement that they have read the mention
     // and judged it incidental (or accepted that the result must be
-    // hand-landed). It only skips THIS intake scan: the review-time floor in
-    // engine.js still refuses to merge a diff that really touches a protected
-    // path, so the override can waste a cycle but can never land a guardrail
-    // change.
+    // hand-landed). It only skips THIS intake scan: a diff that really touches
+    // a protected path is still stopped before the merge — `scanDiff`'s
+    // `guardrail-touch` floor escalates first (engine.js), and `checkPaths` on
+    // the final diff is the backstop behind it — so the override can waste a
+    // cycle but can never land a guardrail change.
     if (mode === "task") {
       const intakeText = workOrder
         ? [workOrder.title, workOrder.problem, ...workOrder.repro_steps, ...workOrder.suspected_paths, ...workOrder.acceptance_criteria].join("\n")

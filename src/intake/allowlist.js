@@ -1,6 +1,7 @@
-// §3c + §7: author-time enforcement of the protected-path set. A work order
-// whose diff touches any protected path is rejected before authoring — the same
-// set CODEOWNERS guards at review time. Denylist (protected) not allowlist
+// §3c + §7: the protected-path set. A work order whose diff touches any
+// protected path is refused at intake if its text names one, and refused again
+// at the merge boundary if the diff reaches that far — the same set CODEOWNERS
+// guards at review time. Denylist (protected) not allowlist
 // (safe): the safe surface is "everything else", and new ordinary files must
 // not need a config edit to be writable.
 import { globToRegExp } from "../scope.js";
@@ -33,6 +34,12 @@ function normalizePath(p) {
     .replace(/^\.\//, "");
 }
 
+// Called once, at the merge boundary (engine.js). It is the BACKSTOP, not the
+// first line of defence: `scanDiff`'s `guardrail-touch` floor scans the same set
+// (plus docs/CODEOWNERS) and escalates earlier in engine.js, so an ordinary
+// guardrail diff never reaches here. Do not delete it as unreachable — it is the
+// only one of the two that fails closed on a `..` traversal segment, which the
+// security floor's path globs would not match.
 export function checkPaths(changedFiles, protectedGlobs = DEFAULT_PROTECTED) {
   const res = protectedGlobs.map(globToRegExp);
   const violations = changedFiles.filter((f) => {
@@ -46,8 +53,8 @@ export function checkPaths(changedFiles, protectedGlobs = DEFAULT_PROTECTED) {
 }
 
 // Intake-time text scan (#394): a work order that NAMES a protected path almost
-// always requires a change to it, and checkPaths rejects such a diff at review
-// time — so the run is a guaranteed stalemate discovered only after the round
+// always requires a change to it, and such a diff is stopped before it can merge
+// — so the run is a guaranteed stalemate discovered only after the round
 // cap has burned a full author + audit cycle. This is a cheap literal scan, not
 // intent detection: tokenise the free text and report any token that is (or
 // points into) a protected path. A bare mention of a protected `dir/**` stem
