@@ -79,6 +79,11 @@ not merge. It
 **escalates**: it either opens a PR for a human to look at, or writes a local
 decision file and keeps the branch around. Nothing is silently discarded.
 
+One failure mode never reaches the review loop at all: if the author's branch
+has an empty diff against the base, the cycle escalates immediately with
+"author produced no changes — nothing to review" instead of spending
+`roundCap` rounds asking reviewers to approve nothing.
+
 ### 1.2 Two branches you need to know about
 
 - **`main`** — your repo's real trunk. `orch` never runs `git checkout main`,
@@ -558,7 +563,11 @@ orch release "hand-landed guardrail fix (closes #403)"
 - Recovers only the files it wrote if the bump fails partway — no whole-tree
   reset, so nothing of yours is discarded.
 - Does **not** create or push a git tag: tagging is CI's job on push, and a
-  local tag would race it.
+  local tag would race it. The tag-release workflow derives the tags from the
+  push's commit range (`scripts/release-tags.js`), so a push carrying several
+  `chore(release)` commits gets every version tagged, not just the tip — and
+  the job fails loudly if that derivation crashes rather than silently
+  tagging nothing.
 
 It needs no cycle, no agents, and no `.orch/` state — it is pure git and file
 bookkeeping, and orch never calls it for you.

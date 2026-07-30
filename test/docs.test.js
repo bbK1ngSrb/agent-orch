@@ -401,3 +401,22 @@ test("docs document the automatic redrive of overlap-deferred cycles (#350)", ()
     "the FAQ must lead with the automatic redrive, not with manual disjoint scoping",
   );
 });
+
+test("docs document the empty-diff escalation and CI tag derivation (#412/#409/#415)", () => {
+  // engine.js escalates before the first review round when the author branch
+  // has no changes against the base; docs must not imply the review loop runs
+  // to roundCap on an empty diff (#412).
+  const engine = read("src/engine.js");
+  assert.match(engine, /author produced no changes/);
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /author produced no changes/);
+    assert.match(doc, /empty diff/i);
+  }
+  // tag-release.yml derives tags from the push's commit range via
+  // scripts/release-tags.js (#409) and aborts when that script crashes (#415).
+  // The manual's "CI tags on push" line must say both, or a reader expects
+  // tip-only tagging with silent-drop failure modes.
+  assert.match(manual, /every version tagged, not just the tip/);
+  assert.match(manual, /fails loudly/);
+  assert.match(manual, /scripts\/release-tags\.js/);
+});
