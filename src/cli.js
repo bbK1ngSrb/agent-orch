@@ -795,7 +795,7 @@ function dryDeps() {
     git: {
       createTaskBranch() {}, attachExistingBranch() {}, pruneWorktree() {},
       git() { return "(dry-run)"; },
-      changedFiles() { return []; },
+      changedFiles() { return ["(dry-run)"]; },
     },
     gate: { detect: () => "true", run: () => ({ pass: true, log: "(dry-run)" }) },
     scope: { count: () => 0 },
