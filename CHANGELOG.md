@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.217 — 2026-07-30
+- tag-release now fails loudly when release-tags.js crashes instead of tagging nothing (closes #415)
+
 ## v0.4.216 — 2026-07-30
 - tag-release now tags every version a push introduces, not just the final one (closes #409)
 
