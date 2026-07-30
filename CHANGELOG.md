@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.213 — 2026-07-30
+- the `sync` demote trigger has three causes but README and the manual document only one (closes [#401](https://github.com/bbk1ng/agent-orch/issues/401))
+
 ## v0.4.212 — 2026-07-30
 - the protected-path intake refusal and --allow-protected are documented only in --help, not in README or the manual (closes [#400](https://github.com/bbk1ng/agent-orch/issues/400))
 
