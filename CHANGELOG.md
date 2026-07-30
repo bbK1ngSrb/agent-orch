@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.214 — 2026-07-30
+- escalation recoveries that are hand-landed leave no release trace — add an `orch release` command that does finalize()'s bookkeeping (closes [#403](https://github.com/bbk1ng/agent-orch/issues/403))
+
 ## v0.4.213 — 2026-07-30
 - the `sync` demote trigger has three causes but README and the manual document only one (closes [#401](https://github.com/bbk1ng/agent-orch/issues/401))
 
