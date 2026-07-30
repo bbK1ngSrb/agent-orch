@@ -294,9 +294,13 @@ them.
 
 **Two-speed merge path.** When all reviewers agree and tests pass, the cycle
 merges into `orch/integration` through `.orch/integration` under a brief
-`merge.lock`. That branch is immediately usable locally after the post-merge
-test gate (and the version bump, if `release.autoBump` is enabled). Orch then
-pushes `orch/integration` and opens or
+`merge.lock`. Before merging, orch fetches `origin/orch/integration` and
+fast-forwards the local integration branch when it is behind. A fast-forward
+only advances along existing history; it creates no merge commit. If the two
+refs have diverged (each has commits the other lacks), orch demotes with
+`sync` rather than guessing at a merge. The branch is immediately usable
+locally after the post-merge test gate (and the version bump, if
+`release.autoBump` is enabled). Orch then pushes `orch/integration` and opens or
 updates one persistent PR from `orch/integration` to `main`; with
 `github.autoMergePr: true`, it also enables GitHub's native auto-merge on that
 PR using a merge commit so `orch/integration` stays in `main`'s ancestry.
@@ -326,7 +330,9 @@ post-merge re-test against the integrated tree.
 - `dirty-merge` — the merge into `orch/integration` itself fails
 - `integration-test` — tests fail after merge into `.orch/integration`
 - `lock` — the lock was never acquired
-- `sync` — local `main` couldn't catch up to `origin/main`
+- `sync` — pre-landing branch reconciliation failed: local `main` from
+  `origin/main`, local `orch/integration` from `origin/orch/integration`, or
+  `orch/integration` from the base branch
 
 For most triggers, with a git remote and `gh` CLI available the branch is
 pushed and a PR is opened; without them, `.orch/reviews/<branch>/DECISION.md`
@@ -334,12 +340,15 @@ is written and the branch is kept for manual review. **`dirty-merge` is
 different:** it never opens a per-change PR against `main` (that would be a
 second trunk door beside the standing `orch/integration → main` PR). It
 escalates with the staged branch and conflict detail so a human can hand-merge
-into `orch/integration`. Either way the reason is more than the trigger name.
+into `orch/integration`. After that hand-merge is pushed to
+`origin/orch/integration`, the next cycle normally fast-forwards its local
+integration branch automatically. A genuine divergence instead demotes with
+`sync`. Either way the reason is more than the trigger name.
 The `.orch/runs.jsonl` record stores `trigger` at the top level alongside
 `verdict: "merge-deferred"`, and the detailed reason carries round count, the
 branch's base SHA (plus the integration branch's tip once that worktree has
-been synced — still "unknown" for `lock` and `sync`, which fire before that
-sync), the branch's changed paths, and trigger-specific detail (overlapping
+been synced — still "unknown" for `lock` and `sync`), the branch's changed
+paths, and trigger-specific detail (overlapping
 paths per peer cycle, the conflicting paths, the sync failure, or that the
 lock timed out) plus a one-line next action, so a human picking up the
 escalation doesn't have to re-derive context orch already had.

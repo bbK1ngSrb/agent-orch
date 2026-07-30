@@ -226,6 +226,17 @@ test("docs explain stale `orch continue` resume handling", () => {
   }
 });
 
+test("docs describe all pre-landing sync reconciliations", () => {
+  for (const doc of [readme, manual]) {
+    assert.match(
+      doc,
+      /`sync`[\s\S]{0,100}local `main` from\s+`origin\/main`[\s\S]{0,100}local `orch\/integration` from `origin\/orch\/integration`[\s\S]{0,100}`orch\/integration` from the base branch/,
+    );
+    assert.match(doc, /fast-forwards?[\s\S]{0,80}local integration branch/);
+    assert.match(doc, /genuine divergence (?:instead )?demotes[\s\S]{0,20}`sync`/);
+  }
+});
+
 test("the deleted orch-docs Action is not claimed anywhere (#402)", () => {
   // orch-docs.yml needed a self-hosted runner labelled `orch`; none was ever
   // registered, so every dispatch queued until GitHub cancelled it — 28
