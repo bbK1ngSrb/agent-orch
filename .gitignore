@@ -47,6 +47,8 @@ pnpm-lock.yaml
 !/scripts/orch-release.js
 # Exception: git-hooks installer, run by npm "prepare" on dev installs.
 !/scripts/install-hooks.js
+# Exception: invoked by tag-release.yml in CI (#409) — untracked would break the job.
+!/scripts/release-tags.js
 
 # Ignore all local VS Code configurations
 .vscode/*

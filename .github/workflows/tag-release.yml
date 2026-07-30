@@ -2,6 +2,9 @@ name: tag-release
 # main only advances via the orch/integration → main PR (see .orch/ORCH.md).
 # orch bumps package.json on orch/integration but never tags main itself, so
 # without this, released versions silently go untagged/unpublished/unreleased.
+# One push can carry several `chore(release)` commits (orch batches cycles before
+# the PR is merged), so tag every version the push introduced — reading only the
+# final package.json version drops the intermediate ones forever (#409).
 on:
   push:
     branches: [main]
@@ -12,15 +15,25 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - name: tag if package.json version is untagged
+        with:
+          fetch-depth: 0 # walking the push range needs history, not a shallow tip
+      - name: tag every release version the push introduced
+        shell: bash
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
-          TAG="v$VERSION"
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "tag $TAG already exists, skipping"
-            exit 0
-          fi
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$TAG"
-          git push origin "$TAG"
+          # oldest-first `<sha> <tag>` lines, so tags land in version order
+          node scripts/release-tags.js "$BEFORE" "$AFTER" > /tmp/release-tags
+          while read -r SHA TAG; do
+            [ -n "${TAG:-}" ] || continue
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "tag $TAG already exists, skipping"
+              continue
+            fi
+            git tag -a "$TAG" -m "$TAG" "$SHA"
+            git push origin "$TAG"
+          done < /tmp/release-tags
