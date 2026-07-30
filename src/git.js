@@ -441,7 +441,16 @@ export function mergeInWorktree(integrationPath, branch, mode, message = null) {
 // package.json is missing/unparsable, or if anything below fails (dirty
 // target-repo pre-commit hooks, missing git identity, etc.) — this must
 // never throw out of a finalize that already landed the merge (issue #44).
-export function bumpVersion(integrationPath, entry) {
+//
+// opts.recovery:
+//   "destructive" (default) — `git reset --hard` + `git clean -fd`. Safe only
+//     inside orch's own integration worktree (finalize). Never use from a
+//     human checkout.
+//   "written-files" — restore only the paths this function wrote
+//     (`git checkout --` for pre-existing files; unlink for files it created).
+//     Used by `orch release` so a failed bump never deletes unrelated work.
+export function bumpVersion(integrationPath, entry, opts = {}) {
+  const recovery = opts.recovery === "written-files" ? "written-files" : "destructive";
   const pkgPath = join(integrationPath, "package.json");
   let pkg;
   try {
@@ -453,19 +462,32 @@ export function bumpVersion(integrationPath, entry) {
   if (parts.length !== 3 || parts.some((p) => !/^\d+$/.test(p))) return null;
   const version = `${parts[0]}.${parts[1]}.${Number(parts[2]) + 1}`;
 
+  // Paths we touch, so a written-files recovery can roll back only those.
+  // `created` are untracked files we introduced; `restored` already existed.
+  const created = [];
+  const restored = [];
+  const touch = (rel) => {
+    const abs = join(integrationPath, rel);
+    if (existsSync(abs)) restored.push(rel);
+    else created.push(rel);
+    return abs;
+  };
+
   try {
+    touch("package.json");
     pkg.version = version;
     writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
 
     const lockPath = join(integrationPath, "package-lock.json");
     if (existsSync(lockPath)) {
+      touch("package-lock.json");
       const lock = JSON.parse(readFileSync(lockPath, "utf8"));
       lock.version = version;
       if (lock.packages?.[""]) lock.packages[""].version = version;
       writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
     }
 
-    const changelogPath = join(integrationPath, "CHANGELOG.md");
+    const changelogPath = touch("CHANGELOG.md");
     const date = new Date().toISOString().slice(0, 10);
     const section = `## v${version} — ${date}\n- ${entry}\n\n`;
     const prior = existsSync(changelogPath) ? readFileSync(changelogPath, "utf8").replace(/^# Changelog\n+/, "") : "";
@@ -486,6 +508,7 @@ export function bumpVersion(integrationPath, entry) {
       const html = readFileSync(sitePath, "utf8");
       const next = html.replace(/v\d+\.\d+\.\d+(?=<(?:\\u002F|\\\/|\/)span>)/, `v${version}`);
       if (next !== html) {
+        touch("docs/index.html");
         writeFileSync(sitePath, next);
         siteBumped = true;
       }
@@ -498,8 +521,17 @@ export function bumpVersion(integrationPath, entry) {
     git(["commit", "-m", `chore(release): v${version}`], integrationPath);
     return version;
   } catch {
-    gitTry(["reset", "--hard", "HEAD"], integrationPath);
-    gitTry(["clean", "-fd"], integrationPath);
+    if (recovery === "written-files") {
+      const all = [...new Set([...restored, ...created])];
+      if (all.length) gitTry(["reset", "HEAD", "--", ...all], integrationPath);
+      if (restored.length) gitTry(["checkout", "--", ...restored], integrationPath);
+      for (const rel of created) {
+        try { rmSync(join(integrationPath, rel), { force: true }); } catch { /* best-effort */ }
+      }
+    } else {
+      gitTry(["reset", "--hard", "HEAD"], integrationPath);
+      gitTry(["clean", "-fd"], integrationPath);
+    }
     return null;
   }
 }

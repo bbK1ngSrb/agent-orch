@@ -843,6 +843,40 @@ test("bumpVersion returns null and leaves the repo clean when the commit fails",
   assert.equal(version, null);
 });
 
+// Human `orch release` path: recovery must restore only the files the bump
+// wrote. A whole-tree reset/clean would delete unrelated uncommitted work in
+// a human checkout (finalize's integration worktree is orch-owned, so the
+// destructive default stays correct there).
+test("bumpVersion recovery:written-files leaves unrelated dirty work untouched when commit fails", () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-bumpver-safe-"));
+  git(["init"], repo);
+  git(["config", "user.email", "t@t.com"], repo);
+  git(["config", "user.name", "t"], repo);
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.4.1" }, null, 2) + "\n");
+  writeFileSync(join(repo, "notes.txt"), "committed notes\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "init"], repo);
+
+  const dirtyPayload = "human WIP — must survive a failed release\n";
+  writeFileSync(join(repo, "notes.txt"), dirtyPayload);
+  writeFileSync(join(repo, "scratch.untracked"), "also mine\n");
+
+  const hooksDir = join(repo, ".git", "hooks");
+  mkdirSync(hooksDir, { recursive: true });
+  writeFileSync(join(hooksDir, "pre-commit"), "#!/bin/sh\nexit 1\n");
+  chmodSync(join(hooksDir, "pre-commit"), 0o755);
+
+  const version = bumpVersion(repo, "hand-landed fix", { recovery: "written-files" });
+  assert.equal(version, null);
+  assert.equal(readFileSync(join(repo, "notes.txt"), "utf8"), dirtyPayload);
+  assert.equal(readFileSync(join(repo, "scratch.untracked"), "utf8"), "also mine\n");
+  // package.json restored to the pre-bump committed version
+  const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+  assert.equal(pkg.version, "0.4.1");
+  // CHANGELOG was created by the failed bump and must be removed, not left half-written
+  assert.equal(existsSync(join(repo, "CHANGELOG.md")), false);
+});
+
 test("deleteRemoteBranch removes an existing remote head (#339)", () => {
   const repo = newRepo();
   addOrigin(repo);

@@ -513,6 +513,19 @@ A change that genuinely must touch a guardrail has exactly two routes:
 
 Without the flag neither route produces a branch, because nothing starts.
 
+Either route ends outside `finalize()`, so the version bump and CHANGELOG entry
+that normally fire after a green merge never run. Close the recovery with three
+steps:
+
+1. **Verify** the staged branch (or your hand-authored commit) is correct.
+2. **Merge** it onto `orch/integration` (resolve conflicts there; do not open a
+   per-change PR against `main`).
+3. **`orch release "<changelog entry>"`** — bumps `package.json` (and the lock
+   file / site version span when present), prepends a CHANGELOG section with
+   your entry, and commits `chore(release): vX.Y.Z`. Requires a clean working
+   tree; refuses otherwise and leaves your uncommitted files untouched. Does
+   **not** create a git tag (CI tags on push).
+
 ---
 
 ## Part 3 — The merge models, in detail (the part people actually ask about)
@@ -638,9 +651,10 @@ create a second door into the trunk beside the standing
 `orch/integration → main` PR. Instead orch escalates with the staged branch
 and conflict detail so a human can hand-merge into `orch/integration`; the
 standing integration PR remains the only trunk gate. After that hand-merge is
-pushed to `origin/orch/integration`, the next cycle normally fast-forwards its
-local integration branch automatically. A genuine divergence instead demotes
-with `sync`.
+pushed to `origin/orch/integration`, run `orch release "<entry>"` so the
+version/CHANGELOG bookkeeping still lands (the recovery never entered
+`finalize()`). The next cycle normally fast-forwards its local integration
+branch automatically. A genuine divergence instead demotes with `sync`.
 
 The `.orch/runs.jsonl` entry records `verdict: "merge-deferred"` and the cause
 as a top-level `trigger` field.
