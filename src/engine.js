@@ -163,6 +163,11 @@ export async function runCycle(opts, deps) {
     }
 
     for (;;) {
+      if (git.changedFiles(repo, branch, baseBranch).length === 0) {
+        return recordTerminal(escalate(notify, orchDir, branch, round,
+          "author produced no changes — nothing to review"));
+      }
+
       let verdict;
       if (pendingVerdict) {
         verdict = pendingVerdict;
