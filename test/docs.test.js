@@ -136,14 +136,48 @@ test("prose docs describe the protected-path intake refusal and its override", (
   }
 });
 
-test("ORCH.md template documents `orch release` for hand-landed escalations", () => {
-  // A hand-merged escalation never enters finalize(), so the version bump and
-  // CHANGELOG entry are silently skipped unless the operator runs
-  // `orch release`. ORCH_DOC is the usage doc every initialized repo's agents
-  // read; if it omits the command, the recovery procedure it describes
-  // (review the staged branch, merge it by hand) is left half-finished.
-  assert.match(ORCH_DOC, /`orch release "<entry>"`/);
-  assert.match(ORCH_DOC, /merge it by hand[\s\S]{0,200}`orch release "<entry>"`/);
+test("every command surface documents `orch release`", () => {
+  // The bookkeeping for a hand-landed escalation is only discoverable if the
+  // doc that tells you to hand-merge also tells you to close the recovery.
+  // ORCH_DOC ships verbatim into every initialized repo, so a command missing
+  // from its list is missing for every user of that repo — that is how
+  // `release` stayed absent there while README and the manual carried it.
+  for (const doc of [readme, manual, ORCH_DOC]) {
+    assert.match(doc, /orch release "/, "surface omits the orch release command");
+  }
+  assert.match(ORCH_DOC, /^- `orch release "<entry>"`/m);
+  // The manual's Part 2 is the command reference; release needs its own
+  // heading there, not just a mention inside the recovery procedure.
+  assert.match(manual, /^### 2\.\d+ `orch release /m);
+  // Claims that must stay true of src/git.js bumpVersion(): it refuses a dirty
+  // tree and never tags (CI tags on push).
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /clean working\s+tree/i);
+    assert.match(doc, /not[*]{0,2} create (a |or push a )?git tag/i);
+  }
+});
+
+test("`orch release` is never documented as unconditional recovery", () => {
+  // finalize.js only bumps under cfg.release.autoBump, which config.js defaults
+  // to false — but cli.js's release handler bumps unconditionally. So in a
+  // default repo a hand merge skips *nothing*, and "always run orch release
+  // afterwards" would manufacture a chore(release) commit that repo opted out
+  // of. Every mention must therefore sit next to the autoBump caveat; a bare
+  // presence check would pass on docs that mention autoBump elsewhere.
+  const WINDOW = 700;
+  for (const [name, doc] of [["README.md", readme], ["orch-manual.md", manual], ["ORCH_DOC", ORCH_DOC]]) {
+    for (const m of doc.matchAll(/orch release/g)) {
+      const near = doc.slice(Math.max(0, m.index - WINDOW), m.index + WINDOW);
+      assert.match(
+        near,
+        /autoBump/,
+        `${name}: 'orch release' at offset ${m.index} is not qualified by release.autoBump nearby`,
+      );
+    }
+  }
+  // And the asymmetry itself must be stated somewhere: the command ignores the
+  // flag that decides whether a clean merge would have bumped at all.
+  assert.match(manual, /never \*?reads\*? `release\.autoBump`|never consults `?autoBump/i);
 });
 
 test("roundCap docs describe total review rounds, not post-DISAGREE revisions only", () => {

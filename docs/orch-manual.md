@@ -514,17 +514,55 @@ A change that genuinely must touch a guardrail has exactly two routes:
 Without the flag neither route produces a branch, because nothing starts.
 
 Either route ends outside `finalize()`, so the version bump and CHANGELOG entry
-that normally fire after a green merge never run. Close the recovery with three
-steps:
+that a green merge writes **when `release.autoBump: true`** never run. Close the
+recovery with two steps, plus a third only in an auto-bump repo:
 
 1. **Verify** the staged branch (or your hand-authored commit) is correct.
 2. **Merge** it onto `orch/integration` (resolve conflicts there; do not open a
    per-change PR against `main`).
-3. **`orch release "<changelog entry>"`** — bumps `package.json` (and the lock
-   file / site version span when present), prepends a CHANGELOG section with
-   your entry, and commits `chore(release): vX.Y.Z`. Requires a clean working
+3. **Only if `release.autoBump: true`** (§4.1 — it is `false` by default, and
+   then a clean merge does no release bookkeeping either, so there is nothing to
+   recover): **`orch release "<changelog entry>"`** — bumps `package.json` (and
+   the lock file / site version span when present), prepends a CHANGELOG section
+   with your entry, and commits `chore(release): vX.Y.Z`. Requires a clean working
    tree; refuses otherwise and leaves your uncommitted files untouched. Does
    **not** create a git tag (CI tags on push).
+
+### 2.15 `orch release "<changelog entry>"`
+
+The bookkeeping half of a merge, on demand. Version bumps and CHANGELOG lines
+live inside `finalize()` (§4.1) behind `release.autoBump`, so in a repo that
+opted in with `release.autoBump: true`, *any* landing that bypasses `finalize()` —
+the escalation recovery in §2.14, a `dirty-merge` hand-merge (§3.4), a plain
+hand-authored commit — leaves commits nobody can map to a released version.
+`orch release` runs that same bookkeeping after the fact:
+
+```bash
+orch release "hand-landed guardrail fix (closes #403)"
+```
+
+- Bumps `package.json`, `package-lock.json`, and the landing page's version
+  span when present, and prepends a CHANGELOG section holding your entry.
+- Commits everything it wrote as `chore(release): vX.Y.Z` — on whatever branch
+  is currently checked out. It does not switch branches for you, so check out
+  `orch/integration` (after the hand-merge) *before* running it.
+- **Refuses a dirty working tree**, so it can never sweep your uncommitted work
+  into a release commit. Fix or stash first, then re-run.
+- Recovers only the files it wrote if the bump fails partway — no whole-tree
+  reset, so nothing of yours is discarded.
+- Does **not** create or push a git tag: tagging is CI's job on push, and a
+  local tag would race it.
+
+It needs no cycle, no agents, and no `.orch/` state — it is pure git and file
+bookkeeping, and orch never calls it for you.
+
+It also never *reads* `release.autoBump`: run it and it bumps, whatever the
+config says. That asymmetry is the one thing to keep straight. `autoBump`
+(§4.1) is `false` by default, and a repo that left it there gets **no** release
+bookkeeping from a clean merge — so a hand merge in that repo has skipped
+nothing, and running `orch release` would manufacture a `chore(release)` commit
+the repo deliberately opted out of. Reach for `release` only where `autoBump` is
+`true` (or where you have decided, this once, that you want a release commit).
 
 ---
 
@@ -651,9 +689,10 @@ create a second door into the trunk beside the standing
 `orch/integration → main` PR. Instead orch escalates with the staged branch
 and conflict detail so a human can hand-merge into `orch/integration`; the
 standing integration PR remains the only trunk gate. After that hand-merge is
-pushed to `origin/orch/integration`, run `orch release "<entry>"` so the
-version/CHANGELOG bookkeeping still lands (the recovery never entered
-`finalize()`). The next cycle normally fast-forwards its local integration
+pushed to `origin/orch/integration`, a repo running `release.autoBump: true`
+runs `orch release "<entry>"` so the version/CHANGELOG bookkeeping still lands
+(the recovery never entered `finalize()`); under the default `autoBump: false`
+there is none to land, so skip it (§2.15). The next cycle normally fast-forwards its local integration
 branch automatically. A genuine divergence instead demotes with `sync`.
 
 The `.orch/runs.jsonl` entry records `verdict: "merge-deferred"` and the cause

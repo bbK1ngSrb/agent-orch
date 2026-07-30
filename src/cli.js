@@ -302,7 +302,8 @@ test-gate is the governing review.
 - \`orch review <branch>\`           audit an existing branch (no author)
 - \`orch continue <sid>\`            resume an interrupted/stalled cycle from its checkpoint
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
-- \`orch release "<entry>"\`         bump version + CHANGELOG after a hand-landed escalation
+- \`orch release "<entry>"\`         run the version bump + CHANGELOG write by hand; only needed
+                                    in repos that set \`release.autoBump: true\` (default \`false\`)
 - \`orch agent add <name>\`          add an agent to the rotation pool
 - \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
 - \`orch dashboard [--json] [--limit <n>] [--check-history]\`
@@ -326,10 +327,14 @@ round. The scan is textual, so pass \`--allow-protected\` when the mention is
 incidental. A change that really must touch a guardrail is either hand-authored
 without orch, or run with \`--allow-protected\` to have orch stage it — the cycle
 then escalates at \`guardrail-touch\` instead of merging, and you review that staged
-branch and merge it by hand. A hand-merged escalation never enters finalize, so
-the version bump and CHANGELOG entry are skipped — close the recovery with
-\`orch release "<entry>"\`. Without the flag nothing runs, so there is no branch
-to review.
+branch and merge it by hand. Without the flag nothing runs, so there is no branch
+to review. A hand merge never reaches \`finalize()\`, so no version bump or CHANGELOG
+line is written. Whether that is a gap depends on your config: with the default
+\`release.autoBump: false\` a clean merge writes neither, so there is nothing
+to recover and you should not run \`orch release\`. Only with
+\`release.autoBump: true\` does the hand merge skip bookkeeping a clean merge would
+have done — close that gap with \`orch release "<changelog entry>"\`, which always
+bumps and never consults \`autoBump\`.
 
 Run \`orch --help\` for the full flag list.
 `;
@@ -1757,7 +1762,7 @@ Commands:
   review <branch>       Audit an existing branch without merging.
   continue <sid>        Resume an interrupted/stalled cycle from its checkpoint.
   pr <number>           Review a GitHub PR; add --merge to merge if approved.
-  release "entry"       Bump version + CHANGELOG after a hand-landed escalation.
+  release "entry"       Bump version + CHANGELOG by hand (autoBump repos only).
   dashboard             Live status TUI; --once prints the static one-shot.
   upgrade, update       Self-update the global npm install.
   completion [bash]     Print the bash completion script (default: bash).
