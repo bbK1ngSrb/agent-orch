@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.213 — 2026-07-30
+- the `sync` demote trigger has three causes but README and the manual document only one (closes [#401](https://github.com/bbk1ng/agent-orch/issues/401))
+
+## v0.4.212 — 2026-07-30
+- the protected-path intake refusal and --allow-protected are documented only in --help, not in README or the manual (closes [#400](https://github.com/bbk1ng/agent-orch/issues/400))
+
 ## v0.4.211 — 2026-07-30
 - intake: a work order that names a protected path is refused before the cycle starts, instead of running to a three-round stalemate the guardrail floor made inevitable. `--allow-protected` overrides, because the scan is textual and an incidental mention of a filename should not lock you out (closes [#395](https://github.com/bbk1ng/agent-orch/issues/395))
 - finalize: local `orch/integration` is fast-forwarded from `origin/orch/integration` before landing. A human who hand-merges an escalated branch straight onto origin (the documented recovery) left the local ref behind, and the next cycle merged onto that stale base, passed the gate — a stale tree is self-consistent — then had its PR push rejected as non-fast-forward, blaming the PR bridge instead of the base. Genuine divergence now demotes rather than guessing at a merge base (closes [#396](https://github.com/bbk1ng/agent-orch/issues/396))

@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ORCH_DOC } from "../src/cli.js";
 import { MAX_REDRIVE_ATTEMPTS } from "../src/deferred.js";
+import { DEFAULT_PROTECTED } from "../src/intake/allowlist.js";
 
 const rootUrl = new URL("../", import.meta.url);
 const rootDir = fileURLToPath(rootUrl);
@@ -96,6 +97,43 @@ test("README documents the auto docs-update feature and its loop guard", () => {
   assert.match(readme, /docs.autoUpdate/);
   assert.match(readme, /[Ll]oop guard/);
   assert.match(readme, /no-op/); // guard covers empty-diff merges too
+});
+
+test("prose docs describe the protected-path intake refusal and its override", () => {
+  // The refusal is a hard stop on a command users ran successfully before, and
+  // it fires at intake — no run, no branch, no DECISION.md to inspect. The
+  // stderr line names `--allow-protected` as the remedy, so every surface a
+  // reader consults for it must mention it, not just `--help`.
+  for (const doc of [readme, manual, ORCH_DOC]) {
+    assert.match(doc, /--allow-protected/);
+    assert.match(doc, /protected path/i);
+  }
+  // "Unsatisfiable" is only true of a work order that REQUIRES a protected
+  // change; an incidental mention run with the override can merge normally.
+  assert.match(manual, /genuinely requires[\s\S]{0,80}unsatisfiable by\s+construction/i);
+  // Correct mechanism (#406): guardrail-touch escalates first on an ordinary
+  // protected-path diff. checkPaths is only the merge-boundary backstop (and
+  // the unique `..` fail-closed). Do not pin checkPaths as the primary blocker.
+  for (const doc of [manual, ORCH_DOC]) {
+    assert.match(doc, /guardrail-touch/);
+  }
+  assert.match(manual, /guardrail-touch[\s\S]{0,120}fires first/i);
+  assert.match(manual, /checkPaths[\s\S]{0,80}backstop/i);
+  assert.doesNotMatch(
+    manual,
+    /security scan passes, and \*?then\*?[\s\S]{0,40}`checkPaths`/i,
+  );
+  assert.doesNotMatch(manual, /the boundary is `checkPaths`/i);
+  // The manual's §2.14 list reads as exhaustive, so a new denylist entry that
+  // never reaches the prose recreates this exact defect: a refusal the doc
+  // says cannot happen.
+  for (const p of DEFAULT_PROTECTED) assert.ok(manual.includes(p), `manual omits ${p}`);
+  // A real guardrail change has no staged branch unless the operator passes
+  // the override — prose that says "let the cycle escalate" without it
+  // describes a workflow that never starts.
+  for (const doc of [manual, ORCH_DOC]) {
+    assert.match(doc, /--allow-protected[`']? to have orch stage it/i);
+  }
 });
 
 test("roundCap docs describe total review rounds, not post-DISAGREE revisions only", () => {
