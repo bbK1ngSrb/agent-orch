@@ -97,10 +97,15 @@ author branch ──(AGREE + green tests)──▶ orch/integration ──▶ [p
                      ▲ fast, local, instant                    ▲ GitHub-mediated, has a natural lag
 ```
 
-1. The cycle merges into `orch/integration` locally, under a short-lived
-   `merge.lock` (so two concurrent cycles don't race each other). A
-   post-merge re-test runs against the *integrated* tree, not just the
-   branch — catching semantic conflicts a plain git merge wouldn't.
+1. Under a short-lived `merge.lock` (so two concurrent cycles don't race each
+   other), orch first fetches `origin/orch/integration` and fast-forwards the
+   local integration branch when it is behind. A **fast-forward** only advances
+   along existing history; it creates no merge commit. If the refs have
+   **diverged** — each has commits the other lacks — orch demotes with `sync`
+   rather than guessing at a merge. The cycle then merges into
+   `orch/integration` locally, and a post-merge re-test runs against the
+   *integrated* tree, not just the branch — catching semantic conflicts a plain
+   git merge wouldn't.
 2. On success — and only if you opted in with `release.autoBump: true`
    (default off, see §4.1) — `orch` bumps the merge counter (see §4.1 for the
    `x.y.zcc` scheme) and prepends a `CHANGELOG.md` entry, committed as
@@ -559,7 +564,7 @@ mode you've configured — can demote when one of these triggers fires:
 | `dirty-merge` | The merge into `orch/integration` itself fails |
 | `integration-test` | Tests fail after merging into the integrated tree |
 | `lock` | The local merge lock was never acquired in time |
-| `sync` | Local `main` couldn't catch up to `origin/main` |
+| `sync` | Pre-landing branch reconciliation failed: local `main` from `origin/main`, local `orch/integration` from `origin/orch/integration`, or `orch/integration` from the base branch |
 
 For most triggers, with a remote and `gh` available orch pushes the branch and
 opens a PR, carrying full context in the PR body: round count, base SHA,
@@ -572,7 +577,10 @@ the branch for manual review.
 create a second door into the trunk beside the standing
 `orch/integration → main` PR. Instead orch escalates with the staged branch
 and conflict detail so a human can hand-merge into `orch/integration`; the
-standing integration PR remains the only trunk gate.
+standing integration PR remains the only trunk gate. After that hand-merge is
+pushed to `origin/orch/integration`, the next cycle normally fast-forwards its
+local integration branch automatically. A genuine divergence instead demotes
+with `sync`.
 
 The `.orch/runs.jsonl` entry records `verdict: "merge-deferred"` and the cause
 as a top-level `trigger` field.
