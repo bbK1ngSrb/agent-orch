@@ -317,6 +317,17 @@ set \`cheap.paths\` to auto-route matching \`--file\`/\`orch issue\` work orders
 \`--config-file <path.yml>\` layers a custom YAML file on top of \`orch.yml\` for one run.
 Config and every option live in \`.orch/orch.yml\`.
 
+A \`task\`/\`issue\` whose work order text names a protected path (orch's own
+guardrail denylist in \`src/intake/allowlist.js\`) is refused at intake, before any
+cycle starts: a real change to that path is unsatisfiable — the security scan's
+\`guardrail-touch\` floor would escalate the diff on the first otherwise-agreeing
+round. The scan is textual, so pass \`--allow-protected\` when the mention is
+incidental. A change that really must touch a guardrail is either hand-authored
+without orch, or run with \`--allow-protected\` to have orch stage it — the cycle
+then escalates at \`guardrail-touch\` instead of merging, and you review that staged
+branch and merge it by hand. Without the flag nothing runs, so there is no branch
+to review.
+
 Run \`orch --help\` for the full flag list.
 `;
 
