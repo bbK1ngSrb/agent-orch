@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.216 — 2026-07-30
+- tag-release now tags every version a push introduces, not just the final one (closes #409)
+
+## v0.4.215 — 2026-07-30
+- auto-docs ms7hmnqz0 update documentation to reflect the latest merged changes
+
 ## v0.4.214 — 2026-07-30
 - escalation recoveries that are hand-landed leave no release trace — add an `orch release` command that does finalize()'s bookkeeping (closes [#403](https://github.com/bbk1ng/agent-orch/issues/403))
 

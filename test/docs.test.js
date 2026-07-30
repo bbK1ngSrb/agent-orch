@@ -136,6 +136,16 @@ test("prose docs describe the protected-path intake refusal and its override", (
   }
 });
 
+test("ORCH.md template documents `orch release` for hand-landed escalations", () => {
+  // A hand-merged escalation never enters finalize(), so the version bump and
+  // CHANGELOG entry are silently skipped unless the operator runs
+  // `orch release`. ORCH_DOC is the usage doc every initialized repo's agents
+  // read; if it omits the command, the recovery procedure it describes
+  // (review the staged branch, merge it by hand) is left half-finished.
+  assert.match(ORCH_DOC, /`orch release "<entry>"`/);
+  assert.match(ORCH_DOC, /merge it by hand[\s\S]{0,200}`orch release "<entry>"`/);
+});
+
 test("roundCap docs describe total review rounds, not post-DISAGREE revisions only", () => {
   // Engine starts round at 1 and escalates when round >= roundCap, so the cap
   // counts the initial review. "author-revise rounds after a DISAGREE" would
