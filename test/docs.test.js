@@ -483,3 +483,22 @@ test("docs document the empty-diff escalation and CI tag derivation (#412/#409/#
   assert.match(manual, /#416|PLANNED\.md/);
   assert.match(read("PLANNED.md"), /#416 tag-release API ref creation/);
 });
+
+test("the landing page tracks recently shipped surfaces (#403/#335)", () => {
+  // docs/index.html is hand-maintained (no generator), so it drifts. Its
+  // commands section bills itself as "the whole surface" but missed
+  // `orch release` (#403, v0.4.214), and the adapter chips missed kimi (#335)
+  // while README and orch.example.yml already listed it.
+  assert.match(landing, /orch release/);
+  assert.match(landing, /<span class="chip">kimi<\/span>/);
+});
+
+test("FUTURE.md records the #323 decision instead of planning the rejected design", () => {
+  // #323 was closed by rejecting rich `agents:` entries at config validation
+  // (a7aea98), the opposite of the rotation-pool design FUTURE.md listed as
+  // the 1-month plan. The roadmap must not promise what validation refuses.
+  const future = read("FUTURE.md");
+  assert.doesNotMatch(future, /parse `agents:` entries as full role specs/);
+  assert.match(future, /decided against[\s\S]{0,200}#323/);
+  assert.match(future, /bare adapter names/);
+});
