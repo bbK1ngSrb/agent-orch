@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.234 — 2026-08-01
+- bind the approve/merge boundary to one reviewed commit OID (#422 parts 1+2)
+
 ## v0.4.233 — 2026-08-01
 - auto-docs msad18y30 update documentation to reflect the latest merged changes
 
