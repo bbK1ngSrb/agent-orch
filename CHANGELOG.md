@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.235 — 2026-08-01
+- openPr passes a branch name to mergeDirect's numeric prRef → swallowed 404, auto-merge fallback silently dead on merge: pr (sibling of #182) (closes [#426](https://github.com/bbk1ng/agent-orch/issues/426))
+
 ## v0.4.234 — 2026-08-01
 - bind the approve/merge boundary to one reviewed commit OID (#422 parts 1+2)
 
