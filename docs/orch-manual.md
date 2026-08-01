@@ -877,10 +877,10 @@ Each recorded verdict is pinned to the branch head commit OID at the moment
 it was recorded (`git rev-parse --verify refs/heads/<branch>`, so a tag that
 happens to share the branch's name can't shadow the real head). The OID is
 captured once per review round, and that single captured value then binds
-the round's cached-verdict check, audit, test gate, checkpoint writes,
+the round's cached-verdict check, checkpoint writes,
 security and path reads, and the final merge — a branch ref that moves
 mid-round cannot launder unaudited content into a checkpoint the tests
-actually ran. On resume the shortcut is honoured only when the recorded OID
+actually ran on. On resume the shortcut is honoured only when the recorded OID
 still equals the current head, and that match is re-verified at the moment
 the cached verdict is consumed rather than only when the checkpoint is first
 read: if the branch moved between the crash and `orch continue` — a manual

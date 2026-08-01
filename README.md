@@ -273,10 +273,10 @@ was recorded. A crash mid-review or between a green gate and merge doesn't
 re-audit rounds already decided or re-run tests that already passed — the resumed
 cycle picks up at the next undone step. The OID pin binds each verdict to the code
 that earned it: the OID is captured once per review round, and that one value then
-binds the round's cached-verdict check, audit, gate, checkpoint writes, security
+binds the round's cached-verdict check, checkpoint writes, security
 reads, and merge — a branch ref that moves mid-round can't launder unaudited
-content into a checkpoint the tests actually ran. The match is also re-checked
-when the cached verdict is consumed, not only when the checkpoint is first read:
+content into a checkpoint the tests actually ran on. The match is re-verified
+when the cached verdict is consumed, rather than only when the checkpoint is first read:
 if the branch moved between the crash and the resume (a manual
 commit, a rebase, another cycle's revise), the recorded shortcut no longer matches
 and that step is re-audited or re-gated instead of inheriting a verdict earned on
