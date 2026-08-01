@@ -399,9 +399,14 @@ pushes that cycle branch and opens its own PR to `main` instead. This mode is
 unchanged by the persistent `orch/integration` bridge. Needs a git remote and
 the `gh` CLI; without them the cycle escalates locally the same way `merge-deferred`
 does. Set `github.autoMergePr: true` to also enable GitHub's native auto-merge
-on that PR (merged automatically once its own checks pass) — if enabling
-auto-merge fails (e.g. branch protection isn't configured), the PR itself still
-stands; only the auto-merge step is skipped.
+on that PR. Once native auto-merge is armed, orch also makes one immediate REST
+merge attempt using the numeric PR id from the creation URL and pinned to the
+exact reviewed commit OID. That lets an already-green PR land when a ruleset
+bypass leaves native auto-merge stuck at `BLOCKED`. A not-ready direct attempt
+is swallowed; the PR and native auto-merge remain, and orch does not poll or
+retry this one-shot path. If enabling auto-merge itself fails (e.g. branch
+protection isn't configured), the PR still stands and the direct attempt is
+skipped.
 
 ## Version bump on merge
 
