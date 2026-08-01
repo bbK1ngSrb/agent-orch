@@ -99,8 +99,14 @@ export async function runCycle(opts, deps) {
   // Called fresh at every record/lookup site — a revise moves the branch. Read
   // from `repo`: a linked worktree's commits land on the shared refs/heads entry.
   // Unreadable → null, which the resume check treats as "cannot verify".
+  // The ref is fully qualified (`refs/heads/<branch>`, with `--verify` so an
+  // ambiguous or missing ref fails instead of guessing): a bare name goes
+  // through git's disambiguation order, which prefers `refs/tags/<name>` over
+  // `refs/heads/<name>`. A tag sharing the branch's name would otherwise pin the
+  // checkpoint to the tag's commit — the branch could move freely and the resume
+  // would still see a "match", defeating the integrity check entirely.
   const branchOid = () => {
-    try { return git.git(["rev-parse", branch], repo); }
+    try { return git.git(["rev-parse", "--verify", `refs/heads/${branch}`], repo); }
     catch { return null; }
   };
 

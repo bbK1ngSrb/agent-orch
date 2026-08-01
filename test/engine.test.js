@@ -774,6 +774,51 @@ test("#422: a 'tested' checkpoint whose branch has MOVED loses the shortcut — 
   assert.equal(deps._calls.authors, 0, "resume never re-authors");
 });
 
+test("#422: the OID is read from refs/heads/<branch>, so a same-named tag cannot shadow it", async () => {
+  // `git rev-parse <name>` resolves refs/tags/<name> BEFORE refs/heads/<name>, so a
+  // tag sharing the branch's name would pin the checkpoint to the tag's (frozen)
+  // commit — the branch could move and the resume would still see a match. The stub
+  // models that ordering: the bare name yields the tag, the qualified ref the head.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.attachExistingBranch = () => {};
+  deps.git.git = (args) => {
+    if (args[0] !== "rev-parse") return "diff summary";
+    const ref = args[args.length - 1];
+    if (ref === `refs/heads/${opts.branch}`) return "sha-head";
+    return ref === opts.branch ? "sha-tag" : "base";
+  };
+  let gateRuns = 0;
+  deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
+  const stored = { branch: opts.branch, oid: "sha-head", round: 1, stage: "tested", reason: "ok" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(deps._calls.audits, 0, "the real branch head matches, so the verdict still holds");
+  assert.equal(gateRuns, 0, "…and the gate is still skipped");
+});
+
+test("#422: a tag pinned to a stale commit cannot fake a match after the branch moves", async () => {
+  // Same shadowing setup, opposite direction: the checkpoint was earned on the tag's
+  // commit but the branch has since moved. Reading the qualified ref exposes the
+  // mismatch; reading the bare name would have inherited a verdict for dead content.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.attachExistingBranch = () => {};
+  deps.git.git = (args) => {
+    if (args[0] !== "rev-parse") return "diff summary";
+    const ref = args[args.length - 1];
+    if (ref === `refs/heads/${opts.branch}`) return "sha-moved";
+    return ref === opts.branch ? "sha-stale" : "base";
+  };
+  let gateRuns = 0;
+  deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
+  const stored = { branch: opts.branch, oid: "sha-stale", round: 2, stage: "tested", reason: "ok" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(deps._calls.audits, 1, "the branch head differs — the stale verdict must be refused");
+  assert.equal(gateRuns, 1, "…and the gate must run again");
+});
+
 test("#422: a legacy checkpoint with no OID fails closed — re-audit + re-gate", async () => {
   // A checkpoint written by an older orch carries no `oid`, so the current branch
   // content cannot be verified against it. Unverifiable means untrusted.
