@@ -75,7 +75,7 @@ test("docs explain that approval is bound to the reviewed commit OID (#422 parts
   assert.match(finalizeSrc, new RegExp(reason));
   for (const doc of [readme, manual]) {
     assert.match(doc, new RegExp(reason));
-    assert.match(doc, /bound to (a|one) commit|Approval is bound to/i);
+    assert.match(doc, /bound to the scanned commit/i);
   }
   // The deferred queue carries the same OID: the redrive rebase is a
   // compare-and-swap, and a record written before the pin stays human-owned.
@@ -85,6 +85,33 @@ test("docs explain that approval is bound to the reviewed commit OID (#422 parts
     assert.match(doc, /no (reviewed )?OID/i);
     assert.match(doc, /human-owned/i);
   }
+});
+
+test("docs scope the pin to what it actually binds (#422 parts 1+2)", () => {
+  // Presence-greps pass whether or not the prose overclaims, so derive both
+  // limits from the source: if the code ever gains the stronger guarantee,
+  // these fail and force the docs to be re-widened deliberately.
+
+  // Limit 1: engine.js pins the OID *after* the review rounds and the test
+  // gate, so a push landing in that window inherits an AGREE it never earned.
+  const engineSrc = read("src/engine.js");
+  const pinAt = engineSrc.indexOf("const reviewedSha = branchOid()");
+  const gateAt = engineSrc.indexOf("gate.run(");
+  // One gate call, so the index comparison below can't pass on the wrong one.
+  assert.equal((engineSrc.match(/gate\.run\(/g) || []).length, 1);
+  assert.ok(pinAt > 0 && gateAt > 0, "expected engine.js to pin reviewedSha after a gate run");
+  assert.ok(pinAt > gateAt, "reviewedSha is pinned after the test gate; docs must not claim otherwise");
+  assert.match(manual, /pin is not\s+retroactive/i);
+  assert.match(manual, /read \*after\* the last review round and \*after\* the test\s+gate/i);
+
+  // Limit 2: the security scan and the protected-path floor live in engine.js
+  // only — the redrive path in finalize.js re-gates with the tests alone.
+  const finalizeSrc = read("src/finalize.js");
+  assert.match(engineSrc, /scanDiff\(/);
+  assert.doesNotMatch(finalizeSrc, /scanDiff\(|checkPaths\(/);
+  assert.doesNotMatch(read("src/deferred.js"), /scanDiff\(|checkPaths\(/);
+  assert.match(manual, /not re-run on\s+the rebased commit/i);
+  assert.match(readme, /re-gated by the tests only — never re-scanned/i);
 });
 
 test("docs list the built-in CLI adapters", () => {

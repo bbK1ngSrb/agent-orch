@@ -77,20 +77,36 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    is the authoring step. Only `orch pr` stops short of a local merge — it
    reports its verdict and leaves GitHub to own the actual merge (§2.7).
 
-   **Approval is bound to one commit, not to a branch name.** A branch name is
-   a moving pointer: whatever `refs/heads/<branch>` happens to point at *right
-   now*. So orch resolves that pointer to a commit OID once — immediately
-   before the step-4 security scan — and every later step reads that same OID
-   rather than re-resolving the name. The scan, the changed-path floor, and
-   the merge therefore act on identical content: what was scanned is what was
-   approved is what lands. Right before it merges (or, under `merge: pr`,
-   before it publishes; or, on a `merge-deferred` demotion, before it opens
-   the escalation PR) orch re-reads the branch head one last time. If it no
-   longer equals the reviewed OID — a manual commit, a rebase, a concurrent
-   push — or if it cannot be read at all, that is a **terminal escalation**:
-   orch refuses to merge *or* publish, and `.orch/runs.jsonl` records
-   `branch head integrity check failed` with both SHAs. It fails closed,
-   because an approval earned by one commit says nothing about another.
+   **The merge is bound to the scanned commit, not to a branch name.** A
+   branch name is a moving pointer: whatever `refs/heads/<branch>` happens to
+   point at *right now*. So orch resolves that pointer to a commit OID once —
+   after the reviewers agree and the tests pass, immediately before the step-4
+   security scan — and every later step reads that same OID rather than
+   re-resolving the name. The scan, the changed-path floor, and the merge
+   therefore act on identical content: what was scanned is what lands. Right
+   before it merges (or, under `merge: pr`, before it publishes; or, on a
+   `merge-deferred` demotion, before it opens the escalation PR) orch re-reads
+   the branch head one last time. If it no longer equals the reviewed OID — a
+   manual commit, a rebase, a concurrent push — or if it cannot be read at
+   all, that is a **terminal escalation**: orch refuses to merge *or* publish,
+   and `.orch/runs.jsonl` records `branch head integrity check failed` with
+   both SHAs. It fails closed, because an approval earned by one commit says
+   nothing about another.
+
+   Two limits belong in the same breath, because **the pin is not
+   retroactive** — it binds the scan and the merge, not the reviewers.
+
+   - The OID is read *after* the last review round and *after* the test gate,
+     so a commit that lands on the branch inside that window is scanned and
+     path-checked like any other tip, but it inherits an `AGREE` and a green
+     test run that were earned on the older tree. orch will merge it. Only a
+     human re-review catches that, which is why a branch under an active cycle
+     should be left alone.
+   - The security scan and the protected-path floor run **here, in step 4**,
+     against the pinned OID. A deferred peer's automatic redrive (§3.4)
+     rebases that pinned commit into a *new* commit and re-gates it with the
+     tests only — the scan and the floor are not re-run on the rebased
+     commit.
 
 If any stage fails — reviewer disagreement past the cap, red tests, a risky
 security-scan finding, a merge conflict, an author that produced no changes at
@@ -774,7 +790,12 @@ peer the land unblocked:
    *gated, not trusted*: rebasing can produce a tree that merges cleanly but
    behaves wrongly (a "semantic conflict"), and only re-running the tests on the
    integrated tree catches that. Nothing is merged on the strength of the
-   earlier, pre-rebase green run.
+   earlier, pre-rebase green run. The re-gate is the **tests only**, though: the
+   deterministic security scan and the protected-path floor are not re-run on
+   the rebased commit (§1.1). A rebase replays the peer's diff onto a newer
+   base, so the landed commit is not byte-for-byte the commit that was scanned,
+   and a finding that only exists in the combination — a secret one side adds
+   and the other side's context makes live, say — would not be caught here.
 3. **Cascades.** A peer that heals becomes a new "just landed" blocker itself,
    so a cycle C that was deferred behind B gets redriven once B heals behind A.
 
@@ -788,7 +809,8 @@ consume that attempt — nothing was tried, so nothing was spent, and the peer
 can still be redriven once its identity checks out. A conflict does consume it.
 A record parked by an older orch carries no reviewed OID; it cannot be proved
 to still describe the code that was approved, so it consumes its attempt
-immediately and becomes human-owned rather than being redriven on trust. A failed redrive adds no extra noise: the escalation
+immediately and becomes human-owned rather than being redriven on trust.
+A failed redrive adds no extra noise: the escalation
 PR opened by the original demotion is left exactly as it was, rather than a
 second demote PR being opened beside it. A *successful* redrive usually retires
 it: the merged path deletes the cycle's remote `pr/*` head, and GitHub closes a
