@@ -268,9 +268,16 @@ before any commit (nothing to resume), and never hijacks a live peer's branch.
 
 Within a resumed cycle, a per-round checkpoint in `.orch/checkpoints/` (keyed on the
 run's sid) goes further: it records each review round's verdict, and whether the test
-gate has already passed. A crash mid-review or between a green gate and merge doesn't
+gate has already passed — each pinned to the branch head commit OID at the moment it
+was recorded. A crash mid-review or between a green gate and merge doesn't
 re-audit rounds already decided or re-run tests that already passed — the resumed
-cycle picks up at the next undone step. The checkpoint is cleared once the cycle
+cycle picks up at the next undone step. The OID pin binds each verdict to the code
+that earned it: if the branch moved between the crash and the resume (a manual
+commit, a rebase, another cycle's revise), the recorded shortcut no longer matches
+and that step is re-audited or re-gated instead of inheriting a verdict earned on
+different content — resume still keeps the recorded round and merges if the fresh
+checks pass. A checkpoint written by an older orch carries no OID and is treated as
+unverifiable, never as a match. The checkpoint is cleared once the cycle
 reaches a terminal status.
 
 `orch continue <sid>` also cleans up stale local resume state when the saved
@@ -320,7 +327,12 @@ PR using a merge commit so `orch/integration` stays in `main`'s ancestry.
 Alternatively, `main.autoMerge: true` triggers a direct merge of that
 persistent PR once all of its checks are green — a fallback for
 when native auto-merge stalls at `BLOCKED` because review is satisfied via a
-ruleset bypass grant rather than a human approval. The merge runs as whatever
+ruleset bypass grant rather than a human approval. The merge is pinned to the
+integration tip this cycle pushed and verified: a concurrent cycle that advances
+`orch/integration` between the push and the merge attempt gets a logged 409
+("integration advanced past the commit this cycle verified — the newer cycle will
+merge it") and owns landing the newer tip; other failures stay swallowed so a
+pending check is not cycle noise. The merge runs as whatever
 `gh` identity orch is authenticated as, so it only lands if that identity is
 itself in the branch's ruleset `bypass_actors` list. This is necessary because GitHub
 does not allow an actor to approve its own PR, so an orch-authored PR cannot
