@@ -675,7 +675,13 @@ merge somewhere else.
 
 If `github.autoMergePr: true` and enabling auto-merge fails (e.g. branch
 protection isn't set up for it), the PR itself still stands — only the
-auto-merge step is skipped, never the PR.
+auto-merge step is skipped, never the PR. When enabling it succeeds, orch also
+makes one immediate REST merge attempt, using the numeric PR number parsed from
+the creation URL and pinned to the exact reviewed commit OID. This covers an
+already-green PR whose review requirement is satisfied by a ruleset bypass but
+whose native auto-merge remains `BLOCKED`. If the direct attempt is not ready,
+orch swallows that failure and leaves the PR plus native auto-merge in place;
+it does not poll or retry this one-shot direct path.
 
 **Consequence you should know:** `merge: pr` does not run orch's
 `release.autoBump` or CHANGELOG behavior described in §4.1 — those only apply
@@ -1063,10 +1069,11 @@ release:
   native auto-merge does not reliably fire — it can stay enabled with
   `mergeStateStatus: BLOCKED` indefinitely even after checks pass. For the
   persistent `orch/integration → main` PR, set `main.autoMerge: true` (below)
-  to have orch merge it directly instead of relying on native auto-merge; the
-  one-shot `merge: pr` per-cycle PR has no such fallback, since nothing
-  re-invokes it later the way the persistent integration PR gets re-touched
-  every cycle.
+  to have orch merge it directly instead of relying on native auto-merge. A
+  one-shot `merge: pr` per-cycle PR gets one immediate, reviewed-OID-pinned
+  direct REST attempt after native auto-merge is armed; if that attempt is too
+  early, nothing re-invokes it later the way the persistent integration PR is
+  re-touched every cycle.
 - **`main.autoMerge`** — opt-in (default `false`). When `true`, every cycle
   that re-touches the persistent `orch/integration → main` PR checks whether
   *all* of that PR's status checks are green and, if so, merges it directly
