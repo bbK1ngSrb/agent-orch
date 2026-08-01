@@ -102,6 +102,7 @@ test("rebaseBranchOnto refuses to replace a branch that moved past the reviewed 
   const r = rebaseBranchOnto(repo, join(repo, ".orch"), "feature", "main", reviewedSha);
 
   assert.equal(r.ok, false);
+  assert.equal(r.moved, true);
   assert.equal(git(["rev-parse", "feature"], repo), movedSha);
 });
 

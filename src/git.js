@@ -394,6 +394,12 @@ export function rebaseBranchOnto(repo, orchDir, branch, onto, expectedSha = null
   if (!branch || !onto || branch === onto) {
     return { ok: false, reason: "rebaseBranchOnto: invalid branch/onto" };
   }
+  if (expectedSha) {
+    const current = gitTry(["rev-parse", "--verify", `refs/heads/${branch}`], repo);
+    if (!current.ok || current.out.trim() !== expectedSha) {
+      return { ok: false, moved: true, reason: "branch moved before rebase" };
+    }
+  }
   const path = join(orchDir, "wt", `rebase-${String(branch).replace(/[^\w.-]+/g, "_")}`);
   gitTry(["worktree", "remove", "--force", path], repo);
   rmSync(path, { recursive: true, force: true });
@@ -413,7 +419,7 @@ export function rebaseBranchOnto(repo, orchDir, branch, onto, expectedSha = null
     const sha = head.out.trim();
     if (expectedSha) {
       const update = gitTry(["update-ref", `refs/heads/${branch}`, sha, expectedSha], repo);
-      if (!update.ok) return { ok: false, reason: update.out.trim() || "branch moved during rebase" };
+      if (!update.ok) return { ok: false, moved: true, reason: update.out.trim() || "branch moved during rebase" };
     }
     return { ok: true, sha };
   } finally {

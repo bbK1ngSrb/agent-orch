@@ -752,14 +752,19 @@ test("openIntegrationPr updates a BEHIND-but-clean integration PR from base", as
     return "";
   };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
-  const cfg = { integrationBranch: "orch/integration", baseBranch: "main", github: { mergeMethod: "squash", autoMergePr: false } };
+  const integrationSha = "7777777777777777777777777777777777777777";
+  const cfg = { integrationBranch: "orch/integration", baseBranch: "main", github: { mergeMethod: "squash", autoMergePr: true } };
 
-  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg, integrationSha }, { gh, git, notify: { escalate() {} } });
 
   assert.ok(
     calls.some((c) => c[0] === "gh" && c[1] === "api" && c.includes("PUT") && c.includes("repos/{owner}/{repo}/pulls/247/update-branch")),
     "a BEHIND-clean integration PR must be updated from base",
   );
+  const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
+  assert.ok(mergeCall, "native auto-merge must still be armed after updating the branch");
+  assert.equal(mergeCall.includes("--match-head-commit"), false,
+    "the pre-update integration SHA is no longer the PR head");
 });
 
 test("openIntegrationPr does not update-branch a CONFLICTING integration PR", async () => {

@@ -317,11 +317,12 @@ async function redriveDeferredPeers(ctx, deps, { integration, integrationBranch,
         : (typeof inflight.peerPaths === "function" ? inflight.peerPaths(orchDir, peer.sid) : []);
       if (overlapDetails(peer.paths || [], livePaths, live).any) continue;
 
-      // Consume one redrive attempt up front so a crash mid-redrive cannot loop.
-      deferred.markAttempt?.(orchDir, peer.sid);
-
       const reviewedSha = typeof peer.reviewedSha === "string" ? peer.reviewedSha.trim() : "";
-      if (!reviewedSha) continue; // legacy/unpinned records require a fresh human review
+      if (!reviewedSha) {
+        // Legacy/unpinned records require a fresh human review and must not loop.
+        deferred.markAttempt?.(orchDir, peer.sid);
+        continue;
+      }
 
       git.syncWorktreeToIntegration(integration, integrationBranch);
       const preSha = git.git(["rev-parse", "HEAD"], integration);
@@ -329,9 +330,21 @@ async function redriveDeferredPeers(ctx, deps, { integration, integrationBranch,
       let redriveSha = reviewedSha;
       if (typeof git.rebaseBranchOnto === "function") {
         const rb = git.rebaseBranchOnto(repo, orchDir, peer.branch, integrationBranch, reviewedSha);
-        if (!rb.ok || !rb.sha) continue; // stays deferred; demote PR from first demote still open
+        if (!rb.ok || !rb.sha) {
+          // A moved head invalidates this pass without consuming the peer's one
+          // real redrive attempt. Conflicts still consume it and stay human-owned.
+          if (!rb.moved) deferred.markAttempt?.(orchDir, peer.sid);
+          continue;
+        }
         redriveSha = rb.sha;
+        // The CAS advanced the branch. Persist that exact OID before landing so
+        // a crash or failed re-gate never falls back to the pre-rebase commit.
+        deferred.record?.(orchDir, { ...peer, reviewedSha: redriveSha });
       }
+
+      // Identity/CAS checks passed; consume the one real redrive attempt before
+      // merge + re-gate so a crash in that work cannot loop indefinitely.
+      deferred.markAttempt?.(orchDir, peer.sid);
 
       const peerCtx = {
         repo, orchDir,

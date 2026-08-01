@@ -424,10 +424,12 @@ export async function openIntegrationPr(ctx, deps) {
   // first-class subcommand for this, so hit the REST endpoint (keyed by numeric
   // PR id, like mergeDirect) directly. A failure here is never fatal to a
   // green+merged+pushed cycle — the next cycle retries.
+  let updatedFromBase = false;
   try {
     const state = JSON.parse(gh(["pr", "view", prRef, "--json", "mergeable,mergeStateStatus"]) || "{}");
     if (state.mergeStateStatus === "BEHIND" && state.mergeable !== "CONFLICTING") {
       gh(["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${prRef}/update-branch`]);
+      updatedFromBase = true;
       log(`updated stale integration PR #${prRef} from ${base}`);
     }
   } catch (e) {
@@ -439,7 +441,7 @@ export async function openIntegrationPr(ctx, deps) {
       // or rebase would strand orch/integration behind main after the first PR.
       // Requires the repo to allow merge-commit merges — see docs/ORCH.md.
       const args = ["pr", "merge", prRef, "--auto", "--merge"];
-      if (tipSha) args.push("--match-head-commit", tipSha);
+      if (tipSha && !updatedFromBase) args.push("--match-head-commit", tipSha);
       gh(args);
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);

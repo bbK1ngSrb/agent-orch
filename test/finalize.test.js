@@ -350,6 +350,7 @@ test("path overlap with a peer → merge-deferred (no merge attempted)", async (
 test("post-land redrive: deferred peer is rebased + gated + landed under the same lock (#350)", async () => {
   const lockOps = [];
   const rebased = [];
+  const persisted = [];
   const mergedBranches = [];
   const removed = [];
   const deferredPeer = {
@@ -389,6 +390,7 @@ test("post-land redrive: deferred peer is rebased + gated + landed under the sam
       list: () => (removed.includes(deferredPeer.sid) ? [] : [deferredPeer]),
       eligibleForRedrive: (e) => (e.redriveAttempts || 0) < 1,
       blockedByLand: (e, landed) => e.peerSids?.includes(landed.sid) || e.paths.some((p) => (landed.paths || []).includes(p)),
+      record: (_d, entry) => { persisted.push(entry); },
       markAttempt: () => { deferredPeer.redriveAttempts += 1; },
       remove: (_d, sid) => { removed.push(sid); },
     },
@@ -399,6 +401,8 @@ test("post-land redrive: deferred peer is rebased + gated + landed under the sam
   assert.deepEqual(rebased, [{
     branch: "pr/codex/b-2", onto: "orch/integration", expectedSha: "peer-reviewed",
   }]);
+  assert.equal(persisted[0].reviewedSha, "deadbee", "the post-rebase OID must replace the deferred pin");
+  assert.equal(deferredPeer.redriveAttempts, 1);
   assert.deepEqual(removed, ["2"]);
   // Both lands recorded as merged; lock acquired once (serial under one hold).
   assert.equal(recorded.filter((e) => e.verdict === "merged").length, 2);
@@ -569,6 +573,39 @@ test("post-land redrive: rebase conflict leaves peer deferred (no second demote)
   assert.equal(recorded.filter((e) => e.verdict === "merged").length, 1);
   assert.equal(demoteCalls, 0); // quietFail — existing demote PR stands
   assert.equal(deferredPeer.redriveAttempts, 1);
+});
+
+test("#422: a moved deferred peer stays queued without burning its redrive attempt", async () => {
+  const mergedBranches = [];
+  const deferredPeer = {
+    sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
+    reviewedSha: "peer-reviewed", rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+  };
+  const { deps } = baseDeps({
+    inflight: { listLive: () => [], peerPaths: () => [] },
+    git: {
+      ...baseDeps().deps.git,
+      rebaseBranchOnto: () => ({ ok: false, moved: true, reason: "branch moved before rebase" }),
+      mergeInWorktree: (_p, branch) => {
+        mergedBranches.push(branch);
+        return { ok: true, reason: "merged" };
+      },
+    },
+    deferred: {
+      list: () => [deferredPeer],
+      eligibleForRedrive: () => true,
+      blockedByLand: () => true,
+      record: () => { throw new Error("a failed CAS must not replace the deferred pin"); },
+      markAttempt: () => { deferredPeer.redriveAttempts += 1; },
+      remove: () => { throw new Error("a moved peer must stay deferred"); },
+    },
+  });
+
+  const r = await finalize(ctx(), deps);
+
+  assert.equal(r.status, "merged");
+  assert.deepEqual(mergedBranches, ["pr/claude/x-1"]);
+  assert.equal(deferredPeer.redriveAttempts, 0);
 });
 
 test("merge conflict → merge-deferred (escalate, no per-change PR against main)", async () => {
