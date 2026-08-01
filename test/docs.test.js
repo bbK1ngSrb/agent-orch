@@ -65,6 +65,28 @@ test("the manual names the REST merge endpoint `orch pr --merge` uses (#421)", (
   assert.match(manual, /precheck[\s\S]{0,80}bypass|bypass[\s\S]{0,80}precheck/i);
 });
 
+test("docs explain that approval is bound to the reviewed commit OID (#422 parts 1+2)", () => {
+  // finalize.js re-reads the branch head before every merge/publish/demote exit
+  // and escalates when it no longer matches the OID the security scan and the
+  // reviewers acted on. Derive the phrase from the source so renaming the
+  // escalation reason can't leave the docs quoting a string orch never prints.
+  const finalizeSrc = read("src/finalize.js");
+  const reason = "branch head integrity check failed";
+  assert.match(finalizeSrc, new RegExp(reason));
+  for (const doc of [readme, manual]) {
+    assert.match(doc, new RegExp(reason));
+    assert.match(doc, /bound to (a|one) commit|Approval is bound to/i);
+  }
+  // The deferred queue carries the same OID: the redrive rebase is a
+  // compare-and-swap, and a record written before the pin stays human-owned.
+  assert.match(read("src/deferred.js"), /reviewedSha/);
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /compare-and-swap/i);
+    assert.match(doc, /no (reviewed )?OID/i);
+    assert.match(doc, /human-owned/i);
+  }
+});
+
 test("docs list the built-in CLI adapters", () => {
   for (const doc of [readme, exampleConfig]) {
     assert.match(doc, /claude/);

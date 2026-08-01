@@ -77,6 +77,21 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    is the authoring step. Only `orch pr` stops short of a local merge — it
    reports its verdict and leaves GitHub to own the actual merge (§2.7).
 
+   **Approval is bound to one commit, not to a branch name.** A branch name is
+   a moving pointer: whatever `refs/heads/<branch>` happens to point at *right
+   now*. So orch resolves that pointer to a commit OID once — immediately
+   before the step-4 security scan — and every later step reads that same OID
+   rather than re-resolving the name. The scan, the changed-path floor, and
+   the merge therefore act on identical content: what was scanned is what was
+   approved is what lands. Right before it merges (or, under `merge: pr`,
+   before it publishes; or, on a `merge-deferred` demotion, before it opens
+   the escalation PR) orch re-reads the branch head one last time. If it no
+   longer equals the reviewed OID — a manual commit, a rebase, a concurrent
+   push — or if it cannot be read at all, that is a **terminal escalation**:
+   orch refuses to merge *or* publish, and `.orch/runs.jsonl` records
+   `branch head integrity check failed` with both SHAs. It fails closed,
+   because an approval earned by one commit says nothing about another.
+
 If any stage fails — reviewer disagreement past the cap, red tests, a risky
 security-scan finding, a merge conflict, an author that produced no changes at
 all — the cycle does not merge. It
@@ -747,6 +762,14 @@ peer the land unblocked:
 
 1. **Rebases** the peer's branch onto the new `orch/integration` tip. A real
    line conflict fails here and the peer simply stays deferred for a human.
+   The parked record stores the reviewed commit OID (§1.1), and the rebase is
+   a *compare-and-swap* against it: orch rebases that exact commit and updates
+   the branch only if the branch still points where it did. If the head moved
+   in the meantime, the redrive is abandoned rather than rebasing content no
+   reviewer saw. The rebase mints a new commit, so orch persists that new OID
+   back into the parked record **before** landing it — otherwise a crash
+   between rebase and merge would leave the queue pointing at the pre-rebase
+   commit.
 2. **Re-runs the full merge and the post-merge test gate.** A redriven merge is
    *gated, not trusted*: rebasing can produce a tree that merges cleanly but
    behaves wrongly (a "semantic conflict"), and only re-running the tests on the
@@ -760,7 +783,12 @@ a *live* in-flight cycle is left queued untouched (it hasn't used up anything �
 its turn comes when that cycle lands). And each peer gets exactly **one**
 automatic attempt (`MAX_REDRIVE_ATTEMPTS` in `src/deferred.js`); if that attempt
 fails the rebase, the merge, or the gate, the cycle stays `merge-deferred` and a
-human owns it from there. A failed redrive adds no extra noise: the escalation
+human owns it from there. A *moved head* is the one exception that does not
+consume that attempt — nothing was tried, so nothing was spent, and the peer
+can still be redriven once its identity checks out. A conflict does consume it.
+A record parked by an older orch carries no reviewed OID; it cannot be proved
+to still describe the code that was approved, so it consumes its attempt
+immediately and becomes human-owned rather than being redriven on trust. A failed redrive adds no extra noise: the escalation
 PR opened by the original demotion is left exactly as it was, rather than a
 second demote PR being opened beside it. A *successful* redrive usually retires
 it: the merged path deletes the cycle's remote `pr/*` head, and GitHub closes a

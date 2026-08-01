@@ -231,6 +231,15 @@ print `merged` for a cycle whose commit never reached `origin/main`:
   `origin/main` and confirms the merge commit GitHub reports is really an ancestor before
   logging `merged ... verified on origin/main`, since a squash/rebase merge mints a new
   SHA that a bare success response can't vouch for.
+- **Approval is bound to a commit, not a branch name.** A branch name is a moving
+  pointer, so orch resolves it to a commit OID once — just before the deterministic
+  security scan — and the scan, the changed-path floor and the merge all act on that
+  same OID: what was scanned is what was approved is what lands. Just before merging
+  (or publishing under `merge: pr`, or opening a `merge-deferred` escalation PR) orch
+  re-reads the branch head; if it moved or can't be read, the cycle escalates with
+  `branch head integrity check failed` instead of acting on code no reviewer saw.
+  Deferred cycles awaiting an automatic redrive carry that OID too, so the rebase is a
+  compare-and-swap and a legacy record with no OID stays human-owned.
 - **Per-cycle cost.** Every cycle's summary line includes `; cost <usageSummary>` — the
   token/$ estimate for that cycle's author + review rounds — so cost is visible next to
   the verdict, not just in aggregate run stats.
