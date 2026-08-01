@@ -739,11 +739,13 @@ test("§3b: initial author receives opts.authorPrompt verbatim (fenced work orde
 test("crash recovery: a 'tested' checkpoint skips both audit and gate on resume", async () => {
   // Simulates a crash after AGREE + green tests but before merge: the resumed
   // cycle must land the merge without re-auditing or re-running the test gate.
+  // The branch still points at the checkpointed commit, so the verdict is trusted.
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   deps.git.attachExistingBranch = () => {};
+  deps.git.git = (args) => (args[0] === "rev-parse" ? "sha-head" : "diff summary");
   let gateRuns = 0;
   deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
-  const stored = { branch: opts.branch, round: 1, stage: "tested", reason: "ok" };
+  const stored = { branch: opts.branch, oid: "sha-head", round: 1, stage: "tested", reason: "ok" };
   deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
   const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
   assert.equal(r.status, "merged");
@@ -751,12 +753,52 @@ test("crash recovery: a 'tested' checkpoint skips both audit and gate on resume"
   assert.equal(gateRuns, 0, "resume from a tested checkpoint must not re-run the test gate");
 });
 
+test("#422: a 'tested' checkpoint whose branch has MOVED loses the shortcut — re-audit + re-gate", async () => {
+  // The branch head no longer matches the OID the verdict was earned on (someone
+  // committed, rebased, or another cycle revised between crash and resume), so the
+  // cached AGREE + green must not be inherited: audit and gate run again.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.attachExistingBranch = () => {};
+  deps.git.git = (args) => (args[0] === "rev-parse" ? "sha-new" : "diff summary");
+  let gateRuns = 0;
+  deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
+  // round 2, not 1: 1 is also the no-checkpoint default, so it could not tell a
+  // refused verdict apart from a discarded checkpoint.
+  const stored = { branch: opts.branch, oid: "sha-old", round: 2, stage: "tested", reason: "ok" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "merged", "resume still works — it just refuses the stale verdict");
+  assert.equal(r.rounds, 2, "the checkpointed round is still adopted — only the verdict is refused");
+  assert.equal(deps._calls.audits, 1, "a moved branch must be audited fresh");
+  assert.equal(gateRuns, 1, "a moved branch must be re-gated");
+  assert.equal(deps._calls.authors, 0, "resume never re-authors");
+});
+
+test("#422: a legacy checkpoint with no OID fails closed — re-audit + re-gate", async () => {
+  // A checkpoint written by an older orch carries no `oid`, so the current branch
+  // content cannot be verified against it. Unverifiable means untrusted.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.attachExistingBranch = () => {};
+  deps.git.git = (args) => (args[0] === "rev-parse" ? "sha-head" : "diff summary");
+  let gateRuns = 0;
+  deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
+  const stored = { branch: opts.branch, round: 2, stage: "tested", reason: "ok" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.rounds, 2, "the checkpointed round is still adopted — only the verdict is refused");
+  assert.equal(deps._calls.audits, 1, "an OID-less checkpoint must be audited fresh");
+  assert.equal(gateRuns, 1, "an OID-less checkpoint must be re-gated");
+  assert.equal(deps._calls.authors, 0, "resume never re-authors");
+});
+
 test("crash recovery: a 'reviewed' DISAGREE checkpoint skips that round's audit and revises directly", async () => {
   const deps = makeDeps({
     verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], // only used for round 2's fresh audit
   });
   deps.git.attachExistingBranch = () => {};
-  const stored = { branch: opts.branch, round: 1, stage: "reviewed", decision: "DISAGREE", reason: "needs work" };
+  deps.git.git = (args) => (args[0] === "rev-parse" ? "sha-head" : "diff summary");
+  const stored = { branch: opts.branch, oid: "sha-head", round: 1, stage: "reviewed", decision: "DISAGREE", reason: "needs work" };
   deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
   const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
   assert.equal(r.status, "merged");
@@ -769,6 +811,7 @@ test("crash recovery: a 'reviewed' DISAGREE checkpoint skips that round's audit 
 test("checkpoint.record is called with the round's verdict after each fresh audit", async () => {
   const recorded = [];
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => (args[0] === "rev-parse" ? "sha-head" : "diff summary");
   deps.checkpoint = { lookup: () => null, record: (_dir, sid, data) => recorded.push({ sid, ...data }), clear() {} };
   const r = await runCycle({ ...opts, sid: "s1" }, deps);
   assert.equal(r.status, "merged");
@@ -776,6 +819,10 @@ test("checkpoint.record is called with the round's verdict after each fresh audi
   assert.equal(recorded[0].stage, "reviewed");
   assert.equal(recorded[0].decision, "AGREE");
   assert.equal(recorded[1].stage, "tested");
+  // #422: both entries pin the branch head OID — without it a resume cannot tell
+  // whether the verdict still belongs to the content the branch holds.
+  assert.equal(recorded[0].oid, "sha-head");
+  assert.equal(recorded[1].oid, "sha-head");
 });
 
 test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as ms (#56)", async () => {

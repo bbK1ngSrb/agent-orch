@@ -94,6 +94,16 @@ export async function runCycle(opts, deps) {
 
   const baseSha = git.git(["rev-parse", baseBranch], repo);
 
+  // #422: the branch head at this instant. Checkpoints carry it so a resume can
+  // prove the recorded verdict belongs to the content the branch holds NOW.
+  // Called fresh at every record/lookup site — a revise moves the branch. Read
+  // from `repo`: a linked worktree's commits land on the shared refs/heads entry.
+  // Unreadable → null, which the resume check treats as "cannot verify".
+  const branchOid = () => {
+    try { return git.git(["rev-parse", branch], repo); }
+    catch { return null; }
+  };
+
   try {
     // F1: author step + scope gate only in task mode. Review never writes.
     if (mode === "task") {
@@ -144,6 +154,16 @@ export async function runCycle(opts, deps) {
     // requested, still resume at the recorded round number (still valid,
     // still useful), but skip the pendingVerdict shortcut and force a fresh
     // audit call with the (now-different) reviewers.
+    //
+    // #422: the branch NAME is not enough. A verdict is earned by specific
+    // content, and a branch can move between the crash and `orch continue` (a
+    // manual commit, a rebase, another cycle's revise). So the checkpoint also
+    // pins the head commit OID: honour the cached verdict only when the branch
+    // still points at that exact commit. Mismatch — or a missing `oid`, which is
+    // what a checkpoint written by an older orch looks like — means we cannot
+    // prove the verdict fits, so we fail closed: resume at the recorded round,
+    // but re-audit and re-gate it. Costs one extra audit; never inherits a
+    // verdict earned by different code.
     let round = 1;
     let pendingVerdict = null;
     let skipTest = false;
@@ -151,7 +171,9 @@ export async function runCycle(opts, deps) {
       const ck = checkpoint?.lookup(orchDir, sid);
       if (ck && ck.branch === branch) {
         round = ck.round;
-        if (!opts.reviewerOverride) {
+        const oid = branchOid();
+        const contentMatches = Boolean(ck.oid) && Boolean(oid) && ck.oid === oid;
+        if (!opts.reviewerOverride && contentMatches) {
           if (ck.stage === "tested") {
             pendingVerdict = { decision: "AGREE", reason: ck.reason || "" };
             skipTest = true;
@@ -205,7 +227,7 @@ export async function runCycle(opts, deps) {
         notify.writeRound(orchDir, branch, round,
           `# Round ${round}\n\nVerdict: ${verdict.decision}\n\nCost: ${formatUsage(totalUsage(runStats))}\n\n${verdict.reason}\n`);
         notify.writeRoundRaw?.(orchDir, branch, round, roundRawOutput(verdicts));
-        checkpoint?.record(orchDir, sid, { branch, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
+        checkpoint?.record(orchDir, sid, { branch, oid: branchOid(), round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
 
         // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
         // revising the author would burn the whole loop for nothing. Escalate
@@ -230,7 +252,7 @@ export async function runCycle(opts, deps) {
           notify.phase("gate", `running: ${testCmd}`);
           ({ pass } = gate.run(testCmd, worktree));
           notify.phase("gate", testCmd, pass ? "ok" : "fail");
-          if (pass) checkpoint?.record(orchDir, sid, { branch, round, stage: "tested", reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
+          if (pass) checkpoint?.record(orchDir, sid, { branch, oid: branchOid(), round, stage: "tested", reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
         }
         if (!pass) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
