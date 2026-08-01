@@ -18,6 +18,13 @@ Contributors: more than welcome to pick up anything on this list — see
 - Dashboard visibility for orch cycles running outside the launching
   terminal (background/detached via `nohup`/`tmux`, or a future `--detach`
   flag) — see [docs/idea-detach-dashboard-visibility.md](docs/idea-detach-dashboard-visibility.md).
+- Drop quota-exhausted agents from the rotation pool on the fly, instead of
+  letting a 403 kill the whole cycle — orch already detects the condition
+  (`LIMIT_RE` in `cli-adapter.js`) but can only abort on it; pre-flight probing
+  is the weaker alternative. Includes moving limit detection into the adapter
+  contract next to `capabilities` (one shared regex cannot cover seven CLIs) and
+  scaffolding the field in `orch agent build` — see
+  [docs/idea-agent-quota-exclusion.md](docs/idea-agent-quota-exclusion.md).
 
 ## 1 year
 

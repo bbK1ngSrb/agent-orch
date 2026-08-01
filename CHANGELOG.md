@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.238 — 2026-08-01
+- auto-docs msakj2kr0 update documentation to reflect the latest merged changes
+
 ## v0.4.237 — 2026-08-01
 - auto-docs msajx8jg0 update documentation to reflect the latest merged changes
 
