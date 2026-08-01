@@ -20,6 +20,35 @@ function changelogEntry(ctx) {
     : title;
 }
 
+function reviewedHeadEscalation(ctx, deps) {
+  if (!Object.hasOwn(ctx, "reviewedSha")) return null;
+  const { repo, orchDir, branch, reviewedSha, sid, rounds, closes, runStats } = ctx;
+  const { git, notify } = deps;
+  let currentSha = null;
+  try {
+    currentSha = git.git(["rev-parse", "--verify", `refs/heads/${branch}`], repo);
+  } catch { /* unreadable fails closed below */ }
+  if (reviewedSha && currentSha && reviewedSha === currentSha) return null;
+
+  const reviewed = reviewedSha || "<unreadable>";
+  const current = currentSha || "<unreadable>";
+  const reason = `branch head integrity check failed: reviewed SHA ${reviewed}; current SHA ${current} — terminal escalation, refusing to merge or publish`;
+  notify.escalate(orchDir, branch,
+    `# Escalation — ${branch}\n\n` +
+    `The branch moved after approval or its current OID became unreadable.\n\n` +
+    `- Reviewed SHA: \`${reviewed}\`\n` +
+    `- Current SHA: \`${current}\`\n\n` +
+    `The approval applies only to the reviewed commit, so orch refused to merge or publish the branch.\n`);
+  const usage = totalUsage(runStats);
+  notify.recordRun(orchDir, {
+    ts: new Date().toISOString(), branch, sid, verdict: "escalated", reason, rounds,
+    closes: closes ?? null,
+    ...(usage.tokens ? { tokens: usage.tokens } : {}),
+    ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
+  });
+  return { status: "escalated", reason };
+}
+
 export async function finalize(ctx, deps) {
   const { repo, orchDir, branch, sid, paths, testCmd, cfg, rounds, closes, runStats } = ctx;
   const { git, gate, lock, inflight, github, notify } = deps;
@@ -29,6 +58,8 @@ export async function finalize(ctx, deps) {
   // cfg.merge === "pr": opt out of direct-to-main. No local merge, no merge.lock —
   // GitHub owns the merge (branch protection / CI-gated checks apply).
   if (cfg.merge === "pr") {
+    const integrityFailure = reviewedHeadEscalation(ctx, deps);
+    if (integrityFailure) return integrityFailure;
     const r = await github.openPr(ctx, deps);
     notify.recordRun(orchDir, {
       ts: new Date().toISOString(), branch, sid, verdict: r.prUrl ? "pr" : "escalated", rounds,
@@ -134,16 +165,21 @@ export async function finalize(ctx, deps) {
 // `quietFail` (redrive path): on conflict/gate-fail do not demote again — the
 // peer already has a merge-deferred PR from its first demote; just leave it.
 async function landIntoIntegration(ctx, deps, { integration, integrationBranch, baseBranch, preSha, quietFail = false }) {
-  const { repo, orchDir, branch, sid, testCmd, cfg, rounds, closes, runStats } = ctx;
+  const { repo, orchDir, branch, reviewedSha, sid, testCmd, cfg, rounds, closes, runStats } = ctx;
   const { git, gate, github, notify } = deps;
   const usage = totalUsage(runStats);
+
+  // Primary lands carry the OID captured immediately before the security reads.
+  // This runs under merge.lock; a moved or unreadable branch invalidates approval.
+  const integrityFailure = reviewedHeadEscalation(ctx, deps);
+  if (integrityFailure) return integrityFailure;
 
   // `orch issue <n>`: stamp `Closes #n` in the no-ff merge commit so the issue
   // auto-closes once GitHub merges the integration PR. ponytail: ff-only has no merge commit
   // to carry it, so it won't auto-close — default is no-ff; demote PR covers the
   // fallback. The number is our own int, not attacker text — safe to interpolate.
   const message = closes ? `Merge ${branch}\n\nCloses #${closes}` : null;
-  const m = git.mergeInWorktree(integration, branch, cfg.merge, message);
+  const m = git.mergeInWorktree(integration, reviewedSha || branch, cfg.merge, message);
   if (!m.ok) {
     if (quietFail) return { status: "merge-deferred", trigger: "dirty-merge", reason: m.reason || "conflict" };
     return demote(ctx, deps, {
@@ -478,6 +514,8 @@ function oneLine(value = "") {
 async function demote(ctx, deps, details) {
   const { orchDir, branch, sid, rounds, closes, runStats, cfg } = ctx;
   const { github, notify } = deps;
+  const integrityFailure = reviewedHeadEscalation(ctx, deps);
+  if (integrityFailure) return integrityFailure;
   const usage = totalUsage(runStats);
   const reason = demoteReason(ctx, details);
   const integrationBranch = details.integrationBranch || cfg?.integrationBranch || "orch/integration";

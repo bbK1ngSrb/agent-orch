@@ -273,10 +273,15 @@ export async function runCycle(opts, deps) {
         // rules) and the STRUCTURAL `--raw -z` listing (changed paths, for the
         // guardrail floor — no prefix/quoting config can blind it). Both are in
         // the one try: a partial view is not a view we scan on.
+        const reviewedSha = branchOid();
+        if (!reviewedSha) {
+          return recordTerminal(escalate(notify, orchDir, branch, round,
+            `security scan: could not read reviewed branch head refs/heads/${branch} — failing closed, not merging`));
+        }
         let finalDiff, rawPaths;
         try {
-          finalDiff = git.git(["diff", ...SECURITY_DIFF_ARGS, `${baseBranch}...${branch}`], repo);
-          rawPaths = parseRawPaths(git.git(["diff", ...SECURITY_RAW_ARGS, `${baseBranch}...${branch}`], repo));
+          finalDiff = git.git(["diff", ...SECURITY_DIFF_ARGS, `${baseBranch}...${reviewedSha}`], repo);
+          rawPaths = parseRawPaths(git.git(["diff", ...SECURITY_RAW_ARGS, `${baseBranch}...${reviewedSha}`], repo));
         } catch (e) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
             `security scan: could not read the final diff (${e.message}) — failing closed, not merging`));
@@ -295,7 +300,7 @@ export async function runCycle(opts, deps) {
         }
         // Compute the loop-guard signals BEFORE finalize: a ff merge makes
         // main...branch empty, so reading it post-merge always yields [].
-        const changed = git.changedFiles(repo, branch, baseBranch);
+        const changed = git.changedFiles(repo, reviewedSha, baseBranch);
         // §3c: protected-path floor at the MERGE boundary. Gating the FINAL diff
         // (not just round 1) covers the initial author, every revise, resume, and
         // an `orch review` merge — the same set CODEOWNERS guards at review time.
@@ -309,7 +314,7 @@ export async function runCycle(opts, deps) {
         const docsOnly = isDocsOnly(changed, cfg.docs.paths);
         const noop = changed.length === 0;
         const fin = await finalize({
-          repo, orchDir, branch, sid, baseSha, paths: changed,
+          repo, orchDir, branch, reviewedSha, sid, baseSha, paths: changed,
           testCmd, cfg, rounds: round, task, closes: opts.closes || null, runStats,
         }, deps);
         const label = fin.status === "merged" ? `merged ${branch}`

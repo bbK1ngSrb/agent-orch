@@ -84,6 +84,168 @@ test("clean path → merged + recorded", async () => {
   assert.equal(recorded[0].verdict, "merged");
 });
 
+test("#422: unchanged head is checked under merge.lock and the reviewed SHA is merged", async () => {
+  const reviewedSha = "1111111111111111111111111111111111111111";
+  const integrationSha = "9999999999999999999999999999999999999999";
+  let lockHeld = false;
+  let checkedUnderLock = false;
+  let mergeTarget = null;
+  let bridgedCtx = null;
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    lock: {
+      acquireBlocking: () => { lockHeld = true; return true; },
+      releaseLock: () => { lockHeld = false; },
+    },
+    git: {
+      ...g,
+      git: (args, cwd) => {
+        if (args[0] === "rev-parse" && args[1] === "--verify") {
+          checkedUnderLock = lockHeld;
+          return reviewedSha;
+        }
+        if (args[0] === "rev-parse" && args[1] === "--short") return "9999999";
+        if (args[0] === "rev-parse" && (cwd === "/integ" || args[1] === "orch/integration")) return integrationSha;
+        return g.git(args, cwd);
+      },
+      mergeInWorktree: (_integration, target) => { mergeTarget = target; return { ok: true, reason: "merged" }; },
+    },
+    github: {
+      ...baseDeps().deps.github,
+      openIntegrationPr: async (c) => { bridgedCtx = c; return { prUrl: "https://x/pr/99" }; },
+    },
+  });
+
+  const r = await finalize({ ...ctx(), reviewedSha }, deps);
+
+  assert.equal(r.status, "merged");
+  assert.equal(checkedUnderLock, true);
+  assert.equal(lockHeld, false);
+  assert.equal(mergeTarget, reviewedSha, "git merge must act on the checked commit, not the branch name");
+  assert.equal(bridgedCtx.reviewedSha, reviewedSha);
+  assert.equal(bridgedCtx.integrationSha, integrationSha, "reviewedSha and integrationSha remain distinct");
+});
+
+test("#422: a moved head causes terminal escalation naming both SHAs and no merge", async () => {
+  const reviewedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const currentSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  let merged = false;
+  let escalation = null;
+  const g = baseDeps().deps.git;
+  const { deps, recorded } = baseDeps({
+    git: {
+      ...g,
+      git: (args, cwd) => args[1] === "--verify" ? currentSha : g.git(args, cwd),
+      mergeInWorktree: () => { merged = true; return { ok: true }; },
+    },
+    notify: {
+      recordRun: (_d, e) => recorded.push(e),
+      cleanupReviews: () => {},
+      escalate: (orchDir, branch, body) => { escalation = { orchDir, branch, body }; },
+    },
+  });
+
+  const r = await finalize({ ...ctx(), reviewedSha }, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.equal(merged, false);
+  assert.match(r.reason, new RegExp(reviewedSha));
+  assert.match(r.reason, new RegExp(currentSha));
+  assert.match(escalation.body, new RegExp(reviewedSha));
+  assert.match(escalation.body, new RegExp(currentSha));
+  assert.equal(recorded[0].verdict, "escalated");
+});
+
+test("#422: an unreadable head at finalize fails closed without merging", async () => {
+  const reviewedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  let merged = false;
+  const g = baseDeps().deps.git;
+  const { deps, recorded } = baseDeps({
+    git: {
+      ...g,
+      git: (args, cwd) => {
+        if (args[1] === "--verify") throw new Error("cannot resolve branch");
+        return g.git(args, cwd);
+      },
+      mergeInWorktree: () => { merged = true; return { ok: true }; },
+    },
+    notify: {
+      recordRun: (_d, e) => recorded.push(e),
+      cleanupReviews: () => {},
+      escalate: () => {},
+    },
+  });
+
+  const r = await finalize({ ...ctx(), reviewedSha }, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.equal(merged, false);
+  assert.match(r.reason, new RegExp(reviewedSha));
+  assert.match(r.reason, /current SHA <unreadable>/);
+  assert.equal(recorded[0].verdict, "escalated");
+});
+
+test("#422: a tip moved on the overlap demote path is not pushed or opened as a PR", async () => {
+  const reviewedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const currentSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  let liveHead = reviewedSha;
+  let merged = false;
+  let demoted = false;
+  const g = baseDeps().deps.git;
+  const { deps, recorded } = baseDeps({
+    inflight: { peerPaths: () => ["src/a.js"] },
+    deferred: { record: () => {}, list: () => [] },
+    git: {
+      ...g,
+      git: (args, cwd) => {
+        if (args[1] === "--verify") return liveHead;
+        if (args[0] === "rev-parse" && args[1] === "HEAD" && cwd === "/integ") {
+          liveHead = currentSha;
+          return "deadbee";
+        }
+        return g.git(args, cwd);
+      },
+      mergeInWorktree: () => { merged = true; return { ok: true }; },
+    },
+    github: {
+      ...baseDeps().deps.github,
+      demote: async () => { demoted = true; return { prUrl: "https://x/pr/1" }; },
+    },
+    notify: {
+      recordRun: (_d, e) => recorded.push(e),
+      cleanupReviews: () => {},
+      escalate: () => {},
+    },
+  });
+
+  const r = await finalize({ ...ctx(), reviewedSha }, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.equal(merged, false);
+  assert.equal(demoted, false, "moved content must not be pushed or opened as a PR");
+  assert.match(r.reason, new RegExp(reviewedSha));
+  assert.match(r.reason, new RegExp(currentSha));
+  assert.equal(recorded[0].verdict, "escalated");
+});
+
+test("#422: merge: pr refuses a moved branch before opening the PR", async () => {
+  const reviewedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const currentSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  let opened = false;
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: { ...g, git: (args, cwd) => args[1] === "--verify" ? currentSha : g.git(args, cwd) },
+    github: { openPr: async () => { opened = true; return { prUrl: "https://x/pr/9" }; } },
+  });
+
+  const r = await finalize({ ...ctx(), reviewedSha, cfg: { merge: "pr" } }, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.equal(opened, false);
+  assert.match(r.reason, new RegExp(reviewedSha));
+  assert.match(r.reason, new RegExp(currentSha));
+});
+
 test("merge commit built but integration branch didn't advance → throws instead of reporting merged", async () => {
   const g = baseDeps().deps.git;
   const { deps } = baseDeps({
