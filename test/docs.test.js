@@ -298,6 +298,21 @@ test("docs document main.autoMerge for the persistent integration PR", () => {
   assert.match(readme, /direct merge of that\s+persistent PR/);
 });
 
+test("docs explain main.autoMerge is pinned to the verified integration tip (#422 part 4)", () => {
+  // tryMergeDirect / openIntegrationPr pass the tip this cycle pushed as sha=.
+  // A concurrent peer that advances the head is legitimate green work — 409 is
+  // logged once and that peer owns the newer tip; other errors stay swallowed.
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /pinned to the\s+integration tip this cycle (?:pushed and )?verified/i);
+    assert.match(
+      doc,
+      /integration advanced past\s+the commit this cycle verified/i,
+    );
+    assert.match(doc, /newer cycle will\s+merge it/i);
+  }
+  assert.match(manual, /sha=/);
+});
+
 test("docs explain headless self-merge needs bypass or a second reviewer identity", () => {
   for (const doc of [readme, manual, ORCH_DOC]) {
     assert.match(doc, /approve its own PR|self-approval/);

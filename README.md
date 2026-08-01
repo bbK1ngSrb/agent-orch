@@ -327,7 +327,12 @@ PR using a merge commit so `orch/integration` stays in `main`'s ancestry.
 Alternatively, `main.autoMerge: true` triggers a direct merge of that
 persistent PR once all of its checks are green — a fallback for
 when native auto-merge stalls at `BLOCKED` because review is satisfied via a
-ruleset bypass grant rather than a human approval. The merge runs as whatever
+ruleset bypass grant rather than a human approval. The merge is pinned to the
+integration tip this cycle pushed and verified: a concurrent cycle that advances
+`orch/integration` between the push and the merge attempt gets a logged 409
+("integration advanced past the commit this cycle verified — the newer cycle will
+merge it") and owns landing the newer tip; other failures stay swallowed so a
+pending check is not cycle noise. The merge runs as whatever
 `gh` identity orch is authenticated as, so it only lands if that identity is
 itself in the branch's ruleset `bypass_actors` list. This is necessary because GitHub
 does not allow an actor to approve its own PR, so an orch-authored PR cannot

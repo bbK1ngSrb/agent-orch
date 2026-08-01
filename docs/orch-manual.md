@@ -1064,8 +1064,16 @@ release:
 - **`main.autoMerge`** — opt-in (default `false`). When `true`, every cycle
   that re-touches the persistent `orch/integration → main` PR checks whether
   *all* of that PR's status checks are green and, if so, merges it directly
-  via `gh` (a merge commit, same as the mirror model requires). This is the
-  fallback for when native auto-merge (`github.autoMergePr`) stalls at
+  via `gh` (a merge commit, same as the mirror model requires). The merge is
+  pinned to the integration tip this cycle pushed and verified (`sha=` on the
+  REST merge endpoint). The persistent PR is designed to accumulate work from
+  several cycles: a concurrent peer that lands on `orch/integration` between
+  this cycle's push and its merge attempt is legitimate green work, not an
+  intruder. On 409 (head moved) orch logs once that *integration advanced past
+  the commit this cycle verified — the newer cycle will merge it*, does not
+  escalate, and leaves the cycle's `merged` status and PR URL alone; every
+  other error stays swallowed so a still-pending check is not cycle noise. This
+  is the fallback for when native auto-merge (`github.autoMergePr`) stalls at
   `BLOCKED` because the review requirement is satisfied only through a ruleset
   `bypass_actors` grant rather than a human approval. The direct merge runs as
   whatever `gh` identity orch is authenticated as — an `orch[bot]` installation
