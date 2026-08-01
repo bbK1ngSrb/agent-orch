@@ -268,9 +268,16 @@ before any commit (nothing to resume), and never hijacks a live peer's branch.
 
 Within a resumed cycle, a per-round checkpoint in `.orch/checkpoints/` (keyed on the
 run's sid) goes further: it records each review round's verdict, and whether the test
-gate has already passed. A crash mid-review or between a green gate and merge doesn't
+gate has already passed — each pinned to the branch head commit OID at the moment it
+was recorded. A crash mid-review or between a green gate and merge doesn't
 re-audit rounds already decided or re-run tests that already passed — the resumed
-cycle picks up at the next undone step. The checkpoint is cleared once the cycle
+cycle picks up at the next undone step. The OID pin binds each verdict to the code
+that earned it: if the branch moved between the crash and the resume (a manual
+commit, a rebase, another cycle's revise), the recorded shortcut no longer matches
+and that step is re-audited or re-gated instead of inheriting a verdict earned on
+different content — resume still keeps the recorded round and merges if the fresh
+checks pass. A checkpoint written by an older orch carries no OID and is treated as
+unverifiable, never as a match. The checkpoint is cleared once the cycle
 reaches a terminal status.
 
 `orch continue <sid>` also cleans up stale local resume state when the saved

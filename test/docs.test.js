@@ -344,6 +344,15 @@ test("docs explain stale `orch continue` resume handling", () => {
   }
 });
 
+test("docs explain checkpoint verdicts are pinned to the branch head OID (#422)", () => {
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /branch head commit OID/);
+    assert.match(doc, /unverifiable/);
+  }
+  assert.match(manual, /rev-parse --verify refs\/heads\/<branch>/);
+  assert.match(manual, /tag[\s\S]{0,60}share the branch's name/);
+});
+
 test("docs describe all pre-landing sync reconciliations", () => {
   for (const doc of [readme, manual]) {
     assert.match(
