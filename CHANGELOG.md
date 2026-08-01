@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.226 — 2026-08-01
+- auto-docs msa94mce0 update documentation to reflect the latest merged changes
+
+## v0.4.225 — 2026-08-01
+- orch pr --merge merges the PR's current head, not the reviewed snapshot (TOCTOU: no sha pin on the REST merge) (closes [#421](https://github.com/bbk1ng/agent-orch/issues/421))
+
 ## v0.4.224 — 2026-07-30
 - tag-release cannot push a tag whose history contains a workflow-file change: GITHUB_TOKEN is refused, and v0.4.216 was left untagged (closes [#416](https://github.com/bbk1ng/agent-orch/issues/416))
 

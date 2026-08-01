@@ -200,12 +200,29 @@ test("roundCap docs describe total review rounds, not post-DISAGREE revisions on
   );
 });
 
-test("manual documents the empty-diff escalation before review", () => {
-  // engine.js checks changedFiles before every review round and escalates with
-  // "author produced no changes — nothing to review" instead of reviewing or
-  // merging an empty diff; in review mode the same check runs before the audit.
-  assert.match(manual, /author produced no changes — nothing to review/);
-  assert.match(manual, /empty author diff/);
+test("manual documents the empty-diff escalation before each review round", () => {
+  // engine.js escalates when the branch has no diff against its base instead of
+  // sending an empty patch to a reviewer — an `AGREE` on nothing would otherwise
+  // walk straight through the test gate to a merge of zero changes.
+  const engine = read("src/engine.js");
+  assert.match(engine, /changedFiles\(repo, branch, baseBranch\)\.length === 0/);
+  assert.match(engine, /author produced no changes — nothing to review/);
+  // The manual hard-wraps at ~78 cols, so the quoted reason spans a line break.
+  assert.match(manual, /author\s+produced\s+no\s+changes\s+—\s+nothing\s+to\s+review/);
+  // The guard sits inside the round loop, so docs must say the check repeats.
+  assert.match(manual, /Before each round/);
+  // ...but it diffs the WHOLE branch against its base, so a revision that adds
+  // nothing new still leaves round one's diff in place and the loop runs to the
+  // cap (test/engine.test.js "DISAGREE until cap"). Docs must not claim the
+  // guard stops every no-op revision.
+  // Every space is \s+ so a reflow of the hard-wrapped manual can't turn these
+  // red while the prose is still correct.
+  assert.match(manual, /whole\s+branch\*?\s+against\s+its\s+base/);
+  assert.match(manual, /adds\s+nothing\s+new\s+keeps\s+the\s+earlier\s+diff/);
+  assert.match(manual, /still\s+runs\s+to\s+`roundCap`/);
+  assert.doesNotMatch(manual, /a revision that changes nothing stops the loop/);
+  // The top-level "what makes a cycle escalate" list must name it too.
+  assert.match(manual, /an\s+author\s+that\s+produced\s+no\s+changes\s+at\s+all/);
 });
 
 test("orch.example.yml exposes security.ignore, commented out, with the sharp-edge warning", () => {
@@ -402,14 +419,16 @@ test("docs document the automatic redrive of overlap-deferred cycles (#350)", ()
   );
 });
 
-test("docs document the empty-diff escalation and CI tag derivation (#412/#409/#415)", () => {
+test("docs document the empty-diff escalation and CI tag derivation (#412/#409/#415/#416)", () => {
   // engine.js escalates before the first review round when the author branch
   // has no changes against the base; docs must not imply the review loop runs
   // to roundCap on an empty diff (#412).
   const engine = read("src/engine.js");
   assert.match(engine, /author produced no changes/);
+  // Manual hard-wraps the quoted reason across lines; README keeps it on one.
+  assert.match(readme, /author produced no changes/);
+  assert.match(manual, /author\s+produced\s+no\s+changes/);
   for (const doc of [readme, manual]) {
-    assert.match(doc, /author produced no changes/);
     assert.match(doc, /empty diff/i);
   }
   // tag-release.yml derives tags from the push's commit range via
@@ -419,4 +438,13 @@ test("docs document the empty-diff escalation and CI tag derivation (#412/#409/#
   assert.match(manual, /every version tagged, not just the tip/);
   assert.match(manual, /fails loudly/);
   assert.match(manual, /scripts\/release-tags\.js/);
+  // #416: GITHUB_TOKEN is refused when pushing a tag whose history reaches a
+  // workflow-file change — reachability alone, not new content. Docs that only
+  // promise "CI tags on push" leave operators blind to permanent untagged
+  // releases; the ready-to-apply fix is in PLANNED.md (workflow path is
+  // protected from orch authorship).
+  assert.match(manual, /GITHUB_TOKEN/);
+  assert.match(manual, /\.github\/workflows\//);
+  assert.match(manual, /#416|PLANNED\.md/);
+  assert.match(read("PLANNED.md"), /#416 tag-release API ref creation/);
 });
