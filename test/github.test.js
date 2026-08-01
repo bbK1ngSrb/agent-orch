@@ -343,6 +343,21 @@ test("openPr also attempts a direct merge right after enabling auto-merge", asyn
   assert.ok(direct.includes(`sha=${reviewedSha}`), "the direct merge must pin the reviewed commit");
 });
 
+// The REST merge endpoint is keyed by the PR *number* — `pulls/9/merge`. Passing
+// the branch name builds `pulls/pr%2Fclaude%2Fx-1/merge`, which matches no route
+// and 404s every single time; swallowed, that looks exactly like a legitimate
+// "checks still pending", so the fallback is silently dead.
+test("openPr addresses the direct merge by PR number, not branch name", async () => {
+  const calls = [];
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/9\n"; };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
+
+  await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", cfg }, { gh, git, notify: { escalate() {} } });
+  const direct = calls.find((c) => c[0] === "gh" && c[1] === "api");
+  assert.ok(direct.includes("repos/{owner}/{repo}/pulls/9/merge"), `direct merge must use the PR number, got: ${direct.join(" ")}`);
+});
+
 test("openPr swallows a direct-merge failure (checks still pending is normal)", async () => {
   const gh = (args) => {
     if (args[0] === "--version") return "gh 2";
