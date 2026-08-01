@@ -331,6 +331,7 @@ export async function openPr(ctx, deps) {
   const body = redact("agent-orch: agents agreed and tests are green. Opened as a PR (merge: pr) instead of merging directly to main.")
     + (closes ? `\n\nCloses #${closes}` : "");
   const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, body, reviewedSha);
+  const prNumber = prNumberFromUrl(url);
   // The PR is already open at this point — a failure enabling GitHub's native
   // auto-merge (branch protection off, no merge queue, etc.) must not be
   // reported as a cycle failure; log it and hand back the PR we did open.
@@ -345,7 +346,11 @@ export async function openPr(ctx, deps) {
       // checks pass (verified empirically). Try an immediate direct merge
       // too: a no-op failure (checks still pending) is expected and safe to
       // swallow — native auto-merge covers the normal real-approval case.
-      try { mergeDirect(gh, branch, cfg.github.mergeMethod, reviewedSha); } catch { /* not ready yet */ }
+      // The REST merge endpoint is keyed by PR *number*: passing the branch
+      // name here 404s every time, which looks identical to a legitimate
+      // not-ready-yet once swallowed (same defect #182 fixed for the
+      // integration path).
+      tryMergeDirect(gh, prNumber || branch, cfg.github.mergeMethod, reviewedSha);
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
     }
