@@ -385,17 +385,22 @@ export function reconcileIntegrationToBase(integrationPath, base = "main") {
 }
 
 // Replay `branch`'s commits onto `onto` (typically orch/integration after a peer
-// landed). Used by finalize's Tier-1 redrive of overlap-demoted peers (#350).
+// landed). When `expectedSha` is supplied, rebase that immutable commit and only
+// advance the branch with an update-ref compare-and-swap. Used by finalize's
+// Tier-1 redrive of overlap-demoted peers (#350).
 // Runs in a temporary worktree so the caller's integration worktree stays put.
-// On conflict: abort the rebase, drop the temp worktree, leave `branch` untouched.
-export function rebaseBranchOnto(repo, orchDir, branch, onto) {
+// On conflict or a moved branch: drop the temp worktree and leave `branch` alone.
+export function rebaseBranchOnto(repo, orchDir, branch, onto, expectedSha = null) {
   if (!branch || !onto || branch === onto) {
     return { ok: false, reason: "rebaseBranchOnto: invalid branch/onto" };
   }
   const path = join(orchDir, "wt", `rebase-${String(branch).replace(/[^\w.-]+/g, "_")}`);
   gitTry(["worktree", "remove", "--force", path], repo);
   rmSync(path, { recursive: true, force: true });
-  const add = gitTry(["worktree", "add", "--", path, branch], repo);
+  const addArgs = expectedSha
+    ? ["worktree", "add", "--detach", "--", path, expectedSha]
+    : ["worktree", "add", "--", path, branch];
+  const add = gitTry(addArgs, repo);
   if (!add.ok) return { ok: false, reason: add.out.trim() || "worktree add failed" };
   try {
     const rb = gitTry(["rebase", onto], path);
@@ -403,7 +408,14 @@ export function rebaseBranchOnto(repo, orchDir, branch, onto) {
       gitTry(["rebase", "--abort"], path);
       return { ok: false, reason: rb.out.trim() || "rebase failed" };
     }
-    return { ok: true };
+    const head = gitTry(["rev-parse", "HEAD"], path);
+    if (!head.ok) return { ok: false, reason: head.out.trim() || "rebased head unreadable" };
+    const sha = head.out.trim();
+    if (expectedSha) {
+      const update = gitTry(["update-ref", `refs/heads/${branch}`, sha, expectedSha], repo);
+      if (!update.ok) return { ok: false, reason: update.out.trim() || "branch moved during rebase" };
+    }
+    return { ok: true, sha };
   } finally {
     gitTry(["worktree", "remove", "--force", path], repo);
     rmSync(path, { recursive: true, force: true });

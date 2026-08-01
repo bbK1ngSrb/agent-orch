@@ -124,19 +124,23 @@ export async function finalize(ctx, deps) {
     const integrationTip = git.git(["rev-parse", "HEAD"], integration);
     const overlap = overlapDetails(paths, peerPaths, peerEntries);
     if (overlap.any) {
-      // Queue for post-land redrive when a blocking peer merges (#350). Only the
-      // overlap trigger is mechanical (stale base); conflicts stay human-only.
-      deferred.record?.(orchDir, {
-        sid, branch, paths, testCmd, baseSha: ctx.baseSha, rounds, closes,
-        title: ctx.title, task: ctx.task,
-        peerSids: overlap.peers.map((e) => e.sid).filter(Boolean),
-      });
-      return demote(ctx, deps, {
+      const result = await demote(ctx, deps, {
         trigger: "overlap",
         integrationBranch,
         integrationTip,
         overlap,
       });
+      // Only a successful demotion is eligible for post-land redrive. Persist
+      // the reviewed commit so redrive never re-resolves mutable branch content.
+      if (result.status === "merge-deferred") {
+        deferred.record?.(orchDir, {
+          sid, branch, reviewedSha: ctx.reviewedSha || null,
+          paths, testCmd, baseSha: ctx.baseSha, rounds, closes,
+          title: ctx.title, task: ctx.task,
+          peerSids: overlap.peers.map((e) => e.sid).filter(Boolean),
+        });
+      }
+      return result;
     }
 
     const landed = await landIntoIntegration(ctx, deps, {
@@ -316,17 +320,23 @@ async function redriveDeferredPeers(ctx, deps, { integration, integrationBranch,
       // Consume one redrive attempt up front so a crash mid-redrive cannot loop.
       deferred.markAttempt?.(orchDir, peer.sid);
 
+      const reviewedSha = typeof peer.reviewedSha === "string" ? peer.reviewedSha.trim() : "";
+      if (!reviewedSha) continue; // legacy/unpinned records require a fresh human review
+
       git.syncWorktreeToIntegration(integration, integrationBranch);
       const preSha = git.git(["rev-parse", "HEAD"], integration);
 
+      let redriveSha = reviewedSha;
       if (typeof git.rebaseBranchOnto === "function") {
-        const rb = git.rebaseBranchOnto(repo, orchDir, peer.branch, integrationBranch);
-        if (!rb.ok) continue; // stays deferred; demote PR from first demote still open
+        const rb = git.rebaseBranchOnto(repo, orchDir, peer.branch, integrationBranch, reviewedSha);
+        if (!rb.ok || !rb.sha) continue; // stays deferred; demote PR from first demote still open
+        redriveSha = rb.sha;
       }
 
       const peerCtx = {
         repo, orchDir,
         branch: peer.branch,
+        reviewedSha: redriveSha,
         sid: peer.sid,
         paths: peer.paths || [],
         testCmd: peer.testCmd || ctx.testCmd,
