@@ -5,7 +5,7 @@ import { runPr, buildComment, buildIssueComment, demote, openPr, openIntegration
 function makeDeps({
   status = "approved", state = "OPEN",
   mergedState = "MERGED", mergeCommitOid = "abc123def", ancestorFails = false,
-  fetchLockFailures = 0,
+  fetchLockFailures = 0, reviewedSha = "reviewed123def", currentHeadSha = reviewedSha,
 } = {}) {
   const calls = { gh: [], git: [] };
   let fetchAttempts = 0;
@@ -20,10 +20,15 @@ function makeDeps({
         }
         return JSON.stringify({ number: 7, headRefName: "feature/x", state });
       }
+      if (args[0] === "api" && args.some((a) => a.includes("pulls/7/merge"))) {
+        const pinnedSha = args.find((a) => a.startsWith("sha="))?.slice(4);
+        if (pinnedSha !== currentHeadSha) throw new Error("HTTP 409: Head branch was modified");
+      }
       return "";
     },
     git(args) {
       calls.git.push(args);
+      if (args[0] === "rev-parse") return `${reviewedSha}\n`;
       if (args[0] === "fetch" && args[2] === "main:refs/remotes/origin/main") {
         fetchAttempts++;
         if (fetchAttempts <= fetchLockFailures) throw new Error("fatal: cannot lock ref 'refs/remotes/origin/main'");
@@ -72,7 +77,9 @@ test("runPr merges only with merge flag + approved", async () => {
   await runPr({ ...opts, merge: true }, yes);
   // Direct REST merge, not `gh pr merge` — its client-side mergeable precheck
   // ignores ruleset bypass_actors and can false-refuse an eligible merge.
-  assert.ok(yes._calls.gh.some((c) => c.args[0] === "api" && c.args.some((a) => a.includes("pulls/7/merge"))));
+  const directMerge = yes._calls.gh.find((c) => c.args[0] === "api" && c.args.some((a) => a.includes("pulls/7/merge")));
+  assert.ok(directMerge);
+  assert.ok(directMerge.args.includes("sha=reviewed123def"), "merge must be pinned to the reviewed commit");
   // §140: a merge claim must be checked against origin/main, not just gh's exit code
   assert.ok(yes._calls.gh.some((c) => c.args[1] === "view" && c.args.includes("state,mergeCommit")));
   assert.ok(yes._calls.git.some((a) => a[0] === "fetch" && a[2] === "main:refs/remotes/origin/main"));
@@ -86,6 +93,15 @@ test("runPr merges only with merge flag + approved", async () => {
   const blocked = makeDeps({ status: "escalated" });
   await runPr({ ...opts, merge: true }, blocked);
   assert.ok(!blocked._calls.gh.some((c) => c.args[0] === "api"));
+});
+
+test("runPr fails closed when the PR head moves during review", async () => {
+  const deps = makeDeps({ currentHeadSha: "moved456def" });
+  await assert.rejects(
+    () => runPr({ ...opts, merge: true }, deps),
+    /PR head moved during review.*re-run `orch pr 7 --merge`/,
+  );
+  assert.ok(!deps._calls.gh.some((c) => c.args.includes("state,mergeCommit")));
 });
 
 test("runPr verifies a merged PR against cfg.baseBranch", async () => {

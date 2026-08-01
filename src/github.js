@@ -17,8 +17,10 @@ function originRef(base) {
 // required, no approval" and refuses, even for an actor the ruleset would
 // actually let merge. Hitting the REST merge endpoint directly skips that
 // broken precheck; GitHub evaluates bypass correctly there.
-function mergeDirect(gh, prRef, method) {
-  gh(["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${prRef}/merge`, "-f", `merge_method=${method}`]);
+function mergeDirect(gh, prRef, method, sha = null) {
+  const args = ["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${prRef}/merge`, "-f", `merge_method=${method}`];
+  if (sha) args.push("-f", `sha=${sha}`);
+  gh(args);
 }
 
 function prNumberFromUrl(url) {
@@ -181,6 +183,9 @@ export async function runPr(opts, deps) {
   git(["fetch", "origin", `+pull/${pr.number}/head:${branch}`], repo);
 
   try {
+    const reviewedSha = git(["rev-parse", branch], repo).trim();
+    if (!reviewedSha) throw new Error(`orch pr #${pr.number}: could not resolve the fetched PR head`);
+
     // Review mode: reviewers default to the first configured agent; PR branch has no orch author.
     // Role specs ("<agent> [model] [effort]") are parsed so model/effort reach the adapters,
     // matching the task/review paths — otherwise a spec string becomes a bogus agent name.
@@ -207,7 +212,17 @@ export async function runPr(opts, deps) {
     log(`commented on PR #${pr.number}: ${result.status}`);
 
     if (result.status === "approved" && merge) {
-      mergeDirect(gh, String(n), cfg.github.mergeMethod);
+      try {
+        mergeDirect(gh, String(n), cfg.github.mergeMethod, reviewedSha);
+      } catch (e) {
+        if (/\b409\b/.test(String(e?.message || ""))) {
+          throw new Error(
+            `orch pr #${pr.number}: the PR head moved during review — re-run \`orch pr ${pr.number} --merge\` to audit the new head`,
+            { cause: e },
+          );
+        }
+        throw e;
+      }
       // gh reporting exit 0 isn't proof the commit is actually on origin/main —
       // squash/rebase merges mint a brand-new sha, so we can't just check the
       // pre-merge branch head; ask GitHub for the merge commit it produced and
