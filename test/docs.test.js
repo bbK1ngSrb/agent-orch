@@ -48,6 +48,16 @@ test("docs explain that `orch pr --merge` pins the reviewed PR head (#421)", () 
   }
 });
 
+test("the manual names the REST merge endpoint `orch pr --merge` uses (#421)", () => {
+  // mergeDirect() PUTs repos/{owner}/{repo}/pulls/<n>/merge rather than
+  // shelling out to `gh pr merge`, whose client-side precheck is blind to
+  // ruleset bypasses and refuses merges the server would accept. A manual
+  // that leaves this out sends readers to the wrong command when they debug
+  // a refused merge.
+  assert.match(manual, /pulls\/<n>\/merge/);
+  assert.match(manual, /precheck[\s\S]{0,80}bypass|bypass[\s\S]{0,80}precheck/i);
+});
+
 test("docs list the built-in CLI adapters", () => {
   for (const doc of [readme, exampleConfig]) {
     assert.match(doc, /claude/);
