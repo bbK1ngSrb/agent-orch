@@ -329,7 +329,7 @@ and posts the verdict as a PR comment.
 
 ```bash
 orch pr 42            # review only, post a comment
-orch pr 42 --merge     # ...and merge via `gh pr merge` if agents approve + tests pass
+orch pr 42 --merge     # ...and ask GitHub to merge if agents approve + tests pass
 ```
 
 **When to use it:** reviewing a PR that came from *outside* your orch
@@ -346,11 +346,18 @@ issue` check this too).
 scan: a risky diff escalates instead of reporting `approved`, regardless of
 what the LLM reviewers concluded.
 
-**Merge verification, not just a trusted exit code.** After `gh pr merge`
-returns success, `orch` doesn't take that at face value: it re-fetches
-`origin/main` and confirms the merge commit `gh` actually reports is
-present as an ancestor before it prints `merged`. This matters because a
-squash or rebase merge mints a brand-new commit SHA that has nothing to do
+**The fetched and reviewed head is the only one eligible to merge.** With
+`--merge`, orch resolves the fetched PR head's commit SHA before review and
+pins GitHub's merge request to it. If the PR head moves during review, GitHub
+rejects the pinned request; orch stops and tells you to re-run
+`orch pr 42 --merge` so the new head is audited instead of landing code the
+agents never saw.
+
+**Merge verification, not just a trusted success response.** After the pinned
+GitHub merge request returns success, `orch` doesn't take that at face value:
+it re-fetches `origin/main` and confirms that the merge commit reported by
+`gh` is present as an ancestor before it prints `merged`. This matters because
+a squash or rebase merge mints a brand-new commit SHA that has nothing to do
 with the PR branch's own commits — checking the *old* branch head would
 prove nothing about whether the new squashed/rebased commit really landed.
 If the check fails (a race with GitHub's own propagation, or a merge that

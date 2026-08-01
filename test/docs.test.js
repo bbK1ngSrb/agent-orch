@@ -37,6 +37,17 @@ test("README documents the `orch` CLI", () => {
   assert.match(readme, /orch agent add <name>/);
 });
 
+test("docs explain that `orch pr --merge` pins the reviewed PR head (#421)", () => {
+  // runPr() sends the fetched branch SHA to GitHub's merge endpoint. If a
+  // contributor updates the PR during review, GitHub returns 409 and orch asks
+  // the operator to audit the new head instead of merging unseen code.
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /merge request[\s\S]{0,100}pinned|pins[\s\S]{0,100}merge request/i);
+    assert.match(doc, /PR head[\s\S]{0,120}moves[\s\S]{0,160}re-run\s+`orch pr[^`]*--merge`/i);
+    assert.match(doc, /new head is audited|agents never saw/i);
+  }
+});
+
 test("docs list the built-in CLI adapters", () => {
   for (const doc of [readme, exampleConfig]) {
     assert.match(doc, /claude/);
