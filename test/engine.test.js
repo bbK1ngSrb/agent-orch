@@ -613,7 +613,7 @@ test("§3c: an `orch review` merge of a protected path is blocked too (any autho
   assert.notEqual(deps._calls.finalized, true, "review must not merge a guardrail-file branch");
 });
 
-// §3e helper: makes the engine's final-diff read (`git diff base...branch`)
+// §3e helper: makes the engine's final-diff read (`git diff base...reviewedSha`)
 // return the given text, while rev-parse and --stat calls keep working.
 function withFinalDiff(deps, diffText) {
   deps.git.git = (args) => {
@@ -622,6 +622,89 @@ function withFinalDiff(deps, diffText) {
   };
   return deps;
 }
+
+test("#422: the final security and path reads all use one captured branch OID", async () => {
+  const reviewedSha = "1111111111111111111111111111111111111111";
+  const diffArgs = [];
+  const changedRefs = [];
+  let oidReads = 0;
+  let finalizeCtx = null;
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--verify") { oidReads += 1; return reviewedSha; }
+    if (args[0] === "diff" && !args.includes("--stat")) {
+      diffArgs.push(args);
+      return "";
+    }
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
+  deps.git.changedFiles = (_repo, ref) => { changedRefs.push(ref); return ["src/a.js"]; };
+  deps.finalize = async (c) => {
+    finalizeCtx = c;
+    return { status: "merged", reason: "merged", sha: "x" };
+  };
+
+  const r = await runCycle(opts, deps);
+
+  assert.equal(r.status, "merged");
+  assert.equal(oidReads, 1, "reviewedSha is captured once at the security boundary");
+  assert.equal(diffArgs.length, 2);
+  assert.ok(diffArgs.some((a) => SECURITY_DIFF_ARGS.every((flag) => a.includes(flag))));
+  assert.ok(diffArgs.some((a) => SECURITY_RAW_ARGS.every((flag) => a.includes(flag))));
+  assert.deepEqual(diffArgs.map((a) => a.at(-1)), [`main...${reviewedSha}`, `main...${reviewedSha}`]);
+  assert.equal(changedRefs.at(-1), reviewedSha, "§3c must read paths from the reviewed commit");
+  assert.equal(finalizeCtx.reviewedSha, reviewedSha);
+});
+
+test("#422: a tip swapped in during the scan and restored before finalize is never approved", async () => {
+  const reviewedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const swappedSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  let liveHead = reviewedSha;
+  const diffTargets = [];
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--verify") return liveHead;
+    if (args[0] === "diff" && !args.includes("--stat")) {
+      liveHead = swappedSha;
+      const target = args.at(-1);
+      diffTargets.push(target);
+      const result = args.includes("--raw")
+        ? ""
+        : target === `main...${reviewedSha}`
+          ? `+++ b/src/x.js\n+  const token = process.env.GITHUB_TOKEN;`
+          : "";
+      if (args.includes("--raw")) liveHead = reviewedSha;
+      return result;
+    }
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
+
+  const r = await runCycle(opts, deps);
+
+  assert.equal(liveHead, reviewedSha, "the simulated branch is restored before finalize");
+  assert.deepEqual(diffTargets, [`main...${reviewedSha}`, `main...${reviewedSha}`]);
+  assert.equal(r.status, "escalated", "the risky reviewed tree must be scanned even while the name points elsewhere");
+  assert.match(r.reason, /security scan/);
+  assert.notEqual(deps._calls.finalized, true);
+});
+
+test("#422: an unreadable reviewed branch OID fails closed before security reads", async () => {
+  let diffReads = 0;
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--verify") throw new Error("missing branch ref");
+    if (args[0] === "diff" && !args.includes("--stat")) diffReads += 1;
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
+
+  const r = await runCycle(opts, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.match(r.reason, /could not read reviewed branch head/);
+  assert.equal(diffReads, 0);
+  assert.notEqual(deps._calls.finalized, true);
+  assert.equal(deps._calls.recorded.verdict, "escalated");
+});
 
 test("§3e: risky final diffs escalate at the merge boundary, never finalize", async () => {
   // One case per SECURITY_RULES class. The deterministic scan runs on the FINAL

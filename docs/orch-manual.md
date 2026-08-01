@@ -332,6 +332,12 @@ orch pr 42            # review only, post a comment
 orch pr 42 --merge     # ...and ask GitHub to merge if agents approve + tests pass
 ```
 
+That merge request goes to GitHub's REST merge endpoint (`gh api -X PUT
+repos/{owner}/{repo}/pulls/<n>/merge`), not `gh pr merge`. Plain `gh pr merge`
+runs its own client-side "is this mergeable?" precheck, and that precheck is
+blind to ruleset bypasses — it refuses merges the server would actually
+allow.
+
 **When to use it:** reviewing a PR that came from *outside* your orch
 workflow entirely — a human contributor, a different tool, a fork — and you
 want orch's agents to weigh in the same way they would on an internal cycle,

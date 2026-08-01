@@ -277,11 +277,12 @@ export function ghAvailable(gh) {
 // Shared push+create step for demote() and openPr(). §3f: --head must carry the
 // real ref so gh finds the branch; the human-readable title is scrubbed (a
 // secret-shaped branch name leaks through publicSummary's \w sanitizer otherwise).
-async function pushAndCreatePr(ctx, deps, title, body) {
+async function pushAndCreatePr(ctx, deps, title, body, headSha = null) {
   const { repo, branch, cfg } = ctx;
   const { gh, git, log = () => {} } = deps;
   const base = cfg?.baseBranch || "main";
-  git(["push", "-u", "origin", branch], repo);
+  const refspec = headSha ? `${headSha}:refs/heads/${branch}` : branch;
+  git(["push", "-u", "origin", refspec], repo);
   const url = gh([
     "pr", "create", "--head", branch, "--base", base,
     "--title", redact(title),
@@ -294,7 +295,7 @@ async function pushAndCreatePr(ctx, deps, title, body) {
 // Demote an approved-but-unmergeable branch: open a PR if we can, else escalate
 // locally (keep the branch + write DECISION.md). Never pushes straight to main.
 export async function demote(ctx, deps) {
-  const { repo, orchDir, branch, reason, closes, cfg } = ctx;
+  const { repo, orchDir, branch, reviewedSha = null, reason, closes, cfg } = ctx;
   const { git, gh, notify } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate(orchDir, branch,
@@ -305,11 +306,11 @@ export async function demote(ctx, deps) {
   // redact would not touch it anyway, but keeping it outside the scrub
   // guarantees gh sees it intact.
   const mergeMethod = cfg?.github?.mergeMethod || "squash";
-  const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, fallbackPrBody(reason, closes, mergeMethod));
+  const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, fallbackPrBody(reason, closes, mergeMethod), reviewedSha);
   const prNumber = prNumberFromUrl(url);
   refreshFallbackPrBody(gh, prNumber, fallbackPrBody(reason, closes, mergeMethod, prNumber || "<PR-number>"));
   if (cfg?.github?.autoMergePr) {
-    tryMergeDirect(gh, prNumber || branch, mergeMethod);
+    tryMergeDirect(gh, prNumber || branch, mergeMethod, reviewedSha);
   }
   return { prUrl: url };
 }
@@ -320,7 +321,7 @@ export async function demote(ctx, deps) {
 // auto-merge on that PR, so solo/local runs can stay zero-friction while still
 // leaving the audit trail a PR provides. Never pushes straight to main.
 export async function openPr(ctx, deps) {
-  const { repo, orchDir, branch, cfg, closes } = ctx;
+  const { repo, orchDir, branch, reviewedSha = null, cfg, closes } = ctx;
   const { git, gh, notify, log = () => {} } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate(orchDir, branch,
@@ -329,20 +330,22 @@ export async function openPr(ctx, deps) {
   }
   const body = redact("agent-orch: agents agreed and tests are green. Opened as a PR (merge: pr) instead of merging directly to main.")
     + (closes ? `\n\nCloses #${closes}` : "");
-  const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, body);
+  const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, body, reviewedSha);
   // The PR is already open at this point — a failure enabling GitHub's native
   // auto-merge (branch protection off, no merge queue, etc.) must not be
   // reported as a cycle failure; log it and hand back the PR we did open.
   if (cfg?.github?.autoMergePr) {
     try {
-      gh(["pr", "merge", branch, "--auto", `--${cfg.github.mergeMethod}`]);
+      const args = ["pr", "merge", branch, "--auto", `--${cfg.github.mergeMethod}`];
+      if (reviewedSha) args.push("--match-head-commit", reviewedSha);
+      gh(args);
       // GitHub's native auto-merge never fires if the only thing satisfying
       // the review requirement is a ruleset bypass_actor grant rather than a
       // real approval — mergeStateStatus stays BLOCKED forever even once
       // checks pass (verified empirically). Try an immediate direct merge
       // too: a no-op failure (checks still pending) is expected and safe to
       // swallow — native auto-merge covers the normal real-approval case.
-      try { mergeDirect(gh, branch, cfg.github.mergeMethod); } catch { /* not ready yet */ }
+      try { mergeDirect(gh, branch, cfg.github.mergeMethod, reviewedSha); } catch { /* not ready yet */ }
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
     }
@@ -371,7 +374,8 @@ export async function openIntegrationPr(ctx, deps) {
   const body = redact(
     `agent-orch: local integration passed. This persistent PR gates ${branch} into ${base}; ${base} is a GitHub mirror and is not advanced locally.`,
   ) + closingLinesFromIntegration(git, repo, base, branch);
-  git(["push", "-u", "origin", branch], repo);
+  const refspec = tipSha ? `${tipSha}:refs/heads/${branch}` : branch;
+  git(["push", "-u", "origin", refspec], repo);
   const open = JSON.parse(gh([
     "pr", "list",
     "--head", branch,
@@ -420,10 +424,12 @@ export async function openIntegrationPr(ctx, deps) {
   // first-class subcommand for this, so hit the REST endpoint (keyed by numeric
   // PR id, like mergeDirect) directly. A failure here is never fatal to a
   // green+merged+pushed cycle — the next cycle retries.
+  let updatedFromBase = false;
   try {
     const state = JSON.parse(gh(["pr", "view", prRef, "--json", "mergeable,mergeStateStatus"]) || "{}");
     if (state.mergeStateStatus === "BEHIND" && state.mergeable !== "CONFLICTING") {
       gh(["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${prRef}/update-branch`]);
+      updatedFromBase = true;
       log(`updated stale integration PR #${prRef} from ${base}`);
     }
   } catch (e) {
@@ -434,7 +440,9 @@ export async function openIntegrationPr(ctx, deps) {
       // The persistent integration branch must stay in main's ancestry. Squash
       // or rebase would strand orch/integration behind main after the first PR.
       // Requires the repo to allow merge-commit merges — see docs/ORCH.md.
-      gh(["pr", "merge", prRef, "--auto", "--merge"]);
+      const args = ["pr", "merge", prRef, "--auto", "--merge"];
+      if (tipSha && !updatedFromBase) args.push("--match-head-commit", tipSha);
+      gh(args);
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
     }

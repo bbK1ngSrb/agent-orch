@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ORCH_DOC } from "../src/cli.js";
 import { MAX_REDRIVE_ATTEMPTS } from "../src/deferred.js";
 import { DEFAULT_PROTECTED } from "../src/intake/allowlist.js";
+import { nativeAgents } from "../src/adapters/index.js";
 
 const rootUrl = new URL("../", import.meta.url);
 const rootDir = fileURLToPath(rootUrl);
@@ -20,6 +21,12 @@ const manual = read("docs/orch-manual.md");
 const exampleConfig = read("orch.example.yml");
 const coc = read("CODE_OF_CONDUCT.md");
 const changelog = read("CHANGELOG.md");
+
+const NUMBER_WORDS = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+  "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+  "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+];
 
 test("the CLI bin is `orch`", () => {
   assert.deepEqual(Object.keys(pkg.bin), ["orch"]);
@@ -46,6 +53,16 @@ test("docs explain that `orch pr --merge` pins the reviewed PR head (#421)", () 
     assert.match(doc, /PR head[\s\S]{0,120}moves[\s\S]{0,160}re-run\s+`orch pr[^`]*--merge`/i);
     assert.match(doc, /new head is audited|agents never saw/i);
   }
+});
+
+test("the manual names the REST merge endpoint `orch pr --merge` uses (#421)", () => {
+  // mergeDirect() PUTs repos/{owner}/{repo}/pulls/<n>/merge rather than
+  // shelling out to `gh pr merge`, whose client-side precheck is blind to
+  // ruleset bypasses and refuses merges the server would accept. A manual
+  // that leaves this out sends readers to the wrong command when they debug
+  // a refused merge.
+  assert.match(manual, /pulls\/<n>\/merge/);
+  assert.match(manual, /precheck[\s\S]{0,80}bypass|bypass[\s\S]{0,80}precheck/i);
 });
 
 test("docs list the built-in CLI adapters", () => {
@@ -482,4 +499,42 @@ test("docs document the empty-diff escalation and CI tag derivation (#412/#409/#
   assert.match(manual, /\.github\/workflows\//);
   assert.match(manual, /#416|PLANNED\.md/);
   assert.match(read("PLANNED.md"), /#416 tag-release API ref creation/);
+});
+
+test("the landing page tracks recently shipped surfaces (#403/#335)", () => {
+  // docs/index.html is hand-maintained (no generator), so it drifts. Its
+  // commands section missed `orch release` (#403, v0.4.214), and the adapter
+  // chips missed kimi (#335) while README and orch.example.yml already
+  // listed it.
+  assert.match(landing, /orch release/);
+  // Derive the chip assertions from the adapter registry (the single source
+  // of truth, src/adapters/index.js) instead of hardcoding names — a
+  // hardcoded `kimi` check would drift silently again the moment adapter #8
+  // lands. Same idiom as test/cli.test.js's scaffold "Built-in:" check.
+  assert.ok(nativeAgents.length >= 4, "expected the native adapter set to be non-trivial");
+  for (const name of nativeAgents) {
+    assert.match(landing, new RegExp(`<span class="chip">${name}</span>`));
+  }
+  // The two shipped cycle commands the section dropped must stay listed or
+  // the same drift recurs for the primary agent-change entry point.
+  assert.match(landing, /orch issue &lt;n&gt;/);
+  assert.match(landing, /orch continue &lt;sid&gt;/);
+  // The section shows a curated subset — printUsage (src/cli.js) lists more
+  // commands — so the eyebrow must not bill it as the whole surface, and the
+  // heading's count must match the actual <div class="command"> blocks.
+  assert.doesNotMatch(landing, /The whole surface/);
+  const commandCount = (landing.match(/<div class="command">/g) || []).length;
+  const word = NUMBER_WORDS[commandCount];
+  assert.ok(word, `unexpected command count: ${commandCount}`);
+  assert.match(landing, new RegExp(`<h2>${word[0].toUpperCase()}${word.slice(1)} commands</h2>`));
+});
+
+test("FUTURE.md records the #323 decision instead of planning the rejected design", () => {
+  // #323 was closed by rejecting rich `agents:` entries at config validation
+  // (a7aea98), the opposite of the rotation-pool design FUTURE.md listed as
+  // the 1-month plan. The roadmap must not promise what validation refuses.
+  const future = read("FUTURE.md");
+  assert.doesNotMatch(future, /parse `agents:` entries as full role specs/);
+  assert.match(future, /decided against[\s\S]{0,200}#323/);
+  assert.match(future, /bare adapter names/);
 });

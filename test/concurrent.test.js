@@ -119,12 +119,14 @@ test("overlap demote then blocker lands → peer is rebased, re-gated, and auto-
   git(["add", "."], repo); git(["commit", "-m", "regions"], repo);
   const baseA = makeBranch(repo, orchDir, "pr/claude/a-1", "base.txt", "TOP\n1\n2\n3\n4\n5\n6\n7\n8\nbottom\n");
   const baseB = makeBranch(repo, orchDir, "pr/codex/b-2", "base.txt", "top\n1\n2\n3\n4\n5\n6\n7\n8\nBOTTOM\n");
+  const reviewedA = git(["rev-parse", "refs/heads/pr/claude/a-1"], repo);
+  const reviewedB = git(["rev-parse", "refs/heads/pr/codex/b-2"], repo);
 
   // B finalizes while A is still in-flight → overlap demote + deferred queue.
   inflight.register(orchDir, "1", { branch: "pr/claude/a-1", pid: process.pid, baseSha: baseA });
   inflight.setPaths(orchDir, "1", ["base.txt"]);
   const rB = await finalize({
-    repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB,
+    repo, orchDir, branch: "pr/codex/b-2", reviewedSha: reviewedB, sid: "2", baseSha: baseB,
     paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1,
   }, realDeps());
   assert.equal(rB.status, "merge-deferred");
@@ -133,7 +135,7 @@ test("overlap demote then blocker lands → peer is rebased, re-gated, and auto-
   // A lands; post-land redrive should rebase + gate + merge B.
   inflight.deregister(orchDir, "1");
   const rA = await finalize({
-    repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: baseA,
+    repo, orchDir, branch: "pr/claude/a-1", reviewedSha: reviewedA, sid: "1", baseSha: baseA,
     paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1,
   }, realDeps());
   assert.equal(rA.status, "merged");
@@ -151,18 +153,20 @@ test("true line conflict after redrive stays merge-deferred (#350 Tier-1 bound)"
   const orchDir = join(repo, ".orch");
   const baseA = makeBranch(repo, orchDir, "pr/claude/a-1", "shared.txt", "A\n");
   const baseB = makeBranch(repo, orchDir, "pr/codex/b-2", "shared.txt", "B\n");
+  const reviewedA = git(["rev-parse", "refs/heads/pr/claude/a-1"], repo);
+  const reviewedB = git(["rev-parse", "refs/heads/pr/codex/b-2"], repo);
 
   inflight.register(orchDir, "1", { branch: "pr/claude/a-1", pid: process.pid, baseSha: baseA });
   inflight.setPaths(orchDir, "1", ["shared.txt"]);
   const rB = await finalize({
-    repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB,
+    repo, orchDir, branch: "pr/codex/b-2", reviewedSha: reviewedB, sid: "2", baseSha: baseB,
     paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1,
   }, realDeps());
   assert.equal(rB.status, "merge-deferred");
 
   inflight.deregister(orchDir, "1");
   const rA = await finalize({
-    repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: baseA,
+    repo, orchDir, branch: "pr/claude/a-1", reviewedSha: reviewedA, sid: "1", baseSha: baseA,
     paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1,
   }, realDeps());
   assert.equal(rA.status, "merged");

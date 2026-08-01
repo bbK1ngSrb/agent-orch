@@ -28,6 +28,7 @@ export function record(orchDir, entry) {
   const payload = {
     sid: entry.sid,
     branch: entry.branch,
+    reviewedSha: entry.reviewedSha || null,
     paths: Array.isArray(entry.paths) ? entry.paths : [],
     testCmd: entry.testCmd || "true",
     baseSha: entry.baseSha || null,

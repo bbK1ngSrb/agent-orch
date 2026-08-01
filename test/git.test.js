@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitTry, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, reconcileIntegrationToOrigin, mergeInWorktree, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch } from "../src/git.js";
+import { git, gitTry, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, reconcileIntegrationToOrigin, mergeInWorktree, rebaseBranchOnto, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch } from "../src/git.js";
 import { checkPaths } from "../src/intake/allowlist.js";
 
 function newRepo() {
@@ -69,6 +69,41 @@ test("createTaskBranch lifecycle + ff-only merge in the integration worktree", (
   assert.equal(r.ok, true);
   assert.match(git(["log", "--oneline", "orch/integration"], repo), /add b/);
   assert.doesNotMatch(git(["log", "--oneline", "main"], repo), /add b/);
+});
+
+test("rebaseBranchOnto rebases the reviewed commit and advances the branch with CAS", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "feature"], repo);
+  commitFile(repo, "feature.txt", "feature\n", "feature");
+  const reviewedSha = git(["rev-parse", "HEAD"], repo);
+  git(["checkout", "main"], repo);
+  commitFile(repo, "main.txt", "main\n", "advance main");
+  mkdirSync(join(repo, ".orch", "wt"), { recursive: true });
+
+  const r = rebaseBranchOnto(repo, join(repo, ".orch"), "feature", "main", reviewedSha);
+
+  assert.equal(r.ok, true);
+  assert.equal(git(["rev-parse", "feature"], repo), r.sha);
+  assert.notEqual(r.sha, reviewedSha);
+  assert.equal(gitTry(["merge-base", "--is-ancestor", "main", "feature"], repo).ok, true);
+});
+
+test("rebaseBranchOnto refuses to replace a branch that moved past the reviewed commit", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "feature"], repo);
+  commitFile(repo, "feature.txt", "feature\n", "feature");
+  const reviewedSha = git(["rev-parse", "HEAD"], repo);
+  git(["checkout", "main"], repo);
+  commitFile(repo, "main.txt", "main\n", "advance main");
+  const movedSha = git(["rev-parse", "main"], repo);
+  git(["update-ref", "refs/heads/feature", movedSha], repo);
+  mkdirSync(join(repo, ".orch", "wt"), { recursive: true });
+
+  const r = rebaseBranchOnto(repo, join(repo, ".orch"), "feature", "main", reviewedSha);
+
+  assert.equal(r.ok, false);
+  assert.equal(r.moved, true);
+  assert.equal(git(["rev-parse", "feature"], repo), movedSha);
 });
 
 test("createTaskBranch refuses an existing branch", () => {
