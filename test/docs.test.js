@@ -399,6 +399,14 @@ test("docs explain checkpoint verdicts are pinned to the branch head OID (#422)"
   assert.match(manual, /tag[\s\S]{0,60}share the branch's name/);
 });
 
+test("docs explain the round's single OID capture and consumption-time re-check (#422 part 5)", () => {
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /captured once per review round/);
+    assert.match(doc, /re-(?:checked|verified)[\s\S]{0,80}cached verdict is consumed/);
+    assert.match(doc, /moves?[\s\S]{0,20}mid-round[\s\S]{0,120}launder\s+unaudited\s+content/);
+  }
+});
+
 test("docs describe all pre-landing sync reconciliations", () => {
   for (const doc of [readme, manual]) {
     assert.match(
