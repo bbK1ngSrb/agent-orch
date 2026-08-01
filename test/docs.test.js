@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ORCH_DOC } from "../src/cli.js";
 import { MAX_REDRIVE_ATTEMPTS } from "../src/deferred.js";
 import { DEFAULT_PROTECTED } from "../src/intake/allowlist.js";
+import { nativeAgents } from "../src/adapters/index.js";
 
 const rootUrl = new URL("../", import.meta.url);
 const rootDir = fileURLToPath(rootUrl);
@@ -20,6 +21,12 @@ const manual = read("docs/orch-manual.md");
 const exampleConfig = read("orch.example.yml");
 const coc = read("CODE_OF_CONDUCT.md");
 const changelog = read("CHANGELOG.md");
+
+const NUMBER_WORDS = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+  "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+  "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+];
 
 test("the CLI bin is `orch`", () => {
   assert.deepEqual(Object.keys(pkg.bin), ["orch"]);
@@ -486,17 +493,30 @@ test("docs document the empty-diff escalation and CI tag derivation (#412/#409/#
 
 test("the landing page tracks recently shipped surfaces (#403/#335)", () => {
   // docs/index.html is hand-maintained (no generator), so it drifts. Its
-  // commands section bills itself as "the whole surface" but missed
-  // `orch release` (#403, v0.4.214), and the adapter chips missed kimi (#335)
-  // while README and orch.example.yml already listed it.
+  // commands section missed `orch release` (#403, v0.4.214), and the adapter
+  // chips missed kimi (#335) while README and orch.example.yml already
+  // listed it.
   assert.match(landing, /orch release/);
-  assert.match(landing, /<span class="chip">kimi<\/span>/);
-  // The commands section bills itself as "the whole surface"; the two shipped
-  // cycle commands it dropped must stay listed (and counted in the heading) or
+  // Derive the chip assertions from the adapter registry (the single source
+  // of truth, src/adapters/index.js) instead of hardcoding names — a
+  // hardcoded `kimi` check would drift silently again the moment adapter #8
+  // lands. Same idiom as test/cli.test.js's scaffold "Built-in:" check.
+  assert.ok(nativeAgents.length >= 4, "expected the native adapter set to be non-trivial");
+  for (const name of nativeAgents) {
+    assert.match(landing, new RegExp(`<span class="chip">${name}</span>`));
+  }
+  // The two shipped cycle commands the section dropped must stay listed or
   // the same drift recurs for the primary agent-change entry point.
   assert.match(landing, /orch issue &lt;n&gt;/);
   assert.match(landing, /orch continue &lt;sid&gt;/);
-  assert.match(landing, /<h2>Eight commands<\/h2>/);
+  // The section shows a curated subset — printUsage (src/cli.js) lists more
+  // commands — so the eyebrow must not bill it as the whole surface, and the
+  // heading's count must match the actual <div class="command"> blocks.
+  assert.doesNotMatch(landing, /The whole surface/);
+  const commandCount = (landing.match(/<div class="command">/g) || []).length;
+  const word = NUMBER_WORDS[commandCount];
+  assert.ok(word, `unexpected command count: ${commandCount}`);
+  assert.match(landing, new RegExp(`<h2>${word[0].toUpperCase()}${word.slice(1)} commands</h2>`));
 });
 
 test("FUTURE.md records the #323 decision instead of planning the rejected design", () => {
