@@ -330,6 +330,20 @@ test("docs explain main.autoMerge is pinned to the verified integration tip (#42
   assert.match(manual, /sha=/);
 });
 
+test("docs explain merge: pr's one-shot direct fallback (#426)", () => {
+  const sections = [
+    readme.slice(readme.indexOf("**`merge: pr` — per-cycle PR mode."), readme.indexOf("## Version bump on merge")),
+    manual.slice(manual.indexOf("### 3.3 `merge: pr`"), manual.indexOf("### 3.4 `merge-deferred`")),
+  ];
+  for (const section of sections) {
+    assert.match(section, /one immediate REST\s+merge attempt/i);
+    assert.match(section, /numeric PR (?:id|number)/i);
+    assert.match(section, /pinned to the\s+exact reviewed commit OID/i);
+    assert.match(section, /does not poll or\s+retry/i);
+  }
+  assert.doesNotMatch(manual, /one-shot[^.]{0,100}has no such fallback/i);
+});
+
 test("docs explain headless self-merge needs bypass or a second reviewer identity", () => {
   for (const doc of [readme, manual, ORCH_DOC]) {
     assert.match(doc, /approve its own PR|self-approval/);
