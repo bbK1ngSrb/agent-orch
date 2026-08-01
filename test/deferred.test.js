@@ -11,12 +11,13 @@ test("record/list/remove roundtrip", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-def-"));
   record(d, {
     sid: "s1", branch: "pr/claude/a-1", paths: ["a.js"], testCmd: "npm test",
-    peerSids: ["blocker"], rounds: 2, closes: 9,
+    reviewedSha: "reviewed-commit", peerSids: ["blocker"], rounds: 2, closes: 9,
   });
   const all = list(d);
   assert.equal(all.length, 1);
   assert.equal(all[0].sid, "s1");
   assert.equal(all[0].branch, "pr/claude/a-1");
+  assert.equal(all[0].reviewedSha, "reviewed-commit");
   assert.deepEqual(all[0].paths, ["a.js"]);
   assert.deepEqual(all[0].peerSids, ["blocker"]);
   assert.equal(all[0].redriveAttempts, 0);

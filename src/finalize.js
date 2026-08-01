@@ -20,6 +20,35 @@ function changelogEntry(ctx) {
     : title;
 }
 
+function reviewedHeadEscalation(ctx, deps) {
+  if (!Object.hasOwn(ctx, "reviewedSha")) return null;
+  const { repo, orchDir, branch, reviewedSha, sid, rounds, closes, runStats } = ctx;
+  const { git, notify } = deps;
+  let currentSha = null;
+  try {
+    currentSha = git.git(["rev-parse", "--verify", `refs/heads/${branch}`], repo);
+  } catch { /* unreadable fails closed below */ }
+  if (reviewedSha && currentSha && reviewedSha === currentSha) return null;
+
+  const reviewed = reviewedSha || "<unreadable>";
+  const current = currentSha || "<unreadable>";
+  const reason = `branch head integrity check failed: reviewed SHA ${reviewed}; current SHA ${current} — terminal escalation, refusing to merge or publish`;
+  notify.escalate(orchDir, branch,
+    `# Escalation — ${branch}\n\n` +
+    `The branch moved after approval or its current OID became unreadable.\n\n` +
+    `- Reviewed SHA: \`${reviewed}\`\n` +
+    `- Current SHA: \`${current}\`\n\n` +
+    `The approval applies only to the reviewed commit, so orch refused to merge or publish the branch.\n`);
+  const usage = totalUsage(runStats);
+  notify.recordRun(orchDir, {
+    ts: new Date().toISOString(), branch, sid, verdict: "escalated", reason, rounds,
+    closes: closes ?? null,
+    ...(usage.tokens ? { tokens: usage.tokens } : {}),
+    ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
+  });
+  return { status: "escalated", reason };
+}
+
 export async function finalize(ctx, deps) {
   const { repo, orchDir, branch, sid, paths, testCmd, cfg, rounds, closes, runStats } = ctx;
   const { git, gate, lock, inflight, github, notify } = deps;
@@ -29,6 +58,8 @@ export async function finalize(ctx, deps) {
   // cfg.merge === "pr": opt out of direct-to-main. No local merge, no merge.lock —
   // GitHub owns the merge (branch protection / CI-gated checks apply).
   if (cfg.merge === "pr") {
+    const integrityFailure = reviewedHeadEscalation(ctx, deps);
+    if (integrityFailure) return integrityFailure;
     const r = await github.openPr(ctx, deps);
     notify.recordRun(orchDir, {
       ts: new Date().toISOString(), branch, sid, verdict: r.prUrl ? "pr" : "escalated", rounds,
@@ -93,19 +124,23 @@ export async function finalize(ctx, deps) {
     const integrationTip = git.git(["rev-parse", "HEAD"], integration);
     const overlap = overlapDetails(paths, peerPaths, peerEntries);
     if (overlap.any) {
-      // Queue for post-land redrive when a blocking peer merges (#350). Only the
-      // overlap trigger is mechanical (stale base); conflicts stay human-only.
-      deferred.record?.(orchDir, {
-        sid, branch, paths, testCmd, baseSha: ctx.baseSha, rounds, closes,
-        title: ctx.title, task: ctx.task,
-        peerSids: overlap.peers.map((e) => e.sid).filter(Boolean),
-      });
-      return demote(ctx, deps, {
+      const result = await demote(ctx, deps, {
         trigger: "overlap",
         integrationBranch,
         integrationTip,
         overlap,
       });
+      // Only a successful demotion is eligible for post-land redrive. Persist
+      // the reviewed commit so redrive never re-resolves mutable branch content.
+      if (result.status === "merge-deferred") {
+        deferred.record?.(orchDir, {
+          sid, branch, reviewedSha: ctx.reviewedSha || null,
+          paths, testCmd, baseSha: ctx.baseSha, rounds, closes,
+          title: ctx.title, task: ctx.task,
+          peerSids: overlap.peers.map((e) => e.sid).filter(Boolean),
+        });
+      }
+      return result;
     }
 
     const landed = await landIntoIntegration(ctx, deps, {
@@ -134,16 +169,21 @@ export async function finalize(ctx, deps) {
 // `quietFail` (redrive path): on conflict/gate-fail do not demote again — the
 // peer already has a merge-deferred PR from its first demote; just leave it.
 async function landIntoIntegration(ctx, deps, { integration, integrationBranch, baseBranch, preSha, quietFail = false }) {
-  const { repo, orchDir, branch, sid, testCmd, cfg, rounds, closes, runStats } = ctx;
+  const { repo, orchDir, branch, reviewedSha, sid, testCmd, cfg, rounds, closes, runStats } = ctx;
   const { git, gate, github, notify } = deps;
   const usage = totalUsage(runStats);
+
+  // Primary lands carry the OID captured immediately before the security reads.
+  // This runs under merge.lock; a moved or unreadable branch invalidates approval.
+  const integrityFailure = reviewedHeadEscalation(ctx, deps);
+  if (integrityFailure) return integrityFailure;
 
   // `orch issue <n>`: stamp `Closes #n` in the no-ff merge commit so the issue
   // auto-closes once GitHub merges the integration PR. ponytail: ff-only has no merge commit
   // to carry it, so it won't auto-close — default is no-ff; demote PR covers the
   // fallback. The number is our own int, not attacker text — safe to interpolate.
   const message = closes ? `Merge ${branch}\n\nCloses #${closes}` : null;
-  const m = git.mergeInWorktree(integration, branch, cfg.merge, message);
+  const m = git.mergeInWorktree(integration, reviewedSha || branch, cfg.merge, message);
   if (!m.ok) {
     if (quietFail) return { status: "merge-deferred", trigger: "dirty-merge", reason: m.reason || "conflict" };
     return demote(ctx, deps, {
@@ -277,20 +317,39 @@ async function redriveDeferredPeers(ctx, deps, { integration, integrationBranch,
         : (typeof inflight.peerPaths === "function" ? inflight.peerPaths(orchDir, peer.sid) : []);
       if (overlapDetails(peer.paths || [], livePaths, live).any) continue;
 
-      // Consume one redrive attempt up front so a crash mid-redrive cannot loop.
-      deferred.markAttempt?.(orchDir, peer.sid);
+      const reviewedSha = typeof peer.reviewedSha === "string" ? peer.reviewedSha.trim() : "";
+      if (!reviewedSha) {
+        // Legacy/unpinned records require a fresh human review and must not loop.
+        deferred.markAttempt?.(orchDir, peer.sid);
+        continue;
+      }
 
       git.syncWorktreeToIntegration(integration, integrationBranch);
       const preSha = git.git(["rev-parse", "HEAD"], integration);
 
+      let redriveSha = reviewedSha;
       if (typeof git.rebaseBranchOnto === "function") {
-        const rb = git.rebaseBranchOnto(repo, orchDir, peer.branch, integrationBranch);
-        if (!rb.ok) continue; // stays deferred; demote PR from first demote still open
+        const rb = git.rebaseBranchOnto(repo, orchDir, peer.branch, integrationBranch, reviewedSha);
+        if (!rb.ok || !rb.sha) {
+          // A moved head invalidates this pass without consuming the peer's one
+          // real redrive attempt. Conflicts still consume it and stay human-owned.
+          if (!rb.moved) deferred.markAttempt?.(orchDir, peer.sid);
+          continue;
+        }
+        redriveSha = rb.sha;
+        // The CAS advanced the branch. Persist that exact OID before landing so
+        // a crash or failed re-gate never falls back to the pre-rebase commit.
+        deferred.record?.(orchDir, { ...peer, reviewedSha: redriveSha });
       }
+
+      // Identity/CAS checks passed; consume the one real redrive attempt before
+      // merge + re-gate so a crash in that work cannot loop indefinitely.
+      deferred.markAttempt?.(orchDir, peer.sid);
 
       const peerCtx = {
         repo, orchDir,
         branch: peer.branch,
+        reviewedSha: redriveSha,
         sid: peer.sid,
         paths: peer.paths || [],
         testCmd: peer.testCmd || ctx.testCmd,
@@ -478,6 +537,8 @@ function oneLine(value = "") {
 async function demote(ctx, deps, details) {
   const { orchDir, branch, sid, rounds, closes, runStats, cfg } = ctx;
   const { github, notify } = deps;
+  const integrityFailure = reviewedHeadEscalation(ctx, deps);
+  if (integrityFailure) return integrityFailure;
   const usage = totalUsage(runStats);
   const reason = demoteReason(ctx, details);
   const integrationBranch = details.integrationBranch || cfg?.integrationBranch || "orch/integration";

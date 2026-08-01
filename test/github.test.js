@@ -177,11 +177,13 @@ test("demote opens a PR when a remote and gh are present", async () => {
   const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/7\n"; };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   const notify = { escalate: () => { throw new Error("should not escalate when PR opens"); } };
+  const reviewedSha = "1111111111111111111111111111111111111111";
 
   const reason = "trigger: overlap\nreview: AGREE after 1 round(s)\nnext action: rerun orch review";
-  const r = await demote({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", reason }, { gh, git, notify });
+  const r = await demote({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", reviewedSha, reason }, { gh, git, notify });
   assert.equal(r.prUrl, "https://github.com/o/r/pull/7");
-  assert.ok(calls.some((c) => c[0] === "git" && c[1] === "push"));
+  assert.deepEqual(calls.find((c) => c[0] === "git" && c[1] === "push"),
+    ["git", "push", "-u", "origin", `${reviewedSha}:refs/heads/pr/claude/x-1`]);
   assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
   const args = calls.find((c) => c[0] === "gh" && c[2] === "create");
   const body = args[args.indexOf("--body") + 1];
@@ -211,8 +213,9 @@ test("demote with github.autoMergePr directly merges the opened fallback PR", as
   const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/170\n"; };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
+  const reviewedSha = "2222222222222222222222222222222222222222";
 
-  const r = await demote({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reason: "overlap", cfg },
+  const r = await demote({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reviewedSha, reason: "overlap", cfg },
     { gh, git, notify: { escalate() {} } });
 
   assert.equal(r.prUrl, "https://github.com/o/r/pull/170");
@@ -221,7 +224,8 @@ test("demote with github.autoMergePr directly merges the opened fallback PR", as
     c[0] === "gh" &&
     c[1] === "api" &&
     c.includes("repos/{owner}/{repo}/pulls/170/merge") &&
-    c.includes("merge_method=squash")));
+    c.includes("merge_method=squash") &&
+    c.includes(`sha=${reviewedSha}`)));
 });
 
 test("issue bridge: demote appends Closes #N to the PR body so the issue auto-closes", async () => {
@@ -282,10 +286,12 @@ test("openPr opens a PR for an agreed+green branch when a remote and gh are pres
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   const notify = { escalate: () => { throw new Error("should not escalate when PR opens"); } };
   const cfg = { github: { mergeMethod: "squash", autoMergePr: false } };
+  const reviewedSha = "3333333333333333333333333333333333333333";
 
-  const r = await openPr({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", cfg }, { gh, git, notify });
+  const r = await openPr({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", reviewedSha, cfg }, { gh, git, notify });
   assert.equal(r.prUrl, "https://github.com/o/r/pull/9");
-  assert.ok(calls.some((c) => c[0] === "git" && c[1] === "push"));
+  assert.deepEqual(calls.find((c) => c[0] === "git" && c[1] === "push"),
+    ["git", "push", "-u", "origin", `${reviewedSha}:refs/heads/pr/claude/x-1`]);
   assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge"), "no auto-merge unless opted in");
 });
@@ -309,12 +315,14 @@ test("openPr with github.autoMergePr enables GitHub auto-merge on the PR it open
   const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/9\n"; };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
   const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
+  const reviewedSha = "4444444444444444444444444444444444444444";
 
-  await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", cfg }, { gh, git, notify: { escalate() {} } });
+  await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reviewedSha, cfg }, { gh, git, notify: { escalate() {} } });
   const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
   assert.ok(mergeCall, "gh pr merge --auto must be called");
   assert.ok(mergeCall.includes("--auto"));
   assert.ok(mergeCall.includes("--squash"));
+  assert.deepEqual(mergeCall.slice(-2), ["--match-head-commit", reviewedSha]);
 });
 
 // Native auto-merge silently never completes when the only thing satisfying
@@ -327,10 +335,12 @@ test("openPr also attempts a direct merge right after enabling auto-merge", asyn
   const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/9\n"; };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
   const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
+  const reviewedSha = "5555555555555555555555555555555555555555";
 
-  await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", cfg }, { gh, git, notify: { escalate() {} } });
+  await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reviewedSha, cfg }, { gh, git, notify: { escalate() {} } });
   const direct = calls.find((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=squash")));
   assert.ok(direct, "a direct merge attempt must follow the --auto call");
+  assert.ok(direct.includes(`sha=${reviewedSha}`), "the direct merge must pin the reviewed commit");
 });
 
 test("openPr swallows a direct-merge failure (checks still pending is normal)", async () => {
@@ -388,15 +398,17 @@ test("openIntegrationPr creates the persistent integration PR and enables auto-m
   };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: true } };
+  const integrationSha = "6666666666666666666666666666666666666666";
 
-  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg, integrationSha }, { gh, git, notify: { escalate() {} } });
 
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
-  assert.ok(calls.some((c) => c.join(" ") === "git push -u origin orch/integration"));
+  assert.ok(calls.some((c) => c.join(" ") === `git push -u origin ${integrationSha}:refs/heads/orch/integration`));
   assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
   const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
   assert.ok(mergeCall.includes("--auto"));
   assert.ok(mergeCall.includes("--merge"));
+  assert.deepEqual(mergeCall.slice(-2), ["--match-head-commit", integrationSha]);
   assert.equal(mergeCall.includes("--squash"), false);
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"), "direct main merge needs main.autoMerge");
 });
@@ -740,14 +752,19 @@ test("openIntegrationPr updates a BEHIND-but-clean integration PR from base", as
     return "";
   };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
-  const cfg = { integrationBranch: "orch/integration", baseBranch: "main", github: { mergeMethod: "squash", autoMergePr: false } };
+  const integrationSha = "7777777777777777777777777777777777777777";
+  const cfg = { integrationBranch: "orch/integration", baseBranch: "main", github: { mergeMethod: "squash", autoMergePr: true } };
 
-  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg, integrationSha }, { gh, git, notify: { escalate() {} } });
 
   assert.ok(
     calls.some((c) => c[0] === "gh" && c[1] === "api" && c.includes("PUT") && c.includes("repos/{owner}/{repo}/pulls/247/update-branch")),
     "a BEHIND-clean integration PR must be updated from base",
   );
+  const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
+  assert.ok(mergeCall, "native auto-merge must still be armed after updating the branch");
+  assert.equal(mergeCall.includes("--match-head-commit"), false,
+    "the pre-update integration SHA is no longer the PR head");
 });
 
 test("openIntegrationPr does not update-branch a CONFLICTING integration PR", async () => {

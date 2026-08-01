@@ -84,6 +84,170 @@ test("clean path → merged + recorded", async () => {
   assert.equal(recorded[0].verdict, "merged");
 });
 
+test("#422: unchanged head is checked under merge.lock and the reviewed SHA is merged", async () => {
+  const reviewedSha = "1111111111111111111111111111111111111111";
+  const integrationSha = "9999999999999999999999999999999999999999";
+  let lockHeld = false;
+  let checkedUnderLock = false;
+  let mergeTarget = null;
+  let bridgedCtx = null;
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    lock: {
+      acquireBlocking: () => { lockHeld = true; return true; },
+      releaseLock: () => { lockHeld = false; },
+    },
+    git: {
+      ...g,
+      git: (args, cwd) => {
+        if (args[0] === "rev-parse" && args[1] === "--verify") {
+          checkedUnderLock = lockHeld;
+          return reviewedSha;
+        }
+        if (args[0] === "rev-parse" && args[1] === "--short") return "9999999";
+        if (args[0] === "rev-parse" && (cwd === "/integ" || args[1] === "orch/integration")) return integrationSha;
+        return g.git(args, cwd);
+      },
+      mergeInWorktree: (_integration, target) => { mergeTarget = target; return { ok: true, reason: "merged" }; },
+    },
+    github: {
+      ...baseDeps().deps.github,
+      openIntegrationPr: async (c) => { bridgedCtx = c; return { prUrl: "https://x/pr/99" }; },
+    },
+  });
+
+  const r = await finalize({ ...ctx(), reviewedSha }, deps);
+
+  assert.equal(r.status, "merged");
+  assert.equal(checkedUnderLock, true);
+  assert.equal(lockHeld, false);
+  assert.equal(mergeTarget, reviewedSha, "git merge must act on the checked commit, not the branch name");
+  assert.equal(bridgedCtx.reviewedSha, reviewedSha);
+  assert.equal(bridgedCtx.integrationSha, integrationSha, "reviewedSha and integrationSha remain distinct");
+});
+
+test("#422: a moved head causes terminal escalation naming both SHAs and no merge", async () => {
+  const reviewedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const currentSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  let merged = false;
+  let escalation = null;
+  const g = baseDeps().deps.git;
+  const { deps, recorded } = baseDeps({
+    git: {
+      ...g,
+      git: (args, cwd) => args[1] === "--verify" ? currentSha : g.git(args, cwd),
+      mergeInWorktree: () => { merged = true; return { ok: true }; },
+    },
+    notify: {
+      recordRun: (_d, e) => recorded.push(e),
+      cleanupReviews: () => {},
+      escalate: (orchDir, branch, body) => { escalation = { orchDir, branch, body }; },
+    },
+  });
+
+  const r = await finalize({ ...ctx(), reviewedSha }, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.equal(merged, false);
+  assert.match(r.reason, new RegExp(reviewedSha));
+  assert.match(r.reason, new RegExp(currentSha));
+  assert.match(escalation.body, new RegExp(reviewedSha));
+  assert.match(escalation.body, new RegExp(currentSha));
+  assert.equal(recorded[0].verdict, "escalated");
+});
+
+test("#422: an unreadable head at finalize fails closed without merging", async () => {
+  const reviewedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  let merged = false;
+  const g = baseDeps().deps.git;
+  const { deps, recorded } = baseDeps({
+    git: {
+      ...g,
+      git: (args, cwd) => {
+        if (args[1] === "--verify") throw new Error("cannot resolve branch");
+        return g.git(args, cwd);
+      },
+      mergeInWorktree: () => { merged = true; return { ok: true }; },
+    },
+    notify: {
+      recordRun: (_d, e) => recorded.push(e),
+      cleanupReviews: () => {},
+      escalate: () => {},
+    },
+  });
+
+  const r = await finalize({ ...ctx(), reviewedSha }, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.equal(merged, false);
+  assert.match(r.reason, new RegExp(reviewedSha));
+  assert.match(r.reason, /current SHA <unreadable>/);
+  assert.equal(recorded[0].verdict, "escalated");
+});
+
+test("#422: a tip moved on the overlap demote path is not pushed or opened as a PR", async () => {
+  const reviewedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const currentSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  let liveHead = reviewedSha;
+  let merged = false;
+  let demoted = false;
+  const deferredRecords = [];
+  const g = baseDeps().deps.git;
+  const { deps, recorded } = baseDeps({
+    inflight: { peerPaths: () => ["src/a.js"] },
+    deferred: { record: (_d, e) => deferredRecords.push(e), list: () => [] },
+    git: {
+      ...g,
+      git: (args, cwd) => {
+        if (args[1] === "--verify") return liveHead;
+        if (args[0] === "rev-parse" && args[1] === "HEAD" && cwd === "/integ") {
+          liveHead = currentSha;
+          return "deadbee";
+        }
+        return g.git(args, cwd);
+      },
+      mergeInWorktree: () => { merged = true; return { ok: true }; },
+    },
+    github: {
+      ...baseDeps().deps.github,
+      demote: async () => { demoted = true; return { prUrl: "https://x/pr/1" }; },
+    },
+    notify: {
+      recordRun: (_d, e) => recorded.push(e),
+      cleanupReviews: () => {},
+      escalate: () => {},
+    },
+  });
+
+  const r = await finalize({ ...ctx(), reviewedSha }, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.equal(merged, false);
+  assert.equal(demoted, false, "moved content must not be pushed or opened as a PR");
+  assert.equal(deferredRecords.length, 0, "an integrity escalation must not leave a redrive record");
+  assert.match(r.reason, new RegExp(reviewedSha));
+  assert.match(r.reason, new RegExp(currentSha));
+  assert.equal(recorded[0].verdict, "escalated");
+});
+
+test("#422: merge: pr refuses a moved branch before opening the PR", async () => {
+  const reviewedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const currentSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  let opened = false;
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: { ...g, git: (args, cwd) => args[1] === "--verify" ? currentSha : g.git(args, cwd) },
+    github: { openPr: async () => { opened = true; return { prUrl: "https://x/pr/9" }; } },
+  });
+
+  const r = await finalize({ ...ctx(), reviewedSha, cfg: { merge: "pr" } }, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.equal(opened, false);
+  assert.match(r.reason, new RegExp(reviewedSha));
+  assert.match(r.reason, new RegExp(currentSha));
+});
+
 test("merge commit built but integration branch didn't advance → throws instead of reporting merged", async () => {
   const g = baseDeps().deps.git;
   const { deps } = baseDeps({
@@ -145,6 +309,7 @@ test("integration PR bridge failure after local merge → records merged and esc
 });
 
 test("path overlap with a peer → merge-deferred (no merge attempted)", async () => {
+  const reviewedSha = "deadbee";
   let merged = false;
   const deferredRecords = [];
   const { deps, recorded } = baseDeps({
@@ -158,7 +323,7 @@ test("path overlap with a peer → merge-deferred (no merge attempted)", async (
       list: () => [],
     },
   });
-  const r = await finalize(ctx(), deps);
+  const r = await finalize({ ...ctx(), reviewedSha }, deps);
   assert.equal(r.status, "merge-deferred");
   assert.equal(r.trigger, "overlap");
   assert.match(r.reason, /^opened PR https:\/\/x\/pr\/1; collides with peer peer-2 on src\/a\.js\./);
@@ -178,17 +343,19 @@ test("path overlap with a peer → merge-deferred (no merge attempted)", async (
   // Overlap demote queues the cycle for post-land redrive (#350).
   assert.equal(deferredRecords.length, 1);
   assert.equal(deferredRecords[0].sid, "1");
+  assert.equal(deferredRecords[0].reviewedSha, reviewedSha);
   assert.deepEqual(deferredRecords[0].peerSids, ["peer-2"]);
 });
 
 test("post-land redrive: deferred peer is rebased + gated + landed under the same lock (#350)", async () => {
   const lockOps = [];
   const rebased = [];
+  const persisted = [];
   const mergedBranches = [];
   const removed = [];
   const deferredPeer = {
     sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
-    rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+    reviewedSha: "peer-reviewed", rounds: 1, peerSids: ["1"], redriveAttempts: 0,
   };
   const { deps, recorded } = baseDeps({
     lock: {
@@ -198,9 +365,9 @@ test("post-land redrive: deferred peer is rebased + gated + landed under the sam
     inflight: { listLive: () => [], peerPaths: () => [] },
     git: {
       ...baseDeps().deps.git,
-      rebaseBranchOnto: (_repo, _orch, branch, onto) => {
-        rebased.push({ branch, onto });
-        return { ok: true };
+      rebaseBranchOnto: (_repo, _orch, branch, onto, expectedSha) => {
+        rebased.push({ branch, onto, expectedSha });
+        return { ok: true, sha: "deadbee" };
       },
       mergeInWorktree: (_path, branch) => {
         mergedBranches.push(branch);
@@ -223,14 +390,19 @@ test("post-land redrive: deferred peer is rebased + gated + landed under the sam
       list: () => (removed.includes(deferredPeer.sid) ? [] : [deferredPeer]),
       eligibleForRedrive: (e) => (e.redriveAttempts || 0) < 1,
       blockedByLand: (e, landed) => e.peerSids?.includes(landed.sid) || e.paths.some((p) => (landed.paths || []).includes(p)),
+      record: (_d, entry) => { persisted.push(entry); },
       markAttempt: () => { deferredPeer.redriveAttempts += 1; },
       remove: (_d, sid) => { removed.push(sid); },
     },
   });
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merged");
-  assert.deepEqual(mergedBranches, ["pr/claude/x-1", "pr/codex/b-2"]);
-  assert.deepEqual(rebased, [{ branch: "pr/codex/b-2", onto: "orch/integration" }]);
+  assert.deepEqual(mergedBranches, ["pr/claude/x-1", "deadbee"]);
+  assert.deepEqual(rebased, [{
+    branch: "pr/codex/b-2", onto: "orch/integration", expectedSha: "peer-reviewed",
+  }]);
+  assert.equal(persisted[0].reviewedSha, "deadbee", "the post-rebase OID must replace the deferred pin");
+  assert.equal(deferredPeer.redriveAttempts, 1);
   assert.deepEqual(removed, ["2"]);
   // Both lands recorded as merged; lock acquired once (serial under one hold).
   assert.equal(recorded.filter((e) => e.verdict === "merged").length, 2);
@@ -250,7 +422,7 @@ function redriveDeps(deferredPeer, listLive) {
     inflight: { listLive, peerPaths: () => [] },
     git: {
       ...baseDeps().deps.git,
-      rebaseBranchOnto: () => ({ ok: true }),
+      rebaseBranchOnto: () => ({ ok: true, sha: "deadbee" }),
       mergeInWorktree: (_path, branch) => {
         mergedBranches.push(branch);
         return { ok: true, reason: "merged" };
@@ -275,23 +447,38 @@ function redriveDeps(deferredPeer, listLive) {
   return { deps, recorded, mergedBranches, removed };
 }
 
-test("post-land redrive: the landing cycle's own live inflight record does not block its peer (#350)", async () => {
+test("#422: post-land redrive refuses a legacy deferred peer with no reviewed SHA", async () => {
   const deferredPeer = {
     sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
     rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+  };
+  const { deps, mergedBranches, removed } = redriveDeps(deferredPeer, () => []);
+
+  const r = await finalize(ctx(), deps);
+
+  assert.equal(r.status, "merged");
+  assert.deepEqual(mergedBranches, ["pr/claude/x-1"]);
+  assert.deepEqual(removed, []);
+  assert.equal(deferredPeer.redriveAttempts, 1, "the unpinned record is handed to a human, not retried forever");
+});
+
+test("post-land redrive: the landing cycle's own live inflight record does not block its peer (#350)", async () => {
+  const deferredPeer = {
+    sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
+    reviewedSha: "peer-reviewed", rounds: 1, peerSids: ["1"], redriveAttempts: 0,
   };
   // ctx().sid — still registered, on the overlapping path, exactly as in a real run.
   const { deps, mergedBranches, removed } = redriveDeps(deferredPeer, () => [{ sid: "1", paths: ["src/a.js"] }]);
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merged");
-  assert.deepEqual(mergedBranches, ["pr/claude/x-1", "pr/codex/b-2"]);
+  assert.deepEqual(mergedBranches, ["pr/claude/x-1", "deadbee"]);
   assert.deepEqual(removed, ["2"]);
 });
 
 test("post-land redrive: a third live cycle on the same path still blocks the peer (#350)", async () => {
   const deferredPeer = {
     sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js", "src/b.js"], testCmd: "npm test",
-    rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+    reviewedSha: "peer-reviewed", rounds: 1, peerSids: ["1"], redriveAttempts: 0,
   };
   // sid 3 touches src/b.js only: no overlap with the landing cycle (so the primary
   // land still happens), but it does overlap the deferred peer.
@@ -315,14 +502,14 @@ for (const peerCloses of [999, null]) {
   test(`post-land redrive: each land records its OWN issue (peer closes=${peerCloses}), not the redriving cycle's`, async () => {
   const deferredPeer = {
     sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
-    rounds: 1, peerSids: ["1"], redriveAttempts: 0, closes: peerCloses,
+    reviewedSha: "peer-reviewed", rounds: 1, peerSids: ["1"], redriveAttempts: 0, closes: peerCloses,
   };
   const mergedBranches = [];
   const { deps, recorded } = baseDeps({
     inflight: { listLive: () => [], peerPaths: () => [] },
     git: {
       ...baseDeps().deps.git,
-      rebaseBranchOnto: () => ({ ok: true }),
+      rebaseBranchOnto: () => ({ ok: true, sha: "deadbee" }),
       mergeInWorktree: (_path, branch) => { mergedBranches.push(branch); return { ok: true, reason: "merged" }; },
       git: (args, cwd) => {
         if (args[0] === "rev-parse") {
@@ -356,7 +543,7 @@ test("post-land redrive: rebase conflict leaves peer deferred (no second demote)
   let demoteCalls = 0;
   const deferredPeer = {
     sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
-    rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+    reviewedSha: "peer-reviewed", rounds: 1, peerSids: ["1"], redriveAttempts: 0,
   };
   const { deps, recorded } = baseDeps({
     inflight: { listLive: () => [], peerPaths: () => [] },
@@ -386,6 +573,39 @@ test("post-land redrive: rebase conflict leaves peer deferred (no second demote)
   assert.equal(recorded.filter((e) => e.verdict === "merged").length, 1);
   assert.equal(demoteCalls, 0); // quietFail — existing demote PR stands
   assert.equal(deferredPeer.redriveAttempts, 1);
+});
+
+test("#422: a moved deferred peer stays queued without burning its redrive attempt", async () => {
+  const mergedBranches = [];
+  const deferredPeer = {
+    sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
+    reviewedSha: "peer-reviewed", rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+  };
+  const { deps } = baseDeps({
+    inflight: { listLive: () => [], peerPaths: () => [] },
+    git: {
+      ...baseDeps().deps.git,
+      rebaseBranchOnto: () => ({ ok: false, moved: true, reason: "branch moved before rebase" }),
+      mergeInWorktree: (_p, branch) => {
+        mergedBranches.push(branch);
+        return { ok: true, reason: "merged" };
+      },
+    },
+    deferred: {
+      list: () => [deferredPeer],
+      eligibleForRedrive: () => true,
+      blockedByLand: () => true,
+      record: () => { throw new Error("a failed CAS must not replace the deferred pin"); },
+      markAttempt: () => { deferredPeer.redriveAttempts += 1; },
+      remove: () => { throw new Error("a moved peer must stay deferred"); },
+    },
+  });
+
+  const r = await finalize(ctx(), deps);
+
+  assert.equal(r.status, "merged");
+  assert.deepEqual(mergedBranches, ["pr/claude/x-1"]);
+  assert.equal(deferredPeer.redriveAttempts, 0);
 });
 
 test("merge conflict → merge-deferred (escalate, no per-change PR against main)", async () => {
