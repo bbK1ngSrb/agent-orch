@@ -102,10 +102,11 @@ test("merge commit built but integration branch didn't advance → throws instea
 
 test("local merge success → opens or updates the integration PR", async () => {
   let bridged = false;
+  let bridgedCtx = null;
   const { deps, recorded } = baseDeps({
     github: {
       ...baseDeps().deps.github,
-      openIntegrationPr: async () => { bridged = true; return { prUrl: "https://x/pr/99" }; },
+      openIntegrationPr: async (c) => { bridged = true; bridgedCtx = c; return { prUrl: "https://x/pr/99" }; },
     },
   });
   const r = await finalize(ctx(), deps);
@@ -114,6 +115,9 @@ test("local merge success → opens or updates the integration PR", async () => 
   assert.equal(recorded[0].verdict, "merged");
   assert.equal(recorded[0].prUrl, "https://x/pr/99");
   assert.equal(bridged, true);
+  // #422 part 4: the tip finalize just verified must reach the bridge so
+  // main.autoMerge can pin the direct merge to that commit.
+  assert.equal(bridgedCtx.integrationSha, "deadbee");
 });
 
 test("integration PR bridge failure after local merge → records merged and escalates locally", async () => {

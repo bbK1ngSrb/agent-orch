@@ -62,8 +62,20 @@ function closingLinesFromIntegration(git, repo, base, branch) {
   return lines.length ? `\n\n${lines.join("\n")}` : "";
 }
 
-function tryMergeDirect(gh, prRef, method) {
-  try { mergeDirect(gh, prRef, method); } catch { /* not ready or not mergeable */ }
+// Optional `sha` pins the merge to the commit this cycle verified. A concurrent
+// cycle may advance the head after that — legitimate green work, not an
+// intruder. On 409 (head moved) log once and leave the newer tip to the cycle
+// that advanced it; every other error stays swallowed (checks still pending is
+// the common, expected case and must not become cycle noise).
+function tryMergeDirect(gh, prRef, method, sha = null, log = () => {}) {
+  try {
+    mergeDirect(gh, prRef, method, sha);
+  } catch (e) {
+    if (sha && /\b409\b/.test(String(e?.message || ""))) {
+      log("integration advanced past the commit this cycle verified — the newer cycle will merge it");
+    }
+    /* not ready or not mergeable */
+  }
 }
 
 // A statusCheckRollup entry is one of two shapes: a CheckRun (GitHub Actions /
@@ -342,10 +354,13 @@ export async function openPr(ctx, deps) {
 // merged, tested, and bumped locally. Push that branch and maintain one PR from
 // it to main; GitHub owns the final main update.
 export async function openIntegrationPr(ctx, deps) {
-  const { repo, orchDir, cfg } = ctx;
+  const { repo, orchDir, cfg, integrationSha = null } = ctx;
   const branch = cfg.integrationBranch || "orch/integration";
   const base = cfg.baseBranch || "main";
   const { git, gh, notify, log = () => {}, resolveIntegrationConflict } = deps;
+  // Tip this cycle verified and pushed — finalize threads it so we pin the
+  // direct merge to that commit rather than re-resolving the branch name later.
+  const tipSha = (integrationSha || "").trim() || null;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate?.(orchDir, branch,
       `# Escalation — ${branch}\n\nThe local integration branch is green, but a git remote and the gh CLI are required to open or update the PR to ${base}.\n`);
@@ -456,10 +471,12 @@ export async function openIntegrationPr(ctx, deps) {
   // never auto-merges even after checks pass (verified empirically), and this
   // green-gated direct merge is the only thing that lands it. When native
   // auto-merge does work, the direct call is a harmless no-op (already merged),
-  // swallowed by tryMergeDirect.
+  // swallowed by tryMergeDirect. The merge is pinned to tipSha so this cycle only
+  // lands the commit it verified; if a concurrent cycle advanced the tip, a 409
+  // is logged once and that newer cycle owns the merge.
   if (cfg?.main?.autoMerge) {
     try {
-      if (prChecksGreen(gh, prRef)) tryMergeDirect(gh, prRef, "merge");
+      if (prChecksGreen(gh, prRef)) tryMergeDirect(gh, prRef, "merge", tipSha, log);
     } catch (e) {
       log(`could not inspect checks for ${branch}: ${e.message}`);
     }
