@@ -7,10 +7,11 @@ Contributors: more than welcome to pick up anything on this list — see
 
 ## 1 month (v0.4)
 
-- Model/effort-aware rotation pool — parse `agents:` entries as full role specs
-  (`<agent> [model] [effort]`), rotate by `.agent`, preserve model/effort at
-  spawn, and reject duplicate agents in the pool. Decision + rationale on
-  [#323](https://github.com/bbk1ng/agent-orch/issues/323).
+- Model/effort-aware rotation pool — **decided against** on
+  [#323](https://github.com/bbk1ng/agent-orch/issues/323): `agents:` entries
+  stay bare adapter names and rich role specs (`<agent> [model] [effort]`) are
+  rejected at config validation; model/effort belong in the `author`/`reviewer`
+  keys or CLI overrides.
 
 ## 3 months (v0.5)
 
