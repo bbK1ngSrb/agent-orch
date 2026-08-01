@@ -491,6 +491,12 @@ test("the landing page tracks recently shipped surfaces (#403/#335)", () => {
   // while README and orch.example.yml already listed it.
   assert.match(landing, /orch release/);
   assert.match(landing, /<span class="chip">kimi<\/span>/);
+  // The commands section bills itself as "the whole surface"; the two shipped
+  // cycle commands it dropped must stay listed (and counted in the heading) or
+  // the same drift recurs for the primary agent-change entry point.
+  assert.match(landing, /orch issue &lt;n&gt;/);
+  assert.match(landing, /orch continue &lt;sid&gt;/);
+  assert.match(landing, /<h2>Eight commands<\/h2>/);
 });
 
 test("FUTURE.md records the #323 decision instead of planning the rejected design", () => {
