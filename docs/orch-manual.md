@@ -875,16 +875,22 @@ so a crash mid-review doesn't force a full re-audit or re-test.
 
 Each recorded verdict is pinned to the branch head commit OID at the moment
 it was recorded (`git rev-parse --verify refs/heads/<branch>`, so a tag that
-happens to share the branch's name can't shadow the real head). On resume the
-shortcut is honoured only when the recorded OID still equals the current head:
-if the branch moved between the crash and `orch continue` — a manual commit, a
-rebase, another cycle's revise — the new content does not inherit a verdict
-earned by different code, and that round is re-audited (or the gate re-run)
-instead. The recorded round is still adopted either way, so resume keeps
-working; it just refuses to skip checks it cannot prove still apply. A
-checkpoint written by an older orch has no OID and is treated as unverifiable,
-not as a match — the cost is one extra audit on a resume that spans an
-upgrade.
+happens to share the branch's name can't shadow the real head). The OID is
+captured once per review round, and that single captured value then binds
+the round's cached-verdict check, checkpoint writes,
+security and path reads, and the final merge — a branch ref that moves
+mid-round cannot launder unaudited content into a checkpoint the tests
+actually ran on. On resume the shortcut is honoured only when the recorded OID
+still equals the current head, and that match is re-verified at the moment
+the cached verdict is consumed rather than only when the checkpoint is first
+read: if the branch moved between the crash and `orch continue` — a manual
+commit, a rebase, another cycle's revise — the new content does not inherit
+a verdict earned by different code, and that round is re-audited (or the
+gate re-run) instead. The recorded round is still adopted either way, so
+resume keeps working; it just refuses to skip checks it cannot prove still
+apply. A checkpoint written by an older orch has no OID and is treated as
+unverifiable, not as a match — the cost is one extra audit on a resume that
+spans an upgrade.
 
 If the checkpoint outlives its branch (you deleted it, or it only ever landed
 on the remote), `orch continue` no longer dies with a bare "branch no longer
