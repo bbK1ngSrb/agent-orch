@@ -185,7 +185,9 @@ async function landIntoIntegration(ctx, deps, { integration, integrationBranch, 
   }
   let pr;
   try {
-    pr = await github.openIntegrationPr(ctx, deps);
+    // Thread the integration tip this cycle verified so the bridge can pin
+    // main.autoMerge to that commit (not whatever the branch points at later).
+    pr = await github.openIntegrationPr({ ...ctx, integrationSha: sha }, deps);
   } catch (e) {
     notify.escalate?.(orchDir, integrationBranch,
       `# Escalation — ${integrationBranch}\n\nThe local integration branch is green, but the PR bridge failed after the merge landed locally: ${e.message}\n`);

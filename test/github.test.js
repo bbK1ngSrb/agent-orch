@@ -442,8 +442,9 @@ test("openIntegrationPr with main.autoMerge directly merges the persistent integ
   };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+  const integrationSha = "integabc123";
 
-  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg, integrationSha }, { gh, git, notify: { escalate() {} } });
 
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge"), "must not use gh pr merge precheck");
@@ -461,6 +462,7 @@ test("openIntegrationPr with main.autoMerge directly merges the persistent integ
     !direct.some((a) => a.includes("orch/integration/merge")),
     "direct merge must not use the branch name in the REST path",
   );
+  assert.ok(direct.includes("sha=integabc123"), "direct merge must pin to the integration tip this cycle verified");
 });
 
 test("openIntegrationPr arms native auto-merge and still runs the green-gated direct merge", async () => {
@@ -481,12 +483,15 @@ test("openIntegrationPr arms native auto-merge and still runs the green-gated di
   };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
   const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: true }, main: { autoMerge: true } };
+  const integrationSha = "integabc123";
 
-  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg, integrationSha }, { gh, git, notify: { escalate() {} } });
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
   const mergeCall = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge");
   assert.ok(mergeCall && mergeCall.includes("--auto"), "native auto-merge must be armed");
-  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge"))), "green-gated direct merge must still run so the BLOCKED-bypass PR lands");
+  const direct = calls.find((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge")));
+  assert.ok(direct, "green-gated direct merge must still run so the BLOCKED-bypass PR lands");
+  assert.ok(direct.includes("sha=integabc123"), "existing-PR path must also pin to the integration tip");
 });
 
 test("openIntegrationPr falls back to the direct merge when arming auto-merge fails", async () => {
@@ -576,6 +581,7 @@ test("openIntegrationPr treats SKIPPED and NEUTRAL required checks as green", as
 });
 
 test("openIntegrationPr swallows main.autoMerge direct-merge failures so GitHub refusals retry later", async () => {
+  const logs = [];
   const gh = (args) => {
     if (args[0] === "--version") return "gh 2";
     if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
@@ -586,8 +592,80 @@ test("openIntegrationPr swallows main.autoMerge direct-merge failures so GitHub 
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
   const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
 
-  const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
+  const r = await openIntegrationPr(
+    { repo: "/r", orchDir: "/r/.orch", cfg, integrationSha: "integabc123" },
+    { gh, git, notify: { escalate() {} }, log: (m) => logs.push(m) },
+  );
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
+  // Non-409 refusals (checks pending, not mergeable, etc.) stay silent — must
+  // not become cycle noise once a sha pin is in play.
+  assert.ok(!logs.some((m) => /integration advanced|409/.test(m)), "non-409 merge failure must stay swallowed silently");
+});
+
+test("openIntegrationPr pins main.autoMerge to the integration tip on create and update paths", async () => {
+  // #422 part 4: both paths into the direct merge (fresh create + existing PR)
+  // must send sha=<tip this cycle verified>.
+  const tip = "cycleverifieddeadbeef";
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+  const greenView = JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+
+  async function run(listJson, createUrl) {
+    const calls = [];
+    const gh = (args) => {
+      calls.push(["gh", ...args]);
+      if (args[0] === "--version") return "gh 2";
+      if (args[0] === "pr" && args[1] === "list") return listJson;
+      if (args[0] === "pr" && args[1] === "create") return createUrl;
+      if (args[0] === "pr" && args[1] === "view") return greenView;
+      return "";
+    };
+    const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+    await openIntegrationPr(
+      { repo: "/r", orchDir: "/r/.orch", cfg, integrationSha: tip },
+      { gh, git, notify: { escalate() {} } },
+    );
+    return calls.find((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => String(a).includes("/merge")));
+  }
+
+  const createDirect = await run("[]", "https://github.com/o/r/pull/12\n");
+  assert.ok(createDirect, "create path must attempt direct merge");
+  assert.ok(createDirect.includes(`sha=${tip}`), "create path must pin sha to the integration tip");
+
+  const updateDirect = await run(
+    JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]),
+    "",
+  );
+  assert.ok(updateDirect, "existing-PR path must attempt direct merge");
+  assert.ok(updateDirect.includes(`sha=${tip}`), "existing-PR path must pin sha to the integration tip");
+});
+
+test("openIntegrationPr 409 on pinned merge leaves the cycle result untouched and logs once", async () => {
+  // Head moved after this cycle's push: another cycle landed legitimate green
+  // work. Pin refuses the merge (409); we log and leave the newer tip to that
+  // cycle. Status stays merged, prUrl still returned — never escalate.
+  const logs = [];
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+    if (args[0] === "api" && args.some((a) => String(a).includes("/merge"))) {
+      throw new Error("HTTP 409: Head branch was modified. Review and try the merge again.");
+    }
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+  const r = await openIntegrationPr(
+    { repo: "/r", orchDir: "/r/.orch", cfg, integrationSha: "oldertip000" },
+    { gh, git, notify: { escalate() { throw new Error("must not escalate on 409"); } }, log: (m) => logs.push(m) },
+  );
+
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/12", "PR url must still be returned");
+  assert.ok(
+    logs.some((m) => /integration advanced past the commit this cycle verified/.test(m)),
+    "409 must emit the clear one-line reason",
+  );
 });
 
 test("openIntegrationPr lists and creates the persistent PR against cfg.baseBranch", async () => {

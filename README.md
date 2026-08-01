@@ -96,9 +96,12 @@ also runs before `orch task`/`orch issue` whenever the repo has a remote,
 since even the default `no-ff` path opens/updates the persistent integration
 PR after a merge. It fetches the PR head, runs an
 audit-only cycle (local `main` is never touched — GitHub owns the merge), and
-posts the verdict as a PR comment. With `--merge` it runs `gh pr merge`, then
-confirms the resulting merge commit is really an ancestor of `origin/main`
-before reporting success — a `gh` exit code alone isn't proof the commit
+posts the verdict as a PR comment. With `--merge` it sends GitHub a merge
+request pinned to the exact PR commit fetched for that audit. If the PR head
+moves before the merge, GitHub refuses it and orch tells you to re-run
+`orch pr <n> --merge` so the new head is audited. After a pinned merge succeeds,
+orch confirms the resulting merge commit is really an ancestor of `origin/main`
+before reporting success — a successful API call alone isn't proof the commit
 landed, so a false "merged" is refused with an error instead of printed.
 
 [`gh`]: https://cli.github.com/
@@ -221,11 +224,13 @@ print `merged` for a cycle whose commit never reached `origin/main`:
 - **Verified merge claims.** Before printing `merged`, orch checks the merged commit is
   actually an ancestor of `origin/main` (`verifyOriginContains` in `src/git.js`). If the
   push didn't take, `finalize` reports the real, local-only outcome instead of a false
-  success — it no longer claims a merge that didn't happen. `orch pr --merge` gets the
-  same treatment on its own path: after `gh pr merge` exits 0, it re-fetches
-  `origin/main` and confirms the merge commit `gh` reports is really an ancestor before
+  success — it no longer claims a merge that didn't happen. `orch pr --merge` gets an
+  extra race guard on its own path: its GitHub merge request is pinned to the
+  fetched-and-reviewed PR SHA, so a concurrent head update is refused instead of
+  landing code the agents never saw. After the merge request succeeds, orch re-fetches
+  `origin/main` and confirms the merge commit GitHub reports is really an ancestor before
   logging `merged ... verified on origin/main`, since a squash/rebase merge mints a new
-  SHA that a bare exit-code check can't vouch for.
+  SHA that a bare success response can't vouch for.
 - **Per-cycle cost.** Every cycle's summary line includes `; cost <usageSummary>` — the
   token/$ estimate for that cycle's author + review rounds — so cost is visible next to
   the verdict, not just in aggregate run stats.
