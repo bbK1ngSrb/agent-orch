@@ -94,11 +94,12 @@ export async function runCycle(opts, deps) {
 
   const baseSha = git.git(["rev-parse", baseBranch], repo);
 
-  // #422: the branch head at this instant. Checkpoints carry it so a resume can
-  // prove the recorded verdict belongs to the content the branch holds NOW.
-  // Called fresh at every record/lookup site — a revise moves the branch. Read
-  // from `repo`: a linked worktree's commits land on the shared refs/heads entry.
-  // Unreadable → null, which the resume check treats as "cannot verify".
+  // #422: the branch head for one review round. Checkpoints carry it so a resume
+  // can prove the recorded verdict belongs to the content the branch holds NOW.
+  // Capture it once per round, then reuse it through audit, gate, checkpoint,
+  // security/path reads, and finalize. Read from `repo`: a linked worktree's
+  // commits land on the shared refs/heads entry. Unreadable → null, which the
+  // resume check treats as "cannot verify".
   // The ref is fully qualified (`refs/heads/<branch>`, with `--verify` so an
   // ambiguous or missing ref fails instead of guessing): a bare name goes
   // through git's disambiguation order, which prefers `refs/tags/<name>` over
@@ -173,13 +174,13 @@ export async function runCycle(opts, deps) {
     let round = 1;
     let pendingVerdict = null;
     let skipTest = false;
+    let cachedOid = null;
     if (resume) {
       const ck = checkpoint?.lookup(orchDir, sid);
       if (ck && ck.branch === branch) {
         round = ck.round;
-        const oid = branchOid();
-        const contentMatches = Boolean(ck.oid) && Boolean(oid) && ck.oid === oid;
-        if (!opts.reviewerOverride && contentMatches) {
+        if (!opts.reviewerOverride) {
+          cachedOid = ck.oid || null;
           if (ck.stage === "tested") {
             pendingVerdict = { decision: "AGREE", reason: ck.reason || "" };
             skipTest = true;
@@ -194,6 +195,16 @@ export async function runCycle(opts, deps) {
       if (git.changedFiles(repo, branch, baseBranch).length === 0) {
         return recordTerminal(escalate(notify, orchDir, branch, round,
           "author produced no changes — nothing to review"));
+      }
+
+      // Re-check a cached shortcut at consumption, not only at resume entry. This
+      // is also the round's single branch-ref read: once captured, reviewedSha
+      // binds the audit, gate, checkpoint writes, security reads, and merge to
+      // the same commit even if the branch moves later.
+      const reviewedSha = branchOid();
+      if (pendingVerdict && (!reviewedSha || !cachedOid || cachedOid !== reviewedSha)) {
+        pendingVerdict = null;
+        skipTest = false;
       }
 
       let verdict;
@@ -233,7 +244,7 @@ export async function runCycle(opts, deps) {
         notify.writeRound(orchDir, branch, round,
           `# Round ${round}\n\nVerdict: ${verdict.decision}\n\nCost: ${formatUsage(totalUsage(runStats))}\n\n${verdict.reason}\n`);
         notify.writeRoundRaw?.(orchDir, branch, round, roundRawOutput(verdicts));
-        checkpoint?.record(orchDir, sid, { branch, oid: branchOid(), round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
+        checkpoint?.record(orchDir, sid, { branch, oid: reviewedSha, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
 
         // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
         // revising the author would burn the whole loop for nothing. Escalate
@@ -258,7 +269,7 @@ export async function runCycle(opts, deps) {
           notify.phase("gate", `running: ${testCmd}`);
           ({ pass } = gate.run(testCmd, worktree));
           notify.phase("gate", testCmd, pass ? "ok" : "fail");
-          if (pass) checkpoint?.record(orchDir, sid, { branch, oid: branchOid(), round, stage: "tested", reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
+          if (pass) checkpoint?.record(orchDir, sid, { branch, oid: reviewedSha, round, stage: "tested", reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
         }
         if (!pass) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
@@ -273,7 +284,6 @@ export async function runCycle(opts, deps) {
         // rules) and the STRUCTURAL `--raw -z` listing (changed paths, for the
         // guardrail floor — no prefix/quoting config can blind it). Both are in
         // the one try: a partial view is not a view we scan on.
-        const reviewedSha = branchOid();
         if (!reviewedSha) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
             `security scan: could not read reviewed branch head refs/heads/${branch} — failing closed, not merging`));
