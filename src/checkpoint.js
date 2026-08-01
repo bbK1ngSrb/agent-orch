@@ -9,6 +9,10 @@ import { writeFileAtomic } from "./atomic-file.js";
 const dir = (orchDir) => join(orchDir, "checkpoints");
 const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
 
+// `data.oid` (caller-supplied: the branch head commit at checkpoint time) pins the
+// recorded verdict to the content it was earned on. A checkpoint without an `oid`
+// — an older orch wrote it, or the OID could not be read — is NOT trusted for the
+// resume shortcut; engine.js re-audits instead (#422).
 export function record(orchDir, sid, data) {
   // No sid → no resume path exists (the PR bridge calls runCycle without one).
   // Writing would leave a dangling `undefined.json` the dashboard reads as a
