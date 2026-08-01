@@ -262,6 +262,9 @@ test("merge wipes reviews + records the run; escalation keeps them", async () =>
 test("DISAGREE until cap -> escalated after roundCap rounds", async () => {
   // roundCap is total review rounds (initial included), not post-DISAGREE
   // revisions: default 3 → 3 audits / 2 author revises, then escalate.
+  // Also pins the scope of the empty-diff guard: changedFiles stays constant
+  // and non-empty here, i.e. the revises add nothing new — the guard does NOT
+  // fire, because it diffs the whole branch against base, not revise-to-revise.
   const deps = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "no", raw: "" }] });
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "escalated");

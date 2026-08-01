@@ -186,9 +186,10 @@ below that says `main`, read "your `baseBranch`".
 ## How it decides to merge
 Merge happens only when every reviewer says `AGREE` **and** the repo's tests pass.
 No test command detected → it refuses to auto-merge and tells you. And if the
-author's branch has an empty diff against the base, the review loop never
-starts — the cycle escalates immediately with "author produced no changes —
-nothing to review" instead of spending review rounds on nothing.
+author's branch has an empty diff against the base (checked before each review
+round against the whole branch, not one revision against the previous), the
+cycle escalates with "author produced no changes — nothing to review" instead
+of spending review rounds on nothing.
 
 There's a third, independent gate the LLM reviewers can't talk their way past:
 immediately before every merge attempt — the normal local-integration path and
