@@ -647,7 +647,7 @@ test("#422: the final security and path reads all use one captured branch OID", 
   const r = await runCycle(opts, deps);
 
   assert.equal(r.status, "merged");
-  assert.equal(oidReads, 1, "reviewedSha is captured once at the security boundary");
+  assert.equal(oidReads, 1, "reviewedSha is captured once for the round");
   assert.equal(diffArgs.length, 2);
   assert.ok(diffArgs.some((a) => SECURITY_DIFF_ARGS.every((flag) => a.includes(flag))));
   assert.ok(diffArgs.some((a) => SECURITY_RAW_ARGS.every((flag) => a.includes(flag))));
@@ -825,10 +825,15 @@ test("§3b: initial author receives opts.authorPrompt verbatim (fenced work orde
 test("crash recovery: a 'tested' checkpoint skips both audit and gate on resume", async () => {
   // Simulates a crash after AGREE + green tests but before merge: the resumed
   // cycle must land the merge without re-auditing or re-running the test gate.
-  // The branch still points at the checkpointed commit, so the verdict is trusted.
+  // The branch still points at the checkpointed commit when the shortcut is
+  // consumed, so the verdict is trusted.
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   deps.git.attachExistingBranch = () => {};
-  deps.git.git = (args) => (args[0] === "rev-parse" ? "sha-head" : "diff summary");
+  let oidReads = 0;
+  deps.git.git = (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--verify") { oidReads += 1; return "sha-head"; }
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
   let gateRuns = 0;
   deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
   const stored = { branch: opts.branch, oid: "sha-head", round: 1, stage: "tested", reason: "ok" };
@@ -837,6 +842,38 @@ test("crash recovery: a 'tested' checkpoint skips both audit and gate on resume"
   assert.equal(r.status, "merged");
   assert.equal(deps._calls.audits, 0, "resume from a tested checkpoint must not re-audit");
   assert.equal(gateRuns, 0, "resume from a tested checkpoint must not re-run the test gate");
+  assert.equal(oidReads, 1, "the resumed round reads the branch ref once");
+});
+
+test("#422 Part 5: branch moves between resume check and shortcut consumption — refuse", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.attachExistingBranch = () => {};
+  let liveHead = "sha-head";
+  let oidReads = 0;
+  deps.git.git = (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--verify") { oidReads += 1; return liveHead; }
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
+  let changedReads = 0;
+  deps.git.changedFiles = () => {
+    changedReads += 1;
+    // The first read publishes inflight paths. The second sits after resume
+    // lookup but immediately before the cached verdict is consumed.
+    if (changedReads === 2) liveHead = "sha-moved";
+    return ["src/a.js"];
+  };
+  let gateRuns = 0;
+  deps.gate.run = () => { gateRuns += 1; return { pass: true, log: "" }; };
+  const stored = { branch: opts.branch, oid: "sha-head", round: 2, stage: "tested", reason: "ok" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+
+  assert.equal(r.status, "merged");
+  assert.equal(r.rounds, 2, "the checkpointed round is kept while its shortcut is refused");
+  assert.equal(deps._calls.audits, 1, "consumption-time mismatch must re-audit");
+  assert.equal(gateRuns, 1, "consumption-time mismatch must re-gate");
+  assert.equal(oidReads, 1, "the round uses only its reviewedSha capture");
 });
 
 test("#422: a 'tested' checkpoint whose branch has MOVED loses the shortcut — re-audit + re-gate", async () => {
@@ -923,12 +960,51 @@ test("#422: a legacy checkpoint with no OID fails closed — re-audit + re-gate"
   assert.equal(deps._calls.authors, 0, "resume never re-authors");
 });
 
+test("#422 Part 5: unreadable OID drops the shortcut, re-audits, and re-gates", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.attachExistingBranch = () => {};
+  let oidReads = 0;
+  let diffReads = 0;
+  deps.git.git = (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--verify") {
+      oidReads += 1;
+      throw new Error("missing branch ref");
+    }
+    if (args[0] === "diff" && !args.includes("--stat")) diffReads += 1;
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
+  let gateRuns = 0;
+  deps.gate.run = () => { gateRuns += 1; return { pass: true, log: "" }; };
+  const recorded = [];
+  const stored = { branch: opts.branch, oid: "sha-head", round: 2, stage: "tested", reason: "ok" };
+  deps.checkpoint = {
+    lookup: () => stored,
+    record: (_dir, _sid, data) => recorded.push(data),
+    clear() {},
+  };
+
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+
+  assert.equal(r.status, "escalated", "an unpinnable reviewed round cannot finalize");
+  assert.match(r.reason, /could not read reviewed branch head/);
+  assert.equal(deps._calls.audits, 1, "unreadable OID must not inherit the cached audit");
+  assert.equal(gateRuns, 1, "unreadable OID must not inherit the cached gate");
+  assert.equal(oidReads, 1, "the failed capture is not retried within the round");
+  assert.equal(diffReads, 0, "security reads cannot run without a reviewedSha");
+  assert.deepEqual(recorded.map((entry) => entry.oid), [null, null]);
+  assert.notEqual(deps._calls.finalized, true);
+});
+
 test("crash recovery: a 'reviewed' DISAGREE checkpoint skips that round's audit and revises directly", async () => {
   const deps = makeDeps({
     verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }], // only used for round 2's fresh audit
   });
   deps.git.attachExistingBranch = () => {};
-  deps.git.git = (args) => (args[0] === "rev-parse" ? "sha-head" : "diff summary");
+  let oidReads = 0;
+  deps.git.git = (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--verify") { oidReads += 1; return "sha-head"; }
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
   const stored = { branch: opts.branch, oid: "sha-head", round: 1, stage: "reviewed", decision: "DISAGREE", reason: "needs work" };
   deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
   const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
@@ -937,12 +1013,57 @@ test("crash recovery: a 'reviewed' DISAGREE checkpoint skips that round's audit 
   assert.equal(deps._calls.audits, 1, "round 1's audit is skipped; only round 2 audits fresh");
   assert.equal(deps._calls.authors, 1, "resume skips initial authoring; only the checkpoint-driven revise call runs");
   assert.match(deps._calls.prompts[0], /needs work/, "revise prompt uses the checkpointed reason");
+  assert.equal(oidReads, 2, "each of the two rounds reads the branch ref exactly once");
+});
+
+test("#422 Part 5: a moved head after green gate cannot launder the tested checkpoint", async () => {
+  const testedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const movedSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  let liveHead = testedSha;
+  let oidReads = 0;
+  let finalizeCtx = null;
+  const recorded = [];
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--verify") { oidReads += 1; return liveHead; }
+    if (args[0] === "diff" && !args.includes("--stat")) return "";
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
+  deps.gate.run = () => ({ pass: true, log: "" });
+  const recordPhase = deps.notify.phase;
+  deps.notify.phase = (...args) => {
+    recordPhase(...args);
+    if (args[0] === "gate" && args[2] === "ok") liveHead = movedSha;
+  };
+  deps.checkpoint = {
+    lookup: () => null,
+    record: (_dir, _sid, data) => recorded.push(data),
+    clear() {},
+  };
+  deps.finalize = async (ctx) => {
+    finalizeCtx = ctx;
+    return { status: "merged", reason: "merged", sha: "x" };
+  };
+
+  const r = await runCycle({ ...opts, sid: "s1" }, deps);
+
+  assert.equal(r.status, "merged");
+  assert.equal(liveHead, movedSha, "the test exercises a real post-gate ref move");
+  assert.deepEqual(recorded.map((entry) => entry.stage), ["reviewed", "tested"]);
+  assert.deepEqual(recorded.map((entry) => entry.oid), [testedSha, testedSha],
+    "both checkpoints belong to the commit that was audited and gated");
+  assert.equal(finalizeCtx.reviewedSha, testedSha, "the same reviewed commit continues to finalize");
+  assert.equal(oidReads, 1, "the moved ref is never re-read and laundered into the checkpoint");
 });
 
 test("checkpoint.record is called with the round's verdict after each fresh audit", async () => {
   const recorded = [];
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
-  deps.git.git = (args) => (args[0] === "rev-parse" ? "sha-head" : "diff summary");
+  let oidReads = 0;
+  deps.git.git = (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--verify") { oidReads += 1; return "sha-head"; }
+    return args[0] === "rev-parse" ? "base" : "diff summary";
+  };
   deps.checkpoint = { lookup: () => null, record: (_dir, sid, data) => recorded.push({ sid, ...data }), clear() {} };
   const r = await runCycle({ ...opts, sid: "s1" }, deps);
   assert.equal(r.status, "merged");
@@ -954,6 +1075,7 @@ test("checkpoint.record is called with the round's verdict after each fresh audi
   // whether the verdict still belongs to the content the branch holds.
   assert.equal(recorded[0].oid, "sha-head");
   assert.equal(recorded[1].oid, "sha-head");
+  assert.equal(oidReads, 1, "both writes reuse the round's single OID capture");
 });
 
 test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as ms (#56)", async () => {
