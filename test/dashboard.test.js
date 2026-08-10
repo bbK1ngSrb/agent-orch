@@ -173,6 +173,15 @@ test("latestLog returns the tail of the highest-numbered round file", () => {
   assert.match(log.tail, /last line/);
 });
 
+test("latestLog returns the tail without loading a large review file", () => {
+  const d = freshDir();
+  const tailLines = Array.from({ length: 12 }, (_, i) => `tail-${i}`);
+  const content = `${"discarded\n".repeat(3000)}${tailLines.join("\n")}\n`;
+  notify.writeRound(d, "b1", 1, content);
+
+  assert.equal(dashboard.latestLog(d, "b1").tail, tailLines.join("\n"));
+});
+
 test("latestLog returns null when a branch has no reviews yet", () => {
   const d = freshDir();
   assert.equal(dashboard.latestLog(d, "no-such-branch"), null);
@@ -280,4 +289,23 @@ test("snapshot includes sid for live, interrupted, and history entries", () => {
   assert.equal(snap.live[0].sid, "sid-live");
   assert.equal(snap.interrupted[0].sid, "sid-dead");
   assert.equal(snap.history[0].sid, "sid-hist");
+});
+
+test("snapshot refreshes cached state when a checkpoint or run history changes", () => {
+  const d = freshDir();
+  checkpoint.record(d, "sid-dead", { branch: "old-branch", round: 1, stage: "reviewed" });
+  notify.recordRun(d, { ts: "1", branch: "old-branch", sid: "sid-1", verdict: "merged", rounds: 1 });
+
+  const first = dashboard.snapshot(d);
+  assert.equal(first.interrupted[0].branch, "old-branch");
+  assert.equal(first.metrics.total, 1);
+
+  checkpoint.record(d, "sid-dead", { branch: "newer-branch", round: 2, stage: "tested" });
+  notify.recordRun(d, { ts: "2", branch: "newer-branch", sid: "sid-2-longer", verdict: "pr", rounds: 2 });
+
+  const second = dashboard.snapshot(d);
+  assert.equal(second.interrupted[0].branch, "newer-branch");
+  assert.equal(second.interrupted[0].stage, "test");
+  assert.equal(second.metrics.total, 2);
+  assert.equal(second.history[0].sid, "sid-2-longer");
 });

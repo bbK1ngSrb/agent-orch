@@ -3,10 +3,9 @@
 // success-rate metrics.
 // No new persistence — this only reads what engine.js/finalize.js/notify.js
 // already write.
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
+import { join, sep } from "node:path";
 import * as inflight from "./inflight.js";
-import * as checkpoint from "./checkpoint.js";
 import { branchExists } from "./git.js";
 import { kpi, reviewsDir } from "./notify.js";
 import { paint, C, STAGE_SYMBOL, VERDICT_SYMBOL, table, formatTimestamp } from "./tui/theme.js";
@@ -14,6 +13,16 @@ import { paint, C, STAGE_SYMBOL, VERDICT_SYMBOL, table, formatTimestamp } from "
 const STAGE_LABELS = { reviewed: "review", tested: "test" };
 const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "merge-deferred": C.fail };
 const RED_VERDICTS = new Set(["escalated", "merge-deferred"]);
+const JSONL_CACHE = new Map();
+const CHECKPOINT_CACHE = new Map();
+const LOG_CACHE = new Map();
+const LOG_TAIL_BYTES = 16 * 1024;
+
+function fileStat(p) {
+  try { return statSync(p); } catch { return null; }
+}
+
+function statKey(stat) { return `${stat.mtimeMs}:${stat.size}:${stat.ino}`; }
 
 // Live cycles, newest inflight registration first, each annotated with its
 // most recent checkpoint stage (or "authoring" if none was recorded yet —
@@ -21,7 +30,7 @@ const RED_VERDICTS = new Set(["escalated", "merge-deferred"]);
 export function liveCycles(orchDir) {
   return inflight.listLive(orchDir)
     .map((e) => {
-      const ck = checkpoint.lookup(orchDir, e.sid);
+      const ck = readCheckpoint(join(orchDir, "checkpoints", `${e.sid}.json`));
       return {
         sid: e.sid,
         branch: e.branch,
@@ -35,25 +44,51 @@ export function liveCycles(orchDir) {
     .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
 }
 
+function readCheckpoint(p) {
+  const stat = fileStat(p);
+  if (!stat) {
+    CHECKPOINT_CACHE.delete(p);
+    return null;
+  }
+  const key = statKey(stat);
+  const cached = CHECKPOINT_CACHE.get(p);
+  if (cached?.key === key) return cached.value;
+
+  let value = null;
+  try { value = JSON.parse(readFileSync(p, "utf8")); } catch {
+    // Ignore corrupt partial writes; checkpoint.lookup behaves the same way.
+  }
+  CHECKPOINT_CACHE.set(p, { key, value });
+  return value;
+}
+
 function readCheckpoints(orchDir) {
   const d = join(orchDir, "checkpoints");
-  if (!existsSync(d)) return [];
+  const prefix = `${d}${sep}`;
+  if (!existsSync(d)) {
+    for (const p of CHECKPOINT_CACHE.keys()) {
+      if (p.startsWith(prefix)) CHECKPOINT_CACHE.delete(p);
+    }
+    return [];
+  }
   const out = [];
+  const seen = new Set();
   for (const f of readdirSync(d)) {
     if (!f.endsWith(".json")) continue;
-    try {
-      const ck = JSON.parse(readFileSync(join(d, f), "utf8"));
-      if (!ck?.branch) continue;
-      out.push({
-        sid: f.slice(0, -".json".length),
-        branch: ck.branch,
-        stage: STAGE_LABELS[ck.stage] || ck.stage || "unknown",
-        round: ck.round ?? null,
-        lastUpdate: ck.ts || null,
-      });
-    } catch {
-      // Ignore corrupt partial writes; checkpoint.lookup behaves the same way.
-    }
+    const p = join(d, f);
+    seen.add(p);
+    const ck = readCheckpoint(p);
+    if (!ck?.branch) continue;
+    out.push({
+      sid: f.slice(0, -".json".length),
+      branch: ck.branch,
+      stage: STAGE_LABELS[ck.stage] || ck.stage || "unknown",
+      round: ck.round ?? null,
+      lastUpdate: ck.ts || null,
+    });
+  }
+  for (const p of CHECKPOINT_CACHE.keys()) {
+    if (p.startsWith(prefix) && !seen.has(p)) CHECKPOINT_CACHE.delete(p);
   }
   return out.sort((a, b) => ((a.lastUpdate || "") < (b.lastUpdate || "") ? 1 : -1));
 }
@@ -72,10 +107,20 @@ export function interruptedCycles(orchDir, live = liveCycles(orchDir), repo = nu
 }
 
 function readJsonl(p) {
-  if (!existsSync(p)) return [];
-  return readFileSync(p, "utf8").split("\n").filter(Boolean)
+  const stat = fileStat(p);
+  if (!stat) {
+    JSONL_CACHE.delete(p);
+    return [];
+  }
+  const key = statKey(stat);
+  const cached = JSONL_CACHE.get(p);
+  if (cached?.key === key) return cached.value;
+
+  const entries = readFileSync(p, "utf8").split("\n").filter(Boolean)
     .map((line) => { try { return JSON.parse(line); } catch { return null; } })
     .filter(Boolean);
+  JSONL_CACHE.set(p, { key, value: entries });
+  return entries;
 }
 
 function reconcileHistory(entries, repo) {
@@ -87,15 +132,15 @@ function reconcileHistory(entries, repo) {
 }
 
 // Most recent entries first.
-export function runHistory(orchDir, limit = 20, { repo = null, checkHistory = false } = {}) {
-  const entries = readJsonl(join(orchDir, "runs.jsonl"));
+export function runHistory(orchDir, limit = 20, { repo = null, checkHistory = false, entries: suppliedEntries = null } = {}) {
+  const entries = suppliedEntries ?? readJsonl(join(orchDir, "runs.jsonl"));
   const history = entries.slice(-limit).reverse();
   return checkHistory ? reconcileHistory(history, repo) : history;
 }
 
 // Success-rate + usage totals over the full run-history file.
-export function metrics(orchDir) {
-  const entries = readJsonl(join(orchDir, "runs.jsonl"));
+export function metrics(orchDir, { entries: suppliedEntries = null } = {}) {
+  const entries = suppliedEntries ?? readJsonl(join(orchDir, "runs.jsonl"));
   // "merged" and "pr" are different terminal outcomes — a `pr` run opened a
   // GitHub PR (cfg.merge === "pr") but never actually landed a local merge, so
   // folding it into `merged` mislabels it. Count them separately; `successRate`
@@ -133,18 +178,42 @@ export function latestLog(orchDir, branch, lines = 12) {
     .sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
   if (!rounds.length) return null;
   const file = rounds[rounds.length - 1];
-  const content = readFileSync(join(dir, file), "utf8").split("\n").filter(Boolean);
-  return { file, tail: content.slice(-lines).join("\n") };
+  const p = join(dir, file);
+  const stat = fileStat(p);
+  if (!stat) {
+    LOG_CACHE.delete(p);
+    return null;
+  }
+  const key = `${statKey(stat)}:${lines}`;
+  const cached = LOG_CACHE.get(p);
+  if (cached?.key === key) return { file, tail: cached.tail };
+
+  const length = Math.min(LOG_TAIL_BYTES, stat.size);
+  let content = "";
+  if (length > 0) {
+    const fd = openSync(p, "r");
+    try {
+      const buffer = Buffer.allocUnsafe(length);
+      const bytesRead = readSync(fd, buffer, 0, length, stat.size - length);
+      content = buffer.toString("utf8", 0, bytesRead);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  const result = { file, tail: content.split("\n").filter(Boolean).slice(-lines).join("\n") };
+  LOG_CACHE.set(p, { key, tail: result.tail });
+  return result;
 }
 
 export function snapshot(orchDir, { historyLimit = 10, repo = null, checkHistory = false } = {}) {
   const live = liveCycles(orchDir);
   const interrupted = interruptedCycles(orchDir, live, repo);
+  const entries = readJsonl(join(orchDir, "runs.jsonl"));
   return {
     live: live.map((c) => ({ ...c, log: latestLog(orchDir, c.branch) })),
     interrupted,
-    history: runHistory(orchDir, historyLimit, { repo, checkHistory }),
-    metrics: metrics(orchDir),
+    history: runHistory(orchDir, historyLimit, { repo, checkHistory, entries }),
+    metrics: metrics(orchDir, { entries }),
   };
 }
 
