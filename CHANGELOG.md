@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.246 — 2026-08-11
+- auto-docs msp19s0w0 update documentation to reflect the latest merged changes
+
 ## v0.4.245 — 2026-08-11
 - refactor: four hand-rolled copies of the sid-keyed JSON store with already-diverged corrupt-file policy (rmSync vs silent-skip) (closes [#442](https://github.com/bbk1ng/agent-orch/issues/442))
 
