@@ -1855,6 +1855,31 @@ test("resolveTaskBranch: recorded branch is a live peer -> no resume, no clobber
   assert.equal(spy.cleared, 0);  // and don't clear its record
 });
 
+test("resolveTaskBranch: escalated branch is terminal, so author fresh", () => {
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-escalated-resume-"));
+  const branch = "pr/claude/do-x-9-z";
+  const { deps, spy } = resumeStubs({ record: { branch, sid: "9-z" }, exists: true, changed: ["a"] });
+  const decision = join(orchDir, "reviews", branch, "DECISION.md");
+  mkdirSync(join(orchDir, "reviews", branch), { recursive: true });
+  writeFileSync(decision, "# Decision needed\n");
+
+  const r = resolveTaskBranch({ repo: "/r", orchDir, task: "do x", authorName: "claude" }, deps);
+  assert.equal(r.resume, false); // a terminal escalation is not an interrupted run
+  assert.notEqual(r.branch, branch);
+  assert.equal(spy.cleared, 1); // stale resume state cannot trap a later rotation on this branch
+});
+
+test("resolveTaskBranch: a capped DISAGREE checkpoint is terminal without a decision marker", () => {
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-escalated-checkpoint-"));
+  const branch = "pr/claude/do-x-9-z";
+  const { deps, spy } = resumeStubs({ record: { branch, sid: "9-z" }, exists: true, changed: ["a"] });
+  checkpointDep.record(orchDir, "9-z", { branch, round: 1, stage: "reviewed", decision: "DISAGREE" });
+
+  const r = resolveTaskBranch({ repo: "/r", orchDir, task: "do x", authorName: "claude", roundCap: 1 }, deps);
+  assert.equal(r.resume, false);
+  assert.equal(spy.cleared, 1);
+});
+
 test("resolveTaskBranch: dry never reads or writes the store (#24)", () => {
   const { deps, spy } = resumeStubs({ record: { branch: "x", sid: "1" } });
   let looked = 0;
@@ -1886,6 +1911,15 @@ test("pinnedResumeAuthor pins the recorded author of a surviving committed branc
 test("pinnedResumeAuthor returns null when the branch has no committed work (#27)", () => {
   const deps = pinStubs({ records: [{ author: "claude", branch: "pr/claude/empty" }], changed: [] });
   assert.equal(pinnedResumeAuthor({ repo: "/r", orchDir: "/o", task: "do x" }, deps), null);
+});
+
+test("pinnedResumeAuthor ignores a branch that already escalated", () => {
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-escalated-pin-"));
+  const branch = "pr/claude/do-x-1";
+  mkdirSync(join(orchDir, "reviews", branch), { recursive: true });
+  writeFileSync(join(orchDir, "reviews", branch, "DECISION.md"), "# Decision needed\n");
+  const deps = pinStubs({ records: [{ author: "claude", branch }] });
+  assert.equal(pinnedResumeAuthor({ repo: "/r", orchDir, task: "do x" }, deps), null);
 });
 
 test("pinnedResumeAuthor skips a branch that is a live peer, and is null under dry (#27)", () => {
