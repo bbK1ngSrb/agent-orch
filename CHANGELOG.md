@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.239 — 2026-08-10
+- perf: dashboard snapshot re-reads all state files from disk on every tick (runs.jsonl parsed twice/sec, no mtime cache, full log reads for a 12-line tail) (closes [#438](https://github.com/bbk1ng/agent-orch/issues/438))
+
 ## v0.4.238 — 2026-08-01
 - auto-docs msakj2kr0 update documentation to reflect the latest merged changes
 
