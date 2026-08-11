@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.240 — 2026-08-11
+- perf: TUI render loop — footer clock defeats dirty-check, unbatched paintFrame writes, O(n²) history index, quadratic ANSI walk, fs.watch misses checkpoints/inflight (closes [#439](https://github.com/bbk1ng/agent-orch/issues/439))
+
 ## v0.4.239 — 2026-08-10
 - perf: dashboard snapshot re-reads all state files from disk on every tick (runs.jsonl parsed twice/sec, no mtime cache, full log reads for a 12-line tail) (closes [#438](https://github.com/bbk1ng/agent-orch/issues/438))
 
