@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readRecord, recordFile, removeRecord, scanDir, writeRecord } from "../src/sid-store.js";
+
+const IS_WINDOWS = process.platform === "win32";
 
 function freshDir() {
   return mkdtempSync(join(tmpdir(), "orch-sidstore-"));
@@ -56,6 +58,32 @@ test("scanDir returns {key, record} pairs, heals corrupt files, ignores non-json
 test("scanDir on a missing dir is empty", () => {
   assert.deepEqual(scanDir(join(freshDir(), "absent")), []);
 });
+
+test("corrupt record in a read-only dir: read still returns null (self-heal rm is best-effort)",
+  { skip: IS_WINDOWS && "chmod doesn't restrict directory writes on Windows" }, () => {
+    const d = freshDir();
+    writeFileSync(recordFile(d, "bad"), "{bad json");
+    chmodSync(d, 0o555); // rmSync of the corrupt file will fail with EACCES
+    try {
+      assert.equal(readRecord(d, "bad"), null, "failed self-heal must not escape as a throw");
+    } finally {
+      chmodSync(d, 0o755); // restore so tmp cleanup works
+    }
+  });
+
+test("scanDir on an existing but unreadable dir throws (only ENOENT scans as empty)",
+  { skip: IS_WINDOWS && "chmod doesn't restrict directory reads on Windows" }, () => {
+    const d = freshDir();
+    writeRecord(d, "k1", { v: 1 });
+    chmodSync(d, 0o000); // dir exists but cannot be read
+    try {
+      // Unreadable must NOT report "empty" — scanDir backs the inflight
+      // concurrency guard, where a silent [] would admit a colliding cycle.
+      assert.throws(() => scanDir(d), (e) => e.code !== "ENOENT");
+    } finally {
+      chmodSync(d, 0o755);
+    }
+  });
 
 test("removeRecord deletes and is idempotent", () => {
   const d = freshDir();

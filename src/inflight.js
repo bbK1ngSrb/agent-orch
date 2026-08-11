@@ -21,11 +21,18 @@ export function setPaths(orchDir, sid, paths, baseSha) {
   const d = dir(orchDir);
   // Missing record (and, per sid-store's self-heal policy, a corrupt one) is a
   // silent no-op: in multi-process designs the file may vanish between calls.
-  const e = readRecord(d, sid);
-  if (!e) return;
-  e.paths = paths;
-  if (baseSha !== undefined) e.baseSha = baseSha;
-  writeFileAtomic(recordFile(d, sid), JSON.stringify(e));
+  // The write must stay inside the same guard — the record (or its directory)
+  // can also vanish between the read and the write, and a throw out of here
+  // would abort a live runCycle (engine.js wraps it in try/finally, no catch).
+  try {
+    const e = readRecord(d, sid);
+    if (!e) return;
+    e.paths = paths;
+    if (baseSha !== undefined) e.baseSha = baseSha;
+    writeFileAtomic(recordFile(d, sid), JSON.stringify(e));
+  } catch {
+    // record vanished or became unwritable mid-call → no-op
+  }
 }
 
 export function deregister(orchDir, sid) {

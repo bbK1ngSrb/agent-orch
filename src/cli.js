@@ -852,27 +852,40 @@ export function maybePrintRunBanner(cfg, runs, flags, stdout = process.stdout) {
   return true;
 }
 
+function hasEscalationDecision(orchDir, branch, sid, roundCap) {
+  try {
+    if (existsSync(join(notify.reviewsDir(orchDir, branch), "DECISION.md"))) return true;
+    const ck = sid ? checkpoint.lookup(orchDir, sid) : null;
+    return ck?.stage === "reviewed" && ck.decision === "DISAGREE" && Number(ck.round) >= Number(roundCap);
+  }
+  catch { return false; }
+}
+
 // The author of a surviving committed branch to resume, or null. Scans resume
 // records for this task across authors (#27): a hard kill rotates the pool, so the
 // re-run's author no longer matches the record's per-author key. Returns the author
 // only when its branch still exists, carries committed work, and isn't a live peer —
-// the same staleness guards resolveTaskBranch re-applies before it actually resumes.
+// or an already-escalated branch. The same staleness guards resolveTaskBranch
+// re-applies before it actually resumes.
 export function pinnedResumeAuthor(ctx, deps = { git, resume }) {
-  const { orchDir, task, repo, dry = false, liveBranches = new Set(), baseBranch = "main" } = ctx;
+  const { orchDir, task, repo, dry = false, liveBranches = new Set(), baseBranch = "main", roundCap } = ctx;
   const { git: g, resume: r } = deps;
   if (dry) return null;
   const hit = r.lookupForTask(orchDir, task).find((rec) =>
     g.branchExists(repo, rec.branch) &&
     g.changedFiles(repo, rec.branch, baseBranch).length > 0 &&
-    !liveBranches.has(rec.branch));
+    !liveBranches.has(rec.branch) &&
+    !hasEscalationDecision(orchDir, rec.branch, rec.sid, roundCap));
   return hit ? hit.author : null;
 }
 
 // Pick the branch/sid for one author in task mode, resuming a quota-aborted run
 // when one is on record (issue #24). Resume only when the recorded branch still
-// exists, carries committed work, and isn't a live peer's branch — otherwise the
-// record is stale (branch vanished / empty), so drop it and author fresh. A fresh
-// run records its branch *before* the cycle; cli clears it after runCycle returns.
+// exists, carries committed work, isn't a live peer's branch, and has not already
+// escalated — otherwise the record is stale/terminal, so drop it and author fresh.
+// A fresh run records its branch *before* the cycle; cli clears it after runCycle
+// returns. The decision marker covers a process dying after escalation but before
+// that cleanup, where reusing the branch would skip the new task/issue body.
 // ponytail: the record key ignores sid, so two truly-concurrent identical-text
 // tasks share one key and the later fresh start clobbers the record — same
 // fixed-prompt collision spawnDocsTask already stamps around; sequential retry
@@ -921,14 +934,17 @@ function remoteBranchRefExists(repo, branch) {
 }
 
 export function resolveTaskBranch(ctx, deps = { git, resume }) {
-  const { repo, orchDir, task, authorName, dry = false, liveBranches = new Set(), baseBranch = "main" } = ctx;
+  const { repo, orchDir, task, authorName, dry = false, liveBranches = new Set(), baseBranch = "main", roundCap } = ctx;
   const { git: g, resume: r } = deps;
   const found = dry ? null : r.lookup(orchDir, task, authorName);
   if (found && !liveBranches.has(found.branch)) {
-    if (g.branchExists(repo, found.branch) && g.changedFiles(repo, found.branch, baseBranch).length > 0) {
+    if (hasEscalationDecision(orchDir, found.branch, found.sid, roundCap)) {
+      r.clear(orchDir, task, authorName); // terminal escalation must not be re-run as a resume
+    } else if (g.branchExists(repo, found.branch) && g.changedFiles(repo, found.branch, baseBranch).length > 0) {
       return { sid: found.sid, branch: found.branch, resume: true };
+    } else {
+      r.clear(orchDir, task, authorName); // record points at a vanished/empty branch
     }
-    r.clear(orchDir, task, authorName); // record points at a vanished/empty branch
   }
   const sid = newSid();
   const branch = `pr/${authorName}/${slugify(task)}-${sid}`;
@@ -1056,11 +1072,11 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches, { base: cfg.baseBranch }));
   }
 
-  const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch });
+  const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
   const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned);
   const authorSpec = authors[0];
   const authorName = authorSpec.agent;
-  const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch });
+  const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
   const reviewerList = reviewersForAuthor(authorName, reviewers);
   const run = {
     mode: "task", task, authorPrompt, branch, sid, resume: isResume, authorName, author: authorSpec,
@@ -1375,11 +1391,11 @@ export async function main(argv, deps = {}) {
       // Pin the author of a surviving committed branch from a prior killed run so the
       // rotation pool resumes it instead of authoring fresh under the next agent (#27).
       // resolveTaskBranch re-validates below; this only steers author selection.
-      const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch });
+      const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
       const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned);
       runs = authors.map((authorSpec) => {
         const authorName = authorSpec.agent;
-        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch });
+        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
         const reviewerList = reviewersForAuthor(authorName, reviewers);
         return {
           mode, task, authorPrompt, closes, branch, sid, resume, authorName, author: authorSpec,
