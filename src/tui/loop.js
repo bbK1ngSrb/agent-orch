@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import * as realScreen from "./screen.js";
 import * as realInput from "./input.js";
 import { render as realRender, snapshot as realSnapshot } from "../dashboard.js";
@@ -84,10 +85,15 @@ function historyDetailRows(entry, index, count) {
   return rows;
 }
 
+// Sticky flag anchors the match at lastIndex, so the walk below never slices
+// the remaining string at every position (quadratic on a per-tick hot path).
+const ANSI_AT = /\x1b\[[0-9;]*m/y;
+
 function ansiIndexForPlainIndex(line, plainIndex) {
   let plain = 0;
   for (let i = 0; i < line.length;) {
-    const ansi = line.slice(i).match(/^\x1b\[[0-9;]*m/);
+    ANSI_AT.lastIndex = i;
+    const ansi = ANSI_AT.exec(line);
     if (ansi) {
       i += ansi[0].length;
       continue;
@@ -179,9 +185,9 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
 
   const historyTable = history.length ? table(
     ["", "TIME", "BRANCH", "VERDICT", "ROUNDS", "COST"],
-    history.map((e) => {
+    history.map((e, i) => {
       const usage = e.tokens ? `${e.tokens}tok${e.costUsd != null ? ` ${usd(e.costUsd)}` : ""}` : "";
-      const selected = history.indexOf(e) === state.historySelection.selectedIndex ? ">" : "";
+      const selected = i === state.historySelection.selectedIndex ? ">" : "";
       return [
         selected,
         formatTimestamp(e.ts),
@@ -286,12 +292,16 @@ export function run(orchDir, opts = {}) {
     filter: "",
     filterMode: false,
   };
-  let prevFrame = null;
+  // Dirty-check state: body and footer are tracked separately because the
+  // footer embeds a seconds clock — comparing the whole frame would fail every
+  // tick and force a full repaint once per second.
+  let prevBody = null;
+  let prevFooter = null;
   let prevLineCount = 0;
 
-  // Build the composed frame and paint it, skipping the write when nothing
-  // changed. Any throw (e.g. a mid-tick render error) routes through fail()
-  // so the terminal is never left in raw-mode/alt-screen.
+  // Build the composed frame and paint it, skipping the body write when only
+  // the footer clock changed. Any throw (e.g. a mid-tick render error) routes
+  // through fail() so the terminal is never left in raw-mode/alt-screen.
   function tick() {
     try {
       // Real pseudo-TTYs (pty spawned without a winsize ioctl) report columns/rows
@@ -320,10 +330,18 @@ export function run(orchDir, opts = {}) {
       const maxOffset = Math.max(0, lines.length - bodyRows);
       state.scrollOffset = Math.min(Math.max(0, state.scrollOffset), maxOffset);
       const window = lines.slice(state.scrollOffset, state.scrollOffset + bodyRows);
-      const frame = structuredFrame ? lines.join("\n") : [...window, footerText(state.controlsActive)].join("\n");
-      if (frame === prevFrame) return;
-      prevFrame = frame;
-      prevLineCount = screen.paintFrame(out, frame, prevLineCount);
+      const bodyLines = structuredFrame ? lines.slice(0, -1) : window;
+      const footer = structuredFrame ? lines.at(-1) : footerText(state.controlsActive);
+      const body = bodyLines.join("\n");
+      if (body !== prevBody) {
+        prevBody = body;
+        prevFooter = footer;
+        prevLineCount = screen.paintFrame(out, [...bodyLines, footer].join("\n"), prevLineCount);
+      } else if (footer !== prevFooter) {
+        // Body unchanged: repaint just the footer row (the seconds clock).
+        prevFooter = footer;
+        screen.paintLineAt(out, prevLineCount, footer);
+      }
     } catch (err) {
       fail(err);
     }
@@ -425,12 +443,20 @@ export function run(orchDir, opts = {}) {
   const timer = setInterval(tick, refreshMs);
   if (timer.unref) timer.unref();
 
-  let watcher = null;
-  try {
-    watcher = fs.watch(orchDir, debounce(tick, 100));
-    watcher.on("error", () => {}); // NFS: silently disabled on failure
-  } catch {
-    watcher = null; // fs.watch unreliable on NFS; the interval covers us
+  // Checkpoints and inflight records — the state behind the LIVE/INTERRUPTED
+  // panels — are written two levels under orchDir, where a non-recursive watch
+  // never fires. Watch those subdirectories too. fs.watch is unreliable on
+  // NFS: any failure silently disables that watcher and the interval covers us.
+  const watchers = [];
+  const debouncedTick = debounce(tick, 100);
+  for (const dir of [orchDir, path.join(orchDir, "checkpoints"), path.join(orchDir, "inflight")]) {
+    try {
+      const w = fs.watch(dir, debouncedTick);
+      w.on("error", () => {});
+      watchers.push(w);
+    } catch {
+      // unwatched: the poll interval still covers this directory
+    }
   }
 
   const onResize = debounce(tick, 50);
@@ -451,9 +477,9 @@ export function run(orchDir, opts = {}) {
     if (done) return;
     done = true;
     clearInterval(timer);
-    if (watcher) {
+    for (const w of watchers) {
       try {
-        watcher.close();
+        w.close();
       } catch {
         // already gone
       }
