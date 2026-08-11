@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.247 — 2026-08-11
+- sid-store refactor narrowed three exception guards: unguarded self-heal rmSync, scanDir swallowing all readdir errors, inflight.setPaths write outside its race guard (closes [#453](https://github.com/bbk1ng/agent-orch/issues/453))
+
 ## v0.4.246 — 2026-08-11
 - auto-docs msp19s0w0 update documentation to reflect the latest merged changes
 
