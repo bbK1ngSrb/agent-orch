@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.241 — 2026-08-11
+- orch continue cannot resume a cycle that died between author-completion and the first audit — committed work exists but no checkpoint or inflight record does (closes [#431](https://github.com/bbk1ng/agent-orch/issues/431))
+
 ## v0.4.240 — 2026-08-11
 - perf: TUI render loop — footer clock defeats dirty-check, unbatched paintFrame writes, O(n²) history index, quadratic ANSI walk, fs.watch misses checkpoints/inflight (closes [#439](https://github.com/bbk1ng/agent-orch/issues/439))
 
