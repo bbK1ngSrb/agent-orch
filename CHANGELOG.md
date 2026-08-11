@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.245 — 2026-08-11
+- refactor: four hand-rolled copies of the sid-keyed JSON store with already-diverged corrupt-file policy (rmSync vs silent-skip) (closes [#442](https://github.com/bbk1ng/agent-orch/issues/442))
+
 ## v0.4.244 — 2026-08-11
 - test: coverage gaps that block safe optimization — usage.js (money display) untested, compareVersions indirect-only, buildRevisionPrompt fencing unverified, writeFileAtomic symlink contract tested 3x at wrong layer (closes [#444](https://github.com/bbk1ng/agent-orch/issues/444))
 
