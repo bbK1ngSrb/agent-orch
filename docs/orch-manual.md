@@ -925,9 +925,15 @@ exists. All four now share one storage primitive (`src/sid-store.js`) — the
 filename is just the key it is handed — and therefore one
 **corrupt-file policy**: a record that no longer parses as JSON — half-written
 by a kill mid-write, hand-edited, truncated by a full disk — is discarded and
-the run proceeds exactly as if that record had never existed. It is also
-removed from disk, since a file that can never become valid again is only
-clutter. Before the stores were unified, what happened depended on which code
+the run proceeds exactly as if that record had never existed. Deleting it from
+disk is attempted too, since a file that can never become valid again is only
+clutter — but that cleanup is **best-effort**: if the unlink itself fails (a
+read-only mount, a permission or lock error), the file survives and is simply
+re-discarded on the next read. Treating the record as absent is the guarantee;
+removing the file is the tidy-up, and a failed tidy-up is never turned into an
+error the caller has to handle.
+
+Before the stores were unified, what happened depended on which code
 path touched the file: the directory scans in `inflight` and `deferred` deleted
 it, while every single-record lookup — including both of those stores' own —
 skipped it silently and left it on disk. The behaviour is now deliberate and
