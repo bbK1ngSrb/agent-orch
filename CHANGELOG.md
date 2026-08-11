@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.242 — 2026-08-11
+- perf: appendCapturedOutput does an unamortized ~1MB copy on every chunk once output crosses the cap (benchmarked 0.35ms/call, linear) (closes [#440](https://github.com/bbk1ng/agent-orch/issues/440))
+
 ## v0.4.241 — 2026-08-11
 - orch continue cannot resume a cycle that died between author-completion and the first audit — committed work exists but no checkpoint or inflight record does (closes [#431](https://github.com/bbk1ng/agent-orch/issues/431))
 
