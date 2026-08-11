@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { register, setPaths, deregister, listLive, countLive, peerPaths } from "../src/inflight.js";
+
+const IS_WINDOWS = process.platform === "win32";
 
 test("register/setPaths/deregister roundtrip with a live pid", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-if-"));
@@ -40,3 +42,25 @@ test("listLive deletes a corrupt entry", () => {
   writeFileSync(join(d, "inflight", "corrupt.json"), "{bad json");
   assert.equal(countLive(d), 1); // corrupt dropped, good kept
 });
+
+test("setPaths is a no-op when the record is removed before the call", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-if-"));
+  register(d, "gone", { branch: "b", pid: process.pid, baseSha: "z" });
+  deregister(d, "gone");
+  setPaths(d, "gone", ["a.js"]); // must not throw
+});
+
+test("setPaths does not throw when the record vanishes between read and write",
+  { skip: IS_WINDOWS && "chmod doesn't restrict directory writes on Windows" }, () => {
+    const d = mkdtempSync(join(tmpdir(), "orch-if-"));
+    register(d, "s1", { branch: "b", pid: process.pid, baseSha: "z" });
+    // The read still succeeds but the atomic write fails (EACCES) — the same
+    // failure shape as another process removing the record mid-call, and a
+    // throw here would abort a live runCycle (engine.js try/finally, no catch).
+    chmodSync(join(d, "inflight"), 0o555);
+    try {
+      setPaths(d, "s1", ["a.js"]); // must not throw
+    } finally {
+      chmodSync(join(d, "inflight"), 0o755);
+    }
+  });

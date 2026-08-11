@@ -30,7 +30,10 @@ export function readRecordFile(path) {
   catch { return null; } // ENOENT / unreadable → no record
   try { return JSON.parse(raw); }
   catch {
-    rmSync(path, { force: true }); // corrupt → self-heal (see header policy)
+    // Corrupt → self-heal (see header policy). Best-effort only: force:true
+    // suppresses ENOENT but not EACCES/EPERM/EBUSY, and "no record" must not
+    // become a throw because the cleanup itself failed.
+    try { rmSync(path, { force: true }); } catch { /* best-effort */ }
     return null;
   }
 }
@@ -45,11 +48,16 @@ export function removeRecord(dir, key) {
 
 // All parseable records in dir as { key, record } pairs (key = filename sans
 // ".json"). Corrupt files are deleted per the header policy; a missing dir
-// scans as empty.
+// scans as empty. Other readdir failures (EACCES, NFS hiccups, …) propagate:
+// scanDir backs the inflight concurrency guard, where silently reporting an
+// unreadable-but-existing dir as empty would let a colliding cycle start.
 export function scanDir(dir) {
   let names;
   try { names = readdirSync(dir); }
-  catch { return []; }
+  catch (e) {
+    if (e.code === "ENOENT") return []; // missing dir is genuinely empty
+    throw e;
+  }
   const out = [];
   for (const n of names) {
     if (!n.endsWith(".json")) continue;
