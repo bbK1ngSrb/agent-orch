@@ -416,6 +416,18 @@ test("docs explain stale `orch continue` resume handling", () => {
   }
 });
 
+test("the manual documents the uniform corrupt-record policy of the shared sid store (#442)", () => {
+  // refactor: the four sid-keyed stores (checkpoints/resume/inflight/deferred)
+  // now share src/sid-store.js, which parses every record through one path and
+  // treats an unparseable one as absent. That used to differ per store —
+  // inflight/deferred deleted, checkpoint/resume silently skipped — so an
+  // operator staring at a corrupt checkpoint could previously expect the file
+  // to survive. The manual must state the behaviour, not just the refactor.
+  assert.match(manual, /corrupt/i);
+  assert.match(manual, /sid-store\.js/);
+  assert.match(manual, /never existed|as if.{0,40}absent/i);
+});
+
 test("docs explain checkpoint verdicts are pinned to the branch head OID (#422)", () => {
   for (const doc of [readme, manual]) {
     assert.match(doc, /branch head commit OID/);
