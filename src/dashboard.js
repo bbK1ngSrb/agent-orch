@@ -8,7 +8,6 @@ import { join, sep } from "node:path";
 import * as inflight from "./inflight.js";
 import { branchExists } from "./git.js";
 import { kpi, reviewsDir } from "./notify.js";
-import { readRecordFile } from "./sid-store.js";
 import { paint, C, STAGE_SYMBOL, VERDICT_SYMBOL, table, formatTimestamp } from "./tui/theme.js";
 
 const STAGE_LABELS = { reviewed: "review", tested: "test" };
@@ -55,9 +54,10 @@ function readCheckpoint(p) {
   const cached = CHECKPOINT_CACHE.get(p);
   if (cached?.key === key) return cached.value;
 
-  // Shared sid-store read: a corrupt partial write self-heals (is deleted)
-  // and reads as no checkpoint, exactly like checkpoint.lookup.
-  const value = readRecordFile(p);
+  let value = null;
+  try { value = JSON.parse(readFileSync(p, "utf8")); } catch {
+    // Ignore corrupt partial writes; checkpoint.lookup behaves the same way.
+  }
   CHECKPOINT_CACHE.set(p, { key, value });
   return value;
 }

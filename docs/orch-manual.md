@@ -882,16 +882,6 @@ A finer-grained checkpoint inside a resumed cycle also remembers each
 completed review round's verdict and whether the test gate already passed,
 so a crash mid-review doesn't force a full re-audit or re-test.
 
-The checkpoint's first write happens earlier than any of that: the moment the
-author's commit lands, orch records the branch under stage `"authored"`,
-before the first audit call. Without it a cycle that died *during* round-1
-review left nothing addressable by sid — the checkpoint's first write was
-post-audit and the inflight record is deregistered on every exit path — so
-`orch continue <sid>` said there was nothing to resume even though the
-branch with the finished work was sitting right there. The stage buys
-addressability only, not speed: it records no verdict and no green gate, so a
-resumed run still audits and still gates from round 1.
-
 Each recorded verdict is pinned to the branch head commit OID at the moment
 it was recorded (`git rev-parse --verify refs/heads/<branch>`, so a tag that
 happens to share the branch's name can't shadow the real head). The OID is

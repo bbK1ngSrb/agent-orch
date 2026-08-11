@@ -101,18 +101,6 @@ test("docs document the dashboard's cached state reads", () => {
   }
 });
 
-test("docs document the 'authored' checkpoint stage", () => {
-  // fix(engine): the checkpoint's first write now lands at author-commit time
-  // with stage "authored", so a cycle that died during round-1 review is
-  // addressable by `orch continue <sid>` instead of reporting nothing to
-  // resume. Docs must also say the stage grants no shortcut, or readers will
-  // assume a resume after a round-1 crash skips review.
-  for (const doc of [readme, manual]) {
-    assert.match(doc, /"authored"/);
-    assert.match(doc, /still\s+audits\s+and\s+still\s+gates\s+from\s+round\s+1/);
-  }
-});
-
 test("the generated per-repo ORCH.md template documents all dashboard flags", () => {
   // `orch init` writes ORCH_DOC verbatim to .orch/ORCH.md and overwrites it on
   // every init, so it must track the CLI. The prose-docs test above only covers

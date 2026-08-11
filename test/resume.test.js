@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as resume from "../src/resume.js";
@@ -60,19 +60,4 @@ test("key is full task text, not the slug (collision safety)", () => {
   resume.record(d, "Fix the bug! NOW", "claude", { branch: "b", sid: "2" });
   assert.equal(resume.lookup(d, "Fix the bug now", "claude").branch, "a");
   assert.equal(resume.lookup(d, "Fix the bug! NOW", "claude").branch, "b");
-});
-
-test("scans self-heal a corrupt record (shared sid-store policy)", () => {
-  const d = freshDir();
-  resume.record(d, "do x", "claude", { branch: "b", sid: "s" });
-  const p = join(d, "resume", "corrupt.json");
-  writeFileSync(p, "{bad json");
-  // lookupForTask skips the corrupt record but deletes it; the valid one stays.
-  assert.deepEqual(resume.lookupForTask(d, "do x").map((r) => r.branch), ["b"]);
-  assert.equal(existsSync(p), false, "corrupt file deleted, not left on disk");
-  // clearForBranch likewise tolerates (and heals) a fresh corrupt file.
-  writeFileSync(p, "{still bad");
-  resume.clearForBranch(d, "b");
-  assert.equal(existsSync(p), false);
-  assert.equal(resume.lookup(d, "do x", "claude"), null, "matching branch cleared");
 });
