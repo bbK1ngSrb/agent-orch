@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.244 — 2026-08-11
+- test: coverage gaps that block safe optimization — usage.js (money display) untested, compareVersions indirect-only, buildRevisionPrompt fencing unverified, writeFileAtomic symlink contract tested 3x at wrong layer (closes [#444](https://github.com/bbk1ng/agent-orch/issues/444))
+
 ## v0.4.243 — 2026-08-11
 - auto-docs msnxppv20 update documentation to reflect the latest merged changes
 
