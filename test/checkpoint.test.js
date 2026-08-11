@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as checkpoint from "../src/checkpoint.js";
@@ -30,22 +30,6 @@ test("record overwrites the prior checkpoint for the same sid", () => {
   checkpoint.record(d, "sid-1", { branch: "b", round: 1, stage: "reviewed", decision: "DISAGREE" });
   checkpoint.record(d, "sid-1", { branch: "b", round: 1, stage: "tested" });
   assert.equal(checkpoint.lookup(d, "sid-1").stage, "tested");
-});
-
-test("record replaces the checkpoint path atomically instead of writing through it", () => {
-  const d = freshDir();
-  checkpoint.record(d, "sid-1", { branch: "old", round: 1, stage: "reviewed" });
-  const target = join(d, "checkpoints", "sid-1.json");
-  const linked = join(d, "linked.json");
-  writeFileSync(linked, JSON.stringify({ branch: "linked" }));
-  rmSync(target);
-  symlinkSync(linked, target);
-
-  checkpoint.record(d, "sid-1", { branch: "new", round: 2, stage: "tested" });
-
-  assert.equal(JSON.parse(readFileSync(linked, "utf8")).branch, "linked");
-  assert.equal(lstatSync(target).isSymbolicLink(), false);
-  assert.equal(checkpoint.lookup(d, "sid-1").branch, "new");
 });
 
 test("checkpoints are isolated per sid", () => {

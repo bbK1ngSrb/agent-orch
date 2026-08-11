@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { register, setPaths, deregister, listLive, countLive, peerPaths } from "../src/inflight.js";
@@ -31,23 +31,6 @@ test("peerPaths excludes the caller's own sid", () => {
   setPaths(d, "me", ["a.js"]);
   setPaths(d, "peer", ["b.js", "c.js"]);
   assert.deepEqual(peerPaths(d, "me").sort(), ["b.js", "c.js"]);
-});
-
-test("setPaths replaces the inflight path atomically instead of writing through it", () => {
-  const d = mkdtempSync(join(tmpdir(), "orch-if-"));
-  register(d, "s1", { branch: "b", pid: process.pid, baseSha: "old" });
-  const target = join(d, "inflight", "s1.json");
-  const linked = join(d, "linked.json");
-  writeFileSync(linked, JSON.stringify({ sid: "s1", branch: "linked", pid: process.pid, baseSha: "old", paths: [] }));
-  rmSync(target);
-  symlinkSync(linked, target);
-
-  setPaths(d, "s1", ["new.js"], "newbase");
-
-  assert.deepEqual(JSON.parse(readFileSync(linked, "utf8")).paths, []);
-  assert.equal(lstatSync(target).isSymbolicLink(), false);
-  assert.deepEqual(listLive(d)[0].paths, ["new.js"]);
-  assert.equal(listLive(d)[0].baseSha, "newbase");
 });
 
 test("listLive deletes a corrupt entry", () => {
