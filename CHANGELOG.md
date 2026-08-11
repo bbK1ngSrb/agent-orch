@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.243 — 2026-08-11
+- auto-docs msnxppv20 update documentation to reflect the latest merged changes
+
 ## v0.4.242 — 2026-08-11
 - perf: appendCapturedOutput does an unamortized ~1MB copy on every chunk once output crosses the cap (benchmarked 0.35ms/call, linear) (closes [#440](https://github.com/bbk1ng/agent-orch/issues/440))
 
