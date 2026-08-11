@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { run } from "../../src/tui/loop.js";
 
 // fs.watch on a nonexistent path throws synchronously → the loop disables the
@@ -10,6 +13,7 @@ const ORCH_DIR = "/no/such/orch-loop-test";
 function makeScreen() {
   const s = {
     painted: [],
+    current: "",
     enterCalls: 0,
     leaveCalls: 0,
     enter() {
@@ -20,7 +24,16 @@ function makeScreen() {
     },
     paintFrame(_out, text) {
       s.painted.push(String(text));
+      s.current = String(text);
       return String(text).split("\n").length;
+    },
+    linePaints: [],
+    paintLineAt(_out, row, text) {
+      s.linePaints.push([row, String(text)]);
+      // Keep the composed frame current: a footer-only repaint replaces one row.
+      const lines = s.current.split("\n");
+      lines[row - 1] = String(text);
+      s.current = lines.join("\n");
     },
     registerRestore() {
       return () => {};
@@ -273,7 +286,7 @@ test("filter mode narrows history live and clamps the selection to the subset", 
   for (const ch of "done") input.onKey({ type: "char", value: ch });
   assert.equal(handle.state.filter, "done");
   assert.equal(handle.state.historySelection.selectedIndex, 0);
-  const frame = screen.painted.at(-1);
+  const frame = screen.current; // last keystrokes may only repaint the footer row
   assert.match(frame, /pr\/done/);
   assert.doesNotMatch(frame, /pr\/needs-work/);
   assert.match(frame, /filter: done_/);
@@ -453,4 +466,73 @@ test("a render that throws mid-tick restores the terminal and exits 1", () => {
     out.writes.some((w) => /boom/.test(w)),
     "error printed to the primary screen",
   );
+});
+
+test("an unchanged body is not repainted when only the footer clock advances", () => {
+  // Freeze Date so the frame is deterministic, then advance it past a second
+  // boundary: only the footer row may be repainted, in place. Live rows embed
+  // an elapsed mm:ss, so the snapshot has no live entries to keep the body
+  // stable across the clock advance.
+  const RealDate = Date;
+  let now = RealDate.parse("2026-07-10T10:00:00.000Z");
+  class FakeDate extends RealDate {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  }
+  globalThis.Date = FakeDate;
+  try {
+    const { screen, handle } = setup({ snapshot: () => structuredSnapshot(0), rows: 24, columns: 100 });
+    const paints = screen.painted.length;
+    const footerRow = screen.painted.at(-1).split("\n").length;
+
+    now += 2000; // cross a seconds boundary: only the footer clock changes
+    handle.tick();
+    assert.equal(screen.painted.length, paints, "body not repainted");
+    assert.equal(screen.linePaints.length, 1, "footer repainted in place");
+    const [row, text] = screen.linePaints[0];
+    assert.equal(row, footerRow, "footer row is the last painted row");
+    assert.match(text, /refreshed \d\d:\d\d:02/);
+
+    handle.tick(); // same second again: nothing repaints at all
+    assert.equal(screen.painted.length, paints);
+    assert.equal(screen.linePaints.length, 1);
+
+    handle.shutdown(0);
+  } finally {
+    globalThis.Date = RealDate;
+  }
+});
+
+test("writes under checkpoints/ and inflight/ trigger a repaint", async () => {
+  // A non-recursive fs.watch on orchDir alone misses these subdirectories, so
+  // the loop watches them too. Uses real fs plus the watcher's 100ms debounce;
+  // the poll interval is disabled so only the watcher can cause a repaint.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-loop-watch-"));
+  fs.mkdirSync(path.join(dir, "checkpoints"));
+  fs.mkdirSync(path.join(dir, "inflight"));
+  let text = "before";
+  const screen = makeScreen();
+  const handle = run(dir, {
+    screen,
+    input: makeInput(),
+    out: makeOut(80, 24),
+    stdin: {},
+    exit: () => {},
+    refreshMs: 1_000_000,
+    render: () => text,
+  });
+  try {
+    text = "after checkpoint";
+    fs.writeFileSync(path.join(dir, "checkpoints", "cp.json"), "{}");
+    await new Promise((r) => setTimeout(r, 400));
+    assert.match(screen.painted.at(-1), /after checkpoint/, "checkpoints/ write repaints");
+
+    text = "after inflight";
+    fs.writeFileSync(path.join(dir, "inflight", "inf.json"), "{}");
+    await new Promise((r) => setTimeout(r, 400));
+    assert.match(screen.painted.at(-1), /after inflight/, "inflight/ write repaints");
+  } finally {
+    handle.shutdown(0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

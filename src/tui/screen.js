@@ -22,14 +22,18 @@ export function leave(out = process.stdout) {
 
 export function paintFrame(out = process.stdout, text = "", prevLineCount = 0) {
   const lines = String(text).split("\n");
-  write(out, CURSOR_HOME);
-  lines.forEach((line, i) => {
-    write(out, line);
-    write(out, ERASE_TO_EOL);
-    if (i < lines.length - 1) write(out, "\n");
-  });
-  if (lines.length < prevLineCount) write(out, ERASE_TO_END);
+  // One batched write for the whole frame: a syscall per line (60+ per
+  // repaint) both wastes work and can tear mid-frame.
+  write(out, CURSOR_HOME +
+    lines.map((line) => line + ERASE_TO_EOL).join("\n") +
+    (lines.length < prevLineCount ? ERASE_TO_END : ""));
   return lines.length;
+}
+
+// Repaint a single 1-based row in place. Used for the footer clock, which
+// changes every second while the body above it usually does not.
+export function paintLineAt(out = process.stdout, row = 1, text = "") {
+  write(out, `\x1b[${Math.max(1, row)};1H${String(text)}${ERASE_TO_EOL}`);
 }
 
 export function registerRestore(out = process.stdout) {
