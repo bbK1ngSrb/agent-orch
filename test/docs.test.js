@@ -426,6 +426,10 @@ test("the manual documents the uniform corrupt-record policy of the shared sid s
   assert.match(manual, /corrupt/i);
   assert.match(manual, /sid-store\.js/);
   assert.match(manual, /never existed|as if.{0,40}absent/i);
+  // ...and must not claim all four stores are sid-keyed: resume.js keys on a
+  // hash of author + full task text, because it is looked up before a sid
+  // exists. Sharing the storage primitive is not sharing the key.
+  assert.match(manual, /`\.orch\/resume\/`[\s\S]{0,120}author[\s\S]{0,60}task text/);
 });
 
 test("docs explain checkpoint verdicts are pinned to the branch head OID (#422)", () => {

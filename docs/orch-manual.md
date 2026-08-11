@@ -917,9 +917,12 @@ exists": it distinguishes a remote-only branch (stop and ask you to check it
 out) from a truly-gone one (clear the orphaned checkpoint/inflight record and
 exit clean), so stale resume state can't wedge later runs.
 
-Resume state lives as one small JSON file per sid across four stores —
-`.orch/checkpoints/`, `.orch/resume/`, `.orch/inflight/`, `.orch/deferred/`.
-All four now share one storage primitive (`src/sid-store.js`) and therefore one
+Resume state lives as one small JSON file per record across four stores —
+`.orch/checkpoints/`, `.orch/inflight/` and `.orch/deferred/` name their files
+after the sid; `.orch/resume/` instead keys on a hash of the author plus the
+full task text, so a re-run of the same task finds its record before a sid
+exists. All four now share one storage primitive (`src/sid-store.js`) — the
+filename is just the key it is handed — and therefore one
 **corrupt-file policy**: a record that no longer parses as JSON — half-written
 by a kill mid-write, hand-edited, truncated by a full disk — is discarded and
 the run proceeds exactly as if that record had never existed. It is also
