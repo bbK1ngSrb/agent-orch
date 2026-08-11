@@ -25,6 +25,12 @@ Contributors: more than welcome to pick up anything on this list — see
   contract next to `capabilities` (one shared regex cannot cover seven CLIs) and
   scaffolding the field in `orch agent build` — see
   [docs/idea-agent-quota-exclusion.md](docs/idea-agent-quota-exclusion.md).
+  Audited behavior as of 2026-08-11 is recorded in
+  [docs/idea-agent-readiness-audit.md](docs/idea-agent-readiness-audit.md):
+  detection today covers the **reviewer seat only** (`author()` never consults
+  `LIMIT_RE`), the regex misses "at capacity" / "session limit" / bare `403`,
+  there is no fallback to another agent on either seat, and exit codes conflate
+  "agent unavailable" with "orch bug".
 
 ## 1 year
 

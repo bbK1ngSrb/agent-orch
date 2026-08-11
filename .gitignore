@@ -11,6 +11,7 @@ docs/*.md
 !docs/headless-overnight-design.md
 !docs/idea-detach-dashboard-visibility.md
 !docs/idea-agent-quota-exclusion.md
+!docs/idea-agent-readiness-audit.md
 # subdir markdown isn't matched by docs/*.md, so ignore internal doc dirs wholesale
 docs/superpowers/
 tasks/
