@@ -89,6 +89,18 @@ test("docs document the dashboard --check-history flag", () => {
   assert.match(readme, /view-only|view only/i);
 });
 
+test("docs document the dashboard's cached state reads", () => {
+  // perf(dashboard) (#438): snapshot() caches checkpoints/runs.jsonl/log tails
+  // keyed on file stat (mtime+size+inode), and latestLog serves the tail from
+  // the last 16 KiB of the round file instead of loading it whole. The docs
+  // must note the cache so readers don't expect a full re-read on every
+  // live-TUI poll.
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /mtime\/size\/inode/);
+    assert.match(doc, /16 KiB/);
+  }
+});
+
 test("the generated per-repo ORCH.md template documents all dashboard flags", () => {
   // `orch init` writes ORCH_DOC verbatim to .orch/ORCH.md and overwrites it on
   // every init, so it must track the CLI. The prose-docs test above only covers
