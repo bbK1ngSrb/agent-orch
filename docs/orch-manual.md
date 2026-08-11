@@ -917,6 +917,30 @@ exists": it distinguishes a remote-only branch (stop and ask you to check it
 out) from a truly-gone one (clear the orphaned checkpoint/inflight record and
 exit clean), so stale resume state can't wedge later runs.
 
+Resume state lives as one small JSON file per record across four stores —
+`.orch/checkpoints/`, `.orch/inflight/` and `.orch/deferred/` name their files
+after the sid; `.orch/resume/` instead keys on a hash of the author plus the
+full task text, so a re-run of the same task finds its record before a sid
+exists. All four now share one storage primitive (`src/sid-store.js`) — the
+filename is just the key it is handed — and therefore one
+**corrupt-file policy**: a record that no longer parses as JSON — half-written
+by a kill mid-write, hand-edited, truncated by a full disk — is discarded and
+the run proceeds exactly as if that record had never existed. Deleting it from
+disk is attempted too, since a file that can never become valid again is only
+clutter — but that cleanup is **best-effort**: if the unlink itself fails (a
+read-only mount, a permission or lock error), the file survives and is simply
+re-discarded on the next read. Treating the record as absent is the guarantee;
+removing the file is the tidy-up, and a failed tidy-up is never turned into an
+error the caller has to handle.
+
+Before the stores were unified, what happened depended on which code
+path touched the file: the directory scans in `inflight` and `deferred` deleted
+it, while every single-record lookup — including both of those stores' own —
+skipped it silently and left it on disk. The behaviour is now deliberate and
+identical everywhere. Operationally the cost is
+the same as any missing record: `orch continue <sid>` reports nothing to resume,
+and a fresh run re-authors or re-audits rather than trusting garbage.
+
 `--dry` never deletes worktrees or branches, ever.
 
 ### 4.4 Post-merge tidy

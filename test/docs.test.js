@@ -416,6 +416,27 @@ test("docs explain stale `orch continue` resume handling", () => {
   }
 });
 
+test("the manual documents the uniform corrupt-record policy of the shared sid store (#442)", () => {
+  // refactor: the four sid-keyed stores (checkpoints/resume/inflight/deferred)
+  // now share src/sid-store.js, which parses every record through one path and
+  // treats an unparseable one as absent. That used to differ per store —
+  // inflight/deferred deleted, checkpoint/resume silently skipped — so an
+  // operator staring at a corrupt checkpoint could previously expect the file
+  // to survive. The manual must state the behaviour, not just the refactor.
+  assert.match(manual, /corrupt/i);
+  assert.match(manual, /sid-store\.js/);
+  assert.match(manual, /never existed|as if.{0,40}absent/i);
+  // ...and must not claim all four stores are sid-keyed: resume.js keys on a
+  // hash of author + full task text, because it is looked up before a sid
+  // exists. Sharing the storage primitive is not sharing the key.
+  assert.match(manual, /`\.orch\/resume\/`[\s\S]{0,120}author[\s\S]{0,60}task text/);
+  // ...and must not promise the file always disappears: sid-store.js wraps the
+  // unlink in its own try/catch, so a permission/lock error leaves the corrupt
+  // file on disk while the read still reports "no record". The guarantee is
+  // "treated as absent", the deletion is only best-effort.
+  assert.match(manual, /never existed[\s\S]{0,400}best-effort/i);
+});
+
 test("docs explain checkpoint verdicts are pinned to the branch head OID (#422)", () => {
   for (const doc of [readme, manual]) {
     assert.match(doc, /branch head commit OID/);
