@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as checkpoint from "../src/checkpoint.js";
@@ -53,4 +53,13 @@ test("clear removes the record", () => {
   checkpoint.clear(d, "sid-1");
   assert.equal(checkpoint.lookup(d, "sid-1"), null);
   checkpoint.clear(d, "sid-1"); // idempotent — no throw on missing
+});
+
+test("lookup self-heals a corrupt record (shared sid-store policy)", () => {
+  const d = freshDir();
+  checkpoint.record(d, "sid-1", { branch: "b", round: 1, stage: "tested" });
+  const p = join(d, "checkpoints", "sid-1.json");
+  writeFileSync(p, "{bad json");
+  assert.equal(checkpoint.lookup(d, "sid-1"), null);
+  assert.equal(existsSync(p), false, "corrupt file deleted, not left on disk");
 });
