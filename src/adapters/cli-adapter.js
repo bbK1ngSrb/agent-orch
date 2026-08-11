@@ -9,6 +9,9 @@ const DEFAULT_PROGRESS_INTERVAL_MS = 30_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 25 * 60_000; // #56: per-stage wall-clock cap; 0 disables.
 // Cap captured stdout/stderr so a chatty or stuck agent cannot balloon memory.
 export const MAX_AGENT_OUTPUT_CHARS = 1024 * 1024;
+// Compact only after 1.5× cap so the ~1MB join+slice is amortized (~once per
+// 0.5MB of overflow), not paid on every post-cap data event.
+const OUTPUT_COMPACT_THRESHOLD = Math.floor(MAX_AGENT_OUTPUT_CHARS * 1.5);
 const OUTPUT_TRUNCATED = `[orch: output truncated to last ${MAX_AGENT_OUTPUT_CHARS} chars]\n`;
 const liveChildren = new Set();
 
@@ -111,10 +114,43 @@ function beginProgressState(stage, round, started, label) {
   return { started, beats: 0, dots: "" };
 }
 
-function appendCapturedOutput(buffer, chunk) {
-  const next = buffer + String(chunk);
-  if (next.length <= MAX_AGENT_OUTPUT_CHARS) return next;
-  return OUTPUT_TRUNCATED + next.slice(-MAX_AGENT_OUTPUT_CHARS);
+/** Mutable chunk accumulator for capped agent stdout/stderr. */
+export function createCapturedOutput() {
+  return { parts: [], len: 0, truncated: false };
+}
+
+/**
+ * Append a stdout/stderr chunk. Keeps parts in an array with a running length;
+ * only join+slice when over OUTPUT_COMPACT_THRESHOLD so post-cap copies are
+ * amortized. Marker is deferred until capturedOutputText().
+ */
+export function appendCapturedOutput(buf, chunk) {
+  const s = String(chunk);
+  if (!s) return buf;
+  buf.parts.push(s);
+  buf.len += s.length;
+  if (buf.len > OUTPUT_COMPACT_THRESHOLD) compactCapturedOutput(buf);
+  return buf;
+}
+
+function compactCapturedOutput(buf) {
+  const joined = buf.parts.join("");
+  if (joined.length <= MAX_AGENT_OUTPUT_CHARS) {
+    buf.parts = joined ? [joined] : [];
+    buf.len = joined.length;
+    return;
+  }
+  buf.truncated = true;
+  const tail = joined.slice(-MAX_AGENT_OUTPUT_CHARS);
+  buf.parts = [tail];
+  buf.len = tail.length;
+}
+
+/** Finalize to a string; applies a last compact if still over the cap. */
+export function capturedOutputText(buf) {
+  if (buf.len > MAX_AGENT_OUTPUT_CHARS) compactCapturedOutput(buf);
+  const text = buf.parts.join("");
+  return buf.truncated ? OUTPUT_TRUNCATED + text : text;
 }
 
 function runAgent(bin, args, cwd, label, runOpts = {}) {
@@ -127,8 +163,8 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     const tty = Boolean(process.stderr.isTTY);
     const progress = tty ? beginProgressState(stage, round, started, label) : null;
     if (tty) activeTtyProgress += 1;
-    let stdout = "";
-    let stderr = "";
+    const stdout = createCapturedOutput();
+    const stderr = createCapturedOutput();
     let settled = false;
     let timer = null;
     let watchdog = null;
@@ -214,14 +250,17 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
       if (!settled && child.exitCode === null && child.pid != null) {
         killTree(child.pid);
       }
-      finish({ out: `${stdout}${stderr}\n${label} timed out after ${formatElapsed(elapsed)}`, ok: false });
+      finish({
+        out: `${capturedOutputText(stdout)}${capturedOutputText(stderr)}\n${label} timed out after ${formatElapsed(elapsed)}`,
+        ok: false,
+      });
     }, timeoutMs) : null;
     watchdog?.unref?.();
 
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => { stdout = appendCapturedOutput(stdout, chunk); });
-    child.stderr?.on("data", (chunk) => { stderr = appendCapturedOutput(stderr, chunk); });
+    child.stdout?.on("data", (chunk) => { appendCapturedOutput(stdout, chunk); });
+    child.stderr?.on("data", (chunk) => { appendCapturedOutput(stderr, chunk); });
     child.on("error", (e) => {
       if (child.pid != null) liveChildren.delete(child.pid);
       const out = e.message || "";
@@ -230,8 +269,10 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
     child.on("close", (code, signal) => {
       if (child.pid != null) liveChildren.delete(child.pid);
       const failed = code !== 0 || Boolean(signal);
-      const raw = `${stdout}${stderr}`;
-      const out = failed ? raw || `Command failed: ${bin}` : stdout;
+      const stdoutText = capturedOutputText(stdout);
+      const stderrText = capturedOutputText(stderr);
+      const raw = `${stdoutText}${stderrText}`;
+      const out = failed ? raw || `Command failed: ${bin}` : stdoutText;
       finish({ out, raw, ok: !failed });
     });
   });

@@ -124,6 +124,13 @@ export async function runCycle(opts, deps) {
         const authored = await author.author(opts.authorPrompt || task, worktree, authorOpts);
         recordUsage("author", author.name, authored, authorOpts.model);
         notify.phase("author", `${author.name} completed`, "ok");
+        // Record the committed work NOW: a crash during round-1 review would
+        // otherwise leave neither a checkpoint (first write is post-audit) nor
+        // an inflight record (deregistered on every exit), making the branch
+        // invisible to `orch continue`. "authored" grants no shortcut — it sets
+        // neither pendingVerdict nor skipTest, so a resume still audits and
+        // gates from round 1 (#422 OID binding unaffected).
+        checkpoint?.record(orchDir, sid, { branch, oid: branchOid(), round: 1, stage: "authored", closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
       }
 
       // Scope gate (optional).

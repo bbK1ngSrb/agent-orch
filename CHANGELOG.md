@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.4.244 — 2026-08-11
+- test: coverage gaps that block safe optimization — usage.js (money display) untested, compareVersions indirect-only, buildRevisionPrompt fencing unverified, writeFileAtomic symlink contract tested 3x at wrong layer (closes [#444](https://github.com/bbk1ng/agent-orch/issues/444))
+
+## v0.4.243 — 2026-08-11
+- auto-docs msnxppv20 update documentation to reflect the latest merged changes
+
+## v0.4.242 — 2026-08-11
+- perf: appendCapturedOutput does an unamortized ~1MB copy on every chunk once output crosses the cap (benchmarked 0.35ms/call, linear) (closes [#440](https://github.com/bbk1ng/agent-orch/issues/440))
+
+## v0.4.241 — 2026-08-11
+- orch continue cannot resume a cycle that died between author-completion and the first audit — committed work exists but no checkpoint or inflight record does (closes [#431](https://github.com/bbk1ng/agent-orch/issues/431))
+
+## v0.4.240 — 2026-08-11
+- perf: TUI render loop — footer clock defeats dirty-check, unbatched paintFrame writes, O(n²) history index, quadratic ANSI walk, fs.watch misses checkpoints/inflight (closes [#439](https://github.com/bbk1ng/agent-orch/issues/439))
+
 ## v0.4.239 — 2026-08-10
 - perf: dashboard snapshot re-reads all state files from disk on every tick (runs.jsonl parsed twice/sec, no mtime cache, full log reads for a 12-line tail) (closes [#438](https://github.com/bbk1ng/agent-orch/issues/438))
 

@@ -19,6 +19,9 @@ import {
   MAX_AGENT_OUTPUT_CHARS,
   formatProgressBeat,
   _resetReviewProgress,
+  createCapturedOutput,
+  appendCapturedOutput,
+  capturedOutputText,
 } from "../src/adapters/cli-adapter.js";
 
 // Fake-agent fixtures spawn `node -e <script>` instead of `sh -c <script>`.
@@ -252,6 +255,47 @@ test("audit caps captured child output while preserving the tail", async () => {
   assert.match(v.raw, /output truncated to last/);
   assert.match(v.raw, /final verdict/);
   assert.ok(v.raw.length <= MAX_AGENT_OUTPUT_CHARS + 200);
+});
+
+// Unit: amortized buffer (ADP-1) — under-cap concat, over-cap marker+tail,
+// many small post-cap chunks stay correct without per-chunk 1MB re-slice.
+test("appendCapturedOutput concatenates under the cap", () => {
+  const buf = createCapturedOutput();
+  appendCapturedOutput(buf, "hello ");
+  appendCapturedOutput(buf, "world");
+  assert.equal(capturedOutputText(buf), "hello world");
+  assert.equal(buf.truncated, false);
+});
+
+test("appendCapturedOutput keeps last 1MB with truncation marker", () => {
+  const buf = createCapturedOutput();
+  const head = "H".repeat(100_000);
+  const mid = "M".repeat(MAX_AGENT_OUTPUT_CHARS);
+  const tail = "TAIL-MARKER-XYZ";
+  appendCapturedOutput(buf, head);
+  appendCapturedOutput(buf, mid);
+  appendCapturedOutput(buf, tail);
+  const text = capturedOutputText(buf);
+  assert.match(text, /^\[orch: output truncated to last /);
+  assert.ok(text.endsWith(tail));
+  assert.ok(!text.includes("H".repeat(100))); // head was dropped
+  // marker + at most MAX payload
+  assert.ok(text.length <= MAX_AGENT_OUTPUT_CHARS + 200);
+  assert.equal(text.length - text.indexOf("\n") - 1, MAX_AGENT_OUTPUT_CHARS);
+});
+
+test("appendCapturedOutput amortizes many small post-cap chunks", () => {
+  const buf = createCapturedOutput();
+  // Fill past the cap with one large chunk, then stream many tiny ones.
+  appendCapturedOutput(buf, "x".repeat(MAX_AGENT_OUTPUT_CHARS + 10_000));
+  const n = 2_000;
+  for (let i = 0; i < n; i++) appendCapturedOutput(buf, `e${i % 10}`);
+  // Intermediate length stays bounded (cap × 1.5 + one chunk, plus marker room).
+  assert.ok(buf.len <= Math.floor(MAX_AGENT_OUTPUT_CHARS * 1.5) + 8);
+  const text = capturedOutputText(buf);
+  assert.match(text, /output truncated to last/);
+  assert.ok(text.endsWith("e9")); // last of e0..e9 cycle
+  assert.ok(text.length <= MAX_AGENT_OUTPUT_CHARS + 200);
 });
 
 test("audit captures stderr from successful agent runs", async () => {

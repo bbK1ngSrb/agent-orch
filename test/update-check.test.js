@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { maybeNotifyUpdate, UPDATE_CHECK_CACHE_FILE } from "../src/update-check.js";
+import { maybeNotifyUpdate, compareVersions, UPDATE_CHECK_CACHE_FILE } from "../src/update-check.js";
 
 function freshHome() {
   return mkdtempSync(join(tmpdir(), "orch-update-home-"));
@@ -152,4 +152,31 @@ https.get = (_url, _opts, cb) => {
   assert.equal(json.status, 0);
   assert.doesNotThrow(() => JSON.parse(json.stdout));
   assert.equal(json.stderr, "");
+});
+
+// Direct unit coverage for compareVersions — the maybeNotifyUpdate tests only
+// exercise it indirectly. Hand-computed return values (-1/0/1) catch the classic
+// lexicographic trap ("0.4.9" > "0.4.10" as strings, but 9 < 10 numerically).
+test("compareVersions is numeric, not lexicographic", () => {
+  const cases = [
+    ["1.0.0", "1.0.0", 0],
+    ["1.0.1", "1.0.0", 1],
+    ["1.0.0", "1.0.1", -1],
+    ["0.4.9", "0.4.10", -1],
+    ["0.4.10", "0.4.9", 1],
+    ["1.2", "1.2.0", 0],
+    ["1.2.0", "1.2", 0],
+    ["2.0.0", "1.9.9", 1],
+    ["10.0.0", "9.9.9", 1],
+    ["1.0", "1.0.1", -1],
+    [null, "0.0.0", 0],
+    ["", "0", 0],
+  ];
+  for (const [a, b, expected] of cases) {
+    assert.equal(
+      compareVersions(a, b),
+      expected,
+      `compareVersions(${JSON.stringify(a)}, ${JSON.stringify(b)})`,
+    );
+  }
 });

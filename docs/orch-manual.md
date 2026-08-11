@@ -434,6 +434,15 @@ and any row whose branch is gone is shown as `resolved` — so a long-since-
 merged cycle no longer reads as a lingering failure. This reconciliation is
 recomputed from git on every run; the on-disk history (`runs.jsonl`) is left untouched.
 
+**Polling is cheap.** The dashboard caches its state reads — checkpoint
+files, `runs.jsonl`, and review-log tails — keyed on each file's
+mtime/size/inode, so a live-TUI refresh (or any repeated render in one
+process) only re-reads files that actually changed since the last poll. Log
+tails are served by reading just the last 16 KiB of the newest round file
+rather than loading the whole thing. The cache is in-memory only and never
+writes anything, so the read-only guarantee above still holds, and a changed
+file is picked up on the very next poll.
+
 **When to use it:** checking on a long-running or concurrent set of cycles
 without interrupting them. Reach for `--once`/`--plain` specifically when you
 want the old plain-text summary from inside an interactive terminal — piping
