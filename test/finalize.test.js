@@ -493,6 +493,43 @@ test("post-land redrive: a third live cycle on the same path still blocks the pe
   assert.equal(deferredPeer.redriveAttempts, 0); // still queued; no attempt burned
 });
 
+// CORE-4: listLive is a directory scan + JSON.parse + pidAlive() per record, and
+// nothing in the peer loop changes which cycles are live — only the in-memory
+// landedSids set grows. So the scan belongs above the loop: O(L), not O(P×L).
+test("post-land redrive scans the inflight dir once per wave, not once per peer", async () => {
+  let listLiveCalls = 0;
+  const peers = ["2", "3", "4"].map((sid) => ({
+    sid, branch: `pr/codex/b-${sid}`, paths: ["src/a.js", "src/b.js"], testCmd: "npm test",
+    reviewedSha: `peer-${sid}`, rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+  }));
+  const { deps } = baseDeps({
+    inflight: {
+      listLive: () => {
+        listLiveCalls += 1;
+        // A genuinely live third cycle on src/b.js: every peer is inspected and
+        // then left queued, so the loop runs its full length.
+        return [{ sid: "1", paths: ["src/a.js"] }, { sid: "9", paths: ["src/b.js"] }];
+      },
+      peerPaths: () => [],
+    },
+    deferred: {
+      list: () => peers,
+      eligibleForRedrive: () => true,
+      blockedByLand: (e, landed) => e.peerSids.includes(landed.sid),
+      markAttempt: () => {},
+      remove: () => {},
+    },
+  });
+
+  const r = await finalize(ctx(), deps);
+
+  assert.equal(r.status, "merged");
+  assert.deepEqual(peers.map((p) => p.redriveAttempts), [0, 0, 0], "all three stayed queued, so all three were inspected");
+  // One scan for the landing cycle's own overlap guard, one for the redrive
+  // wave. Three peers, still two scans.
+  assert.equal(listLiveCalls, 2, "one scan for the wave, not one per peer");
+});
+
 // Peer #999 was deferred for overlapping issue #362's cycle. When #362 lands and
 // redrives it, the peer's runs.jsonl record must say 999 — priorStagedBranches
 // joins on that number, so a wrong one makes `orch issue 362` claim #999's branch.

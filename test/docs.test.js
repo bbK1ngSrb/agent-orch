@@ -245,7 +245,9 @@ test("manual documents the empty-diff escalation before each review round", () =
   // sending an empty patch to a reviewer — an `AGREE` on nothing would otherwise
   // walk straight through the test gate to a merge of zero changes.
   const engine = read("src/engine.js");
-  assert.match(engine, /changedFiles\(repo, branch, baseBranch\)\.length === 0/);
+  // The guard reads the round's memoized diff (keyed by the captured OID), so
+  // it is the same file list the merge boundary later gates on.
+  assert.match(engine, /changedFilesAt\(reviewedSha\)\.length === 0/);
   assert.match(engine, /author produced no changes — nothing to review/);
   // The manual hard-wraps at ~78 cols, so the quoted reason spans a line break.
   assert.match(manual, /author\s+produced\s+no\s+changes\s+—\s+nothing\s+to\s+review/);

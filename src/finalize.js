@@ -301,14 +301,23 @@ async function redriveDeferredPeers(ctx, deps, { integration, integrationBranch,
       .filter((e) => deferred.eligibleForRedrive?.(e) !== false)
       .filter((e) => deferred.blockedByLand?.(e, blocker));
 
+    // One directory scan per wave, not per peer: listLive is a readdir +
+    // JSON.parse + pidAlive() per record, while the only thing this loop itself
+    // changes about the live set is `landedSids`, applied as a cheap in-memory
+    // filter below.
+    // ponytail: snapshot per wave — a cycle that registers mid-wave is not seen
+    // until the next one. Safe because the whole wave runs under merge.lock: a
+    // newcomer cannot land before us, and it rebases onto integration, so it
+    // gets our content. Re-scan per peer only if peers start landing outside
+    // the lock.
+    const hasListLive = typeof inflight.listLive === "function";
+    const allLive = hasListLive ? inflight.listLive(orchDir) : [];
+
     for (const peer of peers) {
       seen.add(peer.sid);
 
       // Still blocked by a live in-flight cycle → leave queued; do not burn an attempt.
-      const hasListLive = typeof inflight.listLive === "function";
-      const live = hasListLive
-        ? inflight.listLive(orchDir).filter((e) => e.sid !== peer.sid && !landedSids.has(e.sid))
-        : [];
+      const live = allLive.filter((e) => e.sid !== peer.sid && !landedSids.has(e.sid));
       // Only fall back to peerPaths when listLive is unavailable: peerPaths filters
       // by sid alone, so using it when the filtered list is merely empty would let
       // the landed sids back in through the back door.

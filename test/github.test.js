@@ -455,6 +455,71 @@ test("openIntegrationPr puts pending issue closes on the bridge PR body", async 
   assert.ok(calls.some((c) => c[0] === "git" && c[1] === "log" && c.includes("main..orch/integration")));
 });
 
+// GIT-4: the update-branch check and the conflict check ask GitHub the same
+// question. One round-trip answers both — but only while the answer is still
+// good: any write to the PR in between can flip mergeability, so those paths
+// must pay for a fresh read.
+for (const { name, cfg, expected, resolves } of [
+  {
+    name: "reuses the mergeability read when nothing wrote to the PR",
+    cfg: { autoMergePr: false, mergeStateStatus: "CLEAN" },
+    expected: 1,
+    resolves: false,
+  },
+  {
+    name: "resolves a conflict off the read it already paid for",
+    cfg: { autoMergePr: false, mergeStateStatus: "DIRTY" },
+    expected: 1,
+    resolves: true,
+  },
+  {
+    name: "re-reads mergeability after the branch update",
+    cfg: { autoMergePr: false, mergeStateStatus: "BEHIND" },
+    expected: 2,
+    resolves: false,
+  },
+  {
+    name: "re-reads mergeability after enabling auto-merge",
+    cfg: { autoMergePr: true, mergeStateStatus: "CLEAN" },
+    expected: 2,
+    resolves: false,
+  },
+]) {
+  test(`openIntegrationPr ${name}`, async () => {
+    let mergeStateReads = 0;
+    const gh = (args) => {
+      if (args[0] === "--version") return "gh 2";
+      if (args[0] === "pr" && args[1] === "list") return "[]";
+      if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/12\n";
+      if (args[0] === "pr" && args[1] === "view" && args.includes("mergeable,mergeStateStatus")) {
+        mergeStateReads += 1;
+        return JSON.stringify({ mergeable: "MERGEABLE", mergeStateStatus: cfg.mergeStateStatus });
+      }
+      return "";
+    };
+    const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+    let resolverRan = false;
+
+    await openIntegrationPr({
+      repo: "/r",
+      orchDir: "/r/.orch",
+      cfg: {
+        integrationBranch: "orch/integration",
+        github: { autoMergePr: cfg.autoMergePr },
+        main: { autoResolveConflicts: true },
+      },
+    }, {
+      gh,
+      git,
+      notify: { escalate() {} },
+      resolveIntegrationConflict: async () => { resolverRan = true; return { ok: true }; },
+    });
+
+    assert.equal(mergeStateReads, expected);
+    assert.equal(resolverRan, resolves, "the conflict verdict must match the state that was read");
+  });
+}
+
 test("openIntegrationPr with main.autoMerge directly merges the persistent integration PR", async () => {
   const calls = [];
   const gh = (args) => {
