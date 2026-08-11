@@ -106,8 +106,13 @@ function prChecksGreen(gh, prRef) {
   return checks.length > 0 && checks.every(checkPassed);
 }
 
-function prHasConflicts(gh, prRef) {
-  const data = JSON.parse(gh(["pr", "view", String(prRef), "--json", "mergeable,mergeStateStatus"]) || "{}");
+// `cached` is a mergeability read the caller already paid for. Pass it ONLY
+// when nothing has touched the PR since — any write (update-branch, enabling
+// auto-merge) can flip mergeStateStatus, so those paths must pass null and eat
+// the round-trip.
+function prHasConflicts(gh, prRef, cached = null) {
+  const data = cached
+    || JSON.parse(gh(["pr", "view", String(prRef), "--json", "mergeable,mergeStateStatus"]) || "{}");
   return data.mergeable === "CONFLICTING" || data.mergeStateStatus === "DIRTY";
 }
 
@@ -430,17 +435,24 @@ export async function openIntegrationPr(ctx, deps) {
   // PR id, like mergeDirect) directly. A failure here is never fatal to a
   // green+merged+pushed cycle — the next cycle retries.
   let updatedFromBase = false;
+  // Reused by the conflict check below, but only while it is still true: every
+  // write to the PR clears it back to null so the next reader re-fetches.
+  let mergeState = null;
   try {
     const state = JSON.parse(gh(["pr", "view", prRef, "--json", "mergeable,mergeStateStatus"]) || "{}");
+    mergeState = state;
     if (state.mergeStateStatus === "BEHIND" && state.mergeable !== "CONFLICTING") {
       gh(["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${prRef}/update-branch`]);
       updatedFromBase = true;
+      mergeState = null;
       log(`updated stale integration PR #${prRef} from ${base}`);
     }
   } catch (e) {
+    mergeState = null;
     log(`could not update-branch integration PR #${prRef} (non-fatal): ${e.message}`);
   }
   if (cfg?.github?.autoMergePr) {
+    mergeState = null;
     try {
       // The persistent integration branch must stay in main's ancestry. Squash
       // or rebase would strand orch/integration behind main after the first PR.
@@ -454,7 +466,7 @@ export async function openIntegrationPr(ctx, deps) {
   }
   if (cfg?.main?.autoResolveConflicts || (cfg?.main?.conflictResolution && cfg.main.conflictResolution !== "manual")) {
     try {
-      if (prHasConflicts(gh, prRef)) {
+      if (prHasConflicts(gh, prRef, mergeState)) {
         const resolved = await resolveIntegrationConflict?.({ ...ctx, branch, base, prRef, prUrl: url });
         if (resolved?.ok) {
           log(`auto-resolved integration PR #${prRef}: ${resolved.summary || "resolved and pushed"}`);

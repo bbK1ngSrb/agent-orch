@@ -111,6 +111,25 @@ export async function runCycle(opts, deps) {
     catch { return null; }
   };
 
+  // The changed-file list is asked for three times per round (inflight paths,
+  // the empty-diff guard, the pre-merge overlap/protected-path signals) and each
+  // ask forks a `git diff`. Memoize on the commit the answer belongs to: an OID
+  // is immutable, so a hit is the same diff by construction, and a revise moves
+  // the branch to a new OID and therefore misses. No OID (unreadable ref) means
+  // no cache key we can trust — spawn and don't store.
+  const filesByOid = new Map();
+  const changedFilesAt = (oid) => {
+    if (!oid) return git.changedFiles(repo, branch, baseBranch);
+    if (!filesByOid.has(oid)) filesByOid.set(oid, git.changedFiles(repo, oid, baseBranch));
+    return filesByOid.get(oid);
+  };
+
+  // The branch tip right after the author committed, when we already read it for
+  // the checkpoint. Reused as the cache key below so publishing the paths costs
+  // no extra ref read; null (resume, review mode, no checkpoint dep) just means
+  // "no key we can trust" and the diff runs uncached.
+  let authoredOid = null;
+
   try {
     // F1: author step + scope gate only in task mode. Review never writes.
     if (mode === "task") {
@@ -130,7 +149,8 @@ export async function runCycle(opts, deps) {
         // invisible to `orch continue`. "authored" grants no shortcut — it sets
         // neither pendingVerdict nor skipTest, so a resume still audits and
         // gates from round 1 (#422 OID binding unaffected).
-        checkpoint?.record(orchDir, sid, { branch, oid: branchOid(), round: 1, stage: "authored", closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
+        authoredOid = branchOid();
+        checkpoint?.record(orchDir, sid, { branch, oid: authoredOid, round: 1, stage: "authored", closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
       }
 
       // Scope gate (optional).
@@ -144,7 +164,7 @@ export async function runCycle(opts, deps) {
     }
 
     // Publish changed paths for peer overlap checks (best-effort; finalize re-reads at land time).
-    if (inflight) inflight.setPaths(orchDir, sid, git.changedFiles(repo, branch, baseBranch), baseSha);
+    if (inflight) inflight.setPaths(orchDir, sid, changedFilesAt(authoredOid), baseSha);
 
     // Review mode escalates on first DISAGREE; task mode revises up to the cap.
     const cap = mode === "review" ? 1 : cfg.roundCap;
@@ -199,16 +219,16 @@ export async function runCycle(opts, deps) {
     }
 
     for (;;) {
-      if (git.changedFiles(repo, branch, baseBranch).length === 0) {
+      // The round's single branch-ref read: once captured, reviewedSha binds the
+      // empty-diff guard, the audit, gate, checkpoint writes, security reads and
+      // merge to the same commit even if the branch moves later.
+      const reviewedSha = branchOid();
+      if (changedFilesAt(reviewedSha).length === 0) {
         return recordTerminal(escalate(notify, orchDir, branch, round,
           "author produced no changes — nothing to review"));
       }
 
-      // Re-check a cached shortcut at consumption, not only at resume entry. This
-      // is also the round's single branch-ref read: once captured, reviewedSha
-      // binds the audit, gate, checkpoint writes, security reads, and merge to
-      // the same commit even if the branch moves later.
-      const reviewedSha = branchOid();
+      // Re-check a cached shortcut at consumption, not only at resume entry.
       if (pendingVerdict && (!reviewedSha || !cachedOid || cachedOid !== reviewedSha)) {
         pendingVerdict = null;
         skipTest = false;
@@ -317,7 +337,7 @@ export async function runCycle(opts, deps) {
         }
         // Compute the loop-guard signals BEFORE finalize: a ff merge makes
         // main...branch empty, so reading it post-merge always yields [].
-        const changed = git.changedFiles(repo, reviewedSha, baseBranch);
+        const changed = changedFilesAt(reviewedSha);
         // §3c: protected-path floor at the MERGE boundary. Gating the FINAL diff
         // (not just round 1) covers the initial author, every revise, resume, and
         // an `orch review` merge — the same set CODEOWNERS guards at review time.
