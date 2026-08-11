@@ -279,6 +279,12 @@ test("DISAGREE until cap -> escalated after roundCap rounds", async () => {
 
 test("empty diff after revision escalates before another review", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "no", raw: "" }] });
+  // A revision can only change the diff by committing, which moves the branch
+  // tip — the engine memoizes the file list per OID, so the fake must move the
+  // tip in lockstep or it would be describing a physically impossible repo.
+  deps.git.git = (args) => (args[0] === "rev-parse" && args[1] === "--verify"
+    ? `sha-${deps._calls.authors}`
+    : "diff summary");
   deps.git.changedFiles = () => deps._calls.authors > 1 ? [] : ["src/a.js"];
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "escalated");
@@ -677,13 +683,33 @@ test("#422: the final security and path reads all use one captured branch OID", 
   const r = await runCycle(opts, deps);
 
   assert.equal(r.status, "merged");
-  assert.equal(oidReads, 1, "reviewedSha is captured once for the round");
+  assert.equal(oidReads, 2, "one author-time read (checkpoint pin + diff cache key) + one round capture");
   assert.equal(diffArgs.length, 2);
   assert.ok(diffArgs.some((a) => SECURITY_DIFF_ARGS.every((flag) => a.includes(flag))));
   assert.ok(diffArgs.some((a) => SECURITY_RAW_ARGS.every((flag) => a.includes(flag))));
   assert.deepEqual(diffArgs.map((a) => a.at(-1)), [`main...${reviewedSha}`, `main...${reviewedSha}`]);
   assert.equal(changedRefs.at(-1), reviewedSha, "§3c must read paths from the reviewed commit");
   assert.equal(finalizeCtx.reviewedSha, reviewedSha);
+  // CORE-2/CORE-3: inflight paths, the empty-diff guard and the pre-merge
+  // overlap/protected-path signals are one answer about one commit, so the
+  // round pays for exactly one `git diff` — not one per asker.
+  assert.deepEqual(changedRefs, [reviewedSha], "the round's file list is computed once and reused");
+});
+
+test("a revise re-reads the diff: the memo is keyed by the commit, not the branch", async () => {
+  const changedRefs = [];
+  const deps = makeDeps({ verdicts: [{ decision: "DISAGREE", reason: "no", raw: "" }] });
+  // Each revise commits, so the tip moves; the cache must miss on the new OID.
+  deps.git.git = (args) => (args[0] === "rev-parse" && args[1] === "--verify"
+    ? `sha-${deps._calls.authors}`
+    : "diff summary");
+  deps.git.changedFiles = (_repo, ref) => { changedRefs.push(ref); return ["src/a.js"]; };
+
+  const r = await runCycle({ ...opts, cfg: { ...opts.cfg, roundCap: 3 } }, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.equal(deps._calls.authors, 3, "1 author + 2 revises");
+  assert.deepEqual(changedRefs, ["sha-1", "sha-2", "sha-3"], "one diff per commit, and every commit is re-read");
 });
 
 test("#422: a tip swapped in during the scan and restored before finalize is never approved", async () => {
@@ -887,9 +913,10 @@ test("#422 Part 5: branch moves between resume check and shortcut consumption �
   let changedReads = 0;
   deps.git.changedFiles = () => {
     changedReads += 1;
-    // The first read publishes inflight paths. The second sits after resume
-    // lookup but immediately before the cached verdict is consumed.
-    if (changedReads === 2) liveHead = "sha-moved";
+    // The first read publishes inflight paths — it sits after the resume lookup
+    // and before the round captures reviewedSha, so moving the head here is the
+    // "branch moved between resume check and shortcut consumption" race.
+    if (changedReads === 1) liveHead = "sha-moved";
     return ["src/a.js"];
   };
   let gateRuns = 0;
