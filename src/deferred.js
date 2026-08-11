@@ -3,16 +3,17 @@
 // it overlapped with A is rebased onto the new integration tip and re-gated — no
 // LLM, no resolver. True line conflicts stay deferred for a human.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+// Storage is the shared sid-keyed store (sid-store.js) — including its
+// self-heal policy for corrupt records.
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.js";
+import { readRecord, recordFile, removeRecord, scanDir, writeRecord } from "./sid-store.js";
 
 // One automatic redrive after the initial overlap demote. A second failure
 // (rebase conflict, dirty merge, or post-merge gate) leaves the peer for a human.
 export const MAX_REDRIVE_ATTEMPTS = 1;
 
 const dir = (orchDir) => join(orchDir, "deferred");
-const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
 
 function safeSid(sid) {
   return typeof sid === "string" && sid !== "" && !sid.includes("/") && !sid.includes("\0")
@@ -23,7 +24,6 @@ function safeSid(sid) {
 // `redriveAttempts` counts finished auto-retries (0 = not yet retried).
 export function record(orchDir, entry) {
   if (!safeSid(entry?.sid)) return;
-  mkdirSync(dir(orchDir), { recursive: true });
   const prev = read(orchDir, entry.sid);
   const payload = {
     sid: entry.sid,
@@ -41,36 +41,28 @@ export function record(orchDir, entry) {
     trigger: "overlap",
     ts: new Date().toISOString(),
   };
-  writeFileAtomic(file(orchDir, entry.sid), JSON.stringify(payload));
+  writeRecord(dir(orchDir), entry.sid, payload);
   return payload;
 }
 
 export function read(orchDir, sid) {
   if (!safeSid(sid)) return null;
-  try { return JSON.parse(readFileSync(file(orchDir, sid), "utf8")); }
-  catch { return null; }
+  return readRecord(dir(orchDir), sid);
 }
 
 export function list(orchDir) {
   const d = dir(orchDir);
-  if (!existsSync(d)) return [];
   const out = [];
-  for (const f of readdirSync(d)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const e = JSON.parse(readFileSync(join(d, f), "utf8"));
-      if (e && e.sid && e.branch) out.push(e);
-      else rmSync(join(d, f), { force: true });
-    } catch {
-      rmSync(join(d, f), { force: true });
-    }
+  for (const { key, record: e } of scanDir(d)) {
+    if (e.sid && e.branch) out.push(e);
+    else removeRecord(d, key); // parseable but not a deferred entry → stale
   }
   return out;
 }
 
 export function remove(orchDir, sid) {
   if (!safeSid(sid)) return;
-  rmSync(file(orchDir, sid), { force: true });
+  removeRecord(dir(orchDir), sid);
 }
 
 // Mark one finished redrive attempt. Returns the updated entry, or null if gone.
@@ -79,7 +71,7 @@ export function markAttempt(orchDir, sid) {
   if (!e) return null;
   e.redriveAttempts = (e.redriveAttempts || 0) + 1;
   e.ts = new Date().toISOString();
-  writeFileAtomic(file(orchDir, sid), JSON.stringify(e));
+  writeFileAtomic(recordFile(dir(orchDir), sid), JSON.stringify(e));
   return e;
 }
 

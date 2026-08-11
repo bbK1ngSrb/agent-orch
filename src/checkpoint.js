@@ -2,12 +2,12 @@
 // the branch) skip review rounds already audited instead of re-running them from
 // round 1. Keyed on sid, which resume.js pins BEFORE runCycle starts, so a crash
 // mid-review/mid-test leaves a checkpoint the next run's resumed sid will find.
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+// Storage is the shared sid-keyed store (sid-store.js) — including its
+// self-heal policy for corrupt records.
 import { join } from "node:path";
-import { writeFileAtomic } from "./atomic-file.js";
+import { readRecord, removeRecord, writeRecord } from "./sid-store.js";
 
 const dir = (orchDir) => join(orchDir, "checkpoints");
-const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
 
 // `data.oid` (caller-supplied: the branch head commit at checkpoint time) pins the
 // recorded verdict to the content it was earned on. A checkpoint without an `oid`
@@ -18,15 +18,13 @@ export function record(orchDir, sid, data) {
   // Writing would leave a dangling `undefined.json` the dashboard reads as a
   // cycle that died mid-flight.
   if (!sid) return;
-  mkdirSync(dir(orchDir), { recursive: true });
-  writeFileAtomic(file(orchDir, sid), JSON.stringify({ ...data, ts: new Date().toISOString() }));
+  writeRecord(dir(orchDir), sid, data);
 }
 
 export function lookup(orchDir, sid) {
-  try { return JSON.parse(readFileSync(file(orchDir, sid), "utf8")); }
-  catch { return null; } // ENOENT / parse error → no checkpoint
+  return readRecord(dir(orchDir), sid);
 }
 
 export function clear(orchDir, sid) {
-  rmSync(file(orchDir, sid), { force: true });
+  removeRecord(dir(orchDir), sid);
 }

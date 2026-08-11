@@ -1,10 +1,9 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.js";
 import { pidAlive } from "./pid.js";
+import { readRecord, recordFile, removeRecord, scanDir, writeRecord } from "./sid-store.js";
 
 const dir = (orchDir) => join(orchDir, "inflight");
-const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
 
 // `closes` (the GitHub issue number an `orch issue` run will close on merge)
 // is carried here too, not just in checkpoint.js: a run that dies before its
@@ -15,51 +14,37 @@ const file = (orchDir, sid) => join(dir(orchDir), `${sid}.json`);
 // round has no checkpoint yet, so `orch continue` needs this fallback to know
 // which agents/models it should resume with instead of guessing from rotation.
 export function register(orchDir, sid, { branch, pid, baseSha, closes = null, author = null, reviewers = null }) {
-  mkdirSync(dir(orchDir), { recursive: true });
-  writeFileAtomic(file(orchDir, sid), JSON.stringify({
-    sid, branch, pid, baseSha, closes, author, reviewers, paths: [], ts: new Date().toISOString(),
-  }));
+  writeRecord(dir(orchDir), sid, { sid, branch, pid, baseSha, closes, author, reviewers, paths: [] });
 }
 
 export function setPaths(orchDir, sid, paths, baseSha) {
-  const p = file(orchDir, sid);
-  try {
-    const e = JSON.parse(readFileSync(p, "utf8"));
-    e.paths = paths;
-    if (baseSha !== undefined) e.baseSha = baseSha;
-    writeFileAtomic(p, JSON.stringify(e));
-  } catch (err) {
-    // Treat missing file (ENOENT) and parse errors as silent no-op.
-    // In multi-process designs, the file may be removed or corrupted between calls.
-  }
+  const d = dir(orchDir);
+  // Missing record (and, per sid-store's self-heal policy, a corrupt one) is a
+  // silent no-op: in multi-process designs the file may vanish between calls.
+  const e = readRecord(d, sid);
+  if (!e) return;
+  e.paths = paths;
+  if (baseSha !== undefined) e.baseSha = baseSha;
+  writeFileAtomic(recordFile(d, sid), JSON.stringify(e));
 }
 
 export function deregister(orchDir, sid) {
-  rmSync(file(orchDir, sid), { force: true });
+  removeRecord(dir(orchDir), sid);
 }
 
 // Raw read, ignoring pid liveness — `orch continue` needs the branch of a sid
 // whose owning process is already dead (that's the whole point of resuming it).
 export function lookup(orchDir, sid) {
-  try { return JSON.parse(readFileSync(file(orchDir, sid), "utf8")); }
-  catch { return null; } // ENOENT / parse error → no record
+  return readRecord(dir(orchDir), sid);
 }
 
 // Live entries; dead-owner files are deleted here (doubles as inflight reclaim).
 export function listLive(orchDir) {
   const d = dir(orchDir);
-  if (!existsSync(d)) return [];
   const out = [];
-  for (const f of readdirSync(d)) {
-    if (!f.endsWith(".json")) continue;
-    const p = join(d, f);
-    try {
-      const e = JSON.parse(readFileSync(p, "utf8"));
-      if (Number.isInteger(e.pid) && pidAlive(e.pid)) out.push(e);
-      else rmSync(p, { force: true });
-    } catch {
-      rmSync(p, { force: true }); // unreadable → stale
-    }
+  for (const { key, record: e } of scanDir(d)) {
+    if (Number.isInteger(e.pid) && pidAlive(e.pid)) out.push(e);
+    else removeRecord(d, key); // dead owner → stale
   }
   return out;
 }
