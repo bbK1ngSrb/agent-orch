@@ -558,6 +558,36 @@ test("resume:true attaches the existing branch and skips the initial author (iss
   assert.equal(deps._calls.audits, 1, "resume proceeds straight to audit");
 });
 
+test("an 'authored' checkpoint is written after the author commits, before the first audit — a crash in round-1 review leaves a record `continue` can resolve", async () => {
+  // The gap: checkpoint's first write used to be post-audit, and the inflight
+  // record is deregistered on every exit — so a cycle dying between
+  // author-completion and first-audit-completion left committed work with no
+  // record addressable by sid.
+  const deps = makeDeps({ verdicts: [() => { throw new Error("reviewer quota exhausted"); }] });
+  const records = [];
+  deps.checkpoint = { lookup: () => null, record: (_dir, sid, data) => records.push({ sid, ...data }), clear() {} };
+  await assert.rejects(runCycle({ ...opts, sid: "s1" }, deps), /quota exhausted/);
+  assert.equal(records.length, 1, "exactly the authored checkpoint was written before the crash");
+  assert.equal(records[0].stage, "authored");
+  assert.equal(records[0].sid, "s1");
+  assert.equal(records[0].branch, opts.branch, "checkpoint names the branch `continue` resolves");
+  assert.equal(records[0].round, 1);
+  assert.ok(records[0].oid, "authored checkpoint pins the branch head like the other stages (#422)");
+});
+
+test("resuming from an 'authored' checkpoint grants no shortcut — still audits and still gates", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  let gateRuns = 0;
+  deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
+  const stored = { branch: opts.branch, oid: "diff summary", round: 1, stage: "authored" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(deps._calls.authors, 0, "resume never re-authors");
+  assert.equal(deps._calls.audits, 1, "authored stage must not skip the audit");
+  assert.equal(gateRuns, 1, "authored stage must not skip the test gate");
+});
+
 test("resume:true still runs the scope gate on the resumed work", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   deps.git.attachExistingBranch = () => {};
@@ -1049,11 +1079,11 @@ test("#422 Part 5: a moved head after green gate cannot launder the tested check
 
   assert.equal(r.status, "merged");
   assert.equal(liveHead, movedSha, "the test exercises a real post-gate ref move");
-  assert.deepEqual(recorded.map((entry) => entry.stage), ["reviewed", "tested"]);
-  assert.deepEqual(recorded.map((entry) => entry.oid), [testedSha, testedSha],
-    "both checkpoints belong to the commit that was audited and gated");
+  assert.deepEqual(recorded.map((entry) => entry.stage), ["authored", "reviewed", "tested"]);
+  assert.deepEqual(recorded.map((entry) => entry.oid), [testedSha, testedSha, testedSha],
+    "all checkpoints belong to the commit that was audited and gated");
   assert.equal(finalizeCtx.reviewedSha, testedSha, "the same reviewed commit continues to finalize");
-  assert.equal(oidReads, 1, "the moved ref is never re-read and laundered into the checkpoint");
+  assert.equal(oidReads, 2, "one authored-checkpoint read + one round capture — the moved ref is never re-read and laundered into the checkpoint");
 });
 
 test("checkpoint.record is called with the round's verdict after each fresh audit", async () => {
@@ -1067,15 +1097,17 @@ test("checkpoint.record is called with the round's verdict after each fresh audi
   deps.checkpoint = { lookup: () => null, record: (_dir, sid, data) => recorded.push({ sid, ...data }), clear() {} };
   const r = await runCycle({ ...opts, sid: "s1" }, deps);
   assert.equal(r.status, "merged");
-  assert.equal(recorded.length, 2, "one 'reviewed' checkpoint + one 'tested' checkpoint");
-  assert.equal(recorded[0].stage, "reviewed");
-  assert.equal(recorded[0].decision, "AGREE");
-  assert.equal(recorded[1].stage, "tested");
-  // #422: both entries pin the branch head OID — without it a resume cannot tell
+  assert.equal(recorded.length, 3, "one 'authored' + one 'reviewed' + one 'tested' checkpoint");
+  assert.equal(recorded[0].stage, "authored");
+  assert.equal(recorded[1].stage, "reviewed");
+  assert.equal(recorded[1].decision, "AGREE");
+  assert.equal(recorded[2].stage, "tested");
+  // #422: all entries pin the branch head OID — without it a resume cannot tell
   // whether the verdict still belongs to the content the branch holds.
   assert.equal(recorded[0].oid, "sha-head");
   assert.equal(recorded[1].oid, "sha-head");
-  assert.equal(oidReads, 1, "both writes reuse the round's single OID capture");
+  assert.equal(recorded[2].oid, "sha-head");
+  assert.equal(oidReads, 2, "authored write reads once; reviewed+tested reuse the round's single OID capture");
 });
 
 test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as ms (#56)", async () => {
