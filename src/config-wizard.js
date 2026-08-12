@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { parse, stringify } from "yaml";
-import { DEFAULTS, normalizeMainConfig, validate } from "./config.js";
+import { DEFAULTS, mergeConfig, normalizeMainConfig, validate } from "./config.js";
 import { start as startInput } from "./tui/input.js";
 import { box, C, colorEnabled } from "./tui/theme.js";
 
@@ -198,19 +198,6 @@ function formatValue(value) {
   if (value && typeof value === "object" && value.agent != null) return roleSpecToString(value);
   if (value == null) return "";
   return String(value);
-}
-
-function mergeConfig(user = {}) {
-  return {
-    ...DEFAULTS,
-    ...user,
-    cheap: { ...DEFAULTS.cheap, ...(user.cheap || {}) },
-    scope: { ...DEFAULTS.scope, ...(user.scope || {}) },
-    github: { ...DEFAULTS.github, ...(user.github || {}) },
-    main: { ...DEFAULTS.main, ...(user.main || {}) },
-    docs: { ...DEFAULTS.docs, ...(user.docs || {}) },
-    release: { ...DEFAULTS.release, ...(user.release || {}) },
-  };
 }
 
 export function loadTarget(target) {

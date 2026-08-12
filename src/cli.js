@@ -3,10 +3,11 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
-import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
+import { parse as parseYaml } from "yaml";
+import { load, configPath, mergeConfig, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
-import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable } from "./github.js";
+import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh } from "./github.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -43,6 +44,10 @@ import { runUpgrade } from "./upgrade.js";
 export { slugify };
 export { resolveAgentBin };
 export { visWidth };
+
+function ghShell(args, input) {
+  return execFileSync("gh", args, { input, encoding: "utf8" }).toString();
+}
 
 // Fire-and-forget a detached `orch task <prompt>` after a successful merge.
 // Task mode derives the branch name from the prompt slug, so a FIXED prompt
@@ -603,8 +608,12 @@ function conflictResolvers(cfg, orchDir) {
   return pool.slice(start).concat(pool.slice(0, start));
 }
 
+function formatRole(spec, separator) {
+  return [spec.agent, spec.model, spec.effort].filter(Boolean).join(separator);
+}
+
 function roleName(spec) {
-  return [spec.agent, spec.model, spec.effort].filter(Boolean).join(" ");
+  return formatRole(spec, " ");
 }
 
 function firstRoleOtherThan(agentName, ...roleLists) {
@@ -775,7 +784,6 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
 // stamping this run's number over either kind of peer record is exactly the
 // cross-issue false attribution priorStagedBranches exists to prevent.
 export function realDeps({ closes = null } = {}) {
-  const ghShell = (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString();
   const notifyDep = closes
     ? { ...notify, recordRun: (dir, entry) => notify.recordRun(dir, "closes" in entry ? entry : { ...entry, closes }) }
     : notify;
@@ -818,7 +826,7 @@ function reviewersForAuthor(authorName, reviewerSpecs) {
 }
 
 function roleLabel(spec) {
-  return [spec.agent, spec.model, spec.effort].filter(Boolean).join(" · ");
+  return formatRole(spec, " · ");
 }
 
 function uniqueLabels(specs) {
@@ -923,14 +931,36 @@ export function requireGhAuth(gh) {
 }
 
 export function fetchIssueWorkOrder(n, gh) {
-  try { gh(["--version"]); }
-  catch { throw new Error("gh CLI not found — install https://cli.github.com/ and run `gh auth login`"); }
+  requireGh(gh);
   requireGhAuth(gh);
   const issue = JSON.parse(gh(["issue", "view", String(n), "--json", "number,title,body,state"]));
   if (issue.state && issue.state !== "OPEN") throw new Error(`issue #${issue.number} is ${issue.state}, not open`);
   const v = validateWorkOrder(issueToWorkOrder(issue));
   if (!v.ok) throw new Error(`issue #${n} did not map to a valid work order:\n- ${v.errors.join("\n- ")}`);
   return v.workOrder;
+}
+
+// Register before a cycle starts so the cap counts this run as well. The caller
+// owns the exceeded-cap action because task fan-out skips while single runs throw.
+export function registerWithConcurrencyCap(orchDir, sid, meta, cfg, { onExceeded = () => {} } = {}) {
+  inflight.register(orchDir, sid, meta);
+  const live = inflight.countLive(orchDir);
+  if (live > cfg.concurrency) {
+    inflight.deregister(orchDir, sid);
+    onExceeded(live);
+    return false;
+  }
+  return true;
+}
+
+function commentOnIssue(result, branch, closes, githubDepsFn) {
+  if (!closes) return;
+  try {
+    const body = redact(buildIssueComment(result, branch));
+    githubDepsFn().gh(["issue", "comment", String(closes), "--body-file", "-"], body);
+  } catch (e) {
+    console.error(`orch: could not comment on issue #${closes}: ${e.message}`);
+  }
 }
 
 function remoteBranchRefExists(repo, branch) {
@@ -1048,6 +1078,17 @@ function buildAdapterWorkOrder(name) {
   return v.workOrder;
 }
 
+function reportAgentBuildResult(name, result, { withReason = false } = {}) {
+  const detail = withReason
+    ? ` (${result.reason}) on ${result.branch}`
+    : result.branch ? ` on ${result.branch}` : "";
+  console.log(`orch agent build ${name}: ${result.status}${detail}${costSuffix(result)}`);
+  if (result.status === "approved") {
+    console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
+  }
+  if (result.status === "escalated" || result.status === "merge-deferred") process.exitCode = 2;
+}
+
 // Runs the build as a normal task-mode cycle, isolated in its own worktree/branch
 // (the same mechanism every `orch task` uses) since orch would be modifying its
 // own source while running. Default: `noMerge` — the result sits on its local
@@ -1091,12 +1132,13 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
 
   if (!dry) {
     const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
-    inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList });
-    const live = inflight.countLive(orchDir);
-    if (live > cfg.concurrency) {
-      inflight.deregister(orchDir, sid);
-      throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`);
-    }
+    registerWithConcurrencyCap(
+      orchDir,
+      sid,
+      { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList },
+      cfg,
+      { onExceeded: (live) => { throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`); } },
+    );
   }
   try {
     const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
@@ -1212,11 +1254,7 @@ export async function main(argv, deps = {}) {
       const buildFn = deps.buildAgent || buildAgent;
       const result = await buildFn(name, { repo, orchDir, flags, deps });
       if (result.status === "already-registered") { console.log(`orch: ${name} already registered`); return; }
-      console.log(`orch agent build ${name}: ${result.status} (${result.reason}) on ${result.branch}${costSuffix(result)}`);
-      if (result.status === "approved") {
-        console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
-      }
-      if (result.status === "escalated" || result.status === "merge-deferred") process.exitCode = 2;
+      reportAgentBuildResult(name, result, { withReason: true });
       return;
     }
 
@@ -1234,17 +1272,13 @@ export async function main(argv, deps = {}) {
       if (!answer) throw e;
       const buildFn = deps.buildAgent || buildAgent;
       const result = await buildFn(name, { repo, orchDir, flags, deps });
-      console.log(`orch agent build ${name}: ${result.status}${result.branch ? ` on ${result.branch}` : ""}${costSuffix(result)}`);
-      if (result.status === "approved") {
-        console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
-      }
-      if (result.status === "escalated" || result.status === "merge-deferred") process.exitCode = 2;
+      reportAgentBuildResult(name, result);
       return;
     }
     const file = configPath(repo);
     if (!existsSync(file)) throw new Error("no orch.yml — run `orch init` first");
-    if (load(repo).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
     const text = readFileSync(file, "utf8");
+    if (mergeConfig(parseYaml(text) || {}).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
     // Two on-disk shapes: inline flow (`agents: [claude, codex]`) and the
     // scaffold's block sequence (`agents:\n  - claude\n  - codex`). Support both
     // so `agent add` edits either without a full YAML round-trip (which would
@@ -1434,12 +1468,17 @@ export async function main(argv, deps = {}) {
     for (const run of runs) {
       if (!dry) {
         const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
-        inflight.register(orchDir, run.sid, { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers });
-        const live = inflight.countLive(orchDir);
-        if (live > cfg.concurrency) {
-          inflight.deregister(orchDir, run.sid);
-          console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
-          process.exitCode = 2;
+        const accepted = registerWithConcurrencyCap(
+          orchDir,
+          run.sid,
+          { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers },
+          cfg,
+          { onExceeded: (live) => {
+            console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
+            process.exitCode = 2;
+          } },
+        );
+        if (!accepted) {
           continue;
         }
       }
@@ -1462,15 +1501,7 @@ export async function main(argv, deps = {}) {
           process.exitCode = 2;
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
-          if (!dry && run.closes) {
-            try {
-              const gh = (deps.githubDeps || githubDeps)().gh;
-              const body = redact(buildIssueComment(result, run.branch));
-              gh(["issue", "comment", String(run.closes), "--body-file", "-"], body);
-            } catch (e) {
-              console.error(`orch: could not comment on issue #${run.closes}: ${e.message}`);
-            }
-          }
+          if (!dry) commentOnIssue(result, run.branch, run.closes, deps.githubDeps || githubDeps);
         }
       } finally {
         if (!dry) inflight.deregister(orchDir, run.sid);
@@ -1626,12 +1657,13 @@ export async function main(argv, deps = {}) {
       // persistReviewers here too, not the possibly-overridden `reviewers`,
       // or the same override-permanence bug just resurfaces via the
       // inflight-only recovery path instead of the checkpoint path.
-      inflight.register(orchDir, sid, { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers });
-      const live = inflight.countLive(orchDir);
-      if (live > cfg.concurrency) {
-        inflight.deregister(orchDir, sid);
-        throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`);
-      }
+      registerWithConcurrencyCap(
+        orchDir,
+        sid,
+        { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers },
+        cfg,
+        { onExceeded: (live) => { throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`); } },
+      );
     }
     try {
       const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps({ closes })));
@@ -1664,15 +1696,7 @@ export async function main(argv, deps = {}) {
       }
       if (result.status === "escalated" || result.status === "merge-deferred") {
         process.exitCode = 2;
-        if (!dry && closes) {
-          try {
-            const gh = (deps.githubDeps || githubDeps)().gh;
-            const body = redact(buildIssueComment(result, branch));
-            gh(["issue", "comment", String(closes), "--body-file", "-"], body);
-          } catch (e) {
-            console.error(`orch: could not comment on issue #${closes}: ${e.message}`);
-          }
-        }
+        if (!dry) commentOnIssue(result, branch, closes, deps.githubDeps || githubDeps);
       }
     } finally {
       if (!dry) inflight.deregister(orchDir, sid);
@@ -1833,7 +1857,7 @@ function costSuffix(result) {
 // only (built in github.runPr), so no reviewer prose is read back here.
 function githubDeps() {
   return {
-    gh: (args, input) => execFileSync("gh", args, { input, encoding: "utf8" }).toString(),
+    gh: ghShell,
     git: git.git,
     cycle: (o) => runCycle(o, realDeps()),
     log: (m) => process.stderr.write(`▶ ${m}\n`),

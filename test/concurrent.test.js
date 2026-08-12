@@ -49,8 +49,8 @@ test("two disjoint branches both auto-merge into integration", async () => {
   const baseA = makeBranch(repo, orchDir, "pr/claude/a-1", "a.txt", "A\n");
   const baseB = makeBranch(repo, orchDir, "pr/codex/b-2", "b.txt", "B\n");
 
-  const rA = await finalize({ repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: baseA, paths: ["a.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
-  const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["b.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
+  const rA = await finalize({ repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: baseA, paths: ["a.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1 }, realDeps());
+  const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["b.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1 }, realDeps());
 
   assert.equal(rA.status, "merged");
   assert.equal(rB.status, "merged");
@@ -66,8 +66,8 @@ test("conflicting branches: first merges, second demotes (conflict, not pre-demo
   const baseA = makeBranch(repo, orchDir, "pr/claude/a-1", "shared.txt", "A\n");
   const baseB = makeBranch(repo, orchDir, "pr/codex/b-2", "shared.txt", "B\n");
 
-  const rA = await finalize({ repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: baseA, paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
-  const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
+  const rA = await finalize({ repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: baseA, paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1 }, realDeps());
+  const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1 }, realDeps());
 
   assert.equal(rA.status, "merged");
   assert.equal(rB.status, "merge-deferred");
@@ -84,8 +84,8 @@ test("same file already landed, but cleanly mergeable → second branch still me
   const baseA = makeBranch(repo, orchDir, "pr/claude/a-1", "base.txt", "TOP\n1\n2\n3\n4\n5\n6\n7\n8\nbottom\n");
   const baseB = makeBranch(repo, orchDir, "pr/codex/b-2", "base.txt", "top\n1\n2\n3\n4\n5\n6\n7\n8\nBOTTOM\n");
 
-  const rA = await finalize({ repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: baseA, paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
-  const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
+  const rA = await finalize({ repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: baseA, paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1 }, realDeps());
+  const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1 }, realDeps());
 
   assert.equal(rA.status, "merged");
   assert.equal(rB.status, "merged");
@@ -102,7 +102,7 @@ test("in-flight peer overlap → merge-deferred before any merge attempt", async
   inflight.register(orchDir, "peer", { branch: "pr/claude/a-1", pid: process.pid, baseSha: baseB });
   inflight.setPaths(orchDir, "peer", ["shared.txt"]);
   try {
-    const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1 }, realDeps());
+    const rB = await finalize({ repo, orchDir, branch: "pr/codex/b-2", sid: "2", baseSha: baseB, paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1 }, realDeps());
     assert.equal(rB.status, "merge-deferred");
     assert.match(rB.reason, /overlap/);
   } finally {
@@ -127,7 +127,7 @@ test("overlap demote then blocker lands → peer is rebased, re-gated, and auto-
   inflight.setPaths(orchDir, "1", ["base.txt"]);
   const rB = await finalize({
     repo, orchDir, branch: "pr/codex/b-2", reviewedSha: reviewedB, sid: "2", baseSha: baseB,
-    paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1,
+    paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1,
   }, realDeps());
   assert.equal(rB.status, "merge-deferred");
   assert.match(rB.reason, /overlap/);
@@ -136,7 +136,7 @@ test("overlap demote then blocker lands → peer is rebased, re-gated, and auto-
   inflight.deregister(orchDir, "1");
   const rA = await finalize({
     repo, orchDir, branch: "pr/claude/a-1", reviewedSha: reviewedA, sid: "1", baseSha: baseA,
-    paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1,
+    paths: ["base.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1,
   }, realDeps());
   assert.equal(rA.status, "merged");
 
@@ -160,14 +160,14 @@ test("true line conflict after redrive stays merge-deferred (#350 Tier-1 bound)"
   inflight.setPaths(orchDir, "1", ["shared.txt"]);
   const rB = await finalize({
     repo, orchDir, branch: "pr/codex/b-2", reviewedSha: reviewedB, sid: "2", baseSha: baseB,
-    paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1,
+    paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1,
   }, realDeps());
   assert.equal(rB.status, "merge-deferred");
 
   inflight.deregister(orchDir, "1");
   const rA = await finalize({
     repo, orchDir, branch: "pr/claude/a-1", reviewedSha: reviewedA, sid: "1", baseSha: baseA,
-    paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff" }, rounds: 1,
+    paths: ["shared.txt"], testCmd: "true", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1,
   }, realDeps());
   assert.equal(rA.status, "merged");
 
@@ -188,7 +188,7 @@ test("clean text merge but post-merge tests fail → demote, integration unchang
 
   const deps = realDeps();
   deps.gate = { run: () => ({ pass: false }) }; // post-merge test fails
-  const r = await finalize({ repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: base, paths: ["a.txt"], testCmd: "false", cfg: { merge: "no-ff" }, rounds: 1 }, deps);
+  const r = await finalize({ repo, orchDir, branch: "pr/claude/a-1", sid: "1", baseSha: base, paths: ["a.txt"], testCmd: "false", cfg: { merge: "no-ff", integrationBranch: "orch/integration" }, rounds: 1 }, deps);
 
   assert.equal(r.status, "merge-deferred");
   assert.equal(r.trigger, "integration-test");

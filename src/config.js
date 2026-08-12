@@ -182,16 +182,10 @@ function pickRoundCap(source, label) {
 
 // overridePath (--config-file) layers on top of the repo's orch.yml, same
 // deep-merge rules — lets a run apply one-off settings without editing orch.yml.
-export function load(dir, overridePath) {
-  let user = {};
-  const p = configPath(dir);
-  if (existsSync(p)) user = parse(readFileSync(p, "utf8")) || {};
-  let override = {};
-  if (overridePath) {
-    if (!existsSync(overridePath)) throw new Error(`orch: --config-file not found: ${overridePath}`);
-    override = parse(readFileSync(overridePath, "utf8")) || {};
-  }
-  const cfg = {
+export function mergeConfig(user = {}, override = {}) {
+  user ||= {};
+  override ||= {};
+  return {
     ...DEFAULTS,
     ...user,
     ...override,
@@ -203,6 +197,18 @@ export function load(dir, overridePath) {
     docs: { ...DEFAULTS.docs, ...(user.docs || {}), ...(override.docs || {}) },
     release: { ...DEFAULTS.release, ...(user.release || {}), ...(override.release || {}) },
   };
+}
+
+export function load(dir, overridePath) {
+  let user = {};
+  const p = configPath(dir);
+  if (existsSync(p)) user = parse(readFileSync(p, "utf8")) || {};
+  let override = {};
+  if (overridePath) {
+    if (!existsSync(overridePath)) throw new Error(`orch: --config-file not found: ${overridePath}`);
+    override = parse(readFileSync(overridePath, "utf8")) || {};
+  }
+  const cfg = mergeConfig(user, override);
   // Both layers are consulted so each deprecated spelling gets its own warning.
   const fromOverride = pickRoundCap(override, "--config-file");
   const fromUser = pickRoundCap(user, "orch.yml");

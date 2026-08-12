@@ -9,7 +9,7 @@ import * as inflight from "./inflight.js";
 import { branchExists } from "./git.js";
 import { kpi, reviewsDir } from "./notify.js";
 import { readRecordFile } from "./sid-store.js";
-import { paint, C, STAGE_SYMBOL, VERDICT_SYMBOL, table, formatTimestamp } from "./tui/theme.js";
+import { C, table, formatTimestamp, pct, usd, stageText, verdictText } from "./tui/theme.js";
 
 const STAGE_LABELS = { reviewed: "review", tested: "test" };
 const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "merge-deferred": C.fail };
@@ -215,13 +215,6 @@ export function snapshot(orchDir, { historyLimit = 10, repo = null, checkHistory
     history: runHistory(orchDir, historyLimit, { repo, checkHistory, entries }),
     metrics: metrics(orchDir, { entries }),
   };
-}
-
-function pct(n) { return n == null ? "n/a" : `${Math.round(n * 100)}%`; }
-function usd(n) { return n == null ? "n/a" : `$${n.toFixed(4)}`; }
-function stageText(stage) { return `${STAGE_SYMBOL[stage] || ""} ${stage}`.trim(); }
-function verdictText(verdict, color, colorCode) {
-  return `${VERDICT_SYMBOL[verdict] || ""} ${paint(color, colorCode, verdict)}`.trim();
 }
 
 export function render(orchDir, opts = {}) {

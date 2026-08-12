@@ -4,12 +4,8 @@
 // GitHub API. All shell-outs arrive via `deps` so tests stub them.
 import { join } from "node:path";
 import { parseRoleSpec, parseRoleSpecs } from "./config.js";
+import { originRef, retryOnRefLock } from "./git.js";
 import { redact, publicSummary } from "./redact.js";
-import { sleepSync } from "./lock.js";
-
-function originRef(base) {
-  return `refs/remotes/origin/${base}`;
-}
 
 // `gh pr merge` (without --auto/--admin) runs its own client-side "is this
 // mergeable" precheck before ever calling the merge API, and that precheck
@@ -116,26 +112,6 @@ function prHasConflicts(gh, prRef, cached = null) {
   return data.mergeable === "CONFLICTING" || data.mergeStateStatus === "DIRTY";
 }
 
-// Concurrent orch cycles share one .git and thus one refs/remotes/origin/main —
-// a losing fetch fails "cannot lock ref", which is transient contention, not a
-// real sync problem. Mirrors git.js's fetchOriginMain retry so this new
-// post-merge check doesn't turn that race into a spurious hard failure right
-// after gh has already reported the PR merged.
-const REF_LOCK_RE = /cannot lock ref/i;
-
-function fetchOriginMainRetrying(git, repo, base = "main", { retries = 2, sleep = sleepSync } = {}) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      git(["fetch", "origin", `${base}:${originRef(base)}`], repo);
-      return;
-    } catch (e) {
-      const reason = String(e.message || e);
-      if (attempt >= retries || !REF_LOCK_RE.test(reason)) throw e;
-      sleep(50 * 2 ** attempt);
-    }
-  }
-}
-
 // Build the PR comment body. §3f: `body` is the constrained machine summary
 // (publicSummary), never attacker-influenced reviewer prose — those notes stay
 // in the maintainer's private channel (.orch/reviews/).
@@ -188,8 +164,7 @@ export async function runPr(opts, deps) {
   const { n, repo, orchDir, cfg, merge = false } = opts;
   const { gh, git, cycle, log = () => {} } = deps;
 
-  try { gh(["--version"]); }
-  catch { throw new Error("gh CLI not found — install https://cli.github.com/ and run `gh auth login`"); }
+  requireGh(gh);
 
   const pr = JSON.parse(gh(["pr", "view", String(n), "--json", "number,headRefName,state"]));
   if (pr.state && pr.state !== "OPEN") throw new Error(`PR #${pr.number} is ${pr.state}, not open`);
@@ -252,7 +227,7 @@ export async function runPr(opts, deps) {
         );
       }
       const base = cfg.baseBranch || "main";
-      fetchOriginMainRetrying(git, repo, base);
+      retryOnRefLock(() => git(["fetch", "origin", `${base}:${originRef(base)}`], repo));
       try {
         git(["merge-base", "--is-ancestor", merged.mergeCommit.oid, originRef(base)], repo);
       } catch {
@@ -276,7 +251,12 @@ export function hasRemote(repo, git) {
 }
 
 export function ghAvailable(gh) {
-  try { gh(["--version"]); return true; } catch { return false; }
+  try { requireGh(gh); return true; } catch { return false; }
+}
+
+export function requireGh(gh) {
+  try { gh(["--version"]); }
+  catch { throw new Error("gh CLI not found — install https://cli.github.com/ and run `gh auth login`"); }
 }
 
 // Shared push+create step for demote() and openPr(). §3f: --head must carry the
@@ -368,7 +348,7 @@ export async function openPr(ctx, deps) {
 // it to main; GitHub owns the final main update.
 export async function openIntegrationPr(ctx, deps) {
   const { repo, orchDir, cfg, integrationSha = null } = ctx;
-  const branch = cfg.integrationBranch || "orch/integration";
+  const branch = cfg.integrationBranch;
   const base = cfg.baseBranch || "main";
   const { git, gh, notify, log = () => {}, resolveIntegrationConflict } = deps;
   // Tip this cycle verified and pushed — finalize threads it so we pin the

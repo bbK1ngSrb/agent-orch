@@ -139,6 +139,15 @@ test("wizard save keeps roundCap when a file names both keys", () => {
   assert.equal(Object.hasOwn(saved, "reviseCap"), false);
 });
 
+test("wizard target preserves nested security settings through the shared merge", () => {
+  const d = tmp();
+  mkdirSync(join(d, ".orch"), { recursive: true });
+  const file = join(d, ".orch", "orch.yml");
+  writeFileSync(file, "security:\n  ignore:\n    - dist/**\n");
+
+  assert.deepEqual(loadTarget(file).security.ignore, ["dist/**"]);
+});
+
 test("a bad alias value is reported under the key the operator typed", () => {
   const d = tmp();
   mkdirSync(join(d, ".orch"), { recursive: true });

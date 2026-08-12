@@ -6,7 +6,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -1556,6 +1556,30 @@ test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
   } finally {
     chdir(prev);
     process.exitCode = savedExitCode; // restore instead of unconditionally forcing 0
+  }
+});
+
+test("registerWithConcurrencyCap removes the rejected run", () => {
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-cap-helper-"));
+  inflight.register(orchDir, "cap-peer", { branch: "pr/test/peer", pid: process.pid, baseSha: "abc" });
+  const exceeded = [];
+
+  try {
+    assert.equal(
+      registerWithConcurrencyCap(
+        orchDir,
+        "cap-current",
+        { branch: "pr/test/current", pid: process.pid, baseSha: "abc" },
+        { concurrency: 1 },
+        { onExceeded: (live) => exceeded.push(live) },
+      ),
+      false,
+    );
+    assert.deepEqual(exceeded, [2]);
+    assert.equal(inflight.countLive(orchDir), 1);
+  } finally {
+    inflight.deregister(orchDir, "cap-peer");
+    inflight.deregister(orchDir, "cap-current");
   }
 });
 

@@ -1,9 +1,8 @@
-import { makeCliAdapter } from "./cli-adapter.js";
+import { appendCliOverrides, makeCliAdapter } from "./cli-adapter.js";
 
 export function buildArgs(prompt, _wd, opts = {}) {
   const args = ["-p", prompt];
-  if (opts.model) args.push("--model", opts.model);
-  return args;
+  return appendCliOverrides(args, opts, { model: true });
 }
 
 const adapter = makeCliAdapter({ name: "agy", bin: "agy", buildArgs, capabilities: { model: true, effort: false } });

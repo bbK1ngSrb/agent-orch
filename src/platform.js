@@ -35,6 +35,7 @@ export function killTree(pid, platform = process.platform, deps = {}) {
 // npm cmd-shims end in a line like: ... "%_prog%"  "%dp0%\node_modules\pkg\cli.js" %*
 const CMD_SHIM_TARGET_RE = /"%dp0%\\([^"]+\.(?:cjs|mjs|js))"\s+%\*/i;
 const CMD_META_RE = /[&|<>()^"%!\r\n]/;
+const SHIM_TARGET_CACHE = new Map();
 
 function rejectCmdMeta(value) {
   if (CMD_META_RE.test(String(value))) {
@@ -49,12 +50,26 @@ function rejectCmdMeta(value) {
 // run its JS target with our own node. POSIX and native .exe pass through.
 export function portableSpawnSpec(bin, args, platform = process.platform, read = readFileSync) {
   if (platform !== "win32" || !/\.(cmd|bat)$/i.test(bin)) return { bin, args };
+  const cached = SHIM_TARGET_CACHE.get(bin);
+  if (cached?.read === read) {
+    return cached.target
+      ? { bin: process.execPath, args: [winPath.join(winPath.dirname(bin), cached.target), ...args] }
+      : fallbackCmdSpec(bin, args);
+  }
+  let target = null;
   try {
-    const m = read(bin, "utf8").match(CMD_SHIM_TARGET_RE);
+    target = read(bin, "utf8").match(CMD_SHIM_TARGET_RE)?.[1] || null;
+  } catch { /* unreadable shim: fall through */ }
+  SHIM_TARGET_CACHE.set(bin, { read, target });
+  if (target) {
     // win32 path ops explicitly: `bin` is a Windows path even when this branch
     // is exercised from POSIX tests, where the host path module would mis-split it.
-    if (m) return { bin: process.execPath, args: [winPath.join(winPath.dirname(bin), m[1]), ...args] };
-  } catch { /* unreadable shim: fall through */ }
+    return { bin: process.execPath, args: [winPath.join(winPath.dirname(bin), target), ...args] };
+  }
+  return fallbackCmdSpec(bin, args);
+}
+
+function fallbackCmdSpec(bin, args) {
   // ponytail: non-npm .cmd fallback goes through cmd.exe; argv with spaces may
   // not survive cmd re-parsing. Block command-control metacharacters rather
   // than trying to quote through cmd.exe re-parsing. Upgrade path: ship the

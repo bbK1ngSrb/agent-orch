@@ -6,7 +6,7 @@ import { render as realRender, snapshot as realSnapshot } from "../dashboard.js"
 import { computeLayout } from "./layout.js";
 import { reduceHistorySelection } from "./selection.js";
 import { filterHistory } from "./filter.js";
-import { visWidth, colorEnabled, box, table, C, STAGE_SYMBOL, VERDICT_SYMBOL, paint, formatTimestamp } from "./theme.js";
+import { visWidth, colorEnabled, box, table, C, paint, formatTimestamp, stripAnsi, pct, usd, stageText, verdictText } from "./theme.js";
 
 // Clip one line to `width` display columns (visWidth-aware). Lines that fit
 // pass through untouched so color survives; the rare overflow strips ANSI and
@@ -14,7 +14,7 @@ import { visWidth, colorEnabled, box, table, C, STAGE_SYMBOL, VERDICT_SYMBOL, pa
 // makes. render() already clamps to `columns`, so this is a safety net.
 function clip(line, width) {
   if (!Number.isFinite(width) || visWidth(line) <= width) return line;
-  const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
+  const plain = stripAnsi(line);
   let out = "", w = 0;
   for (const ch of plain) {
     const cw = visWidth(ch);
@@ -40,17 +40,11 @@ const PANEL_ORDER = ["live", "interrupted", "history"];
 const PANEL_TITLE = { live: "LIVE", interrupted: "INTERRUPTED", history: "HISTORY" };
 const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "merge-deferred": C.fail };
 
-function pct(n) { return n == null ? "n/a" : `${Math.round(n * 100)}%`; }
-function usd(n) { return n == null ? "n/a" : `$${n.toFixed(4)}`; }
 function mmss(startedAt, now) {
   const t = Date.parse(startedAt);
   if (!Number.isFinite(t)) return "??:??";
   const secs = Math.max(0, Math.floor((now - t) / 1000));
   return `${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`;
-}
-function stageText(stage) { return `${STAGE_SYMBOL[stage] || ""} ${stage}`.trim(); }
-function verdictText(verdict, color, colorCode) {
-  return `${VERDICT_SYMBOL[verdict] || ""} ${paint(color, colorCode, verdict)}`.trim();
 }
 function seg(text, code = "") { return [{ code, text }]; }
 function plainRows(lines) { return lines.map((text) => seg(text)); }
@@ -114,7 +108,7 @@ function addScrollbar(lines, rect, total, offset, color) {
   return lines.map((line, idx) => {
     const bodyIdx = idx - 1;
     if (bodyIdx < top || bodyIdx >= top + thumb) return line;
-    const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
+    const plain = stripAnsi(line);
     const pos = ansiIndexForPlainIndex(line, plain.lastIndexOf("│"));
     if (pos < 0) return line;
     const bar = paint(color, C.title, "┃");
