@@ -44,6 +44,25 @@ test("README documents the `orch` CLI", () => {
   assert.match(readme, /orch agent add <name>/);
 });
 
+test("the manual and README document `orch upgrade` and its override env vars (#461)", () => {
+  // `orch upgrade`/`update` shipped with help text and tab-completion but no prose
+  // in either long-form doc, so the only way to discover self-update was to run
+  // `orch --help`. Assert both docs name it, and that the manual explains --check.
+  for (const doc of [readme, manual]) assert.match(doc, /orch upgrade/);
+  assert.match(manual, /orch upgrade --check/);
+
+  // ORCH_STAGE_TIMEOUT_MS beats cfg.stageTimeout outright (cli-adapter.js), and the
+  // two use different units, so documenting the key without the override lets a
+  // configured timeout be silently ignored. The manual must name the override, its
+  // precedence, and the millisecond/minute mismatch.
+  assert.match(manual, /ORCH_STAGE_TIMEOUT_MS/);
+  assert.match(manual, /milliseconds/i);
+  assert.match(exampleConfig, /ORCH_STAGE_TIMEOUT_MS/);
+  for (const name of ["ORCH_DRYRUN", "ORCH_PROGRESS_INTERVAL_MS"]) {
+    assert.match(manual, new RegExp(name), `manual does not document ${name}`);
+  }
+});
+
 test("docs explain that `orch pr --merge` pins the reviewed PR head (#421)", () => {
   // runPr() sends the fetched branch SHA to GitHub's merge endpoint. If a
   // contributor updates the PR during review, GitHub returns 409 and orch asks

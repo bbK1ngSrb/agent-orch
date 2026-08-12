@@ -58,6 +58,12 @@ test("BASH_COMPLETION offers every command listed in --help", async () => {
   for (const name of documented) {
     assert.ok(commands.includes(name), `completion commands missing ${name}`);
   }
+  // And the reverse: a command offered by tab-completion but absent from --help is
+  // undiscoverable for anyone who reads the help instead of pressing Tab. `version`
+  // drifted this way (#461) — completion offered it, printUsage never listed it.
+  for (const name of commands) {
+    assert.ok(documented.has(name), `--help Commands section missing ${name}`);
+  }
 });
 
 test("installCompletion writes the script under <home>/.orch and reports the path", () => {
