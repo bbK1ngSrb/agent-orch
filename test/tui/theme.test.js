@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visWidth, paint, C, colorEnabled, row, box, table, formatTimestamp, truncate } from "../../src/tui/theme.js";
+import { visWidth, stripAnsi, paint, C, colorEnabled, row, box, table, formatTimestamp, truncate } from "../../src/tui/theme.js";
 
 test("formatTimestamp renders yyyy-mm-dd HH:mm in UTC from a known instant", () => {
   // Drops the T separator, sub-second .927, and the trailing Z; minute precision.
@@ -41,6 +41,10 @@ test("visWidth counts wide glyphs as 2 columns and ignores ANSI codes", () => {
   assert.equal(visWidth("abc"), 3);
   assert.equal(visWidth("\x1b[1;38;5;208mabc\x1b[0m"), 3);
   assert.equal(visWidth("⏱"), 2);
+});
+
+test("stripAnsi removes terminal color sequences", () => {
+  assert.equal(stripAnsi("\x1b[31mred\x1b[0m"), "red");
 });
 
 test("visWidth counts CJK, Hangul, and fullwidth-form glyphs as 2 columns each", () => {

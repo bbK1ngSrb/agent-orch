@@ -139,6 +139,15 @@ test("wizard save keeps roundCap when a file names both keys", () => {
   assert.equal(Object.hasOwn(saved, "reviseCap"), false);
 });
 
+test("wizard target does not fill an explicitly incomplete security section", () => {
+  const d = tmp();
+  mkdirSync(join(d, ".orch"), { recursive: true });
+  const file = join(d, ".orch", "orch.yml");
+  writeFileSync(file, "security: {}\n");
+
+  assert.throws(() => loadTarget(file), /security\.ignore must be an array/);
+});
+
 test("a bad alias value is reported under the key the operator typed", () => {
   const d = tmp();
   mkdirSync(join(d, ".orch"), { recursive: true });

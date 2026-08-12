@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitTry, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, reconcileIntegrationToOrigin, mergeInWorktree, rebaseBranchOnto, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch } from "../src/git.js";
+import { git, gitTry, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, reconcileIntegrationToOrigin, mergeInWorktree, rebaseBranchOnto, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch, worktreeRecords } from "../src/git.js";
 import { checkPaths } from "../src/intake/allowlist.js";
 
 function newRepo() {
@@ -53,6 +53,28 @@ function commitFile(repo, file, text, msg) {
   git(["add", "."], repo);
   git(["commit", "-m", msg], repo);
 }
+
+test("worktreeRecords keeps detached records separate from branch records", () => {
+  const records = [...worktreeRecords([
+    "worktree /repo",
+    "HEAD abc",
+    "branch refs/heads/main",
+    "",
+    "worktree /detached",
+    "HEAD def",
+    "detached",
+    "",
+    "worktree /feature",
+    "HEAD ghi",
+    "branch refs/heads/feature",
+  ].join("\n"))];
+
+  assert.deepEqual(records, [
+    { path: "/repo", branch: "main" },
+    { path: "/detached", branch: null, detached: true },
+    { path: "/feature", branch: "feature" },
+  ]);
+});
 
 test("createTaskBranch lifecycle + ff-only merge in the integration worktree", () => {
   const repo = newRepo();

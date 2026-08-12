@@ -402,7 +402,7 @@ test("openPr escalates locally when there is no remote", async () => {
   assert.equal(escalated.branch, "pr/claude/x-1");
 });
 
-test("openIntegrationPr creates the persistent integration PR and enables auto-merge", async () => {
+test("openIntegrationPr creates the default integration PR and enables auto-merge", async () => {
   const calls = [];
   const gh = (args) => {
     calls.push(["gh", ...args]);
@@ -412,7 +412,7 @@ test("openIntegrationPr creates the persistent integration PR and enables auto-m
     return "";
   };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
-  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: true } };
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
   const integrationSha = "6666666666666666666666666666666666666666";
 
   const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg, integrationSha }, { gh, git, notify: { escalate() {} } });

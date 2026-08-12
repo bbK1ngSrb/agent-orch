@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { git } from "./git.js";
 
 const DOUBLE_STAR = "__ORCH_DOUBLE_STAR__";
 export function globToRegExp(glob) {
@@ -35,9 +35,6 @@ export function isDocsOnly(files, globs) {
 }
 
 export function count(branch, cwd, ignore = [], base = "main") {
-  const out = execFileSync("git", ["diff", "--numstat", `${base}...${branch}`], {
-    cwd,
-    encoding: "utf8",
-  });
+  const out = git(["diff", "--numstat", `${base}...${branch}`], cwd);
   return parseNumstat(out, ignore);
 }

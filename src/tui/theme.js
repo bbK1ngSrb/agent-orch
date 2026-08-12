@@ -9,8 +9,12 @@
 // and stripped first.
 const WIDE_GLYPH = /[\u{1100}-\u{11ff}\u{2e80}-\u{9fff}\u{ac00}-\u{d7a3}\u{ff00}-\u{ffef}⌚-⏿☀-➿\u{1f000}-\u{1faff}]/u;
 
+export function stripAnsi(s) {
+  return String(s).replace(/\x1b\[[0-9;]*m/g, "");
+}
+
 export function visWidth(s) {
-  const plain = s.replace(/\x1b\[[0-9;]*m/g, "");
+  const plain = stripAnsi(s);
   let w = 0;
   for (const ch of plain) w += WIDE_GLYPH.test(ch) ? 2 : 1;
   return w;
@@ -32,6 +36,13 @@ export const STAGE_SYMBOL = { live: "●", authoring: "●", review: "●", test
 // never bleeds into the box border.
 export function paint(on, code, s) {
   return on && code && s ? `\x1b[${code}m${s}\x1b[0m` : s;
+}
+
+export function pct(n) { return n == null ? "n/a" : `${Math.round(n * 100)}%`; }
+export function usd(n) { return n == null ? "n/a" : `$${n.toFixed(4)}`; }
+export function stageText(stage) { return `${STAGE_SYMBOL[stage] || ""} ${stage}`.trim(); }
+export function verdictText(verdict, color, colorCode) {
+  return `${VERDICT_SYMBOL[verdict] || ""} ${paint(color, colorCode, verdict)}`.trim();
 }
 
 export function colorEnabled(stream) {
@@ -74,7 +85,7 @@ export function row(segs, inner, color) {
     // Strip ANSI first: history rows carry pre-painted verdict codes inside
     // s.text, and truncate() counts escape bytes as columns otherwise (misaligns
     // the right border). Overflow drops color — same tradeoff as table()'s clamp.
-    const out = truncate(plain.replace(/\x1b\[[0-9;]*m/g, ""), inner);
+    const out = truncate(stripAnsi(plain), inner);
     return `${paint(color, C.border, "│")} ${out}${" ".repeat(inner - visWidth(out))} ${paint(color, C.border, "│")}`;
   }
   const body = segs.map((s) => paint(color, s.code, s.text)).join("");
@@ -120,7 +131,7 @@ export function table(headers, rows, opts = {}) {
   const clamp = (l) => {
     if (limit == null) return l;
     const t = l.replace(/ +$/, "");
-    return visWidth(t) <= limit ? t : truncate(t.replace(/\x1b\[[0-9;]*m/g, ""), limit);
+    return visWidth(t) <= limit ? t : truncate(stripAnsi(t), limit);
   };
   return [line(headers), ...rows.map(line)].map(clamp).join("\n");
 }

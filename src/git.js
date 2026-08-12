@@ -4,8 +4,27 @@ import { join } from "node:path";
 import { sleepSync } from "./lock.js";
 import { pidAlive } from "./pid.js";
 
-function originRef(base) {
+export function originRef(base) {
   return `refs/remotes/origin/${base}`;
+}
+
+const REF_LOCK_RE = /cannot lock ref/i;
+
+function failureText(error) {
+  return String(error?.out ?? error?.stderr ?? error?.reason ?? error?.message ?? error);
+}
+
+// Concurrent orch cycles can race while updating a remote-tracking ref. Keep
+// the retry policy in one place for both result-returning and throwing callers.
+export function retryOnRefLock(fn, { retries = 2, sleep = sleepSync } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return fn();
+    } catch (error) {
+      if (attempt >= retries || !REF_LOCK_RE.test(failureText(error))) throw error;
+      sleep(50 * 2 ** attempt);
+    }
+  }
 }
 
 // Ownership marker: a sibling file next to an orch-created task worktree. Its
@@ -129,47 +148,46 @@ export function verifyOriginContains(repo, commit, base = "main") {
     : { ok: false, reason: `${commit} is not contained in origin/${base}` };
 }
 
-// Ref-lock contention: concurrent orch cycles share one .git and thus one
-// refs/remotes/origin/main. A losing fetch fails "cannot lock ref" — transient,
-// not a real sync problem — so retry a couple times before giving up.
-const REF_LOCK_RE = /cannot lock ref/i;
-
 export function fetchOriginMain(
   repo,
   { base = "main", retries = 2, sleep = sleepSync, fetch = () => gitTry(["fetch", "origin", `${base}:${originRef(base)}`], repo) } = {},
 ) {
   if (!gitTry(["remote", "get-url", "origin"], repo).ok)
     return { ok: false, missingOrigin: true, reason: "no origin remote configured" };
-  for (let attempt = 0; ; attempt++) {
-    const r = fetch();
-    if (r.ok) return { ok: true };
-    const reason = r.out.trim();
-    if (attempt >= retries || !REF_LOCK_RE.test(reason)) return { ok: false, reason };
-    sleep(50 * 2 ** attempt);
+  try {
+    retryOnRefLock(() => {
+      const result = fetch();
+      if (!result.ok) throw result;
+      return result;
+    }, { retries, sleep });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: failureText(error).trim() };
   }
+}
+
+export function* worktreeRecords(porcelainOut) {
+  let record = null;
+  for (const line of String(porcelainOut).split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (record) yield record;
+      record = { path: line.slice("worktree ".length), branch: null };
+    } else if (record?.path && line.startsWith("branch ")) {
+      record.branch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
+    } else if (record?.path && line === "detached") {
+      record.detached = true;
+    }
+  }
+  if (record) yield record;
 }
 
 function mainWorktreePath(repo, base = "main") {
   const list = gitTry(["worktree", "list", "--porcelain"], repo);
   if (!list.ok) return null;
-  let path = null;
-  let onMain = false;
-  const flush = () => {
-    const hit = onMain ? path : null;
-    path = null;
-    onMain = false;
-    return hit;
-  };
-  for (const line of list.out.split("\n")) {
-    if (line.startsWith("worktree ")) {
-      const hit = flush();
-      if (hit) return hit;
-      path = line.slice("worktree ".length);
-    } else if (line === `branch refs/heads/${base}`) {
-      onMain = true;
-    }
+  for (const record of worktreeRecords(list.out)) {
+    if (record.branch === base) return record.path;
   }
-  return flush();
+  return null;
 }
 
 function moveMainToOrigin(repo, base = "main") {
@@ -256,25 +274,19 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), 
   }
   const list = gitTry(["worktree", "list", "--porcelain"], repo);
   if (list.ok) {
-    let path = null;
-    let branch = null;
-    const flush = () => {
+    for (const { path, branch } of worktreeRecords(list.out)) {
       if (path && normalize(path).startsWith(wtRoot)) {
         // Belt 1: branch is registered as in-flight (worktree may not have marker yet —
         // this protects the window between `git worktree add` and `writeFileSync(marker)`).
         if (branch && liveBranches.has(branch)) {
-          path = null;
-          branch = null;
-          return;
+          continue;
         }
         const marker = taskMarker(path);
         const owned = existsSync(marker); // orch-created throwaway?
         const pid = owned ? ownerPid(marker) : null;
         if (owned && pid !== null && pidAlive(pid)) {
           // Belt 2: live peer in a concurrent cycle — leave it entirely alone
-          path = null;
-          branch = null;
-          return;
+          continue;
         }
         const removed = gitTry(["worktree", "remove", "--force", path], repo);
         if (removed.ok) recovered = true;
@@ -284,18 +296,7 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), 
           gitTry(["branch", "-D", "--", branch], repo); // never a user branch
         rmSync(marker, { force: true });
       }
-      path = null;
-      branch = null;
-    };
-    for (const line of list.out.split("\n")) {
-      if (line.startsWith("worktree ")) {
-        flush(); // new record — act on the previous one first
-        path = line.slice("worktree ".length);
-      } else if (line.startsWith("branch ")) {
-        branch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
-      }
     }
-    flush(); // last record has no trailing "worktree " to trigger it
   }
   gitTry(["worktree", "prune"], repo);
   return { recovered };

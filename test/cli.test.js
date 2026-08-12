@@ -6,7 +6,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -925,6 +925,26 @@ test("agent add still appends to a legacy inline `agents: [...]` config", async 
   }
 });
 
+test("agent add validates orch.yml before editing it", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-invalid-"));
+  const prev = cwd();
+  const file = join(d, ".orch", "orch.yml");
+  const invalid = "agents: [claude]\nmerge: unsafe\n";
+  chdir(d);
+  try {
+    mkdirSync(join(d, ".orch"));
+    writeFileSync(file, invalid);
+
+    await assert.rejects(
+      () => main(["agent", "add", "copilot"]),
+      /orch\.yml: merge must be ff-only, no-ff, or pr/,
+    );
+    assert.equal(readFileSync(file, "utf8"), invalid);
+  } finally {
+    chdir(prev);
+  }
+});
+
 test("agent add rejects an unknown agent", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-"));
   const prev = cwd();
@@ -1556,6 +1576,30 @@ test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
   } finally {
     chdir(prev);
     process.exitCode = savedExitCode; // restore instead of unconditionally forcing 0
+  }
+});
+
+test("registerWithConcurrencyCap removes the rejected run", () => {
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-cap-helper-"));
+  inflight.register(orchDir, "cap-peer", { branch: "pr/test/peer", pid: process.pid, baseSha: "abc" });
+  const exceeded = [];
+
+  try {
+    assert.equal(
+      registerWithConcurrencyCap(
+        orchDir,
+        "cap-current",
+        { branch: "pr/test/current", pid: process.pid, baseSha: "abc" },
+        { concurrency: 1 },
+        { onExceeded: (live) => exceeded.push(live) },
+      ),
+      false,
+    );
+    assert.deepEqual(exceeded, [2]);
+    assert.equal(inflight.countLive(orchDir), 1);
+  } finally {
+    inflight.deregister(orchDir, "cap-peer");
+    inflight.deregister(orchDir, "cap-current");
   }
 });
 
