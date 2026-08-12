@@ -511,7 +511,7 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
   const forcedReviewers = configuredReviewers(cfg);
   if (pinnedAuthor && cfg.agents.includes(pinnedAuthor)) {
     const pi = cfg.agents.indexOf(pinnedAuthor);
-    const rotationReviewer = cfg.agents[(pi + 1) % cfg.agents.length] || pinnedAuthor;
+    const rotationReviewer = cfg.agents[(pi + 1) % cfg.agents.length];
     const reviewers = forcedReviewers || [{ agent: rotationReviewer, model: null, effort: null }];
     return {
       authorName: pinnedAuthor, reviewerName: reviewers[0].agent,
@@ -523,7 +523,7 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
   const last = existsSync(f) ? readFileSync(f, "utf8").trim() : null;
   const i = last ? (cfg.agents.indexOf(last) + 1) % cfg.agents.length : 0;
   const authorName = cfg.agents[i];
-  const rotationReviewer = cfg.agents[(i + 1) % cfg.agents.length] || authorName;
+  const rotationReviewer = cfg.agents[(i + 1) % cfg.agents.length];
   writeFileSync(f, authorName + "\n");
   const reviewers = forcedReviewers || [{ agent: rotationReviewer, model: null, effort: null }];
   return {

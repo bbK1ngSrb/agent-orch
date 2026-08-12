@@ -12,6 +12,8 @@ export const SECRET_PATTERNS = [
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, // JWT
 ];
 
+// Retained for direct consumers that need a boolean signal. Runtime emission
+// paths still call redact() unconditionally so detection cannot gate redaction.
 export function hasSecret(text) {
   return SECRET_PATTERNS.some((re) => {
     re.lastIndex = 0;

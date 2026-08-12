@@ -93,6 +93,8 @@ export function validate(cfg, roundCapKey = "roundCap") {
     throw new Error("orch.yml: github.autoMergePr must be a boolean");
   if (typeof cfg.main.autoMerge !== "boolean")
     throw new Error("orch.yml: main.autoMerge must be a boolean");
+  // Keep these checks even though load() normalizes first: validate() is exported
+  // and callers may use it directly on an already-merged config object.
   if (typeof cfg.main.autoResolveConflicts !== "boolean")
     throw new Error("orch.yml: main.autoResolveConflicts must be a boolean");
   if (!["manual", "propose", "auto"].includes(cfg.main.conflictResolution))

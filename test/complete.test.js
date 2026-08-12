@@ -8,7 +8,6 @@ function mk(over = {}) {
   const printed = [];
   const git = {
     git: () => "abc123",                       // rev-parse --short integrationBranch
-    currentBranch: () => "orch/x",
     deleteBranchSafe: (_r, br) => { calls.deleted.push(br); return { ok: true }; },
     forceDeleteBranch: (_r, br) => { calls.forced.push(br); },
     ...over.git,
