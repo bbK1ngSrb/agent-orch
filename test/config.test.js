@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { load, parseRoleSpec, parseRoleSpecs } from "../src/config.js";
+import { load, parseRoleSpec, parseRoleSpecs, validate } from "../src/config.js";
 
 function tmp() { return mkdtempSync(join(tmpdir(), "orch-cfg-")); }
 
@@ -225,6 +225,16 @@ test("main.autoResolveConflicts defaults off and validates its scope", () => {
   const badPaths = tmp();
   writeFileSync(join(badPaths, "orch.yml"), "main:\n  autoResolveConflictPaths: CHANGELOG.md\n");
   assert.throws(() => load(badPaths), /main.autoResolveConflictPaths must be an array of strings/);
+});
+
+test("validate keeps its direct-call checks for normalized config objects", () => {
+  const badAlias = load(tmp());
+  badAlias.main.autoResolveConflicts = "yes";
+  assert.throws(() => validate(badAlias), /main.autoResolveConflicts must be a boolean/);
+
+  const badResolvers = load(tmp());
+  badResolvers.main.conflictResolutionResolvers = [];
+  assert.throws(() => validate(badResolvers), /main.conflictResolutionResolvers must be a non-empty list of role specs/);
 });
 
 test("main.conflictResolution overrides the deprecated boolean alias", () => {

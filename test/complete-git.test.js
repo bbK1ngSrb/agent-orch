@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, deleteBranchSafe, forceDeleteBranch } from "../src/git.js";
+import { git, currentBranch, deleteBranchSafe, forceDeleteBranch } from "../src/git.js";
 
 function newRepo() {
   const d = mkdtempSync(join(tmpdir(), "orch-complete-"));
@@ -15,6 +15,13 @@ function newRepo() {
   git(["commit", "-m", "init"], d);
   return d;
 }
+
+test("currentBranch reports the branch, and 'HEAD' when detached", () => {
+  const repo = newRepo();
+  assert.equal(currentBranch(repo), "main");
+  git(["switch", "--detach", "HEAD"], repo);
+  assert.equal(currentBranch(repo), "HEAD");
+});
 
 test("deleteBranchSafe deletes a merged branch, refuses an unmerged one", () => {
   const repo = newRepo();

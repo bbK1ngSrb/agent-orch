@@ -68,6 +68,30 @@ export function branchExists(repo, branch) {
   return gitTry(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repo).ok;
 }
 
+// Retained as a public helper for consumers that inspect branch freshness
+// directly; orch's current landing path uses the narrower reconciliation helpers.
+export function branchSyncStatus(repo, branch, base = "main") {
+  const branchRef = gitTry(["rev-parse", "--verify", "--quiet", `${branch}^{commit}`], repo);
+  if (!branchRef.ok) return { ok: false, reason: `branch not found: ${branch}` };
+  const baseRef = gitTry(["rev-parse", "--verify", "--quiet", `${base}^{commit}`], repo);
+  if (!baseRef.ok) return { ok: false, reason: `base not found: ${base}` };
+
+  const branchSha = branchRef.out.trim();
+  const baseSha = baseRef.out.trim();
+  if (branchSha === baseSha) return { ok: true, synced: true, status: "synced", branchSha, baseSha };
+
+  const branchTree = git(["rev-parse", `${branch}^{tree}`], repo);
+  const baseTree = git(["rev-parse", `${base}^{tree}`], repo);
+  if (branchTree === baseTree) {
+    return { ok: true, synced: true, status: "same-tree", branchSha, baseSha };
+  }
+
+  const branchBehind = gitTry(["merge-base", "--is-ancestor", branch, base], repo).ok;
+  const baseBehind = gitTry(["merge-base", "--is-ancestor", base, branch], repo).ok;
+  const status = branchBehind ? "behind" : baseBehind ? "ahead" : "diverged";
+  return { ok: true, synced: false, status, branchSha, baseSha };
+}
+
 // task mode: branch must NOT exist (orch owns it). Fail otherwise.
 export function createTaskBranch(repo, path, branch, base, markerContent = "") {
   if (branchExists(repo, branch)) throw new Error(`branch already exists: ${branch}`);
@@ -84,6 +108,11 @@ export function attachExistingBranch(repo, path, branch) {
 }
 
 // --- post-run completion helpers (see src/complete.js) ---
+
+// Current branch name, or "HEAD" when detached. --abbrev-ref prints "HEAD" detached.
+export function currentBranch(repo) {
+  return git(["rev-parse", "--abbrev-ref", "HEAD"], repo);
+}
 
 // Safe delete: a branch is safe to drop only when it is fully contained in the
 // configured landing branch (every commit already there → deleting the ref loses
@@ -110,6 +139,18 @@ export function forceDeleteBranch(repo, branch) {
 // The caller is responsible for never handing it a protected branch.
 export function deleteRemoteBranch(repo, branch) {
   return gitTry(["push", "origin", "--delete", branch], repo);
+}
+
+// Retained as a public helper for callers that explicitly verify a commit
+// against a remote-tracking base. The normal cycle has a separate integration
+// path; this helper is not silently treated as a production landing guard.
+export function verifyOriginContains(repo, commit, base = "main") {
+  const fetched = fetchOriginMain(repo, { base });
+  if (!fetched.ok) return { ok: false, reason: fetched.reason };
+  const r = gitTry(["merge-base", "--is-ancestor", commit, originRef(base)], repo);
+  return r.ok
+    ? { ok: true }
+    : { ok: false, reason: `${commit} is not contained in origin/${base}` };
 }
 
 export function fetchOriginMain(
