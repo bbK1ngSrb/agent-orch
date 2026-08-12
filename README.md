@@ -224,16 +224,16 @@ generated build artifacts, never on authored code.
 Prompted by a red-team report that found orch could
 print `merged` for a cycle whose commit never reached `origin/main`:
 
-- **Verified merge claims.** Before printing `merged`, orch checks the merged commit is
-  actually an ancestor of `origin/main` (`verifyOriginContains` in `src/git.js`). If the
-  push didn't take, `finalize` reports the real, local-only outcome instead of a false
-  success — it no longer claims a merge that didn't happen. `orch pr --merge` gets an
-  extra race guard on its own path: its GitHub merge request is pinned to the
-  fetched-and-reviewed PR SHA, so a concurrent head update is refused instead of
-  landing code the agents never saw. After the merge request succeeds, orch re-fetches
-  `origin/main` and confirms the merge commit GitHub reports is really an ancestor before
-  logging `merged ... verified on origin/main`, since a squash/rebase merge mints a new
-  SHA that a bare success response can't vouch for.
+- **Path-specific merge claims.** A normal cycle reports `merged` only after the
+  integrated worktree and local `orch/integration` ref agree on the merged SHA; if
+  the integration PR bridge fails, its reason says the content is local-only. It
+  does not claim that `origin/main` already contains that commit. `orch pr --merge`
+  has the stronger remote verification path: its GitHub merge request is pinned to
+  the fetched-and-reviewed PR SHA, so a concurrent head update is refused instead
+  of landing code the agents never saw. After that merge succeeds, orch re-fetches
+  `origin/main` and confirms the reported merge commit is really an ancestor before
+  logging `merged ... verified on origin/main`, since a squash/rebase merge mints a
+  new SHA that a bare success response can't vouch for.
 - **Per-cycle cost.** Every cycle's summary line includes `; cost <usageSummary>` — the
   token/$ estimate for that cycle's author + review rounds — so cost is visible next to
   the verdict, not just in aggregate run stats.

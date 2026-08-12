@@ -68,6 +68,8 @@ export function branchExists(repo, branch) {
   return gitTry(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repo).ok;
 }
 
+// Retained as a public helper for consumers that inspect branch freshness
+// directly; orch's current landing path uses the narrower reconciliation helpers.
 export function branchSyncStatus(repo, branch, base = "main") {
   const branchRef = gitTry(["rev-parse", "--verify", "--quiet", `${branch}^{commit}`], repo);
   if (!branchRef.ok) return { ok: false, reason: `branch not found: ${branch}` };
@@ -139,6 +141,9 @@ export function deleteRemoteBranch(repo, branch) {
   return gitTry(["push", "origin", "--delete", branch], repo);
 }
 
+// Retained as a public helper for callers that explicitly verify a commit
+// against a remote-tracking base. The normal cycle has a separate integration
+// path; this helper is not silently treated as a production landing guard.
 export function verifyOriginContains(repo, commit, base = "main") {
   const fetched = fetchOriginMain(repo, { base });
   if (!fetched.ok) return { ok: false, reason: fetched.reason };

@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.252 — 2026-08-12
+- cleanup: preserve public API contracts and clarify merge verification (closes [#445](https://github.com/bbk1ng/agent-orch/issues/445))
+
 ## v0.4.251 — 2026-08-12
 - dedup shared orchestration helpers (#443)
 
