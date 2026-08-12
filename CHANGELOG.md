@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.250 — 2026-08-12
+- docs+cli: document running issues in sequence, and name the issue number in the run summary (closes [#451](https://github.com/bbk1ng/agent-orch/issues/451))
+
 ## v0.4.249 — 2026-08-12
 - hasEscalationDecision fails open: an unresolvable check reads as 'never escalated' and allows the resume (closes [#459](https://github.com/bbk1ng/agent-orch/issues/459))
 
