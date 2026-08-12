@@ -67,6 +67,7 @@ orch agent build mynewagent                 # scaffold a missing adapter via orc
 orch continue <sid>                         # resume an interrupted/stalled cycle from its checkpoint
 orch dashboard                              # live cycle status, log tail, run history, metrics
 ```
+For running several issues in a row, see [manual §2.16](docs/orch-manual.md#216-running-several-issues-in-a-row).
 Add `--dry` to any `task`/`review` run to simulate a cycle without touching git,
 agents, or tests. `orch` exits non-zero (`2`) when a cycle escalates for a human.
 

@@ -1880,6 +1880,19 @@ test("resolveTaskBranch: a capped DISAGREE checkpoint is terminal without a deci
   assert.equal(spy.cleared, 1);
 });
 
+test("resolveTaskBranch: an uncheckable branch name is treated as escalated, not clean", () => {
+  // notify.reviewsDir throws on a traversal name, so the escalation check cannot
+  // answer. It must refuse the resume rather than default to "never escalated".
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-escalated-unsafe-"));
+  const branch = "../escape";
+  const { deps, spy } = resumeStubs({ record: { branch, sid: "9-z" }, exists: true, changed: ["a"] });
+
+  const r = resolveTaskBranch({ repo: "/r", orchDir, task: "do x", authorName: "claude" }, deps);
+  assert.equal(r.resume, false);
+  assert.notEqual(r.branch, branch);
+  assert.equal(spy.cleared, 1);
+});
+
 test("resolveTaskBranch: dry never reads or writes the store (#24)", () => {
   const { deps, spy } = resumeStubs({ record: { branch: "x", sid: "1" } });
   let looked = 0;
@@ -1920,6 +1933,9 @@ test("pinnedResumeAuthor ignores a branch that already escalated", () => {
   writeFileSync(join(orchDir, "reviews", branch, "DECISION.md"), "# Decision needed\n");
   const deps = pinStubs({ records: [{ author: "claude", branch }] });
   assert.equal(pinnedResumeAuthor({ repo: "/r", orchDir, task: "do x" }, deps), null);
+  // Same refusal when the check cannot answer at all: reviewsDir throws on this name.
+  assert.equal(pinnedResumeAuthor({ repo: "/r", orchDir, task: "do x" },
+    pinStubs({ records: [{ author: "claude", branch: "../escape" }] })), null);
 });
 
 test("pinnedResumeAuthor skips a branch that is a live peer, and is null under dry (#27)", () => {
@@ -2763,6 +2779,18 @@ test("summaryLine emits no ANSI codes when color is off", () => {
   const out = summaryLine(result, "b", true, "", false);
   assert.doesNotMatch(out, /\x1b\[/);
   assert.match(out, /^orch \(dry\): b: merged \(ok\) after 1 round\(s\); cost \$0$/);
+});
+
+test("summaryLine prefixes an issue number when supplied", () => {
+  const result = { status: "merged", reason: "ok", rounds: 1, usageSummary: "$0" };
+  assert.equal(
+    summaryLine(result, "pr/claude/x", false, "", false, 442),
+    "orch: #442 pr/claude/x: merged (ok) after 1 round(s); cost $0",
+  );
+  assert.equal(
+    summaryLine(result, "pr/claude/x", false, "", false),
+    "orch: pr/claude/x: merged (ok) after 1 round(s); cost $0",
+  );
 });
 
 test("summaryLine keeps a multi-line reason out of the parenthetical, appended below instead", () => {
