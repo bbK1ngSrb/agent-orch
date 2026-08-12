@@ -87,7 +87,7 @@ function cleanStreakSuffix(orchDir, dry) {
 
 const STATUS_COLOR = { merged: C.ok, escalated: C.fail, "merge-deferred": C.fail, pr: C.warn, demoted: C.warn };
 
-export function summaryLine(result, branch, dry, extra, color = false) {
+export function summaryLine(result, branch, dry, extra, color = false, closes = null) {
   const status = paint(color, STATUS_COLOR[result.status] || "", result.status);
   const reason = result.reason || "";
   const nl = reason.indexOf("\n");
@@ -100,7 +100,8 @@ export function summaryLine(result, branch, dry, extra, color = false) {
   const outcome = deferred
     ? ` (${result.trigger}) — ${head.replace(/[.;]$/, "")}; completed`
     : ` (${head})`;
-  return `orch${dry ? " (dry)" : ""}: ${branch}: ${status}${outcome} after ${result.rounds} round(s)${extra}; cost ${result.usageSummary}${rest}`;
+  const issuePrefix = closes == null ? "" : `#${closes} `;
+  return `orch${dry ? " (dry)" : ""}: ${issuePrefix}${branch}: ${status}${outcome} after ${result.rounds} round(s)${extra}; cost ${result.usageSummary}${rest}`;
 }
 
 function resetKpiOnRecovery(orchDir, recovery) {
@@ -1451,7 +1452,7 @@ export async function main(argv, deps = {}) {
           if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
         }
-        console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout)));
+        console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.prUrl) prUrls.push(result.prUrl);
         if (result.status === "escalated" || result.status === "merge-deferred") {
@@ -1642,7 +1643,7 @@ export async function main(argv, deps = {}) {
         // branch instead of authoring fresh.
         resume.clearForBranch(orchDir, branch);
       }
-      console.log(summaryLine(result, branch, dry, "", colorEnabled(process.stdout)));
+      console.log(summaryLine(result, branch, dry, "", colorEnabled(process.stdout), closes));
       // Codex review (#125 stalemate): `continue` forked its own terminal
       // handling instead of reusing the shared `task`/`issue` tail, and dropped
       // two of its side effects for a resumed cycle — the detached docs-update

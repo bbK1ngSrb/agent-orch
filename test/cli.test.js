@@ -2765,6 +2765,18 @@ test("summaryLine emits no ANSI codes when color is off", () => {
   assert.match(out, /^orch \(dry\): b: merged \(ok\) after 1 round\(s\); cost \$0$/);
 });
 
+test("summaryLine prefixes an issue number when supplied", () => {
+  const result = { status: "merged", reason: "ok", rounds: 1, usageSummary: "$0" };
+  assert.equal(
+    summaryLine(result, "pr/claude/x", false, "", false, 442),
+    "orch: #442 pr/claude/x: merged (ok) after 1 round(s); cost $0",
+  );
+  assert.equal(
+    summaryLine(result, "pr/claude/x", false, "", false),
+    "orch: pr/claude/x: merged (ok) after 1 round(s); cost $0",
+  );
+});
+
 test("summaryLine keeps a multi-line reason out of the parenthetical, appended below instead", () => {
   const reason = "opened PR https://x/pr/7. Vetted: agents AGREE, tests green, security clean.\n## Merge deferred: dirty-merge\nmerge result: ```\nCONFLICT (content): Merge conflict in CHANGELOG.md\n```";
   const result = { status: "merge-deferred", trigger: "dirty-merge", reason, rounds: 1, usageSummary: "$0" };
