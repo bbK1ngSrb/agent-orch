@@ -858,7 +858,10 @@ function hasEscalationDecision(orchDir, branch, sid, roundCap) {
     const ck = sid ? checkpoint.lookup(orchDir, sid) : null;
     return ck?.stage === "reviewed" && ck.decision === "DISAGREE" && Number(ck.round) >= Number(roundCap);
   }
-  catch { return false; }
+  // Fail closed: an unreadable answer (e.g. notify.reviewsDir rejecting an unsafe
+  // branch name) must not read as "never escalated". A needless re-author costs
+  // tokens; resuming a branch two reviewers rejected costs the merge guarantee.
+  catch { return true; }
 }
 
 // The author of a surviving committed branch to resume, or null. Scans resume
