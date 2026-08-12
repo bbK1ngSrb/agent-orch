@@ -53,12 +53,14 @@ export function releaseLock(orchDir, lockName = "lock") {
 
 // Block until the named lock is acquired or the timeout elapses. Used for the
 // merge-lock: finalize must serialize (wait its turn), not skip its merge.
-export function acquireBlocking(orchDir, lockName = "lock", { intervalMs = 200, timeoutMs = 300000 } = {}) {
+// Async on purpose: the wait can run for minutes, and a synchronous poll would
+// freeze the whole event loop (signals, timers) for that entire span.
+export async function acquireBlocking(orchDir, lockName = "lock", { intervalMs = 200, timeoutMs = 300000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (acquireLock(orchDir, lockName)) return true;
     if (Date.now() >= deadline) return false;
-    sleepSync(intervalMs);
+    await new Promise((r) => setTimeout(r, intervalMs));
   }
 }
 

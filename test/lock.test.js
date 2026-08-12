@@ -72,10 +72,22 @@ test("stale-lock atomic steal: dead-owner lock is stolen, reacquired with our pi
   releaseLock(d);
 });
 
-test("acquireBlocking returns true when free, false on timeout when held by a live owner", () => {
+test("acquireBlocking returns true when free, false on timeout when held by a live owner", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
-  assert.equal(acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 100 }), true);
+  assert.equal(await acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 100 }), true);
   // still held by us (live PID) → a second blocking acquire must time out, not hang
-  assert.equal(acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 50 }), false);
+  assert.equal(await acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 50 }), false);
+  releaseLock(d, "merge.lock");
+});
+
+test("acquireBlocking leaves the event loop alive while it waits", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
+  assert.equal(await acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 100 }), true);
+  let ticks = 0;
+  const timer = setInterval(() => { ticks++; }, 5);
+  // contended wait: a synchronous poll would starve the interval entirely
+  assert.equal(await acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 100 }), false);
+  clearInterval(timer);
+  assert.ok(ticks > 0, `timer never fired during the wait (ticks=${ticks})`);
   releaseLock(d, "merge.lock");
 });
