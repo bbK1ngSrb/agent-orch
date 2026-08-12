@@ -471,6 +471,78 @@ orch completion install
 source <(orch completion bash)
 ```
 
+### 2.12b `orch mcp` — serve orch to AI clients over MCP
+
+`orch mcp` turns the CLI into a **Model Context Protocol** server. MCP is a small
+JSON-RPC protocol that lets an AI client (Hermes Agent, Claude Code, anything
+else that speaks it) *discover* the operations a program offers and call them
+with typed arguments, instead of the client having to memorise a shell recipe.
+The server speaks newline-delimited JSON-RPC 2.0 on **stdin/stdout**, so stdout
+carries protocol frames only — every diagnostic goes to stderr.
+
+Configure it the same way in both clients. Claude Code (`.mcp.json` in the repo,
+or `~/.claude.json`):
+
+```json
+{
+  "mcpServers": {
+    "orch": { "command": "orch", "args": ["mcp"] }
+  }
+}
+```
+
+Hermes Agent (its MCP server list, same shape):
+
+```json
+{
+  "mcpServers": {
+    "orch": { "command": "orch", "args": ["mcp"], "cwd": "/path/to/your/repo" }
+  }
+}
+```
+
+The server runs the cycle in whatever directory it was started in, so point
+`cwd` at the repo you want orchestrated (Claude Code starts it in the project
+directory already).
+
+The tools:
+
+| Tool | Runs | Notes |
+| --- | --- | --- |
+| `orch_status` | `orch dashboard --json --once` | Read-only; returns the parsed snapshot. Optional `limit`. |
+| `orch_plan` | `orch task --dry` | Plans a cycle — branch, author, reviewers — without calling an agent or touching git. |
+| `orch_task` | `orch task` | Full cycle from a task description. |
+| `orch_issue` | `orch issue <n>` | Full cycle from a GitHub issue. |
+| `orch_review` | `orch review <branch>` | Audit-only. |
+| `orch_continue` | `orch continue <sid>` | Resume from a checkpoint. |
+
+Every call returns JSON: `ok`, `exitCode`, the `command` that ran, a `cycles`
+array (each with `sid`, `branch`, `status`, `reason`, `prUrl`, `closes`,
+`rounds`) read from the run records the call appended, `logs` paths, and the raw
+`stdout`/`stderr`. A cycle that escalates comes back as a *tool* error
+(`isError: true`) with the reason readable — not as a protocol error, so the
+client can act on it.
+
+**What the server deliberately cannot do.** The CLI stays the source of truth:
+each tool spawns `bin/orch.js` with a fixed argument list, `shell: false`, and no
+caller-supplied flags — free text is passed after `--` and refused outright if it
+starts with `-`, so a task string can't smuggle in `--allow-protected` or
+`--config-file`. There is **no shell tool** and **no `orch pr` tool**, and no
+tool can emit `--merge`. Since `--merge` is orch's only PR-merge path, an MCP
+client can never merge into `main`: a cycle lands on the integration branch and
+`main` advances only through the standing integration PR a human merges. That is
+a property of the tool table, not of a policy setting a repo could flip on by
+accident. Everything else — the security floor, the protected-path intake
+refusal (§2.14), the test gate, per-cycle worktree isolation, checkpoints and the
+concurrency cap (§4.5) — lives in the cycle the child process runs, so it applies
+to an MCP-started cycle exactly as it does to a hand-typed one, including when
+several cycles are started at once.
+
+**One caveat.** A real cycle takes minutes and the tool call blocks for all of
+it, so a client with a short tool timeout may give up while the cycle keeps
+running to completion in the child process; poll `orch_status` to see where it
+got to. `orch_status` and `orch_plan` return immediately.
+
 ### 2.13 Flags that apply across commands
 
 - **`--dry`** — plan a `task`/`review` cycle without shelling out to agents,
