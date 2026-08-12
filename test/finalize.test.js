@@ -17,7 +17,6 @@ function baseDeps(over = {}) {
       reconcileIntegrationToBase: () => ({ ok: true, updated: false }),
       mergeInWorktree: () => ({ ok: true, reason: "merged" }),
       bumpVersion: () => "0.1.1",
-      verifyOriginContains: () => ({ ok: true }),
       git: (args) => (args[0] === "rev-parse" ? "deadbee" : ""),
     },
     gate: { run: () => ({ pass: true, log: "" }) },

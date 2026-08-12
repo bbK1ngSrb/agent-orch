@@ -93,12 +93,11 @@ export function validate(cfg, roundCapKey = "roundCap") {
     throw new Error("orch.yml: github.autoMergePr must be a boolean");
   if (typeof cfg.main.autoMerge !== "boolean")
     throw new Error("orch.yml: main.autoMerge must be a boolean");
-  if (typeof cfg.main.autoResolveConflicts !== "boolean")
-    throw new Error("orch.yml: main.autoResolveConflicts must be a boolean");
+  // main.autoResolveConflicts and main.conflictResolutionResolvers are NOT re-checked
+  // here: every validate() caller runs normalizeMainConfig() first, which throws on
+  // or coerces exactly those fields — the re-checks could never fire (CFG-2).
   if (!["manual", "propose", "auto"].includes(cfg.main.conflictResolution))
     throw new Error("orch.yml: main.conflictResolution must be manual, propose, or auto");
-  if (cfg.main.conflictResolutionResolvers != null && (!Array.isArray(cfg.main.conflictResolutionResolvers) || cfg.main.conflictResolutionResolvers.length < 1))
-    throw new Error("orch.yml: main.conflictResolutionResolvers must be a non-empty list of role specs");
   if (!Array.isArray(cfg.main.autoResolveConflictPaths) || !cfg.main.autoResolveConflictPaths.every((p) => typeof p === "string"))
     throw new Error("orch.yml: main.autoResolveConflictPaths must be an array of strings");
   if (typeof cfg.docs.autoUpdate !== "boolean")

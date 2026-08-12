@@ -291,6 +291,7 @@ async function confirmOverwrite(target, deps) {
 
 export async function runConfigWizard({ repo = process.cwd(), configFile, stdin = process.stdin, stdout = process.stdout, inputStart = startInput } = {}) {
   if (!stdin.isTTY) throw new Error("orch config: interactive config needs a TTY");
+  validateCatalog(); // fail-fast on a malformed OPTION_CATALOG entry before any prompting
   const target = configFile || join(repo, ".orch", "orch.yml");
   let cfg = loadTarget(target);
   let i = 0;

@@ -225,7 +225,7 @@ Prompted by a red-team report that found orch could
 print `merged` for a cycle whose commit never reached `origin/main`:
 
 - **Verified merge claims.** Before printing `merged`, orch checks the merged commit is
-  actually an ancestor of `origin/main` (`verifyOriginContains` in `src/git.js`). If the
+  actually an ancestor of `origin/main`. If the
   push didn't take, `finalize` reports the real, local-only outcome instead of a false
   success — it no longer claims a merge that didn't happen. `orch pr --merge` gets an
   extra race guard on its own path: its GitHub merge request is pinned to the

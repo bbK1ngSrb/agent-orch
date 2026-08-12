@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitTry, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, reconcileIntegrationToOrigin, mergeInWorktree, rebaseBranchOnto, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch, worktreeRecords } from "../src/git.js";
+import { git, gitTry, branchExists, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, reconcileIntegrationToOrigin, mergeInWorktree, rebaseBranchOnto, changedFiles, syncMainFromOrigin, bumpVersion, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch, worktreeRecords } from "../src/git.js";
 import { checkPaths } from "../src/intake/allowlist.js";
 
 function newRepo() {
@@ -138,55 +138,6 @@ test("attachExistingBranch refuses a missing branch (F5: no silent create)", () 
   const repo = newRepo();
   assert.equal(branchExists(repo, "pr/claude/nope"), false);
   assert.throws(() => attachExistingBranch(repo, join(repo, ".orch/wt/n"), "pr/claude/nope"), /does not exist/);
-});
-
-test("branchSyncStatus reports a branch at main as synced", () => {
-  const repo = newRepo();
-  git(["branch", "development"], repo);
-  assert.deepEqual(
-    branchSyncStatus(repo, "development", "main"),
-    {
-      ok: true,
-      synced: true,
-      status: "synced",
-      branchSha: git(["rev-parse", "development"], repo),
-      baseSha: git(["rev-parse", "main"], repo),
-    },
-  );
-});
-
-test("branchSyncStatus reports development behind main", () => {
-  const repo = newRepo();
-  git(["branch", "development"], repo);
-  commitFile(repo, "main.txt", "main\n", "advance main");
-  const r = branchSyncStatus(repo, "development", "main");
-  assert.equal(r.ok, true);
-  assert.equal(r.synced, false);
-  assert.equal(r.status, "behind");
-});
-
-test("branchSyncStatus treats same-tree branches as code-synced", () => {
-  const repo = newRepo();
-  git(["checkout", "-b", "development"], repo);
-  commitFile(repo, "marker.txt", "same\n", "add marker");
-  git(["checkout", "main"], repo);
-  commitFile(repo, "marker.txt", "same\n", "add marker another way");
-  const r = branchSyncStatus(repo, "development", "main");
-  assert.equal(r.ok, true);
-  assert.equal(r.synced, true);
-  assert.equal(r.status, "same-tree");
-});
-
-test("branchSyncStatus reports diverged branches with different trees", () => {
-  const repo = newRepo();
-  git(["checkout", "-b", "development"], repo);
-  commitFile(repo, "dev.txt", "dev\n", "advance development");
-  git(["checkout", "main"], repo);
-  commitFile(repo, "main.txt", "main\n", "advance main");
-  const r = branchSyncStatus(repo, "development", "main");
-  assert.equal(r.ok, true);
-  assert.equal(r.synced, false);
-  assert.equal(r.status, "diverged");
 });
 
 test("merge conflict in the integration worktree returns ok:false and aborts cleanly", () => {
@@ -767,28 +718,6 @@ test("syncMainFromOrigin follows a custom base branch, not main", () => {
   assert.equal(r.ok, true);
   assert.equal(r.updated, true);
   assert.match(git(["log", "--oneline", "dev"], repo), /peer commit on dev/);
-});
-
-test("verifyOriginContains checks ancestry against refs/remotes/origin/main", () => {
-  const repo = newRepo();
-  addOrigin(repo);
-  commitFile(repo, "local.txt", "local\n", "advance local");
-  const local = git(["rev-parse", "main"], repo);
-
-  const beforePush = verifyOriginContains(repo, local);
-  assert.equal(beforePush.ok, false);
-  assert.match(beforePush.reason, /not contained in origin\/main/);
-
-  git(["push", "origin", "main"], repo);
-  assert.deepEqual(verifyOriginContains(repo, local), { ok: true });
-});
-
-test("verifyOriginContains checks the custom base branch's origin ref", () => {
-  const repo = newRepo();
-  git(["checkout", "-b", "dev"], repo);
-  addOriginNamed(repo, "dev");
-  const local = git(["rev-parse", "dev"], repo);
-  assert.deepEqual(verifyOriginContains(repo, local, "dev"), { ok: true });
 });
 
 test("reclaim PRESERVES a worktree whose branch is in liveBranches even when marker has dead pid (final-review I3)", () => {

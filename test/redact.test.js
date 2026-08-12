@@ -1,24 +1,23 @@
 // test/redact.test.js
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasSecret, redact, publicSummary } from "../src/redact.js";
+import { redact, publicSummary } from "../src/redact.js";
 
 test("detects a GitHub token shape", () => {
-  assert.equal(hasSecret("token ghp_" + "A".repeat(36)), true);
+  assert.equal(redact("token ghp_" + "A".repeat(36)), "token «redacted»");
 });
 
 test("detects a private key header", () => {
-  assert.equal(hasSecret("-----BEGIN OPENSSH PRIVATE KEY-----"), true);
+  assert.equal(redact("-----BEGIN OPENSSH PRIVATE KEY-----"), "«redacted»");
 });
 
-test("clean text has no secret", () => {
-  assert.equal(hasSecret("all green, merged main"), false);
+test("clean text is left untouched", () => {
+  assert.equal(redact("all green, merged main"), "all green, merged main");
 });
 
 test("redact replaces the secret, keeps surrounding text", () => {
   const out = redact("here is ghp_" + "B".repeat(36) + " ok");
   assert.match(out, /^here is «redacted» ok$/);
-  assert.equal(hasSecret(out), false);
 });
 
 test("publicSummary is a fixed template with only machine fields", () => {
@@ -48,21 +47,19 @@ test("publicSummary ignores any free-form prose passed in", () => {
     rounds: 1,
     reason: "ghp_" + "C".repeat(36) + " leaked here",
   });
-  assert.equal(hasSecret(s), false);
+  assert.equal(redact(s), s);
   assert.equal(s.includes("leaked"), false);
 });
 
 // --- FIX 5: additional secret pattern coverage ---
 test("detects a github_pat_ fine-grained PAT", () => {
   const secret = "github_pat_" + "A".repeat(20);
-  assert.equal(hasSecret(secret), true);
-  assert.equal(hasSecret(redact(secret)), false);
+  assert.equal(redact(secret), "«redacted»");
 });
 
 test("detects an sk- prefixed provider key", () => {
   const secret = "sk-" + "A".repeat(20);
-  assert.equal(hasSecret(secret), true);
-  assert.equal(hasSecret(redact(secret)), false);
+  assert.equal(redact(secret), "«redacted»");
 });
 
 // --- A1: modern hyphenated provider key shapes ---
@@ -71,14 +68,12 @@ test("detects an sk- prefixed provider key", () => {
 // the run reset its 20-char alphanumeric count to zero.
 test("detects a modern Anthropic sk-ant-api03- key", () => {
   const secret = "sk-ant-api03-" + "A".repeat(40) + "-" + "B".repeat(10);
-  assert.equal(hasSecret(secret), true);
-  assert.equal(hasSecret(redact(secret)), false);
+  assert.equal(redact(secret), "«redacted»");
 });
 
 test("detects a modern OpenAI sk-proj- key", () => {
   const secret = "sk-proj-" + "C".repeat(48);
-  assert.equal(hasSecret(secret), true);
-  assert.equal(hasSecret(redact(secret)), false);
+  assert.equal(redact(secret), "«redacted»");
 });
 
 test("redact scrubs a modern sk-ant-api03- key in surrounding prose", () => {
@@ -90,21 +85,19 @@ test("redact scrubs a modern sk-ant-api03- key in surrounding prose", () => {
 
 test("clean prose with a short sk- fragment is not flagged", () => {
   // "sk-" followed by fewer than 10 key-shaped chars stays below the threshold.
-  assert.equal(hasSecret("desk-jockey"), false);
-  assert.equal(hasSecret("risk-averse"), false);
+  assert.equal(redact("desk-jockey"), "desk-jockey");
+  assert.equal(redact("risk-averse"), "risk-averse");
 });
 
 test("detects an AKIA AWS access key id", () => {
   const secret = "AKIA" + "0123456789ABCDEF";
-  assert.equal(hasSecret(secret), true);
-  assert.equal(hasSecret(redact(secret)), false);
+  assert.equal(redact(secret), "«redacted»");
 });
 
 test("detects a JWT token", () => {
   const secret =
     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VySWQifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
-  assert.equal(hasSecret(secret), true);
-  assert.equal(hasSecret(redact(secret)), false);
+  assert.equal(redact(secret), "«redacted»");
 });
 
 // --- FIX 6: branch sanitization ---

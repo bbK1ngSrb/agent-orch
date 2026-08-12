@@ -12,13 +12,6 @@ export const SECRET_PATTERNS = [
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, // JWT
 ];
 
-export function hasSecret(text) {
-  return SECRET_PATTERNS.some((re) => {
-    re.lastIndex = 0;
-    return re.test(String(text));
-  });
-}
-
 export function redact(text) {
   let out = String(text);
   for (const re of SECRET_PATTERNS) {
