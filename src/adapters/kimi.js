@@ -1,4 +1,4 @@
-import { makeCliAdapter } from "./cli-adapter.js";
+import { appendCliOverrides, makeCliAdapter } from "./cli-adapter.js";
 
 // kimi CLI (kimi-code, Moonshot AI). -p/--prompt is the headless single-turn
 // mode ("run one prompt non-interactively and print the response"). Unlike the
@@ -11,8 +11,7 @@ import { makeCliAdapter } from "./cli-adapter.js";
 // dropped.
 export function buildArgs(prompt, _wd, opts = {}) {
   const args = ["-p", prompt];
-  if (opts.model) args.push("--model", opts.model);
-  return args;
+  return appendCliOverrides(args, opts, { model: true });
 }
 
 export default makeCliAdapter({ name: "kimi", bin: "kimi", buildArgs, capabilities: { model: true, effort: false } });

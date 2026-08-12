@@ -430,6 +430,12 @@ function assertSupported(name, capabilities, opts = {}) {
   if (opts.effort && !capabilities.effort) throw new Error(`${name} adapter does not support effort settings`);
 }
 
+export function appendCliOverrides(args, opts = {}, { model = false, effort = false } = {}) {
+  if (model && opts.model) args.push("--model", opts.model);
+  if (effort && opts.effort) args.push("--effort", opts.effort);
+  return args;
+}
+
 export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: true, effort: true } }) {
   const capabilitySupport = normalizeCapabilities(capabilities);
   // Spawns read adapter.bin (not the closed-over param) so preflight can rewrite

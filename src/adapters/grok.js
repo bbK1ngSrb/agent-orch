@@ -1,4 +1,4 @@
-import { makeCliAdapter } from "./cli-adapter.js";
+import { appendCliOverrides, makeCliAdapter } from "./cli-adapter.js";
 
 // grok CLI (xAI). `-p/--single <prompt>` is the headless single-turn mode. But
 // headless still gates tool executions (Edit/Write/Bash) on approval by default,
@@ -7,9 +7,7 @@ import { makeCliAdapter } from "./cli-adapter.js";
 // and gemini's --yolo. --effort carries the optional reasoning-effort role option.
 export function buildArgs(prompt, _wd, opts = {}) {
   const args = ["-p", prompt, "--always-approve"];
-  if (opts.model) args.push("--model", opts.model);
-  if (opts.effort) args.push("--effort", opts.effort);
-  return args;
+  return appendCliOverrides(args, opts, { model: true, effort: true });
 }
 
 export default makeCliAdapter({ name: "grok", bin: "grok", buildArgs, capabilities: { model: true, effort: true } });

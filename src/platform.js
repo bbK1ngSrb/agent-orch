@@ -49,12 +49,19 @@ function rejectCmdMeta(value) {
 // run its JS target with our own node. POSIX and native .exe pass through.
 export function portableSpawnSpec(bin, args, platform = process.platform, read = readFileSync) {
   if (platform !== "win32" || !/\.(cmd|bat)$/i.test(bin)) return { bin, args };
+  let target = null;
   try {
-    const m = read(bin, "utf8").match(CMD_SHIM_TARGET_RE);
+    target = read(bin, "utf8").match(CMD_SHIM_TARGET_RE)?.[1] || null;
+  } catch { /* unreadable shim: fall through */ }
+  if (target) {
     // win32 path ops explicitly: `bin` is a Windows path even when this branch
     // is exercised from POSIX tests, where the host path module would mis-split it.
-    if (m) return { bin: process.execPath, args: [winPath.join(winPath.dirname(bin), m[1]), ...args] };
-  } catch { /* unreadable shim: fall through */ }
+    return { bin: process.execPath, args: [winPath.join(winPath.dirname(bin), target), ...args] };
+  }
+  return fallbackCmdSpec(bin, args);
+}
+
+function fallbackCmdSpec(bin, args) {
   // ponytail: non-npm .cmd fallback goes through cmd.exe; argv with spaces may
   // not survive cmd re-parsing. Block command-control metacharacters rather
   // than trying to quote through cmd.exe re-parsing. Upgrade path: ship the

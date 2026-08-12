@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { parse, stringify } from "yaml";
-import { DEFAULTS, normalizeMainConfig, validate } from "./config.js";
+import { DEFAULTS, mergeConfig, normalizeMainConfig, validate } from "./config.js";
 import { start as startInput } from "./tui/input.js";
 import { box, C, colorEnabled } from "./tui/theme.js";
 
@@ -200,23 +200,13 @@ function formatValue(value) {
   return String(value);
 }
 
-function mergeConfig(user = {}) {
-  return {
-    ...DEFAULTS,
-    ...user,
-    cheap: { ...DEFAULTS.cheap, ...(user.cheap || {}) },
-    scope: { ...DEFAULTS.scope, ...(user.scope || {}) },
-    github: { ...DEFAULTS.github, ...(user.github || {}) },
-    main: { ...DEFAULTS.main, ...(user.main || {}) },
-    docs: { ...DEFAULTS.docs, ...(user.docs || {}) },
-    release: { ...DEFAULTS.release, ...(user.release || {}) },
-  };
-}
-
 export function loadTarget(target) {
   if (existsSync(target)) {
     const user = parse(readFileSync(target, "utf8")) || {};
     const cfg = mergeConfig(user);
+    // Preserve the wizard's pre-shared-helper behavior: an explicit security
+    // section is atomic rather than inheriting omitted nested defaults.
+    if (Object.hasOwn(user, "security")) cfg.security = user.security;
     // Fold the deprecated `reviseCap` into roundCap the way load() does. mergeConfig
     // would otherwise leave DEFAULTS' roundCap next to the operator's reviseCap, and
     // the wizard would serialize both — silently resetting the cap to 3 on reload.

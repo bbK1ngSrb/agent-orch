@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.251 — 2026-08-12
+- dedup shared orchestration helpers (#443)
+
 ## v0.4.250 — 2026-08-12
 - docs+cli: document running issues in sequence, and name the issue number in the run summary (closes [#451](https://github.com/bbk1ng/agent-orch/issues/451))
 

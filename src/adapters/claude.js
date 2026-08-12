@@ -1,4 +1,4 @@
-import { makeCliAdapter } from "./cli-adapter.js";
+import { appendCliOverrides, makeCliAdapter } from "./cli-adapter.js";
 
 // The author runs headless in a throwaway worktree, so it must write without an
 // interactive approval prompt (which would hang a `-p` run and silently no-op the
@@ -11,8 +11,7 @@ import { makeCliAdapter } from "./cli-adapter.js";
 const ALLOWED_TOOLS = "Edit,Write,Read,Bash,Glob,Grep";
 export function buildArgs(prompt, _wd, opts = {}) {
   const args = ["-p", "--allowedTools", ALLOWED_TOOLS, "--dangerously-skip-permissions"];
-  if (opts.model) args.push("--model", opts.model);
-  if (opts.effort) args.push("--effort", opts.effort);
+  appendCliOverrides(args, opts, { model: true, effort: true });
   args.push(prompt);
   return args;
 }
