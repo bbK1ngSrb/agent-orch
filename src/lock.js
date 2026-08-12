@@ -59,8 +59,12 @@ export async function acquireBlocking(orchDir, lockName = "lock", { intervalMs =
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (acquireLock(orchDir, lockName)) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise((r) => setTimeout(r, Math.min(intervalMs, remaining)));
+    // A late timer or an event-loop stall can wake us past the deadline. Re-check
+    // before retrying: acquiring after timeoutMs would break the caller's timeout.
     if (Date.now() >= deadline) return false;
-    await new Promise((r) => setTimeout(r, intervalMs));
   }
 }
 
