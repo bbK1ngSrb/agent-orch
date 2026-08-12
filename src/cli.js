@@ -1787,6 +1787,7 @@ Commands:
   upgrade, update       Self-update the global npm install.
   completion [bash]     Print the bash completion script (default: bash).
   completion install    Write the completion script to ~/.orch/completion.bash.
+  version               Print the version (same as --version).
   help                  Show this help.
 
 Options:

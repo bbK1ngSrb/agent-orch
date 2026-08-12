@@ -687,6 +687,26 @@ is `.orch/runs.jsonl`; its rows include `ts`, `branch`, `sid`, `verdict`,
 `reason`, and `rounds`, with optional `tokens`, `costUsd`, `sha`, `prUrl`, and
 `closes` fields.
 
+### 2.17 `orch upgrade` (alias: `orch update`)
+
+Self-updates the globally installed `orch` binary to the latest published
+version. It works out how orch was installed and re-runs the matching command,
+so you do not have to remember whether it was `npm`, `pnpm`, or something else.
+
+```bash
+orch upgrade            # install the latest version
+orch upgrade --check    # report the latest version without installing anything
+```
+
+`--check` is the form to use in a script or a shell prompt: it tells you whether
+you are behind and changes nothing on disk. orch also checks for updates in the
+background during ordinary runs and prints a one-line notice when a newer
+version exists — `upgrade` is how you act on that notice.
+
+Unlike every other command in this part, `upgrade` does not read `.orch/` and
+does not care which repo you are standing in. It manages the tool, not your
+project.
+
 ---
 
 ## Part 3 — The merge models, in detail (the part people actually ask about)
@@ -1159,7 +1179,15 @@ release:
   the conflict is warned about rather than silently resolved.
 - **`stageTimeout`** — kills a stalled author or review stage (whole process
   group, wall-clock, not CPU time) rather than hanging forever on a wedged
-  agent CLI. `0` disables it — not recommended in CI.
+  agent CLI. `0` disables it — not recommended in CI. **The environment
+  variable `ORCH_STAGE_TIMEOUT_MS` overrides this key entirely** — when it is
+  set, the value here is not consulted at all. That precedence is deliberate:
+  the variable is the ops escape hatch, so it has to win, or you could never
+  raise a wedged repo's timeout without first editing its `orch.yml`. Mind the
+  units — this key is in **minutes**, the variable is in **milliseconds**, so
+  the equivalent of `stageTimeout: 25` is `ORCH_STAGE_TIMEOUT_MS=1500000`.
+  Copying `25` across gives you a 25-millisecond cap that kills every stage on
+  contact. See §5.2.
 - **`merge`** — see Part 3. This is the big one.
 - **`cheap`** — `role` is the agent spec `--cheap` forces for one run;
   `paths` auto-routes a `--file`/`orch issue` work order to it *without* the
@@ -1252,6 +1280,30 @@ release:
   that lands via the local integration path gets the §4.1 merge-counter bump +
   CHANGELOG commit. Left off, orch never edits release files — same opt-in
   philosophy as `docs.autoUpdate`.
+
+### 5.2 Environment variables
+
+Everything above lives in `.orch/orch.yml`, which is per-repo and checked in.
+The variables below are per-shell and per-run — the escape hatches you reach
+for when you cannot or should not edit the config file, such as a one-off CI
+job or a repo you do not own. Where the two overlap, **the variable wins**.
+
+| Variable | Effect |
+|---|---|
+| `ORCH_STAGE_TIMEOUT_MS` | Per-stage wall-clock cap in **milliseconds**, overriding `stageTimeout` (which is in minutes). `0` disables the watchdog. |
+| `ORCH_DRYRUN` | Set to `1` to force dry-run mode, exactly as if `--dry` had been passed: orch plans the cycle without shelling out to an agent or touching git. |
+| `ORCH_PROGRESS_INTERVAL_MS` | How often a running stage prints its "still running" heartbeat. Purely cosmetic; lower it when you are watching a slow stage and want more frequent signs of life. |
+| `ORCH_APP_ID`, `ORCH_APP_PRIVATE_KEY` | GitHub App credentials. When both are set, orch mints a short-lived installation token and every `gh` shell-out runs as `orch[bot]` instead of your ambient login. |
+| `GH_TOKEN` | Standard `gh` token. Used when App credentials are absent; falls back to your ambient `gh` login if unset. |
+| `NO_COLOR` | Honoured as usual — suppresses ANSI colour in orch's output. |
+
+Two of these need a word of warning. `ORCH_STAGE_TIMEOUT_MS` and
+`stageTimeout` control the same watchdog in different units, and the variable
+silently wins — if a timeout you configured appears to do nothing, check the
+environment before you suspect the config loader. And `ORCH_DRYRUN=1` left
+exported in a shell makes *every* subsequent `orch` command a no-op that still
+prints a plausible-looking plan; it is the right tool for a scripted rehearsal
+and the wrong thing to leave in a profile.
 
 ---
 
