@@ -1933,6 +1933,9 @@ test("pinnedResumeAuthor ignores a branch that already escalated", () => {
   writeFileSync(join(orchDir, "reviews", branch, "DECISION.md"), "# Decision needed\n");
   const deps = pinStubs({ records: [{ author: "claude", branch }] });
   assert.equal(pinnedResumeAuthor({ repo: "/r", orchDir, task: "do x" }, deps), null);
+  // Same refusal when the check cannot answer at all: reviewsDir throws on this name.
+  assert.equal(pinnedResumeAuthor({ repo: "/r", orchDir, task: "do x" },
+    pinStubs({ records: [{ author: "claude", branch: "../escape" }] })), null);
 });
 
 test("pinnedResumeAuthor skips a branch that is a live peer, and is null under dry (#27)", () => {
