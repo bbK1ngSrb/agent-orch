@@ -34,9 +34,13 @@ const VERSION = JSON.parse(
 
 const ORCH_BIN = fileURLToPath(new URL("../bin/orch.js", import.meta.url));
 
-// Fallback only. The negotiated version is whatever the client asks for: a
-// client that sees an unfamiliar string may refuse to continue to tools/list.
-export const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
+// Protocol versions this server actually speaks, newest first. The lifecycle
+// spec says the server answers `initialize` with the client's version when it
+// supports it and otherwise with the latest version it does support — echoing
+// back an unknown string would claim conformance to a protocol we have never
+// seen. The client then decides whether to continue.
+export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
+export const DEFAULT_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0];
 
 function requireText(value, field) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be a non-empty string`);
@@ -145,9 +149,14 @@ function fileSize(path) {
 
 // runs.jsonl is repo-wide and append-only, so the tail written while one tool
 // call ran may also hold records from a concurrent cycle (another MCP call, a
-// terminal `orch`, the poller). Filter by whatever this call knows for certain;
-// `orch_task`/`orch_issue` learn their sid only from the record itself, so they
-// report the whole tail and the caller reads the branch.
+// terminal `orch`, the poller). Every record therefore has to be attributed
+// before it is reported. `filter` maps a record field to either a literal to
+// match or a predicate; see runTool for how each tool picks its key.
+//
+// A line is untrusted input: `JSON.parse` happily returns `null`, a number or an
+// array for a valid JSON line, and reading `.sid` off `null` here would throw
+// inside a `close` listener — an uncaught exception that kills the whole server.
+// Anything that is not a plain object is skipped.
 function readNewRuns(path, offset, filter = {}) {
   if (fileSize(path) <= offset) return [];
   let text = "";
@@ -156,7 +165,8 @@ function readNewRuns(path, offset, filter = {}) {
   return text.split("\n").filter(Boolean).flatMap((line) => {
     let entry;
     try { entry = JSON.parse(line); } catch { return []; }
-    if (Object.entries(filter).some(([k, v]) => entry[k] !== v)) return [];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    if (Object.entries(filter).some(([k, v]) => (typeof v === "function" ? !v(entry[k]) : entry[k] !== v))) return [];
     return [{
       sid: entry.sid ?? null,
       branch: entry.branch ?? null,
@@ -192,11 +202,19 @@ export function runTool(tool, args, ctx) {
     child.stderr?.on("data", (d) => { stderr += d; });
     child.on("error", (e) => resolve({ ok: false, exitCode: null, stdout, stderr: `${stderr}${e.message}` }));
     child.on("close", (code) => {
+      // A tool that knows its target (a branch, a sid) matches on that. The rest
+      // — orch_task, orch_issue — learn their cycle only from the record, so they
+      // correlate on the sid's own prefix: a sid is `<pid>-<counter>` (src/sid.js)
+      // and we spawned that pid, so a peer cycle's record can never match. An
+      // unstarted child has no pid, and then nothing is attributed to this call.
+      const match = tool.match
+        ? tool.match(args)
+        : { sid: (sid) => typeof sid === "string" && sid.startsWith(`${child.pid}-`) };
       const payload = {
         ok: code === 0,
         exitCode: code,
         command: `orch ${argv.join(" ")}`,
-        cycles: readNewRuns(runsLog, offset, tool.match ? tool.match(args) : {}),
+        cycles: readNewRuns(runsLog, offset, match),
         logs: { runs: runsLog, reviewOutcomes: join(orchDir, "review-outcomes.jsonl") },
         stdout,
         stderr,
@@ -223,16 +241,17 @@ export async function handle(msg, ctx) {
   const isNotification = id === undefined || id === null;
   const method = msg?.method;
 
+  if (isNotification) return null;
+
   if (method === "initialize") {
     const asked = msg.params?.protocolVersion;
     return rpcResult(id, {
-      protocolVersion: typeof asked === "string" ? asked : DEFAULT_PROTOCOL_VERSION,
+      protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(asked) ? asked : DEFAULT_PROTOCOL_VERSION,
       // Without a `tools` capability a conformant client never calls tools/list.
       capabilities: { tools: {} },
       serverInfo: { name: "orch", version: VERSION },
     });
   }
-  if (isNotification) return null;
   if (method === "ping") return rpcResult(id, {});
   if (method === "tools/list") {
     return rpcResult(id, {

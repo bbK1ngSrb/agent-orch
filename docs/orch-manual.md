@@ -519,9 +519,12 @@ The tools:
 Every call returns JSON: `ok`, `exitCode`, the `command` that ran, a `cycles`
 array (each with `sid`, `branch`, `status`, `reason`, `prUrl`, `closes`,
 `rounds`) read from the run records the call appended, `logs` paths, and the raw
-`stdout`/`stderr`. A cycle that escalates comes back as a *tool* error
-(`isError: true`) with the reason readable — not as a protocol error, so the
-client can act on it.
+`stdout`/`stderr`. `.orch/runs.jsonl` is repo-wide, so a cycle another client or
+a terminal `orch` finished mid-call also lands in that tail; `cycles` holds only
+the records this call produced — matched by branch or sid where the tool knows
+one, and otherwise by the cycle id's process prefix. A cycle that escalates
+comes back as a *tool* error (`isError: true`) with the reason readable — not as
+a protocol error, so the client can act on it.
 
 **What the server deliberately cannot do.** The CLI stays the source of truth:
 each tool spawns `bin/orch.js` with a fixed argument list, `shell: false`, and no

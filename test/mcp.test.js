@@ -6,18 +6,19 @@ import { mkdtempSync, mkdirSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TOOLS, handle, serve, DEFAULT_PROTOCOL_VERSION } from "../src/mcp.js";
+import { TOOLS, handle, serve, DEFAULT_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../src/mcp.js";
 
 const ORCH_BIN = fileURLToPath(new URL("../bin/orch.js", import.meta.url));
 
 // A stand-in child process: records the argv it was spawned with, then closes
 // with the supplied exit code. `onSpawn` can write runs.jsonl first, so a tool
 // call sees exactly the records a real cycle would have appended.
-function fakeSpawn({ code = 0, stdout = "", stderr = "", onSpawn = () => {} } = {}) {
+function fakeSpawn({ code = 0, stdout = "", stderr = "", onSpawn = () => {}, pid = 4242 } = {}) {
   const calls = [];
   const fn = (bin, argv, opts) => {
     calls.push({ bin, argv, opts });
     const child = new EventEmitter();
+    child.pid = pid;
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
     setImmediate(() => {
@@ -35,7 +36,8 @@ function fakeSpawn({ code = 0, stdout = "", stderr = "", onSpawn = () => {} } = 
 const call = (id, name, args) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
 const payload = (res) => JSON.parse(res.result.content[0].text);
 
-test("initialize advertises the tools capability and echoes the client's protocol version", async () => {
+test("initialize negotiates a version this server actually supports", async () => {
+  // An older but supported version is honoured, so an older client keeps working.
   const res = await handle({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } }, {});
   assert.equal(res.id, 1);
   assert.equal(res.result.protocolVersion, "2024-11-05");
@@ -45,6 +47,16 @@ test("initialize advertises the tools capability and echoes the client's protoco
 
   const bare = await handle({ jsonrpc: "2.0", id: 2, method: "initialize" }, {});
   assert.equal(bare.result.protocolVersion, DEFAULT_PROTOCOL_VERSION);
+
+  // An unsupported or malformed version must not be echoed back: that would
+  // claim conformance to a protocol this server has never seen. The lifecycle
+  // spec says answer with the latest version we do support and let the client
+  // decide whether to continue.
+  for (const asked of ["2099-01-01", "", 5, null, { v: 1 }]) {
+    const out = await handle({ jsonrpc: "2.0", id: 3, method: "initialize", params: { protocolVersion: asked } }, {});
+    assert.equal(out.result.protocolVersion, DEFAULT_PROTOCOL_VERSION, `asked ${JSON.stringify(asked)}`);
+  }
+  assert.ok(SUPPORTED_PROTOCOL_VERSIONS.includes("2025-06-18"));
 });
 
 test("notifications get no response at all", async () => {
@@ -52,6 +64,9 @@ test("notifications get no response at all", async () => {
   // send; answering a message that has no id breaks strict clients.
   assert.equal(await handle({ jsonrpc: "2.0", method: "notifications/initialized" }, {}), null);
   assert.equal(await handle({ jsonrpc: "2.0", method: "some/unknown/notification" }, {}), null);
+  // `initialize` is a request, so a notification-shaped one is malformed — it
+  // still gets silence, not a response addressed to no id.
+  assert.equal(await handle({ jsonrpc: "2.0", method: "initialize", params: { protocolVersion: "2025-06-18" } }, {}), null);
 });
 
 test("tools/list exposes every tool with a name, description and schema", async () => {
@@ -145,9 +160,11 @@ test("a cycle reports id, branch, status, reason, PR url and log paths", async (
   mkdirSync(join(repo, ".orch"), { recursive: true });
   record({ ts: "t0", sid: "old", branch: "orch/claude/old", verdict: "merged" }); // pre-existing: not this call's
 
+  // A real sid is `<pid>-<counter>` (src/sid.js) and the pid is the child's.
   const spawnFn = fakeSpawn({
+    pid: 777,
     onSpawn: () => record({
-      ts: "t1", sid: "s1", branch: "orch/claude/new", verdict: "merged",
+      ts: "t1", sid: "777-a", branch: "orch/claude/new", verdict: "merged",
       reason: "agreed", rounds: 2, prUrl: "https://example.invalid/pr/7", closes: 42,
     }),
   });
@@ -155,7 +172,7 @@ test("a cycle reports id, branch, status, reason, PR url and log paths", async (
   const out = payload(res);
   assert.equal(out.ok, true);
   assert.deepEqual(out.cycles, [{
-    sid: "s1", branch: "orch/claude/new", status: "merged", reason: "agreed",
+    sid: "777-a", branch: "orch/claude/new", status: "merged", reason: "agreed",
     prUrl: "https://example.invalid/pr/7", closes: 42, rounds: 2,
   }]);
   assert.equal(out.logs.runs, runs);
@@ -178,6 +195,45 @@ test("a concurrent cycle's run record is not attributed to this call", async () 
   assert.equal(out.cycles.length, 1);
   assert.equal(out.cycles[0].sid, "mine");
   assert.equal(out.cycles[0].status, "escalated");
+});
+
+test("orch_task reports only the cycle its own child started", async () => {
+  // orch_task has no target to match on, so it correlates on the sid's pid
+  // prefix. A peer cycle running in another process writes into the same tail
+  // and must not be reported as this call's result.
+  const repo = mkdtempSync(join(tmpdir(), "orch-mcp-"));
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  const runs = join(repo, ".orch", "runs.jsonl");
+  const spawnFn = fakeSpawn({
+    pid: 1234,
+    onSpawn: () => {
+      appendFileSync(runs, JSON.stringify({ sid: "99-b", branch: "orch/codex/peer", verdict: "merged" }) + "\n");
+      appendFileSync(runs, JSON.stringify({ sid: "1234-b", branch: "orch/claude/mine", verdict: "merged" }) + "\n");
+      // A pid that merely shares a prefix is a different process.
+      appendFileSync(runs, JSON.stringify({ sid: "12345-c", branch: "orch/codex/other", verdict: "merged" }) + "\n");
+    },
+  });
+  const out = payload(await handle(call(14, "orch_task", { task: "do a thing" }), { repo, spawnFn }));
+  assert.deepEqual(out.cycles.map((c) => c.branch), ["orch/claude/mine"]);
+});
+
+test("a malformed run record is skipped instead of killing the server", async () => {
+  // `JSON.parse` returns `null`, a number or an array for these perfectly valid
+  // JSON lines. readNewRuns runs inside a `close` listener, so a throw here would
+  // be an uncaught exception: the whole MCP server dies and the call never
+  // resolves. The good record still has to come back.
+  const repo = mkdtempSync(join(tmpdir(), "orch-mcp-"));
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  const runs = join(repo, ".orch", "runs.jsonl");
+  const spawnFn = fakeSpawn({
+    pid: 55,
+    onSpawn: () => {
+      for (const line of ["null", "123", '"text"', "[1,2]", "{not json"]) appendFileSync(runs, line + "\n");
+      appendFileSync(runs, JSON.stringify({ sid: "55-a", branch: "orch/claude/ok", verdict: "merged" }) + "\n");
+    },
+  });
+  const out = payload(await handle(call(15, "orch_task", { task: "do a thing" }), { repo, spawnFn }));
+  assert.deepEqual(out.cycles.map((c) => c.sid), ["55-a"]);
 });
 
 test("a failed orch run is a tool error, not a protocol error", async () => {
