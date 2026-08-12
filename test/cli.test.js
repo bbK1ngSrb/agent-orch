@@ -1880,6 +1880,19 @@ test("resolveTaskBranch: a capped DISAGREE checkpoint is terminal without a deci
   assert.equal(spy.cleared, 1);
 });
 
+test("resolveTaskBranch: an uncheckable branch name is treated as escalated, not clean", () => {
+  // notify.reviewsDir throws on a traversal name, so the escalation check cannot
+  // answer. It must refuse the resume rather than default to "never escalated".
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-escalated-unsafe-"));
+  const branch = "../escape";
+  const { deps, spy } = resumeStubs({ record: { branch, sid: "9-z" }, exists: true, changed: ["a"] });
+
+  const r = resolveTaskBranch({ repo: "/r", orchDir, task: "do x", authorName: "claude" }, deps);
+  assert.equal(r.resume, false);
+  assert.notEqual(r.branch, branch);
+  assert.equal(spy.cleared, 1);
+});
+
 test("resolveTaskBranch: dry never reads or writes the store (#24)", () => {
   const { deps, spy } = resumeStubs({ record: { branch: "x", sid: "1" } });
   let looked = 0;
