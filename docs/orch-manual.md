@@ -606,6 +606,87 @@ nothing, and running `orch release` would manufacture a `chore(release)` commit
 the repo deliberately opted out of. Reach for `release` only where `autoBump` is
 `true` (or where you have decided, this once, that you want a release commit).
 
+### 2.16 Running several issues in a row
+
+A shell chain is already a useful batch runner; no new `orch` command is needed.
+Choose the operator based on whether a failed cycle should stop the queue:
+
+```bash
+orch issue 442 && orch issue 443
+```
+
+`&&` runs the commands sequentially and stops at the first cycle that exits
+nonzero. This is usually the right default: an escalation means a human needs
+to look, and continuing would base later cycles on a contested tree.
+
+```bash
+orch issue 442; orch issue 443
+```
+
+`;` also runs the commands sequentially, but runs the next command regardless of
+the previous command's outcome.
+
+For more than two or three issues, a loop is the same keep-going behavior in a
+more readable form:
+
+```bash
+for n in 442 443 445 446; do orch issue "$n"; done
+```
+
+Be careful with `&`. It backgrounds the preceding `&&` list, so this line:
+
+```bash
+orch issue 442 && orch issue 443 && orch issue 445 & orch issue 446
+```
+
+is parsed as:
+
+```bash
+( orch issue 442 && orch issue 443 && orch issue 445 ) &
+orch issue 446
+```
+
+That is a three-cycle chain in the background plus a fourth cycle running at the
+same time — two lanes, not one queue.
+
+Serial execution is the default recommendation for an issue queue. Each cycle
+bases its worktree on the local base branch and merges into
+`orch/integration`. Two cycles touching overlapping files can therefore start
+from the same base and collide at merge time; orch demotes the later one to
+`merge-deferred`. Running in sequence lets each cycle see the previous cycle's
+merge and avoids that overlap.
+
+#### Exit codes in a chain
+
+`&&` depends on the exit status, not on the wording of the terminal summary:
+
+| Code | Meaning |
+|---|---|
+| `0` | Normal completion: merged, approved, or a successful dry run. |
+| `1` | An uncaught exception (`bin/orch.js:5`): orch itself broke. |
+| `2` | An escalation, `merge-deferred`, a non-approved `orch pr`, or the concurrency cap being hit. |
+
+Exit `2` for a cycle outcome is not a crash. It means orch is working
+correctly and declining to land something on its own — a human should decide
+this — which is why halting the rest of a `&&` chain is usually sensible.
+There is one important batching gotcha: the concurrency cap shares exit `2`
+with escalation. If another cycle is already live and the cap is reached, orch
+prints:
+
+```text
+orch: concurrency cap N reached — M cycles live; skipping <branch>
+```
+
+Nothing was reviewed or decided in that case; the issue was skipped. At the
+shell, the two outcomes are indistinguishable, so read the printed line rather
+than relying on the exit status alone. The `2` status is set in the `agent build`,
+`task`/`issue`/`review`, `continue`, and `pr` handlers for the relevant outcomes.
+
+After a halt, use `orch dashboard` for the full run history. The durable record
+is `.orch/runs.jsonl`; its rows include `ts`, `branch`, `sid`, `verdict`,
+`reason`, and `rounds`, with optional `tokens`, `costUsd`, `sha`, `prUrl`, and
+`closes` fields.
+
 ---
 
 ## Part 3 — The merge models, in detail (the part people actually ask about)
