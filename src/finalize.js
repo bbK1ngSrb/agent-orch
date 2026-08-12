@@ -73,7 +73,7 @@ export async function finalize(ctx, deps) {
       : { status: "escalated", reason: "agreed + green → escalated locally (merge: pr needs a remote + gh CLI)" };
   }
 
-  if (!lock.acquireBlocking(orchDir, "merge.lock")) {
+  if (!(await lock.acquireBlocking(orchDir, "merge.lock"))) {
     return demote(ctx, deps, { trigger: "lock" }); // never acquired → don't touch the worktree
   }
   try {

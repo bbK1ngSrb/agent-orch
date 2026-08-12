@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireLock, releaseLock, acquireBlocking, isPaused } from "../src/lock.js";
+import { acquireLock, releaseLock, acquireBlocking, isPaused, sleepSync } from "../src/lock.js";
 
 test("acquireLock is exclusive until released", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
@@ -72,10 +72,32 @@ test("stale-lock atomic steal: dead-owner lock is stolen, reacquired with our pi
   releaseLock(d);
 });
 
-test("acquireBlocking returns true when free, false on timeout when held by a live owner", () => {
+test("acquireBlocking returns true when free, false on timeout when held by a live owner", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
-  assert.equal(acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 100 }), true);
+  assert.equal(await acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 100 }), true);
   // still held by us (live PID) → a second blocking acquire must time out, not hang
-  assert.equal(acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 50 }), false);
+  assert.equal(await acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 50 }), false);
+  releaseLock(d, "merge.lock");
+});
+
+test("acquireBlocking does not acquire after the deadline when a stall delays the retry", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
+  assert.equal(await acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 20 }), true);
+  // Stall the event loop well past the deadline, then free the lock: the pending
+  // retry wakes up late and must refuse to take a lock it is no longer entitled to.
+  setTimeout(() => { sleepSync(100); releaseLock(d, "merge.lock"); }, 1);
+  assert.equal(await acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 20 }), false);
+  assert.equal(existsSync(join(d, "merge.lock")), false); // timed-out waiter must not hold it
+});
+
+test("acquireBlocking leaves the event loop alive while it waits", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
+  assert.equal(await acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 100 }), true);
+  let ticks = 0;
+  const timer = setInterval(() => { ticks++; }, 5);
+  // contended wait: a synchronous poll would starve the interval entirely
+  assert.equal(await acquireBlocking(d, "merge.lock", { intervalMs: 5, timeoutMs: 100 }), false);
+  clearInterval(timer);
+  assert.ok(ticks > 0, `timer never fired during the wait (ticks=${ticks})`);
   releaseLock(d, "merge.lock");
 });
