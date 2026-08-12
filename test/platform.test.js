@@ -64,15 +64,20 @@ test("portableSpawnSpec: win32 unwraps an npm .cmd shim to node + JS target", ()
   assert.deepEqual(spec.args.slice(1), ["-p", "multi\nline prompt"]); // prompt argv survives verbatim
 });
 
-test("portableSpawnSpec: win32 caches a shim read for the same bin and reader", () => {
-  const shim = 'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\\node_modules\\tool\\cli.js" %*';
+test("portableSpawnSpec: win32 rereads a shim so an updated target is not stale", () => {
+  const targets = ["old", "new"];
   let reads = 0;
-  const read = () => { reads++; return shim; };
+  const read = () => {
+    const target = targets[reads++];
+    return `endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\\node_modules\\${target}\\cli.js" %*`;
+  };
 
-  portableSpawnSpec("C:\\cache\\tool.cmd", [], "win32", read);
-  portableSpawnSpec("C:\\cache\\tool.cmd", ["--again"], "win32", read);
+  const first = portableSpawnSpec("C:\\cache\\tool.cmd", [], "win32", read);
+  const second = portableSpawnSpec("C:\\cache\\tool.cmd", ["--again"], "win32", read);
 
-  assert.equal(reads, 1);
+  assert.equal(reads, 2);
+  assert.match(first.args[0], /node_modules\\old\\cli\.js$/);
+  assert.match(second.args[0], /node_modules\\new\\cli\.js$/);
 });
 
 test("portableSpawnSpec: win32 safe non-shim .cmd falls back to cmd.exe /c", () => {

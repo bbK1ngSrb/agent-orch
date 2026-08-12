@@ -925,6 +925,26 @@ test("agent add still appends to a legacy inline `agents: [...]` config", async 
   }
 });
 
+test("agent add validates orch.yml before editing it", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-invalid-"));
+  const prev = cwd();
+  const file = join(d, ".orch", "orch.yml");
+  const invalid = "agents: [claude]\nmerge: unsafe\n";
+  chdir(d);
+  try {
+    mkdirSync(join(d, ".orch"));
+    writeFileSync(file, invalid);
+
+    await assert.rejects(
+      () => main(["agent", "add", "copilot"]),
+      /orch\.yml: merge must be ff-only, no-ff, or pr/,
+    );
+    assert.equal(readFileSync(file, "utf8"), invalid);
+  } finally {
+    chdir(prev);
+  }
+});
+
 test("agent add rejects an unknown agent", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-"));
   const prev = cwd();

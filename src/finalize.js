@@ -91,7 +91,7 @@ export async function finalize(ctx, deps) {
       });
     }
 
-    const integrationBranch = cfg.integrationBranch;
+    const integrationBranch = cfg.integrationBranch || "orch/integration";
     const integration = git.ensureIntegrationWorktree(repo, orchDir, integrationBranch, baseBranch);
     git.syncWorktreeToIntegration(integration, integrationBranch);
     const originSync = git.reconcileIntegrationToOrigin(integration, integrationBranch);
@@ -409,7 +409,7 @@ function overlapDetails(mine, peerPaths, peerEntries = []) {
 // burying the signal.
 function demoteReason(ctx, details) {
   const { baseSha, paths, rounds, testCmd } = ctx;
-  const integ = details.integrationBranch || ctx.cfg.integrationBranch;
+  const integ = details.integrationBranch || "integration";
   const out = [
     `## Merge deferred: ${details.trigger}`,
     "",
@@ -509,7 +509,7 @@ function blockedSection(details) {
   return [`trigger: ${details.trigger}`];
 }
 
-function nextStep(trigger, integrationBranch) {
+function nextStep(trigger, integrationBranch = "orch/integration") {
   switch (trigger) {
     case "overlap":
       return "next action: inspect the listed overlap, rebase or refresh the branch if needed, then rerun orch review before merging.";
@@ -549,8 +549,8 @@ async function demote(ctx, deps, details) {
   const integrityFailure = reviewedHeadEscalation(ctx, deps);
   if (integrityFailure) return integrityFailure;
   const usage = totalUsage(runStats);
-  const integrationBranch = details.integrationBranch || cfg.integrationBranch;
-  const reason = demoteReason(ctx, { ...details, integrationBranch });
+  const reason = demoteReason(ctx, details);
+  const integrationBranch = details.integrationBranch || cfg?.integrationBranch || "orch/integration";
 
   // dirty-merge: never open a per-change agent PR against main. That path is a
   // second trunk door this repo forbids (CLAUDE.md); the standing

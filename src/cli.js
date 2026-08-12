@@ -3,8 +3,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
-import { parse as parseYaml } from "yaml";
-import { load, configPath, mergeConfig, parseRoleSpec, parseRoleSpecs } from "./config.js";
+import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh } from "./github.js";
@@ -1277,8 +1276,8 @@ export async function main(argv, deps = {}) {
     }
     const file = configPath(repo);
     if (!existsSync(file)) throw new Error("no orch.yml — run `orch init` first");
+    if (load(repo).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
     const text = readFileSync(file, "utf8");
-    if (mergeConfig(parseYaml(text) || {}).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
     // Two on-disk shapes: inline flow (`agents: [claude, codex]`) and the
     // scaffold's block sequence (`agents:\n  - claude\n  - codex`). Support both
     // so `agent add` edits either without a full YAML round-trip (which would
