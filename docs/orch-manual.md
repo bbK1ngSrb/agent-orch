@@ -532,14 +532,24 @@ caller-supplied flags — free text is passed after `--` and refused outright if
 starts with `-`, so a task string can't smuggle in `--allow-protected` or
 `--config-file`. There is **no shell tool** and **no `orch pr` tool**, and no
 tool can emit `--merge`. Since `--merge` is orch's only PR-merge path, an MCP
-client can never merge into `main`: a cycle lands on the integration branch and
-`main` advances only through the standing integration PR a human merges. That is
-a property of the tool table, not of a policy setting a repo could flip on by
-accident. Everything else — the security floor, the protected-path intake
+client cannot merge a pull request itself: the server hands out no merge
+authority that a hand-typed `orch` in the same repo does not already have. That
+much is a property of the tool table, not of a policy setting — see the test.
+Everything else — the security floor, the protected-path intake
 refusal (§2.14), the test gate, per-cycle worktree isolation, checkpoints and the
 concurrency cap (§4.5) — lives in the cycle the child process runs, so it applies
 to an MCP-started cycle exactly as it does to a hand-typed one, including when
 several cycles are started at once.
+
+**What it cannot promise: where a green cycle lands.** That is the repo's config
+talking, and it answers the same way for an MCP-started and a hand-typed cycle.
+Under the defaults (`integrationBranch: orch/integration` in §5, `main.autoMerge:
+false` in §5.1) the cycle lands on the integration branch and `main` advances
+only when a human merges the standing integration PR — the human checkpoint. A
+repo that points `integrationBranch` at its `baseBranch`, or sets
+`main.autoMerge: true`, has already opted every green cycle out of that
+checkpoint; exposing MCP does not change that, but it does mean the checkpoint is
+not there to rely on. Check both keys before pointing a client at a repo.
 
 **One caveat.** A real cycle takes minutes and the tool call blocks for all of
 it, so a client with a short tool timeout may give up while the cycle keeps

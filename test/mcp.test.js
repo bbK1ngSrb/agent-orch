@@ -86,10 +86,12 @@ test("an unknown method is a protocol error, an unknown tool is an invalid-param
   assert.equal(res.error.code, -32602);
 });
 
-test("no tool can merge into main: --merge and `pr` are unreachable", async () => {
-  // orch's ONLY PR-merge path is `orch pr <n> --merge`. Foreign repos therefore
-  // get the conservative default (human merges) by construction, not by policy
-  // code: no argv builder can produce either token, for any input.
+test("no tool can merge a PR: --merge and `pr` are unreachable", async () => {
+  // orch's ONLY PR-merge path is `orch pr <n> --merge`, and no argv builder can
+  // produce either token, for any input. So an MCP client cannot merge a pull
+  // request itself — it gets no merge authority a hand-typed `orch` in the same
+  // repo lacks. Where a green cycle lands is a separate, config-owned question
+  // (`integrationBranch`, `main.autoMerge`) that this test does not speak to.
   const probes = [
     { task: "--merge" }, { task: "pr 1 --merge" }, { branch: "merge" }, { sid: "merge" },
     { number: 1 }, { limit: 1 }, {},

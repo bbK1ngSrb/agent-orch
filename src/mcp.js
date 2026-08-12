@@ -12,10 +12,15 @@
 //     it starts with `-`, so a task string cannot smuggle in `--allow-protected`
 //     or `--config-file`;
 //   * no tool can emit `--merge`, and `orch pr` is not exposed at all. `--merge`
-//     is orch's only PR-merge path, so an MCP client can never merge into
-//     `main`; a cycle lands on the integration branch and `main` still advances
-//     only through the standing integration PR a human merges. That is a
-//     property of the tool table, not of a policy layer — see the test.
+//     is orch's only PR-merge path, so no MCP client can merge a pull request
+//     itself. The server therefore grants no merge authority beyond what a
+//     hand-typed `orch` in the same repo already has — that is a property of the
+//     tool table, not of a policy layer (see the test). Where a cycle lands is
+//     still the repo's own choice: with the default config it lands on
+//     `orch/integration` and the standing integration PR is a human checkpoint,
+//     but a repo that points `integrationBranch` at `baseBranch`, or sets
+//     `main.autoMerge: true`, has already chosen to let *any* green cycle
+//     advance `main` — MCP-started or not.
 //
 // Security, protected-path, test-gate, worktree, checkpoint and concurrency
 // controls all live in the cycle the child process runs, so they apply to an
@@ -102,7 +107,7 @@ export const TOOLS = [
   {
     name: "orch_task",
     description:
-      "Run a full cycle (author, cross-audit, test gate) from a task description. On agreement the branch lands on the integration branch — never on main.",
+      "Run a full cycle (author, cross-audit, test gate) from a task description. On agreement the branch lands on the repo's configured integration branch.",
     inputSchema: { type: "object", properties: { task: TEXT_ARG }, required: ["task"], additionalProperties: false },
     argv: (a) => ["task", "--", requireText(a.task, "task")],
   },
