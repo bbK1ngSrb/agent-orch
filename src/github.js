@@ -348,7 +348,7 @@ export async function openPr(ctx, deps) {
 // it to main; GitHub owns the final main update.
 export async function openIntegrationPr(ctx, deps) {
   const { repo, orchDir, cfg, integrationSha = null } = ctx;
-  const branch = cfg.integrationBranch;
+  const branch = cfg.integrationBranch || "orch/integration";
   const base = cfg.baseBranch || "main";
   const { git, gh, notify, log = () => {}, resolveIntegrationConflict } = deps;
   // Tip this cycle verified and pushed — finalize threads it so we pin the

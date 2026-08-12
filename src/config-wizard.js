@@ -204,6 +204,9 @@ export function loadTarget(target) {
   if (existsSync(target)) {
     const user = parse(readFileSync(target, "utf8")) || {};
     const cfg = mergeConfig(user);
+    // Preserve the wizard's pre-shared-helper behavior: an explicit security
+    // section is atomic rather than inheriting omitted nested defaults.
+    if (Object.hasOwn(user, "security")) cfg.security = user.security;
     // Fold the deprecated `reviseCap` into roundCap the way load() does. mergeConfig
     // would otherwise leave DEFAULTS' roundCap next to the operator's reviseCap, and
     // the wizard would serialize both — silently resetting the cap to 3 on reload.

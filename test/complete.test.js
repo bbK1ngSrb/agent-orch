@@ -32,7 +32,7 @@ const ctx = (over = {}) => ({
 
 test("integrated + PR bridge: safe-deletes merged branches and summarizes", async () => {
   const { deps, calls, summary } = mk();
-  const r = await finishRun(ctx(), deps);
+  const r = await finishRun(ctx({ integrationBranch: undefined }), deps);
   assert.deepEqual(calls.deleted, ["pr/claude/make-it-nice-1"]);
   assert.equal(calls.forced.length, 0);
   assert.deepEqual(r.deleted, ["pr/claude/make-it-nice-1"]);

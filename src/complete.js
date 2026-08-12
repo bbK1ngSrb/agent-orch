@@ -13,7 +13,7 @@ import { formatInt, formatUsd } from "./usage.js";
 export async function finishRun(ctx, deps) {
   const {
     repo, task, merged = [], interactive, docsPending = false, runStats = [],
-    integrationBranch, prUrls = [],
+    integrationBranch = "orch/integration", prUrls = [],
   } = ctx;
   const { git, io } = deps;
 
