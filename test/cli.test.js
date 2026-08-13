@@ -126,6 +126,7 @@ test("--dry completes without any agent CLI on PATH (F2)", async () => {
     process.exitCode = 0;
     await main(["task", "hello world", "--dry"]); // dryDeps: no real git/agent/test
     assert.notEqual(process.exitCode, 2); // not escalated
+    assert.equal(existsSync(join(d, ".orch")), false);
   } finally {
     chdir(prev);
     process.exitCode = 0;
@@ -641,6 +642,23 @@ test("nextAuthor alternates and persists last-author", () => {
   assert.equal(readFileSync(join(d, "last-author"), "utf8").trim(), "claude");
   const b = nextAuthor(cfg, d);
   assert.equal(b.authorName, "codex"); // alternated
+});
+
+test("nextAuthor computes dry rotation without persisting state", () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-cli-dry-"));
+  const orchDir = join(repo, ".orch");
+  mkdirSync(orchDir);
+  const f = join(orchDir, "last-author");
+  writeFileSync(f, "codex\n");
+  const before = readFileSync(f);
+  const result = nextAuthor({ agents: ["claude", "codex"] }, orchDir, null, true);
+  assert.equal(result.authorName, "claude");
+  assert.equal(result.reviewerName, "codex");
+  assert.deepEqual(readFileSync(f), before);
+
+  const freshOrchDir = join(mkdtempSync(join(tmpdir(), "orch-cli-dry-fresh-")), ".orch");
+  nextAuthor({ agents: ["claude", "codex"] }, freshOrchDir, null, true);
+  assert.equal(existsSync(freshOrchDir), false);
 });
 
 test("nextAuthor pins a resumed author without advancing rotation (#27)", () => {
