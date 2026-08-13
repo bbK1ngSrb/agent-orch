@@ -442,9 +442,37 @@ test("reconcileIntegrationToBase never rewrites integration-only commits", () =>
   const r = reconcileIntegrationToBase(integ, "main");
 
   assert.equal(r.ok, true);
-  assert.equal(r.updated, false);
-  assert.equal(r.skipped, "not-fast-forward");
-  assert.equal(git(["rev-parse", "orch/integration"], repo), before);
+  assert.equal(r.updated, true);
+  // Diverged histories get a merge commit, never a rewrite: the new head's
+  // first parent must be the previous integration tip, keeping every
+  // integration-only commit reachable.
+  assert.equal(git(["rev-parse", "HEAD^1"], integ), before);
+  assert.equal(git(["rev-parse", "HEAD^2"], integ), git(["rev-parse", "main"], repo));
+  assert.equal(readFileSync(join(integ, "integration.txt"), "utf8"), "integration\n");
+});
+
+test("reconcileIntegrationToBase re-links identical trees with disjoint histories (post-squash)", () => {
+  const repo = newRepo();
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  commitFile(integ, "landed.txt", "landed\n", "cycle lands on integration");
+  // Simulate the squash-merge of the integration PR: main gets ONE new commit
+  // with integration's exact tree and no parent link back to the branch.
+  const tree = git(["write-tree"], integ);
+  const squash = git(["commit-tree", tree, "-p", "main", "-m", "squash-merged integration PR"], repo);
+  git(["update-ref", "refs/heads/main", squash], repo);
+  syncWorktreeToIntegration(integ);
+
+  // Precondition: identical content, disjoint histories — the old code skipped here.
+  assert.equal(git(["diff", "main", "HEAD"], integ), "");
+  assert.equal(gitTry(["merge-base", "--is-ancestor", "main", "HEAD"], integ).ok, false);
+
+  const r = reconcileIntegrationToBase(integ, "main");
+
+  assert.equal(r.ok, true);
+  assert.equal(r.updated, true);
+  // main is an ancestor of integration again, and the tree still matches main.
+  assert.equal(gitTry(["merge-base", "--is-ancestor", "main", "HEAD"], integ).ok, true);
+  assert.equal(git(["diff", "main", "HEAD"], integ), "");
 });
 
 // Shared setup for the origin-reconcile tests: a repo whose integration branch
