@@ -20,6 +20,7 @@ const landing = read("docs/index.html");
 const manual = read("docs/orch-manual.md");
 const exampleConfig = read("orch.example.yml");
 const coc = read("CODE_OF_CONDUCT.md");
+const contributing = read("CONTRIBUTING.md");
 const changelog = read("CHANGELOG.md");
 const security = read("SECURITY.md");
 
@@ -455,6 +456,19 @@ test("docs explain headless self-merge needs bypass or a second reviewer identit
     assert.match(doc, /cross-audit/);
   }
   assert.match(manual, /GitHub approval is bypassed, not recorded/);
+});
+
+test("CONTRIBUTING states this repo's merge-commit-only landing policy (#478)", () => {
+  // Squash and rebase merging are disabled repo-side, so a contributor who
+  // reaches for --squash gets a hard failure; the doc explains why (ancestry)
+  // rather than leaving the failure to be rediscovered. CLAUDE.md carries the
+  // agent-facing copy of the same rule.
+  assert.match(contributing, /allow_squash_merge: false/);
+  assert.match(contributing, /allow_rebase_merge: false/);
+  assert.match(contributing, /git merge-base --is-ancestor origin\/orch\/integration origin\/main/);
+  // The policy is the repo's, not the tool's — github.mergeMethod still offers
+  // all three methods, and a reader must not come away thinking otherwise.
+  assert.match(contributing, /`github\.mergeMethod`[\s\S]*?still offers/);
 });
 
 test("CLAUDE routes agent changes through the persistent integration PR", () => {

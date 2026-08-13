@@ -374,8 +374,10 @@ export function reconcileIntegrationToOrigin(integrationPath, branch = "orch/int
 // If GitHub advanced the base branch after the last integration PR merge,
 // integration can be cleanly behind it. Fast-forward that safe prefix case
 // before landing more local work; never rewrite or discard integration commits.
-// Histories also diverge on EVERY landing: the integration PR is squash-merged,
-// so base carries a new commit with integration's tree but no shared history.
+// Histories also diverge on every landing where the integration PR is squashed
+// or rebased: base carries a new commit with integration's tree but no shared
+// history. (This repo now disables both, so it stays on the ancestry path; a
+// repo that squashes its integration PR still lands here.)
 // For that case an ordinary merge commit re-establishes base as an ancestor
 // (content-identical trees merge cleanly); without it the next cycle's land
 // hits add/add conflicts on files both sides already agree on. A merge only
