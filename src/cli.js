@@ -310,6 +310,8 @@ test-gate is the governing review.
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
 - \`orch release "<entry>"\`         run the version bump + CHANGELOG write by hand; only needed
                                     in repos that set \`release.autoBump: true\` (default \`false\`)
+- \`orch mcp\`                       serve orch's cycle commands over MCP on stdio, for an AI
+                                    client to drive (no merge authority is exposed)
 - \`orch agent add <name>\`          add an agent to the rotation pool
 - \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
 - \`orch dashboard [--json] [--limit <n>] [--check-history]\`
