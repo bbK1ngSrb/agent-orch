@@ -518,7 +518,7 @@ The tools:
 | Tool | Runs | Notes |
 | --- | --- | --- |
 | `orch_status` | `orch dashboard --json --once` | Read-only; returns the parsed snapshot. Optional `limit`. |
-| `orch_plan` | `orch task --dry` | Plans a cycle — branch, author, reviewers — without calling an agent, touching git or merging anything. It does advance the recorded author rotation (`.orch/last-author`); see issue #471. |
+| `orch_plan` | `orch task --dry` | Plans a cycle — branch, author, reviewers — without calling an agent, touching git or merging anything. Leaves the author rotation where it was; an escalated plan still writes its brief (§2.13). |
 | `orch_task` | `orch task` | Full cycle from a task description. |
 | `orch_issue` | `orch issue <n>` | Full cycle from a GitHub issue. |
 | `orch_review` | `orch review <branch>` | Audit-only. |
@@ -572,10 +572,19 @@ got to. `orch_status` and `orch_plan` return immediately.
 ### 2.13 Flags that apply across commands
 
 - **`--dry`** — plan a `task`/`review` cycle without shelling out to agents,
-  touching git, or running tests. Never deletes worktrees or branches. It is
-  not quite side-effect free, though: the author it picks is still written to
-  `.orch/last-author`, so a plan advances the rotation and the next real cycle
-  starts from the following agent. That is tracked as issue #471.
+  touching git, or running tests. Never deletes worktrees or branches. Since
+  v0.4.302 (#471) it also keeps its bookkeeping out of `.orch/`: the author it
+  picks is computed but not persisted to `.orch/last-author`, and round logs and
+  run records are stubbed out. The rotation is therefore unchanged — the next
+  real cycle starts from the same agent the plan showed you, and a plan that
+  runs clean in a repo that has never run orch leaves no `.orch/` directory
+  behind. **The escalation path is the exception.** Escalating is how orch
+  reports that a cycle cannot proceed, so it is not stubbed: any escalation the
+  plan reaches still writes its brief to
+  `.orch/reviews/<branch>/DECISION.md` and resets `.orch/kpi.json`, creating
+  `.orch/` if it was absent. The easiest one to hit is an unset test gate — with
+  `test:` empty in `orch.yml` there is no command to run, so the plan escalates
+  with "no test gate detected" and exits 2.
 - **`--cheap`** — force `cheap.role` from `orch.yml` (e.g. a local model or
   the cheapest CLI agent) as both author and reviewer for this one
   `task`/`issue` run. See §5.1 `cheap` for the automatic path-based routing

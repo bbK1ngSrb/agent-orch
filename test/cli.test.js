@@ -133,6 +133,35 @@ test("--dry completes without any agent CLI on PATH (F2)", async () => {
   }
 });
 
+// Pairs with the test above: that one pins the clean path (no `.orch/` at all),
+// this one pins the documented exception. dryDeps() stubs the round/run writers
+// but leaves notify.escalate real — escalating is how orch reports that a cycle
+// cannot proceed, so a plan that hits it still writes its brief. With `test:`
+// unset there is no gate command, so the AGREE branch escalates instead.
+test("--dry that escalates still writes its brief under .orch (#471 wording)", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-dry-esc-"));
+  const override = join(d, "custom.yml");
+  writeFileSync(override, "test: null\n");
+  const prev = cwd();
+  chdir(d);
+  try {
+    process.exitCode = 0;
+    await main(["task", "hello world", "--dry", "--config-file", override, "--no-banner"], {
+      stdout: { write() {} },
+    });
+    assert.equal(process.exitCode, 2); // escalated
+    assert.equal(existsSync(join(d, ".orch", "kpi.json")), true);
+    // Branch name carries a random suffix, so walk for the brief instead of
+    // spelling its path (readdirSync recursive: true needs Node >= 20).
+    const hasBrief = (dir) => readdirSync(dir, { withFileTypes: true })
+      .some((e) => (e.isDirectory() ? hasBrief(join(dir, e.name)) : e.name === "DECISION.md"));
+    assert.ok(hasBrief(join(d, ".orch", "reviews")), "escalated dry run wrote no DECISION.md");
+  } finally {
+    chdir(prev);
+    process.exitCode = 0;
+  }
+});
+
 test("GitHub App auth is silent when repo has no origin remote", async () => {
   const repo = initGitRepo("orch-no-origin-");
   const prev = cwd();

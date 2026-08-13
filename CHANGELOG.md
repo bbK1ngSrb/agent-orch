@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.305 — 2026-08-13
+- docs: qualify the --dry "writes nothing under .orch/" claim and pin it with tests (#471)
+
 ## v0.4.304 — 2026-08-13
 - Test gap: reconcileIntegrationToBase's merge-conflict path is uncovered (closes [#477](https://github.com/bbk1ng/agent-orch/issues/477))
 
