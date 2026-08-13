@@ -70,8 +70,13 @@ test("the manual documents the update-check opt-out env vars", () => {
   // doc named them. An offline or locked-down install wants exactly this knob.
   // NODE_TEST_CONTEXT is also honoured but is set by `node --test` itself, so
   // it is an internal detail rather than a user-facing knob.
-  for (const name of ["ORCH_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER"]) {
-    assert.match(manual, new RegExp(name), `manual does not document ${name}`);
+  // Assert against the table row rather than the whole manual: `CI` is two very
+  // common letters, so a document-wide search for it would pass on prose that
+  // happens to contain them and would never notice the opt-out being dropped.
+  const row = manual.match(/^\| `ORCH_NO_UPDATE_CHECK`.*$/m);
+  assert.ok(row, "manual does not document ORCH_NO_UPDATE_CHECK");
+  for (const name of ["NO_UPDATE_NOTIFIER", "CI"]) {
+    assert.match(row[0], new RegExp("`" + name + "`"), `manual does not document ${name}`);
   }
 });
 
@@ -638,13 +643,15 @@ test("the landing page tracks recently shipped surfaces (#403/#335)", () => {
   // on top of these — so neither the eyebrow nor the heading may bill it as the
   // whole surface. A heading that states a count ("Eight commands") is a
   // factual claim about the CLI, and it was wrong; the section must instead
-  // point readers at `orch --help` for the complete list.
+  // point readers at `orch --help` for the complete list. Reject digits as well
+  // as number words, and anywhere in the heading rather than only at its start,
+  // so neither "8 commands" nor "The eight commands" slips through.
   assert.doesNotMatch(landing, /The whole surface/);
   const heading = landing.match(/<h2>([^<]*commands)<\/h2>/);
   assert.ok(heading, "commands section lost its <h2>");
   assert.doesNotMatch(
     heading[1],
-    new RegExp(`^(${NUMBER_WORDS.join("|")})\\b`, "i"),
+    new RegExp(`\\b(${NUMBER_WORDS.join("|")}|\\d+)\\b`, "i"),
     `commands heading asserts a count it cannot keep true: ${heading[1]}`,
   );
   assert.match(landing, /orch --help/);
