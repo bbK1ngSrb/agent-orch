@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.304 — 2026-08-13
+- Test gap: reconcileIntegrationToBase's merge-conflict path is uncovered (closes [#477](https://github.com/bbk1ng/agent-orch/issues/477))
+
 ## v0.4.303 — 2026-08-13
 - reconcileIntegrationToBase is fast-forward-only, so it silently no-ops after every squash-merge and the next cycle demotes on dirty-merge (closes [#475](https://github.com/bbk1ng/agent-orch/issues/475))
 
