@@ -510,7 +510,7 @@ The tools:
 | Tool | Runs | Notes |
 | --- | --- | --- |
 | `orch_status` | `orch dashboard --json --once` | Read-only; returns the parsed snapshot. Optional `limit`. |
-| `orch_plan` | `orch task --dry` | Plans a cycle — branch, author, reviewers — without calling an agent or touching git. |
+| `orch_plan` | `orch task --dry` | Plans a cycle — branch, author, reviewers — without calling an agent, touching git or merging anything. It does advance the recorded author rotation (`.orch/last-author`); see issue #471. |
 | `orch_task` | `orch task` | Full cycle from a task description. |
 | `orch_issue` | `orch issue <n>` | Full cycle from a GitHub issue. |
 | `orch_review` | `orch review <branch>` | Audit-only. |
@@ -521,8 +521,13 @@ array (each with `sid`, `branch`, `status`, `reason`, `prUrl`, `closes`,
 `rounds`) read from the run records the call appended, `logs` paths, and the raw
 `stdout`/`stderr`. `.orch/runs.jsonl` is repo-wide, so a cycle another client or
 a terminal `orch` finished mid-call also lands in that tail; `cycles` holds only
-the records this call produced — matched by branch or sid where the tool knows
-one, and otherwise by the cycle id's process prefix. A cycle that escalates
+the records this call produced. Every tool that *starts* a cycle — `orch_task`,
+`orch_issue`, `orch_review` — matches on the cycle id's process prefix, because
+the child that minted that id is the process the call spawned. `orch_continue`
+resumes a cycle whose id predates that child, so it matches the sid literally
+instead. A branch name is deliberately never used as the key: two `orch_review`
+calls auditing the same branch at once would each read back the other's verdict
+alongside their own. A cycle that escalates
 comes back as a *tool* error (`isError: true`) with the reason readable — not as
 a protocol error, so the client can act on it.
 
@@ -559,7 +564,10 @@ got to. `orch_status` and `orch_plan` return immediately.
 ### 2.13 Flags that apply across commands
 
 - **`--dry`** — plan a `task`/`review` cycle without shelling out to agents,
-  touching git, or running tests. Never deletes worktrees or branches.
+  touching git, or running tests. Never deletes worktrees or branches. It is
+  not quite side-effect free, though: the author it picks is still written to
+  `.orch/last-author`, so a plan advances the rotation and the next real cycle
+  starts from the following agent. That is tracked as issue #471.
 - **`--cheap`** — force `cheap.role` from `orch.yml` (e.g. a local model or
   the cheapest CLI agent) as both author and reviewer for this one
   `task`/`issue` run. See §5.1 `cheap` for the automatic path-based routing

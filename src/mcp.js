@@ -100,7 +100,9 @@ export const TOOLS = [
   {
     name: "orch_plan",
     description:
-      "Dry-run a task: report the branch, author and reviewers a cycle would use without shelling out to any agent or touching git.",
+      "Dry-run a task: report the branch, author and reviewers a cycle would use without shelling out to any agent, touching git or merging anything. " +
+      "One caveat: the preview still advances the recorded author rotation (.orch/last-author), so the next real cycle starts from the following agent " +
+      "in the pool. That is a separate latent bug in the CLI, tracked as issue #471.",
     inputSchema: { type: "object", properties: { task: TEXT_ARG }, required: ["task"], additionalProperties: false },
     argv: (a) => ["task", "--dry", "--", requireText(a.task, "task")],
   },
@@ -132,7 +134,6 @@ export const TOOLS = [
       additionalProperties: false,
     },
     argv: (a) => ["review", requireBranch(a.branch)],
-    match: (a) => ({ branch: requireBranch(a.branch) }),
   },
   {
     name: "orch_continue",
@@ -207,10 +208,14 @@ export function runTool(tool, args, ctx) {
     child.stderr?.on("data", (d) => { stderr += d; });
     child.on("error", (e) => resolve({ ok: false, exitCode: null, stdout, stderr: `${stderr}${e.message}` }));
     child.on("close", (code) => {
-      // A tool that knows its target (a branch, a sid) matches on that. The rest
-      // — orch_task, orch_issue — learn their cycle only from the record, so they
-      // correlate on the sid's own prefix: a sid is `<pid>-<counter>` (src/sid.js)
-      // and we spawned that pid, so a peer cycle's record can never match. An
+      // Every tool that STARTS a cycle — orch_task, orch_issue, orch_review —
+      // correlates on the sid's own prefix: a sid is `<pid>-<counter>`
+      // (src/sid.js), minted by the child we just spawned, so a peer cycle's
+      // record can never match. A branch name is deliberately not a key: two
+      // concurrent orch_review calls on the same branch would each pick up the
+      // other's verdict alongside their own. orch_continue is the one exception —
+      // it RESUMES a cycle whose sid was minted by an earlier process, so no pid
+      // prefix of ours could match it and it matches the literal sid instead. An
       // unstarted child has no pid, and then nothing is attributed to this call.
       const match = tool.match
         ? tool.match(args)

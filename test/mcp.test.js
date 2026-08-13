@@ -182,7 +182,9 @@ test("a cycle reports id, branch, status, reason, PR url and log paths", async (
 
 test("a concurrent cycle's run record is not attributed to this call", async () => {
   // runs.jsonl is repo-wide, so the tail written while one call ran can hold a
-  // peer's record too. Tools that know their target filter the tail by it.
+  // peer's record too. orch_continue resumes a cycle whose sid was minted by an
+  // earlier process, so the pid prefix of the child we spawn could never match
+  // it: it is the one tool that correlates on the literal sid it was given.
   const repo = mkdtempSync(join(tmpdir(), "orch-mcp-"));
   mkdirSync(join(repo, ".orch"), { recursive: true });
   const runs = join(repo, ".orch", "runs.jsonl");
@@ -192,11 +194,56 @@ test("a concurrent cycle's run record is not attributed to this call", async () 
       appendFileSync(runs, JSON.stringify({ sid: "mine", branch: "orch/claude/mine", verdict: "escalated", reason: "stalemate" }) + "\n");
     },
   });
-  const res = await handle(call(12, "orch_review", { branch: "orch/claude/mine" }), { repo, spawnFn });
+  const res = await handle(call(12, "orch_continue", { sid: "mine" }), { repo, spawnFn });
   const out = payload(res);
   assert.equal(out.cycles.length, 1);
   assert.equal(out.cycles[0].sid, "mine");
   assert.equal(out.cycles[0].status, "escalated");
+});
+
+test("two concurrent orch_review calls on one branch each see only their own cycle", async () => {
+  // Auditing the same branch twice at once is legitimate — a second reviewer, a
+  // re-run after a push — and the branch name then cannot tell the two cycles
+  // apart. Correlating on it would hand each caller the other call's verdict as
+  // if it were its own, which for an AI client reading `cycles` is a wrong
+  // answer, not a cosmetic one. `orch review` starts a fresh cycle, so its sid
+  // carries the pid of the child this call spawned; that is what separates them.
+  const repo = mkdtempSync(join(tmpdir(), "orch-mcp-"));
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  const runs = join(repo, ".orch", "runs.jsonl");
+  const branch = "orch/claude/shared";
+
+  // Two phases on purpose: every child appends its record before any child
+  // closes, so both calls read a tail holding BOTH records. That is the
+  // collision the correlation key has to survive; if the writes were staggered
+  // behind each close, neither call would ever see the other's record and the
+  // test could not fail even with the branch-only matching it guards against.
+  const reviewer = (pid, verdict, reason) => () => {
+    const child = new EventEmitter();
+    child.pid = pid;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    setImmediate(() => {
+      appendFileSync(runs, JSON.stringify({ sid: `${pid}-a`, branch, verdict, reason }) + "\n");
+      setImmediate(() => child.emit("close", 0));
+    });
+    return child;
+  };
+
+  // Launched in the same tick, so both calls record their starting offset in
+  // runs.jsonl before either child has written anything.
+  const [first, second] = await Promise.all([
+    handle(call(20, "orch_review", { branch }), { repo, spawnFn: reviewer(801, "merged", "agreed") }),
+    handle(call(21, "orch_review", { branch }), { repo, spawnFn: reviewer(802, "escalated", "stalemate") }),
+  ]);
+
+  // The requirement: each response carries exactly one record, its own.
+  assert.deepEqual(payload(first).cycles, [{
+    sid: "801-a", branch, status: "merged", reason: "agreed", prUrl: null, closes: null, rounds: null,
+  }]);
+  assert.deepEqual(payload(second).cycles, [{
+    sid: "802-a", branch, status: "escalated", reason: "stalemate", prUrl: null, closes: null, rounds: null,
+  }]);
 });
 
 test("orch_task reports only the cycle its own child started", async () => {
