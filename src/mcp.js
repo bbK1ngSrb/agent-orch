@@ -100,9 +100,7 @@ export const TOOLS = [
   {
     name: "orch_plan",
     description:
-      "Dry-run a task: report the branch, author and reviewers a cycle would use without shelling out to any agent, touching git or merging anything. " +
-      "One caveat: the preview still advances the recorded author rotation (.orch/last-author), so the next real cycle starts from the following agent " +
-      "in the pool. That is a separate latent bug in the CLI, tracked as issue #471.",
+      "Dry-run a task: report the branch, author and reviewers a cycle would use without shelling out to any agent, touching git or merging anything.",
     inputSchema: { type: "object", properties: { task: TEXT_ARG }, required: ["task"], additionalProperties: false },
     argv: (a) => ["task", "--dry", "--", requireText(a.task, "task")],
   },

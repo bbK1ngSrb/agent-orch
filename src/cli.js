@@ -491,12 +491,12 @@ export function applyCheapOverride(cfg, flags, workOrder = null) {
   return { ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] };
 }
 
-export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
+export function nextAuthor(cfg, orchDir, pinnedAuthor = null, dry = false) {
   // Explicit fixed roles win over rotation — the trivial "who authors, who audits".
   // Returns role specs ({agent, model, effort}) plus plain name arrays for back-compat.
+  if (!dry) mkdirSync(orchDir, { recursive: true });
   const fixed = fixedRoles(cfg);
   if (fixed) {
-    mkdirSync(orchDir, { recursive: true });
     return {
       authorName: fixed.authors[0].agent,
       reviewerName: fixed.reviewers[0].agent,
@@ -507,7 +507,6 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
     };
   }
   const f = join(orchDir, "last-author");
-  mkdirSync(orchDir, { recursive: true });
   // Resuming a surviving branch (#27): pin its author and DON'T advance rotation —
   // this run is the prior run continuing, not a new author's turn.
   // Reviewer-only CLI overrides (D2) force reviewers while still rotating the author.
@@ -527,7 +526,7 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null) {
   const i = last ? (cfg.agents.indexOf(last) + 1) % cfg.agents.length : 0;
   const authorName = cfg.agents[i];
   const rotationReviewer = cfg.agents[(i + 1) % cfg.agents.length];
-  writeFileSync(f, authorName + "\n");
+  if (!dry) writeFileSync(f, authorName + "\n");
   const reviewers = forcedReviewers || [{ agent: rotationReviewer, model: null, effort: null }];
   return {
     authorName, reviewerName: reviewers[0].agent,
@@ -818,7 +817,7 @@ function dryDeps() {
     inflight: { setPaths() {} },
     finalize: async () => ({ status: "merged", reason: "dry-run", sha: "dry" }),
     // Dry-run must not pollute the real run history/KPIs.
-    notify: { ...notify, recordRun() {} },
+    notify: { ...notify, writeRound() {}, writeRoundRaw() {}, recordRun() {} },
   };
 }
 
@@ -1120,7 +1119,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   }
 
   const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
-  const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned);
+  const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned, dry);
   const authorSpec = authors[0];
   const authorName = authorSpec.agent;
   const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
@@ -1441,7 +1440,7 @@ export async function main(argv, deps = {}) {
       // rotation pool resumes it instead of authoring fresh under the next agent (#27).
       // resolveTaskBranch re-validates below; this only steers author selection.
       const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
-      const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned);
+      const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned, dry);
       runs = authors.map((authorSpec) => {
         const authorName = authorSpec.agent;
         const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
