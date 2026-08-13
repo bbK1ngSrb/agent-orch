@@ -109,6 +109,20 @@ test("reading .orch/ creds → DISAGREE (secret-read)", () => {
   assert.ok(r.findings.some((f) => f.rule === "secret-read"));
 });
 
+test("comment-only .orch/ mention in a test file → AGREE", () => {
+  const d = `+++ b/test/cli.test.js\n+// The fixture path is not read: .orch/last-author`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "AGREE");
+  assert.deepEqual(r.findings, []);
+});
+
+test("executable .orch/ read in a test file → DISAGREE", () => {
+  const d = `+++ b/test/cli.test.js\n+  const value = readFileSync(".orch/last-author"); // fixture`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "secret-read"));
+});
+
 test("reading .ssh private key → DISAGREE (secret-read)", () => {
   const d = `+++ b/src/x.js\n+  fs.readFileSync("/home/u/.ssh/id_rsa");`;
   const r = scanDiff(d);

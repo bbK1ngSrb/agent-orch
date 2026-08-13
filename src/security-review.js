@@ -32,6 +32,11 @@ function isDocsPath(file) {
   return false;
 }
 
+function isCommentOnlyLine(line) {
+  const content = String(line).replace(/^\+/, "").trim();
+  return /^(?:\/\/|#|\*|\/\*)/.test(content);
+}
+
 // Git C-quotes paths containing non-ASCII or control characters in diff headers
 // (`+++ "b/caf\303\251.yml"`), so unquote before the a//b/ prefix is stripped —
 // a quoted guardrail path must not slip past the path-based floor.
@@ -237,6 +242,7 @@ export function scanDiff(diffText, { ignore = [], rawPaths = [] } = {}) {
   const regexVars = regexLiteralVars(entries.map((e) => e.raw));
   for (const { file, raw } of entries) {
     for (const { rule, re } of SECURITY_RULES) {
+      if (rule === "secret-read" && isCommentOnlyLine(raw)) continue;
       if (re.test(raw)) findings.push({ rule, line: raw.slice(1).trim(), file });
     }
     if (isSubprocessCall(raw, regexVars)) {
