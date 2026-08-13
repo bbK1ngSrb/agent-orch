@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.307 — 2026-08-13
+- update documentation to reflect the latest merged changes: the --dry rotation fix (#471), the secret-read comment skip (#480), and that squash merging is disabled repo-wide in favour of merge commits (#478)
+
 ## v0.4.306 — 2026-08-13
 - fix(security-review): skip comment-only added lines for the secret-read rule (#480)
 
