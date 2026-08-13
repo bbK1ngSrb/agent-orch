@@ -6,14 +6,18 @@
 
 ## Supported versions
 
-There are no released, versioned builds. Security fixes land on the default
-branch (`main`) only. Run from a current checkout of `main`; older commits and
-forks are not maintained.
+Security fixes land on the default branch (`main`) first and then ship in the
+next published release of [`@bbk1ng/agent-orch`](https://www.npmjs.com/package/@bbk1ng/agent-orch)
+on npm. Only the latest published version is supported; fixes are **not**
+backported to earlier versions. `main` can be ahead of the latest published
+version, so a fix may be on `main` before it is installable — until it
+publishes, run from a current checkout of `main` to get it.
 
-| Version            | Supported          |
-| ------------------ | ------------------ |
-| `main` (latest)    | :white_check_mark: |
-| any earlier commit | :x:                |
+| Version                          | Supported          |
+| -------------------------------- | ------------------ |
+| `main` (latest)                  | :white_check_mark: |
+| latest published npm version     | :white_check_mark: |
+| any earlier version or commit    | :x:                |
 
 **Runtime:** Node.js `>=18` (per `package.json`). Reports against unsupported
 runtimes will be assessed but may be declined.

@@ -21,6 +21,7 @@ const manual = read("docs/orch-manual.md");
 const exampleConfig = read("orch.example.yml");
 const coc = read("CODE_OF_CONDUCT.md");
 const changelog = read("CHANGELOG.md");
+const security = read("SECURITY.md");
 
 const NUMBER_WORDS = [
   "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
@@ -310,6 +311,14 @@ test("manual documents the empty-diff escalation before each review round", () =
   assert.doesNotMatch(manual, /a revision that changes nothing stops the loop/);
   // The top-level "what makes a cycle escalate" list must name it too.
   assert.match(manual, /an\s+author\s+that\s+produced\s+no\s+changes\s+at\s+all/);
+});
+
+test("SECURITY.md states the published-release support policy", () => {
+  // The package ships on npm, so the policy must answer "is the version I
+  // installed supported?" — the old text claimed no versioned builds exist.
+  assert.doesNotMatch(security, /no released, versioned builds/i);
+  assert.match(security, new RegExp(pkg.name.replace(/[/@]/g, "\\$&")));
+  assert.match(security, /not\*{0,2}\s+backported/i);
 });
 
 test("orch.example.yml exposes security.ignore, commented out, with the sharp-edge warning", () => {
