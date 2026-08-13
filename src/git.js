@@ -374,20 +374,39 @@ export function reconcileIntegrationToOrigin(integrationPath, branch = "orch/int
 // If GitHub advanced the base branch after the last integration PR merge,
 // integration can be cleanly behind it. Fast-forward that safe prefix case
 // before landing more local work; never rewrite or discard integration commits.
+// Histories also diverge on EVERY landing: the integration PR is squash-merged,
+// so base carries a new commit with integration's tree but no shared history.
+// For that case an ordinary merge commit re-establishes base as an ancestor
+// (content-identical trees merge cleanly); without it the next cycle's land
+// hits add/add conflicts on files both sides already agree on. A merge only
+// ever ADDS a commit whose first parent is the old integration head, so the
+// no-rewrite invariant holds. On conflict: abort and skip as before — the
+// behaviour is never worse than the old no-op.
 export function reconcileIntegrationToBase(integrationPath, base = "main") {
   const head = git(["rev-parse", "HEAD"], integrationPath);
   const target = git(["rev-parse", base], integrationPath);
   if (head === target) return { ok: true, updated: false };
-  if (!gitTry(["merge-base", "--is-ancestor", "HEAD", base], integrationPath).ok) {
-    return { ok: true, updated: false, skipped: "not-fast-forward" };
+  // Integration strictly ahead (nothing new on base): nothing to do.
+  if (gitTry(["merge-base", "--is-ancestor", base, "HEAD"], integrationPath).ok) {
+    return { ok: true, updated: false };
   }
-  try {
-    git(["merge", "--ff-only", base], integrationPath);
-    return { ok: true, updated: true, from: head, to: target };
-  } catch (e) {
-    const reason = (e.stderr || e.stdout || e.message || "").toString().trim();
-    return { ok: false, reason: `could not fast-forward integration to ${base}: ${reason}` };
+  if (gitTry(["merge-base", "--is-ancestor", "HEAD", base], integrationPath).ok) {
+    try {
+      git(["merge", "--ff-only", base], integrationPath);
+      return { ok: true, updated: true, from: head, to: target };
+    } catch (e) {
+      const reason = (e.stderr || e.stdout || e.message || "").toString().trim();
+      return { ok: false, reason: `could not fast-forward integration to ${base}: ${reason}` };
+    }
   }
+  // Diverged histories (the post-squash case): merge base in to re-link them.
+  const m = gitTry(["merge", "--no-edit", base], integrationPath);
+  if (!m.ok) {
+    gitTry(["merge", "--abort"], integrationPath);
+    const reason = m.out.trim();
+    return { ok: true, updated: false, skipped: "merge-conflict", ...(reason ? { reason } : {}) };
+  }
+  return { ok: true, updated: true, from: head, to: git(["rev-parse", "HEAD"], integrationPath) };
 }
 
 // Replay `branch`'s commits onto `onto` (typically orch/integration after a peer
