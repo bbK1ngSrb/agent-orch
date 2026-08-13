@@ -1303,6 +1303,7 @@ job or a repo you do not own. Where the two overlap, **the variable wins**.
 | `ORCH_PROGRESS_INTERVAL_MS` | How often a running stage prints its "still running" heartbeat. Purely cosmetic; lower it when you are watching a slow stage and want more frequent signs of life. |
 | `ORCH_APP_ID`, `ORCH_APP_PRIVATE_KEY` | GitHub App credentials. When both are set, orch mints a short-lived installation token and every `gh` shell-out runs as `orch[bot]` instead of your ambient login. |
 | `GH_TOKEN` | Standard `gh` token. Used when App credentials are absent; falls back to your ambient `gh` login if unset. |
+| `ORCH_NO_UPDATE_CHECK` | Set to any non-empty value to disable the startup check against the npm registry for a newer `orch`. `NO_UPDATE_NOTIFIER` (the ecosystem-standard spelling) and `CI` have the same effect. Reach for this on an offline or locked-down machine, where the check can only ever fail. |
 | `NO_COLOR` | Honoured as usual — suppresses ANSI colour in orch's output. |
 
 Two of these need a word of warning. `ORCH_STAGE_TIMEOUT_MS` and
