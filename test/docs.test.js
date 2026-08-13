@@ -88,8 +88,12 @@ test("docs describe `--dry` as leaving the author rotation alone (#471)", () => 
   // warns about a fixed defect sends readers hunting for a phantom.
   const bullet = manual.match(/^- \*\*`--dry`\*\*[\s\S]*?(?=\n- \*\*)/m);
   assert.ok(bullet, "manual does not document the --dry flag in §2.13");
-  assert.match(bullet[0], /writes nothing under `\.orch\/`/);
-  // Absence alone would pass if the whole bullet were deleted, hence the pin above.
+  assert.match(bullet[0], /not persisted to `\.orch\/last-author`/);
+  // The bookkeeping claim is not absolute: escalate() is left real in dryDeps(),
+  // so a plan that escalates still writes DECISION.md and kpi.json. The runtime
+  // half of this pair lives in cli.test.js ("--dry that escalates ...").
+  assert.match(bullet[0], /DECISION\.md/);
+  // Absence alone would pass if the whole bullet were deleted, hence the pins above.
   // Scoped to the bullet, not the whole manual: other sections legitimately
   // discuss rotation advancing (the #27 resume pin, the conflict-resolver pool).
   assert.doesNotMatch(bullet[0], /advances? the rotation/i);
