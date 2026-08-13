@@ -20,6 +20,33 @@ list — open an issue or PR referencing it.
 The adapter contract: `author(task, wd)` makes commits in the worktree;
 `audit(branch, wd)` returns a `Verdict` (it ends its output with `AGREE`/`DISAGREE`).
 
+## How a PR lands: merge commits only
+
+Every PR is merged with `gh pr merge <n> --merge`. Squash and rebase merging
+are disabled on the repo (`allow_squash_merge: false`,
+`allow_rebase_merge: false`), so `--squash` fails outright rather than quietly
+doing the wrong thing.
+
+The reason is ancestry. A merge commit records both parents, so every commit of
+the merged branch stays reachable from `main` — it becomes an *ancestor* of
+`main`, which is exactly what git's merge detection tests. A squash flattens the
+branch into one new commit: the content lands, the history does not. Rebase does
+the same, because it rewrites commits into new SHAs. Without ancestry,
+`git branch --merged main` stops listing branches that have in fact landed,
+`git branch -d` refuses to delete them, and orch's own post-merge `pr/*` cleanup
+leaves orphans behind.
+
+The one-line check, which must hold after every landing of the standing
+`orch/integration → main` PR:
+
+```sh
+git merge-base --is-ancestor origin/orch/integration origin/main
+```
+
+Note this is a policy of *this* repo, not of the tool: `github.mergeMethod` in
+`orch.yml` still offers `squash`/`merge`/`rebase` for PRs orch merges in your
+own repo (manual §5.1).
+
 ## Git hooks
 
 `npm install` wires up the committed hooks in `githooks/` (via
