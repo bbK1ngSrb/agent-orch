@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.302 — 2026-08-13
+- fix(cli): orch task --dry no longer advances the author rotation or creates .orch (#471)
+
 ## v0.4.301 — 2026-08-13
 - Land #466 (SECURITY.md supported-versions), #467 (docs drift: ORCH_NO_UPDATE_CHECK, adapter lede, command count), #464 (shared MCP stdio server, sid-correlated)
 
