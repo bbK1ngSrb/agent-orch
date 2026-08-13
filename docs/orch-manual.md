@@ -134,6 +134,14 @@ author branch ──(AGREE + green tests)──▶ orch/integration ──▶ [p
    pass. Otherwise a human merges it on GitHub whenever they're ready.
 5. Local `main` only advances afterward, by fetching and fast-forwarding.
 
+**What `merged` means on this default path.** The claim is local and
+path-specific: orch reports `merged` only after the integrated worktree and the
+local `orch/integration` ref agree on the merged SHA. That does not prove that
+`origin/main` contains the commit yet; if the PR bridge fails, the reason says
+the content is local-only. The stronger remote verification described in §2.7
+belongs to `orch pr --merge`, whose GitHub merge is pinned to the fetched and
+reviewed PR head and checked against `origin/main` afterward.
+
 **Why this design, and not "just merge to main directly"?** Because it lets
 you run cycles — including several in parallel — with zero GitHub round-trips
 for the fast, local part, while still giving you (or your branch-protection

@@ -74,6 +74,20 @@ test("docs explain that `orch pr --merge` pins the reviewed PR head (#421)", () 
   }
 });
 
+test("docs distinguish local integration from remote merge verification (#445)", () => {
+  // finalize() verifies the integrated worktree against the local
+  // orch/integration ref. The PR bridge may still be unavailable, so a normal
+  // cycle must not promise that origin/main already contains the commit.
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /integrated worktree and (?:the\s+)?local `orch\/integration` ref agree on the merged SHA/);
+    assert.match(doc, /does not prove that\s+`origin\/main` contains|does not claim that\s+`origin\/main` already contains/);
+    assert.match(doc, /PR bridge fails[\s\S]{0,100}local-only/);
+  }
+  // The remote ancestor check belongs to the separately pinned `orch pr --merge`
+  // path, not to the local integration result.
+  assert.match(manual, /stronger remote verification described in §2\.7[\s\S]{0,180}`orch pr --merge`/);
+});
+
 test("the manual names the REST merge endpoint `orch pr --merge` uses (#421)", () => {
   // mergeDirect() PUTs repos/{owner}/{repo}/pulls/<n>/merge rather than
   // shelling out to `gh pr merge`, whose client-side precheck is blind to
