@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.306 — 2026-08-13
+- fix(security-review): skip comment-only added lines for the secret-read rule (#480)
+
 ## v0.4.305 — 2026-08-13
 - docs: qualify the --dry "writes nothing under .orch/" claim and pin it with tests (#471)
 
