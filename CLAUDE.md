@@ -71,6 +71,35 @@ to `orch pr`, so it does not make an Issue cycle merge to `main`.
 This rule applies to agent-generated output. A trivial human/owner chore or
 documentation change may still use a direct owner PR.
 
+## Never squash-merge — merge commits only
+
+Land every PR with `gh pr merge <n> --merge`, never `--squash` and never
+`--rebase`. The repo enforces this (`allow_squash_merge: false`,
+`allow_rebase_merge: false`), so a squash attempt now fails rather than silently
+doing the wrong thing.
+
+The reason is ancestry. A *merge commit* records both parents, so every commit on
+the merged branch stays reachable from `main` — it becomes an **ancestor** of
+`main`, which is what git's own merge detection tests. A **squash** instead
+flattens the branch into one brand-new commit: the content lands, but the original
+commits are not in `main`'s history at all. Rebase has the same effect for the same
+reason — it rewrites commits into new ones with new SHAs.
+
+Squashing the standing `orch/integration → main` PR therefore broke things
+concretely, until 2026-08-13:
+
+- `orch/integration` diverged from `main` on every landing, so each merge had to be
+  followed by a `chore(integration): sync with squashed main` commit, and
+  `reconcileIntegrationToBase()` had to grow a diverged-branch path to cope.
+- Every `pr/*` branch that had landed on integration became content-in-`main`-but-
+  not-an-ancestor. `git branch --merged main` listed none of them and `git branch -d`
+  refused to delete them, so orch's own post-merge `pr/*` cleanup left orphans behind
+  and branch sweeps had to fall back on comparing file content instead of ancestry.
+
+With merge commits, `git merge-base --is-ancestor origin/orch/integration
+origin/main` holds after every landing; that is the one-line check to run if branch
+cleanup ever starts misbehaving again.
+
 <!-- orch:begin (managed by `orch init --link`; edits here are overwritten) -->
 ## orch
 This repo uses agent-orch. See `.orch/ORCH.md` for usage; config in `.orch/orch.yml`.
