@@ -475,6 +475,21 @@ test("reconcileIntegrationToBase re-links identical trees with disjoint historie
   assert.equal(git(["diff", "main", "HEAD"], integ), "");
 });
 
+test("reconcileIntegrationToBase skips conflicting merges and aborts cleanly", () => {
+  const repo = newRepo();
+  const integ = ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  commitFile(integ, "a.txt", "from integration\n", "advance integration");
+  commitFile(repo, "a.txt", "from main\n", "advance main");
+  const before = git(["rev-parse", "orch/integration"], repo);
+
+  const r = reconcileIntegrationToBase(integ, "main");
+
+  assert.equal(r.skipped, "merge-conflict");
+  assert.equal(git(["status", "--porcelain"], integ), "");
+  assert.equal(gitTry(["rev-parse", "-q", "--verify", "MERGE_HEAD"], integ).ok, false);
+  assert.equal(git(["rev-parse", "orch/integration"], repo), before);
+});
+
 // Shared setup for the origin-reconcile tests: a repo whose integration branch
 // exists on origin, plus a peer clone standing in for the human who hand-lands
 // an escalated fix straight on origin/orch/integration.
