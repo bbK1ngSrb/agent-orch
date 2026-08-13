@@ -34,7 +34,7 @@ function isDocsPath(file) {
 
 function isCommentOnlyLine(line) {
   const content = String(line).replace(/^\+/, "").trim();
-  return /^(?:\/\/|#|\*|\/\*)/.test(content);
+  return content.startsWith("//");
 }
 
 // Git C-quotes paths containing non-ASCII or control characters in diff headers
