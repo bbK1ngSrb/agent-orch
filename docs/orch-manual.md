@@ -479,10 +479,103 @@ orch completion install
 source <(orch completion bash)
 ```
 
+### 2.12b `orch mcp` — serve orch to AI clients over MCP
+
+`orch mcp` turns the CLI into a **Model Context Protocol** server. MCP is a small
+JSON-RPC protocol that lets an AI client (Hermes Agent, Claude Code, anything
+else that speaks it) *discover* the operations a program offers and call them
+with typed arguments, instead of the client having to memorise a shell recipe.
+The server speaks newline-delimited JSON-RPC 2.0 on **stdin/stdout**, so stdout
+carries protocol frames only — every diagnostic goes to stderr.
+
+Configure it the same way in both clients. Claude Code (`.mcp.json` in the repo,
+or `~/.claude.json`):
+
+```json
+{
+  "mcpServers": {
+    "orch": { "command": "orch", "args": ["mcp"] }
+  }
+}
+```
+
+Hermes Agent (its MCP server list, same shape):
+
+```json
+{
+  "mcpServers": {
+    "orch": { "command": "orch", "args": ["mcp"], "cwd": "/path/to/your/repo" }
+  }
+}
+```
+
+The server runs the cycle in whatever directory it was started in, so point
+`cwd` at the repo you want orchestrated (Claude Code starts it in the project
+directory already).
+
+The tools:
+
+| Tool | Runs | Notes |
+| --- | --- | --- |
+| `orch_status` | `orch dashboard --json --once` | Read-only; returns the parsed snapshot. Optional `limit`. |
+| `orch_plan` | `orch task --dry` | Plans a cycle — branch, author, reviewers — without calling an agent, touching git or merging anything. It does advance the recorded author rotation (`.orch/last-author`); see issue #471. |
+| `orch_task` | `orch task` | Full cycle from a task description. |
+| `orch_issue` | `orch issue <n>` | Full cycle from a GitHub issue. |
+| `orch_review` | `orch review <branch>` | Audit-only. |
+| `orch_continue` | `orch continue <sid>` | Resume from a checkpoint. |
+
+Every call returns JSON: `ok`, `exitCode`, the `command` that ran, a `cycles`
+array (each with `sid`, `branch`, `status`, `reason`, `prUrl`, `closes`,
+`rounds`) read from the run records the call appended, `logs` paths, and the raw
+`stdout`/`stderr`. `.orch/runs.jsonl` is repo-wide, so a cycle another client or
+a terminal `orch` finished mid-call also lands in that tail; `cycles` holds only
+the records this call produced. Every tool that *starts* a cycle — `orch_task`,
+`orch_issue`, `orch_review` — matches on the cycle id's process prefix, because
+the child that minted that id is the process the call spawned. `orch_continue`
+resumes a cycle whose id predates that child, so it matches the sid literally
+instead. A branch name is deliberately never used as the key: two `orch_review`
+calls auditing the same branch at once would each read back the other's verdict
+alongside their own. A cycle that escalates
+comes back as a *tool* error (`isError: true`) with the reason readable — not as
+a protocol error, so the client can act on it.
+
+**What the server deliberately cannot do.** The CLI stays the source of truth:
+each tool spawns `bin/orch.js` with a fixed argument list, `shell: false`, and no
+caller-supplied flags — free text is passed after `--` and refused outright if it
+starts with `-`, so a task string can't smuggle in `--allow-protected` or
+`--config-file`. There is **no shell tool** and **no `orch pr` tool**, and no
+tool can emit `--merge`. Since `--merge` is orch's only PR-merge path, an MCP
+client cannot merge a pull request itself: the server hands out no merge
+authority that a hand-typed `orch` in the same repo does not already have. That
+much is a property of the tool table, not of a policy setting — see the test.
+Everything else — the security floor, the protected-path intake
+refusal (§2.14), the test gate, per-cycle worktree isolation, checkpoints and the
+concurrency cap (§4.5) — lives in the cycle the child process runs, so it applies
+to an MCP-started cycle exactly as it does to a hand-typed one, including when
+several cycles are started at once.
+
+**What it cannot promise: where a green cycle lands.** That is the repo's config
+talking, and it answers the same way for an MCP-started and a hand-typed cycle.
+Under the defaults (`integrationBranch: orch/integration` in §5, `main.autoMerge:
+false` in §5.1) the cycle lands on the integration branch and `main` advances
+only when a human merges the standing integration PR — the human checkpoint. A
+repo that points `integrationBranch` at its `baseBranch`, or sets
+`main.autoMerge: true`, has already opted every green cycle out of that
+checkpoint; exposing MCP does not change that, but it does mean the checkpoint is
+not there to rely on. Check both keys before pointing a client at a repo.
+
+**One caveat.** A real cycle takes minutes and the tool call blocks for all of
+it, so a client with a short tool timeout may give up while the cycle keeps
+running to completion in the child process; poll `orch_status` to see where it
+got to. `orch_status` and `orch_plan` return immediately.
+
 ### 2.13 Flags that apply across commands
 
 - **`--dry`** — plan a `task`/`review` cycle without shelling out to agents,
-  touching git, or running tests. Never deletes worktrees or branches.
+  touching git, or running tests. Never deletes worktrees or branches. It is
+  not quite side-effect free, though: the author it picks is still written to
+  `.orch/last-author`, so a plan advances the rotation and the next real cycle
+  starts from the following agent. That is tracked as issue #471.
 - **`--cheap`** — force `cheap.role` from `orch.yml` (e.g. a local model or
   the cheapest CLI agent) as both author and reviewer for this one
   `task`/`issue` run. See §5.1 `cheap` for the automatic path-based routing
@@ -1303,6 +1396,7 @@ job or a repo you do not own. Where the two overlap, **the variable wins**.
 | `ORCH_PROGRESS_INTERVAL_MS` | How often a running stage prints its "still running" heartbeat. Purely cosmetic; lower it when you are watching a slow stage and want more frequent signs of life. |
 | `ORCH_APP_ID`, `ORCH_APP_PRIVATE_KEY` | GitHub App credentials. When both are set, orch mints a short-lived installation token and every `gh` shell-out runs as `orch[bot]` instead of your ambient login. |
 | `GH_TOKEN` | Standard `gh` token. Used when App credentials are absent; falls back to your ambient `gh` login if unset. |
+| `ORCH_NO_UPDATE_CHECK` | Set to any non-empty value to disable the startup check against the npm registry for a newer `orch`. `NO_UPDATE_NOTIFIER` (the ecosystem-standard spelling) and `CI` have the same effect. Reach for this on an offline or locked-down machine, where the check can only ever fail. |
 | `NO_COLOR` | Honoured as usual — suppresses ANSI colour in orch's output. |
 
 Two of these need a word of warning. `ORCH_STAGE_TIMEOUT_MS` and

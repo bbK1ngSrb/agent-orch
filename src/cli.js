@@ -15,6 +15,7 @@ import { globToRegExp } from "./scope.js";
 import * as notify from "./notify.js";
 import { acquireLock, releaseLock, acquireBlocking, isPaused } from "./lock.js";
 import { slugify } from "./slug.js";
+import { serve } from "./mcp.js";
 
 const VERSION = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -309,6 +310,8 @@ test-gate is the governing review.
 - \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
 - \`orch release "<entry>"\`         run the version bump + CHANGELOG write by hand; only needed
                                     in repos that set \`release.autoBump: true\` (default \`false\`)
+- \`orch mcp\`                       serve orch's cycle commands over MCP on stdio, for an AI
+                                    client to drive (no merge authority is exposed)
 - \`orch agent add <name>\`          add an agent to the rotation pool
 - \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
 - \`orch dashboard [--json] [--limit <n>] [--check-history]\`
@@ -1168,6 +1171,15 @@ export async function main(argv, deps = {}) {
     return;
   }
 
+  // `mcp` dispatches before anything that can print: on this command stdout is
+  // a JSON-RPC transport, so one stray update banner would corrupt the protocol
+  // stream. Early return also skips the GitHub App token mint below — each
+  // cycle the server spawns does its own auth.
+  if (command === "mcp") {
+    await serve({ repo: process.cwd() });
+    return;
+  }
+
   if (flags.version || command === "version") { console.log(DISPLAY_VERSION); return; }
   if (flags.help || command === "help") { printUsage(); return; }
   if (command === "upgrade" || command === "update") {
@@ -1807,6 +1819,7 @@ Commands:
   pr <number>           Review a GitHub PR; add --merge to merge if approved.
   release "entry"       Bump version + CHANGELOG by hand (autoBump repos only).
   dashboard             Live status TUI; --once prints the static one-shot.
+  mcp                   Serve orch as an MCP server over stdio (for AI clients).
   upgrade, update       Self-update the global npm install.
   completion [bash]     Print the bash completion script (default: bash).
   completion install    Write the completion script to ~/.orch/completion.bash.

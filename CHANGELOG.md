@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.301 — 2026-08-13
+- Land #466 (SECURITY.md supported-versions), #467 (docs drift: ORCH_NO_UPDATE_CHECK, adapter lede, command count), #464 (shared MCP stdio server, sid-correlated)
+
 ## v0.4.253 — 2026-08-12
 - cleanup: lock.acquireBlocking blocks the event loop with synchronous Atomics.wait polling (impact verified LOW — one cycle per process) (closes [#446](https://github.com/bbk1ng/agent-orch/issues/446))
 
