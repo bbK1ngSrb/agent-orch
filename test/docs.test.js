@@ -63,6 +63,23 @@ test("the manual and README document `orch upgrade` and its override env vars (#
   }
 });
 
+test("the manual documents the update-check opt-out env vars", () => {
+  // shouldSkip() in src/update-check.js honours these, but they were readable
+  // only in the source: they are looked up as `env.NAME` on an injected `env`
+  // object, so a `grep process.env.` sweep of the codebase misses them, and no
+  // doc named them. An offline or locked-down install wants exactly this knob.
+  // NODE_TEST_CONTEXT is also honoured but is set by `node --test` itself, so
+  // it is an internal detail rather than a user-facing knob.
+  // Assert against the table row rather than the whole manual: `CI` is two very
+  // common letters, so a document-wide search for it would pass on prose that
+  // happens to contain them and would never notice the opt-out being dropped.
+  const row = manual.match(/^\| `ORCH_NO_UPDATE_CHECK`.*$/m);
+  assert.ok(row, "manual does not document ORCH_NO_UPDATE_CHECK");
+  for (const name of ["NO_UPDATE_NOTIFIER", "CI"]) {
+    assert.match(row[0], new RegExp("`" + name + "`"), `manual does not document ${name}`);
+  }
+});
+
 test("docs explain that `orch pr --merge` pins the reviewed PR head (#421)", () => {
   // runPr() sends the fetched branch SHA to GitHub's merge endpoint. If a
   // contributor updates the PR during review, GitHub returns 409 and orch asks
@@ -621,14 +638,35 @@ test("the landing page tracks recently shipped surfaces (#403/#335)", () => {
   // the same drift recurs for the primary agent-change entry point.
   assert.match(landing, /orch issue &lt;n&gt;/);
   assert.match(landing, /orch continue &lt;sid&gt;/);
-  // The section shows a curated subset — printUsage (src/cli.js) lists more
-  // commands — so the eyebrow must not bill it as the whole surface, and the
-  // heading's count must match the actual <div class="command"> blocks.
+  // The section shows a curated subset — printUsage (src/cli.js) dispatches
+  // `config`, `agent add/build`, `completion`, `upgrade`, `version` and `help`
+  // on top of these — so neither the eyebrow nor the heading may bill it as the
+  // whole surface. A heading that states a count ("Eight commands") is a
+  // factual claim about the CLI, and it was wrong; the section must instead
+  // point readers at `orch --help` for the complete list. Reject digits as well
+  // as number words, and anywhere in the heading rather than only at its start,
+  // so neither "8 commands" nor "The eight commands" slips through.
   assert.doesNotMatch(landing, /The whole surface/);
-  const commandCount = (landing.match(/<div class="command">/g) || []).length;
-  const word = NUMBER_WORDS[commandCount];
-  assert.ok(word, `unexpected command count: ${commandCount}`);
-  assert.match(landing, new RegExp(`<h2>${word[0].toUpperCase()}${word.slice(1)} commands</h2>`));
+  const heading = landing.match(/<h2>([^<]*commands)<\/h2>/);
+  assert.ok(heading, "commands section lost its <h2>");
+  assert.doesNotMatch(
+    heading[1],
+    new RegExp(`\\b(${NUMBER_WORDS.join("|")}|\\d+)\\b`, "i"),
+    `commands heading asserts a count it cannot keep true: ${heading[1]}`,
+  );
+  assert.match(landing, /orch --help/);
+});
+
+test("the landing page lede names every built-in adapter (#335)", () => {
+  // The lede is the one line every first-time visitor reads. It listed six of
+  // the seven adapters in src/adapters/index.js — omitting kimi — while the
+  // chip list two sections down had all seven, so the page contradicted
+  // itself. Derive from the registry so adapter #8 cannot drift the same way.
+  const lede = landing.match(/<p class="lede">([\s\S]*?)<\/p>/);
+  assert.ok(lede, "hero lede paragraph is missing");
+  for (const name of nativeAgents) {
+    assert.match(lede[1], new RegExp(`\\b${name}\\b`, "i"), `lede omits the ${name} adapter`);
+  }
 });
 
 test("FUTURE.md records the #323 decision instead of planning the rejected design", () => {
