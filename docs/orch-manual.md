@@ -518,7 +518,7 @@ The tools:
 | Tool | Runs | Notes |
 | --- | --- | --- |
 | `orch_status` | `orch dashboard --json --once` | Read-only; returns the parsed snapshot. Optional `limit`. |
-| `orch_plan` | `orch task --dry` | Plans a cycle — branch, author, reviewers — without calling an agent, touching git or merging anything. It does advance the recorded author rotation (`.orch/last-author`); see issue #471. |
+| `orch_plan` | `orch task --dry` | Plans a cycle — branch, author, reviewers — without calling an agent, touching git or merging anything. Persists nothing under `.orch/`, so the author rotation is left where it was (§2.13). |
 | `orch_task` | `orch task` | Full cycle from a task description. |
 | `orch_issue` | `orch issue <n>` | Full cycle from a GitHub issue. |
 | `orch_review` | `orch review <branch>` | Audit-only. |
@@ -572,10 +572,12 @@ got to. `orch_status` and `orch_plan` return immediately.
 ### 2.13 Flags that apply across commands
 
 - **`--dry`** — plan a `task`/`review` cycle without shelling out to agents,
-  touching git, or running tests. Never deletes worktrees or branches. It is
-  not quite side-effect free, though: the author it picks is still written to
-  `.orch/last-author`, so a plan advances the rotation and the next real cycle
-  starts from the following agent. That is tracked as issue #471.
+  touching git, or running tests. Never deletes worktrees or branches. Since
+  v0.4.302 (#471) it writes nothing under `.orch/` either: the author it picks
+  is computed but not persisted to `.orch/last-author`, round logs and run
+  records are stubbed out, and a dry run in a repo that has never run orch
+  leaves no `.orch/` directory behind. The rotation is therefore unchanged —
+  the next real cycle starts from the same agent the plan showed you.
 - **`--cheap`** — force `cheap.role` from `orch.yml` (e.g. a local model or
   the cheapest CLI agent) as both author and reviewer for this one
   `task`/`issue` run. See §5.1 `cheap` for the automatic path-based routing

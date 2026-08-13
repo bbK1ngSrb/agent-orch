@@ -81,6 +81,21 @@ test("the manual documents the update-check opt-out env vars", () => {
   }
 });
 
+test("docs describe `--dry` as leaving the author rotation alone (#471)", () => {
+  // nextAuthor(cfg, orchDir, pinned, dry) no longer mkdirs .orch or writes
+  // last-author on a dry run, and dryDeps() stubs the round/run writers. The
+  // manual used to document the old behaviour as a known bug; a doc that still
+  // warns about a fixed defect sends readers hunting for a phantom.
+  const bullet = manual.match(/^- \*\*`--dry`\*\*[\s\S]*?(?=\n- \*\*)/m);
+  assert.ok(bullet, "manual does not document the --dry flag in §2.13");
+  assert.match(bullet[0], /writes nothing under `\.orch\/`/);
+  // Absence alone would pass if the whole bullet were deleted, hence the pin above.
+  // Scoped to the bullet, not the whole manual: other sections legitimately
+  // discuss rotation advancing (the #27 resume pin, the conflict-resolver pool).
+  assert.doesNotMatch(bullet[0], /advances? the rotation/i);
+  assert.doesNotMatch(manual, /tracked as issue #471/i);
+});
+
 test("docs explain that `orch pr --merge` pins the reviewed PR head (#421)", () => {
   // runPr() sends the fetched branch SHA to GitHub's merge endpoint. If a
   // contributor updates the PR during review, GitHub returns 409 and orch asks
