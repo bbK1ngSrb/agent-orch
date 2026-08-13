@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.303 — 2026-08-13
+- reconcileIntegrationToBase is fast-forward-only, so it silently no-ops after every squash-merge and the next cycle demotes on dirty-merge (closes [#475](https://github.com/bbk1ng/agent-orch/issues/475))
+
 ## v0.4.302 — 2026-08-13
 - fix(cli): orch task --dry no longer advances the author rotation or creates .orch (#471)
 
