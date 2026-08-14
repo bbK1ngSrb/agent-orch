@@ -73,7 +73,9 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    path rather than reading one. Read that exemption literally — it is only
    `//` line comments (a `#` comment in Python or YAML is *not* exempt), only
    whole-line ones (`readFileSync(".orch/x") // fixture` still fires, and so
-   does `/* note */ readFileSync(".orch/x")`), and only that one rule:
+   does `/* note */ readFileSync(".orch/x")`), and only lines containing no
+   `${` — a `//` line inside a template literal still evaluates its
+   interpolations, so `// note: ${readFileSync(".orch/x")}` fires — and only that one rule:
    `env-read`, `network`, `guardrail-touch`, and the subprocess check all still
    fire on comment lines. This runs on every cycle that reaches AGREE + green, including the
    `orch pr`/PR-bridge audit-only path (§2.7) where nothing else merges.
@@ -1109,15 +1111,14 @@ A finer-grained checkpoint inside a resumed cycle also remembers each
 completed review round's verdict and whether the test gate already passed,
 so a crash mid-review doesn't force a full re-audit or re-test.
 
-The checkpoint's first write happens earlier than any of that: the moment the
-author's commit lands, orch records the branch under stage `"authored"`,
-before the first audit call. Without it a cycle that died *during* round-1
-review left nothing addressable by sid — the checkpoint's first write was
-post-audit and the inflight record is deregistered on every exit path — so
-`orch continue <sid>` said there was nothing to resume even though the
-branch with the finished work was sitting right there. The stage buys
-addressability only, not speed: it records no verdict and no green gate, so a
-resumed run still audits and still gates from round 1.
+The checkpoint starts earlier than any of that: before invoking the author,
+orch records the branch under stage `"started"`. When the author's commit lands,
+it updates the record to stage `"authored"` before the first audit call. A
+`"started"` checkpoint with no committed branch changes is treated like an
+inflight-only record, so `orch continue <sid>` refuses the empty branch instead
+of turning it into an escalation. The `"authored"` stage buys addressability,
+not speed: it records no verdict and no green gate, so a resumed run still audits
+and still gates from round 1.
 
 Each recorded verdict is pinned to the branch head commit OID at the moment
 it was recorded (`git rev-parse --verify refs/heads/<branch>`, so a tag that

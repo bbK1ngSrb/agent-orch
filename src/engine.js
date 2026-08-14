@@ -137,6 +137,7 @@ export async function runCycle(opts, deps) {
       // re-authoring and go straight to audit. The scope gate below still runs,
       // so a too-big resumed diff is caught even if quota aborted before it ran.
       if (!resume) {
+        checkpoint?.record(orchDir, sid, { branch, round: 1, stage: "started", closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
         notify.phase("author", `${author.name} authoring`);
         // §3b: for untrusted intake (work order), the author runs against a
         // fenced prompt; free-text tasks pass through unchanged.
