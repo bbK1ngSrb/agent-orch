@@ -385,6 +385,35 @@ test("docs do not claim the security scan covers every added line", () => {
   }
 });
 
+test("docs pin the secret-read comment exemption to `//` whole-line comments", () => {
+  // isCommentOnlyLine() in src/security-review.js skips a line only when its
+  // trimmed content starts with `//`, and only for the `secret-read` rule. The
+  // doc risk here is breadth, not omission: "comments are exempt" would read as
+  // covering `#` comments, trailing comments, and every rule — none true.
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /`secret-read`[\s\S]{0,200}starts\s+with `\/\/`/);
+    assert.match(doc, /only\s+`\/\/`\s+line comments/i);
+    // `#` comments (Python, YAML, shell) are NOT exempt — say so, don't imply it.
+    assert.match(doc, /`#`[^.]{0,60}Python or YAML/);
+    // Trailing comment after real code still fires — the exemption is whole-line only.
+    assert.match(doc, /readFileSync\("\.orch\/x"\) \/\/ fixture` still fires/);
+    // The other rules are unaffected.
+    assert.match(doc, /`env-read`, `network`, `guardrail-touch`, and the subprocess check[\s\S]{0,40}still\s+(?:fire|scan)/);
+  }
+});
+
+test("docs describe the base-branch reconcile merging diverged histories", () => {
+  // reconcileIntegrationToBase() no longer no-ops on divergence: it merges the
+  // base in (the post-squash case) so the base is an ancestor again. Divergence
+  // from origin/orch/integration still demotes with `sync` — the docs have to
+  // keep those two apart rather than collapsing them into one rule.
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /\*base\* branch[\s\S]{0,400}does \*\*not\*\* demote/);
+    assert.match(doc, /squash-? or[- ]rebase/);
+    assert.match(doc, /add\/add conflicts/);
+  }
+});
+
 test("docs document that the version bump on merge is opt-in via release.autoBump", () => {
   // finalize() only calls bumpVersion() when release.autoBump is true (default
   // off), so the prose must not promise an unconditional post-merge bump.

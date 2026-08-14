@@ -216,7 +216,14 @@ overselling it: markdown and `docs/**` paths are dropped before the
 added-line content scan runs (prose can't execute a secret read). That
 exemption applies only to the content scan, though — a separate path-based
 floor over the *changed paths* still catches the guardrail file under `docs/`:
-a change to `docs/CODEOWNERS` trips a `guardrail-touch` finding today. On top of that built-in exemption, `security.ignore` in `orch.yml`
+a change to `docs/CODEOWNERS` trips a `guardrail-touch` finding today. The
+`secret-read` rule has one more, deliberately narrow carve-out: it skips an
+added line whose trimmed content starts with `//`, since a `//` line comment
+mentioning `.orch/` or `.env` names a path instead of reading one. Only `//`
+line comments (not `#` ones in Python or YAML), only whole-line ones
+(`readFileSync(".orch/x") // fixture` still fires), and only that rule —
+`env-read`, `network`, `guardrail-touch`, and the subprocess check still scan
+comment lines. On top of those built-in exemptions, `security.ignore` in `orch.yml`
 lets you exempt paths yourself — commented out in `orch.example.yml`, because
 exempting a path skips *every* security rule for it and belongs only on
 generated build artifacts, never on authored code.
@@ -332,7 +339,15 @@ merges into `orch/integration` through `.orch/integration` under a brief
 fast-forwards the local integration branch when it is behind. A fast-forward
 only advances along existing history; it creates no merge commit. If the two
 refs have diverged (each has commits the other lacks), orch demotes with
-`sync` rather than guessing at a merge. The branch is immediately usable
+`sync` rather than guessing at a merge. Reconciling integration against the
+*base* branch is more forgiving: behind fast-forwards the same way, but
+divergence there does **not** demote — orch merges the base in and carries on.
+That divergence isn't two writers fighting over one branch; it's what a
+squash- or rebase-merged integration PR leaves behind (`main` gets
+integration's tree under a new commit sharing no history), and the merge
+commit re-links them so the next cycle doesn't hit add/add conflicts on files
+both sides agree on. Orch always merges that PR with a merge commit itself, so
+only a human squashing it on GitHub gets you here. The branch is immediately usable
 locally after the post-merge test gate (and the version bump, if
 `release.autoBump` is enabled). Orch then pushes `orch/integration` and opens or
 updates one persistent PR from `orch/integration` to `main`; with

@@ -54,7 +54,7 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    scan can't be reasoned or prompted out of a finding — any hit escalates,
    even after `AGREE` and green tests. If the final diff itself can't be read,
    orch fails closed and escalates rather than assuming an unseen patch is
-   safe. Two things are outside the scan. First, a built-in path exemption:
+   safe. Three things are outside the scan. First, a built-in path exemption:
    markdown and `docs/**` paths are dropped before the added-line content
    scan runs (mirroring `docs.paths`), because prose cannot execute a secret
    read at runtime. That exemption applies to the content scan only — a
@@ -67,7 +67,15 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    `RegExp#exec()` call in minified code reads exactly like a subprocess
    `exec()`). Exempting a path skips *every* security rule for it, so list
    only generated files, never authored code. `orch.example.yml` ships the
-   block commented out for exactly that reason. This runs on every cycle that reaches AGREE + green, including the
+   block commented out for exactly that reason. Third, and narrowest: the
+   `secret-read` rule alone skips an added line whose trimmed content starts
+   with `//`, because a `//` line comment naming `.orch/` or `.env` describes a
+   path rather than reading one. Read that exemption literally — it is only
+   `//` line comments (a `#` comment in Python or YAML is *not* exempt), only
+   whole-line ones (`readFileSync(".orch/x") // fixture` still fires, and so
+   does `/* note */ readFileSync(".orch/x")`), and only that one rule:
+   `env-read`, `network`, `guardrail-touch`, and the subprocess check all still
+   fire on comment lines. This runs on every cycle that reaches AGREE + green, including the
    `orch pr`/PR-bridge audit-only path (§2.7) where nothing else merges.
 5. **Merge** — *only if* every reviewer said `AGREE`, tests passed, **and**
    the security scan found nothing — the branch is merged. How and where it
@@ -113,7 +121,23 @@ author branch ──(AGREE + green tests)──▶ orch/integration ──▶ [p
    local integration branch when it is behind. A **fast-forward** only advances
    along existing history; it creates no merge commit. If the refs have
    **diverged** — each has commits the other lacks — orch demotes with `sync`
-   rather than guessing at a merge. The cycle then merges into
+   rather than guessing at a merge. A second reconciliation, integration
+   against the *base* branch, is deliberately more forgiving: behind the base
+   fast-forwards as above, but diverged from the base does **not** demote — orch
+   merges the base into integration (`git merge --no-edit`) and carries on.
+   The asymmetry is intentional. Divergence from `origin/orch/integration` means
+   two writers disagree about the same branch, which a human has to settle;
+   divergence from the base is the routine aftermath of an integration PR landed
+   by **squash or rebase**, where `main` gains integration's tree under a brand-new
+   commit that shares no history with it. Left unlinked, the next cycle's land
+   hits add/add conflicts on files both sides already agree on; the merge commit
+   re-establishes the base as an ancestor and only ever adds a commit, never
+   rewrites one. If that merge conflicts, orch aborts it and proceeds to the
+   merge attempt anyway rather than demoting — no worse than the no-op it
+   replaced, though nothing surfaces the skip, so a repeat `dirty-merge` is the
+   symptom you'd actually see. Orch itself always merges the persistent
+   integration PR with a merge commit (see `github.mergeMethod`, §5.1), so this
+   path is reached only when a *human* squash- or rebase-merges it on GitHub. The cycle then merges into
    `orch/integration` locally, and a post-merge re-test runs against the
    *integrated* tree, not just the branch — catching semantic conflicts a plain
    git merge wouldn't.
