@@ -345,12 +345,13 @@ only advances along existing history; it creates no merge commit. If the two
 refs have diverged (each has commits the other lacks), orch demotes with
 `sync` rather than guessing at a merge. Orch also reconciles
 `orch/integration` against the base branch before landing: a fast-forward when
-it is merely behind, and — for the case where a human has squash-merged the
-integration PR by hand (a deviation from orch's merge-commit model, see the
-manual's `mergeMethod` note), leaving identical trees on disjoint histories —
-an ordinary merge commit that re-establishes the base as an ancestor, aborted
-and skipped if it conflicts (a real content conflict surfaces at the cycle's
-own merge step instead). The branch is immediately usable
+it is merely behind, and — whenever the histories have diverged, meaning neither
+branch is an ancestor of the other (most commonly when a human has squash-merged
+the integration PR by hand, a deviation from orch's merge-commit model, but also
+after a commit lands on the base branch outside orch; see the manual's
+`mergeMethod` note) — an ordinary merge commit that re-establishes the base as
+an ancestor, aborted and skipped if it conflicts (a real content conflict
+surfaces at the cycle's own merge step instead). The branch is immediately usable
 locally after the post-merge test gate (and the version bump, if
 `release.autoBump` is enabled). Orch then pushes `orch/integration` and opens or
 updates one persistent PR from `orch/integration` to `main`; with
