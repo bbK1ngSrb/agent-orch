@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.308 — 2026-08-14
+- pr/codex/auto-docs-mss03eje0-update-documentation-2577870-0
+
 ## v0.4.307 — 2026-08-13
 - update documentation to reflect the latest merged changes: the --dry rotation fix (#471), the secret-read comment skip (#480), and that squash merging is disabled repo-wide in favour of merge commits (#478)
 
