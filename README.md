@@ -69,7 +69,8 @@ orch dashboard                              # live cycle status, log tail, run h
 ```
 For running several issues in a row, see [manual §2.16](docs/orch-manual.md#216-running-several-issues-in-a-row).
 Add `--dry` to any `task`/`review` run to simulate a cycle without touching git,
-agents, or tests. `orch` exits non-zero (`2`) when a cycle escalates for a human.
+agents, or tests, and without advancing the author rotation. `orch` exits
+non-zero (`2`) when a cycle escalates for a human.
 
 After a `task` run merges, `orch` tidies up for you: it pushes `orch/integration`
 to GitHub and opens/updates its persistent PR to `main`, deletes the temporary
@@ -332,7 +333,14 @@ merges into `orch/integration` through `.orch/integration` under a brief
 fast-forwards the local integration branch when it is behind. A fast-forward
 only advances along existing history; it creates no merge commit. If the two
 refs have diverged (each has commits the other lacks), orch demotes with
-`sync` rather than guessing at a merge. The branch is immediately usable
+`sync` rather than guessing at a merge. Orch also reconciles
+`orch/integration` against the base branch before landing: a fast-forward when
+it is merely behind, and — for the case where a human has squash-merged the
+integration PR by hand (a deviation from orch's merge-commit model, see the
+manual's `mergeMethod` note), leaving identical trees on disjoint histories —
+an ordinary merge commit that re-establishes the base as an ancestor, aborted
+and skipped if it conflicts (a real content conflict surfaces at the cycle's
+own merge step instead). The branch is immediately usable
 locally after the post-merge test gate (and the version bump, if
 `release.autoBump` is enabled). Orch then pushes `orch/integration` and opens or
 updates one persistent PR from `orch/integration` to `main`; with
