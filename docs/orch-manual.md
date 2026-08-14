@@ -54,7 +54,7 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    scan can't be reasoned or prompted out of a finding — any hit escalates,
    even after `AGREE` and green tests. If the final diff itself can't be read,
    orch fails closed and escalates rather than assuming an unseen patch is
-   safe. Two things are outside the scan. First, a built-in path exemption:
+   safe. Three things are outside the scan. First, a built-in path exemption:
    markdown and `docs/**` paths are dropped before the added-line content
    scan runs (mirroring `docs.paths`), because prose cannot execute a secret
    read at runtime. That exemption applies to the content scan only — a
@@ -67,7 +67,15 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    `RegExp#exec()` call in minified code reads exactly like a subprocess
    `exec()`). Exempting a path skips *every* security rule for it, so list
    only generated files, never authored code. `orch.example.yml` ships the
-   block commented out for exactly that reason. This runs on every cycle that reaches AGREE + green, including the
+   block commented out for exactly that reason. Third, and narrowest: the
+   `secret-read` rule alone skips an added line whose trimmed content starts
+   with `//`, because a `//` line comment naming `.orch/` or `.env` describes a
+   path rather than reading one. Read that exemption literally — it is only
+   `//` line comments (a `#` comment in Python or YAML is *not* exempt), only
+   whole-line ones (`readFileSync(".orch/x") // fixture` still fires, and so
+   does `/* note */ readFileSync(".orch/x")`), and only that one rule:
+   `env-read`, `network`, `guardrail-touch`, and the subprocess check all still
+   fire on comment lines. This runs on every cycle that reaches AGREE + green, including the
    `orch pr`/PR-bridge audit-only path (§2.7) where nothing else merges.
 5. **Merge** — *only if* every reviewer said `AGREE`, tests passed, **and**
    the security scan found nothing — the branch is merged. How and where it
