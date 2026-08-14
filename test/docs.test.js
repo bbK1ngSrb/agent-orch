@@ -99,6 +99,21 @@ test("docs describe `--dry` as leaving the author rotation alone (#471)", () => 
   // discuss rotation advancing (the #27 resume pin, the conflict-resolver pool).
   assert.doesNotMatch(bullet[0], /advances? the rotation/i);
   assert.doesNotMatch(manual, /tracked as issue #471/i);
+  assert.match(readme, /without advancing the author rotation/);
+  const planRow = manual.match(/^\| `orch_plan`.*$/m);
+  assert.ok(planRow, "manual lost the orch_plan row");
+  assert.match(planRow[0], /Leaves the author rotation where it was/);
+});
+
+test("docs describe the post-squash integration/base reconciliation (#475)", () => {
+  // A diverged integration/base history is repaired with an ordinary merge;
+  // only a reconciliation conflict is aborted and skipped. Keep both prose
+  // documents aligned with that source-level behavior.
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /squash-merged[\s\S]{0,220}re-establishes\s+the\s+base[\s\S]{0,30}ancestor/);
+    assert.match(doc, /abort(?:ed|s)\s+(?:it\s+)?and\s+skip(?:ped|s)/);
+  }
+  assert.match(manual, /squash-merge that PR by hand[\s\S]{0,160}repairs the ancestry/);
 });
 
 test("docs explain that `orch pr --merge` pins the reviewed PR head (#421)", () => {
@@ -399,18 +414,6 @@ test("docs pin the secret-read comment exemption to `//` whole-line comments", (
     assert.match(doc, /readFileSync\("\.orch\/x"\) \/\/ fixture` still fires/);
     // The other rules are unaffected.
     assert.match(doc, /`env-read`, `network`, `guardrail-touch`, and the subprocess check[\s\S]{0,40}still\s+(?:fire|scan)/);
-  }
-});
-
-test("docs describe the base-branch reconcile merging diverged histories", () => {
-  // reconcileIntegrationToBase() no longer no-ops on divergence: it merges the
-  // base in (the post-squash case) so the base is an ancestor again. Divergence
-  // from origin/orch/integration still demotes with `sync` — the docs have to
-  // keep those two apart rather than collapsing them into one rule.
-  for (const doc of [readme, manual]) {
-    assert.match(doc, /\*base\* branch[\s\S]{0,400}does \*\*not\*\* demote/);
-    assert.match(doc, /squash-? or[- ]rebase/);
-    assert.match(doc, /add\/add conflicts/);
   }
 });
 

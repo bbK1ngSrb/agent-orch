@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.308 — 2026-08-14
+- document the `--dry` author-rotation guarantee (#471) and the integration/base reconciliation that repairs a diverged history with a merge commit
+
 ## v0.4.307 — 2026-08-13
 - update documentation to reflect the latest merged changes: the --dry rotation fix (#471), the secret-read comment skip (#480), and that squash merging is disabled repo-wide in favour of merge commits (#478)
 
