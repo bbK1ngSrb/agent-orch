@@ -13,8 +13,15 @@ import { totalUsage } from "./usage.js";
 
 const ISSUE_URL_BASE = "https://github.com/bbk1ng/agent-orch/issues";
 
+// A CHANGELOG line ships to npm, so it must never be a branch name: the branch
+// is a machine-generated slug (work order squashed to filename-safe chars +
+// session id) and tells a consumer nothing. A resumed cycle also sets
+// ctx.task to the branch (cli.js), so reject that value however it arrives.
+const NO_WORK_ORDER = "release bookkeeping (no work-order text recorded)";
+
 function changelogEntry(ctx) {
-  const title = oneLine(ctx.title || ctx.task || ctx.branch) || ctx.branch;
+  const candidate = oneLine(ctx.title || ctx.task);
+  const title = candidate && candidate !== oneLine(ctx.branch) ? candidate : NO_WORK_ORDER;
   return ctx.closes
     ? `${title} (closes [#${ctx.closes}](${ISSUE_URL_BASE}/${ctx.closes}))`
     : title;
