@@ -125,12 +125,14 @@ author branch ──(AGREE + green tests)──▶ orch/integration ──▶ [p
    **diverged** — each has commits the other lacks — orch demotes with `sync`
    rather than guessing at a merge. Orch then reconciles `orch/integration`
    against the base branch: a fast-forward when integration is merely behind,
-   and otherwise — as when the integration PR has been squash-merged by hand
-   (a deviation from the merge-commit PR orch itself creates, §5.1), which
-   leaves identical trees on disjoint histories — an ordinary merge commit
-   that re-establishes the base branch as an ancestor (a merge only ever adds
-   a commit, so the no-rewrite invariant holds). If that merge conflicts, orch
-   aborts it and skips the reconciliation instead of demoting; a real content
+   and otherwise — whenever the histories have diverged, meaning neither branch
+   is an ancestor of the other (most commonly after the integration PR has been
+   squash-merged by hand, a deviation from the merge-commit PR orch itself
+   creates, §5.1, but also after a commit lands on the base branch outside orch)
+   — an ordinary merge commit that re-establishes the base branch as an ancestor
+   (a merge only ever adds a commit, so the no-rewrite invariant holds). If that
+   merge conflicts, orch aborts it and skips the reconciliation instead of
+   demoting; a real content
    conflict then surfaces at the cycle's own merge step. The cycle then merges
    into `orch/integration` locally, and a post-merge re-test runs against the
    *integrated* tree, not just the branch — catching semantic conflicts a plain
@@ -1340,10 +1342,11 @@ release:
   merge commit, deliberately, so `orch/integration` stays in `main`'s
   ancestry (a squash or rebase would strand the integration branch outside
   `main`'s history and break the fast-forward mirror model from §1.2). It
-  also doesn't touch how a human merges a PR on GitHub's UI; if a human does
-  squash-merge that PR by hand, the next cycle repairs the ancestry by
-  merging `main` back into `orch/integration` (§1.3 step 1) rather than
-  demoting every later land to `dirty-merge`. Because that PR
+  also doesn't touch how a human merges a PR on GitHub's UI; if the branches
+  have diverged — for example, if a human does a squash-merge that PR by hand —
+  the next cycle repairs the ancestry by merging `main` back into
+  `orch/integration` (§1.3 step 1) rather than demoting every later land to
+  `dirty-merge`. Because that PR
   always uses a merge commit, the repo must have "Allow merge commits"
   enabled in its GitHub merge-button settings — if a repo only allows
   squash/rebase, this PR can never be merged (by orch or by hand).
