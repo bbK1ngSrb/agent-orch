@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.310 — 2026-08-14
+- A cycle whose author throws (provider quota/auth error) leaves no trace in either dashboard view — no run row and no checkpoint (closes [#484](https://github.com/bbk1ng/agent-orch/issues/484))
+
 ## v0.4.309 — 2026-08-14
 - pr/claude/auto-docs-mss7n3w70-update-documentation-2771831-0
 
