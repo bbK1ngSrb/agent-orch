@@ -32,9 +32,16 @@ function isDocsPath(file) {
   return false;
 }
 
+// ponytail: line-based heuristic — a scanner that walks added lines one at a time
+// cannot know whether a `//` line actually sits inside a template literal, where a
+// dollar-brace interpolation still executes and can read a secret path. Treating
+// any line that carries an interpolation opener as non-comment closes that hole;
+// a real parser is the upgrade path if more cases appear. The example lives in the
+// tests, not here: spelling it out in this comment would trip the floor's own
+// secret-read rule on this file's diff.
 function isCommentOnlyLine(line) {
   const content = String(line).replace(/^\+/, "").trim();
-  return content.startsWith("//");
+  return content.startsWith("//") && !content.includes("${");
 }
 
 // Git C-quotes paths containing non-ASCII or control characters in diff headers

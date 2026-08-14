@@ -73,7 +73,9 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    path rather than reading one. Read that exemption literally — it is only
    `//` line comments (a `#` comment in Python or YAML is *not* exempt), only
    whole-line ones (`readFileSync(".orch/x") // fixture` still fires, and so
-   does `/* note */ readFileSync(".orch/x")`), and only that one rule:
+   does `/* note */ readFileSync(".orch/x")`), and only lines containing no
+   `${` — a `//` line inside a template literal still evaluates its
+   interpolations, so `// note: ${readFileSync(".orch/x")}` fires — and only that one rule:
    `env-read`, `network`, `guardrail-touch`, and the subprocess check all still
    fire on comment lines. This runs on every cycle that reaches AGREE + green, including the
    `orch pr`/PR-bridge audit-only path (§2.7) where nothing else merges.

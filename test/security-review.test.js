@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scanDiff, formatSecurityFindings, parseRawPaths, SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "../src/security-review.js";
@@ -129,6 +129,51 @@ test("live code with comment-like prefixes still trips secret-read", () => {
     assert.equal(r.decision, "DISAGREE", label);
     assert.ok(r.findings.some((f) => f.rule === "secret-read"), label);
   }
+});
+
+// A `//` line inside a template literal is not a comment — `${...}` still runs.
+test("comment-prefixed template interpolation still trips secret-read", () => {
+  const d = `+++ b/test/cli.test.js\n+// note: \${readFileSync(".orch/last-author")}`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "secret-read"));
+});
+
+// The `.orch/` below is load-bearing: without it the exemption is untested.
+test("genuine comment without interpolation stays exempt", () => {
+  const d = `+++ b/test/cli.test.js\n+// names .orch/ but only mentions it, never reads it`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "AGREE");
+  assert.deepEqual(r.findings, []);
+});
+
+// Self-scan: a `//` line carrying an interpolation is no longer exempt, so an
+// illustrative example written into a src comment would flag the floor's own
+// diff. Keep such examples in tests (scanned, but expected), never in src prose.
+test("no src comment line trips the floor's secret-read rule", () => {
+  // Yields [relativePath, absoluteURL] so the diff header needs no path surgery.
+  const walk = (dir, rel) =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory()
+        ? walk(new URL(`${e.name}/`, dir), `${rel}${e.name}/`)
+        : e.name.endsWith(".js")
+          ? [[`${rel}${e.name}`, new URL(e.name, dir)]]
+          : [],
+    );
+  const offenders = [];
+  let scanned = 0;
+  for (const [rel, file] of walk(new URL("../src/", import.meta.url), "src/")) {
+    const comments = readFileSync(file, "utf8")
+      .split("\n")
+      .filter((l) => l.trim().startsWith("//"));
+    if (!comments.length) continue;
+    scanned += comments.length;
+    const d = `+++ b/${rel}\n${comments.map((l) => `+${l}`).join("\n")}`;
+    offenders.push(...scanDiff(d).findings.filter((f) => f.rule === "secret-read"));
+  }
+  // Guard against a vacuous pass: a walker that finds nothing scans nothing.
+  assert.ok(scanned > 50, `expected src comment lines, walked ${scanned}`);
+  assert.deepEqual(offenders, []);
 });
 
 test("executable .orch/ read in a test file → DISAGREE", () => {
