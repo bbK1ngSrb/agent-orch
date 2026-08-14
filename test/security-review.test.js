@@ -131,6 +131,21 @@ test("live code with comment-like prefixes still trips secret-read", () => {
   }
 });
 
+// A `//` line inside a template literal is not a comment — `${...}` still runs.
+test("comment-prefixed template interpolation still trips secret-read", () => {
+  const d = `+++ b/test/cli.test.js\n+// note: \${readFileSync(".orch/last-author")}`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "DISAGREE");
+  assert.ok(r.findings.some((f) => f.rule === "secret-read"));
+});
+
+test("genuine comment without interpolation stays exempt", () => {
+  const d = `+++ b/test/cli.test.js\n+// pins the clean path (no .orch/ at all)`;
+  const r = scanDiff(d);
+  assert.equal(r.decision, "AGREE");
+  assert.deepEqual(r.findings, []);
+});
+
 test("executable .orch/ read in a test file → DISAGREE", () => {
   const d = `+++ b/test/cli.test.js\n+  const value = readFileSync(".orch/last-author"); // fixture`;
   const r = scanDiff(d);

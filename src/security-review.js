@@ -32,9 +32,13 @@ function isDocsPath(file) {
   return false;
 }
 
+// ponytail: line-based heuristic — a scanner that walks added lines one at a time
+// cannot know whether a `//` line actually sits inside a template literal, where
+// `${...}` still executes (`// note: ${readFileSync(".orch/x")}`). Excluding `${`
+// closes that hole; a real parser is the upgrade path if more cases appear.
 function isCommentOnlyLine(line) {
   const content = String(line).replace(/^\+/, "").trim();
-  return content.startsWith("//");
+  return content.startsWith("//") && !content.includes("${");
 }
 
 // Git C-quotes paths containing non-ASCII or control characters in diff headers

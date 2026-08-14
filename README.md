@@ -222,7 +222,9 @@ a change to `docs/CODEOWNERS` trips a `guardrail-touch` finding today. The
 added line whose trimmed content starts with `//`, since a `//` line comment
 mentioning `.orch/` or `.env` names a path instead of reading one. Only `//`
 line comments (not `#` ones in Python or YAML), only whole-line ones
-(`readFileSync(".orch/x") // fixture` still fires), and only that rule —
+(`readFileSync(".orch/x") // fixture` still fires), and only lines with no
+`${` in them (inside a template literal a `//` line still evaluates its
+interpolations, so `// note: ${readFileSync(".orch/x")}` fires), and only that rule —
 `env-read`, `network`, `guardrail-touch`, and the subprocess check still scan
 comment lines. On top of those built-in exemptions, `security.ignore` in `orch.yml`
 lets you exempt paths yourself — commented out in `orch.example.yml`, because
