@@ -2546,6 +2546,8 @@ test("orch continue <sid> refuses to resume a started checkpoint with no committ
     runMainInRepo(repo, ["continue", sid]),
     /has no committed changes/,
   );
+  assert.equal(checkpointDep.lookup(join(repo, ".orch"), sid), null,
+    "refusing an empty started resume clears the stale checkpoint");
 });
 
 // Regression (#129 bug 1): a run that died BEFORE its first checkpoint has, by

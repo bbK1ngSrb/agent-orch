@@ -1590,6 +1590,7 @@ export async function main(argv, deps = {}) {
     // that died before the author committed anything — neither record proves
     // there's work to review/merge until the branch has a committed diff.
     if ((inf || ck?.stage === "started") && git.changedFiles(repo, branch, cfg.baseBranch).length === 0) {
+      if (!dry && ck) checkpoint.clear(orchDir, sid);
       throw new Error(`orch: branch ${branch} (sid ${sid}) has no committed changes — the run died before authoring finished; start a fresh \`orch task\` instead`);
     }
 

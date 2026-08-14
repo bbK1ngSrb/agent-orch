@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visWidth, stripAnsi, paint, C, colorEnabled, row, box, table, formatTimestamp, truncate } from "../../src/tui/theme.js";
+import { visWidth, stripAnsi, paint, C, colorEnabled, row, box, table, formatTimestamp, truncate, stageText } from "../../src/tui/theme.js";
+
+test("stageText keeps the started checkpoint stage visible", () => {
+  assert.equal(stageText("started"), "● started");
+});
 
 test("formatTimestamp renders yyyy-mm-dd HH:mm in UTC from a known instant", () => {
   // Drops the T separator, sub-second .927, and the trailing Z; minute precision.
