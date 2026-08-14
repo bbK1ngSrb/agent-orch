@@ -105,12 +105,13 @@ test("docs describe `--dry` as leaving the author rotation alone (#471)", () => 
   assert.match(planRow[0], /Leaves the author rotation where it was/);
 });
 
-test("docs describe the post-squash integration/base reconciliation (#475)", () => {
-  // A diverged integration/base history is repaired with an ordinary merge;
-  // only a reconciliation conflict is aborted and skipped. Keep both prose
-  // documents aligned with that source-level behavior.
+test("docs describe integration/base reconciliation for diverged histories (#475)", () => {
+  // Any diverged integration/base history is repaired with an ordinary merge;
+  // a hand squash-merge is only one example. Only a reconciliation conflict is
+  // aborted and skipped. Keep both prose documents aligned with that behavior.
   for (const doc of [readme, manual]) {
-    assert.match(doc, /squash-merged[\s\S]{0,220}re-establishes\s+the\s+base[\s\S]{0,30}ancestor/);
+    assert.match(doc, /histories have diverged[\s\S]{0,180}neither\s+branch\s+is\s+an\s+ancestor\s+of\s+the\s+other/);
+    assert.match(doc, /squash-merged[\s\S]{0,450}re-establishes\s+the\s+base[\s\S]{0,30}ancestor/);
     assert.match(doc, /abort(?:ed|s)\s+(?:it\s+)?and\s+skip(?:ped|s)/);
   }
   assert.match(manual, /squash-merge that PR by hand[\s\S]{0,160}repairs the ancestry/);

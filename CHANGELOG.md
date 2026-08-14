@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.313 — 2026-08-14
+- Docs describe the integration/base merge as squash-specific; it fires on any divergence (closes [#487](https://github.com/bbk1ng/agent-orch/issues/487))
+
+## v0.4.312 — 2026-08-14
+- CHANGELOG entry falls back to the branch slug when a cycle has no title or work order (closes [#486](https://github.com/bbk1ng/agent-orch/issues/486))
+
 ## v0.4.311 — 2026-08-14
 - harden comment-only secret scan (closes #482)
 
