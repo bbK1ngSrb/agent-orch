@@ -2531,6 +2531,25 @@ test("orch continue <sid> refuses to resume an inflight-only branch with no comm
   );
 });
 
+test("orch continue <sid> refuses to resume a started checkpoint with no committed changes", async () => {
+  const repo = initGitRepo("orch-continue-started-empty-");
+  const sid = "started0";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  // The checkpoint is written before authoring begins. It must not turn an
+  // empty branch into a resumable run after the author dies before committing.
+  checkpointDep.record(join(repo, ".orch"), sid, { branch, round: 1, stage: "started" });
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid]),
+    /has no committed changes/,
+  );
+  assert.equal(checkpointDep.lookup(join(repo, ".orch"), sid), null,
+    "refusing an empty started resume clears the stale checkpoint");
+});
+
 // Regression (#129 bug 1): a run that died BEFORE its first checkpoint has, by
 // definition, a dead owner pid — that's the whole scenario `continue`'s inflight
 // fallback exists for. `listLive()` deletes any inflight file whose pid is dead

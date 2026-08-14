@@ -278,15 +278,16 @@ different agent, the resuming run pins the surviving branch's original author ra
 than authoring fresh under the next one. It restarts cleanly only if the run died
 before any commit (nothing to resume), and never hijacks a live peer's branch.
 
-Within a resumed cycle, a checkpoint in `.orch/checkpoints/` (keyed on the
-run's sid) goes further: its first write lands as soon as the author's commit does
-(stage `"authored"`), and after that it records each review round's verdict and
-whether the test gate has already passed — each pinned to the branch head commit OID
-at the moment it was recorded. That early write is what makes a cycle that died
-*during* round-1 review addressable at all: the committed branch used to survive
-while `orch continue <sid>` reported nothing to resume. The `"authored"` stage
-grants no shortcut — it carries no verdict and no green gate, so the resumed run
-still audits and still gates from round 1. A crash mid-review or between a green gate and merge doesn't
+During a task cycle, a checkpoint in `.orch/checkpoints/` (keyed on the run's sid)
+is first written before authoring starts (stage `"started"`), then updated as soon
+as the author's commit lands (stage `"authored"`). After that it records each
+review round's verdict and whether the test gate has already passed — each pinned
+to the branch head commit OID at the moment it was recorded. The early write makes
+a cycle that dies during authoring addressable by sid, while a `"started"`
+checkpoint with no committed changes is treated like an inflight-only record and
+`orch continue <sid>` refuses the empty branch. The `"authored"` stage grants no
+shortcut — it carries no verdict and no green gate, so the resumed run still audits
+and still gates from round 1. A crash mid-review or between a green gate and merge doesn't
 re-audit rounds already decided or re-run tests that already passed — the resumed
 cycle picks up at the next undone step. The OID pin binds each verdict to the code
 that earned it: the OID is captured once per review round, and that one value then

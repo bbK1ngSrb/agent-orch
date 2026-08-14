@@ -11,7 +11,7 @@ import { kpi, reviewsDir } from "./notify.js";
 import { readRecordFile } from "./sid-store.js";
 import { C, table, formatTimestamp, pct, usd, stageText, verdictText } from "./tui/theme.js";
 
-const STAGE_LABELS = { reviewed: "review", tested: "test" };
+const STAGE_LABELS = { started: "authoring", reviewed: "review", tested: "test" };
 const VERDICT_COLOR = { merged: C.ok, pr: C.warn, escalated: C.fail, "merge-deferred": C.fail };
 const RED_VERDICTS = new Set(["escalated", "merge-deferred"]);
 const JSONL_CACHE = new Map();
