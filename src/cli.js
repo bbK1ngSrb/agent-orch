@@ -1586,10 +1586,10 @@ export async function main(argv, deps = {}) {
       }
       throw new Error(`orch: branch ${branch} (sid ${sid}) no longer exists`);
     }
-    // inflight-only fallback (no checkpoint ever written): the run may have died
-    // before the author committed anything — unlike the checkpoint path, an
-    // inflight record alone doesn't prove there's work to review/merge.
-    if (inf && git.changedFiles(repo, branch, cfg.baseBranch).length === 0) {
+    // A pre-authoring checkpoint or inflight-only fallback may represent a run
+    // that died before the author committed anything — neither record proves
+    // there's work to review/merge until the branch has a committed diff.
+    if ((inf || ck?.stage === "started") && git.changedFiles(repo, branch, cfg.baseBranch).length === 0) {
       throw new Error(`orch: branch ${branch} (sid ${sid}) has no committed changes — the run died before authoring finished; start a fresh \`orch task\` instead`);
     }
 
