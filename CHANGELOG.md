@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.309 — 2026-08-14
+- pr/claude/auto-docs-mss7n3w70-update-documentation-2771831-0
+
 ## v0.4.308 — 2026-08-14
 - document the `--dry` author-rotation guarantee (#471) and the integration/base reconciliation that repairs a diverged history with a merge commit
 

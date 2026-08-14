@@ -217,7 +217,14 @@ overselling it: markdown and `docs/**` paths are dropped before the
 added-line content scan runs (prose can't execute a secret read). That
 exemption applies only to the content scan, though — a separate path-based
 floor over the *changed paths* still catches the guardrail file under `docs/`:
-a change to `docs/CODEOWNERS` trips a `guardrail-touch` finding today. On top of that built-in exemption, `security.ignore` in `orch.yml`
+a change to `docs/CODEOWNERS` trips a `guardrail-touch` finding today. The
+`secret-read` rule has one more, deliberately narrow carve-out: it skips an
+added line whose trimmed content starts with `//`, since a `//` line comment
+mentioning `.orch/` or `.env` names a path instead of reading one. Only `//`
+line comments (not `#` ones in Python or YAML), only whole-line ones
+(`readFileSync(".orch/x") // fixture` still fires), and only that rule —
+`env-read`, `network`, `guardrail-touch`, and the subprocess check still scan
+comment lines. On top of those built-in exemptions, `security.ignore` in `orch.yml`
 lets you exempt paths yourself — commented out in `orch.example.yml`, because
 exempting a path skips *every* security rule for it and belongs only on
 generated build artifacts, never on authored code.
