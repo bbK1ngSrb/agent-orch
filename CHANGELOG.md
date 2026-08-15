@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.315 — 2026-08-15
+- honor adapter disabled flag in agent detection (#492)
+
 ## v0.4.314 — 2026-08-15
 - add per-adapter env overrides and a zai (GLM) adapter (#491)
 
