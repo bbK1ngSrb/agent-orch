@@ -11,9 +11,11 @@ import { buildArgs as copilotArgs } from "../src/adapters/copilot.js";
 import { buildArgs as geminiArgs } from "../src/adapters/gemini.js";
 import { buildArgs as grokArgs } from "../src/adapters/grok.js";
 import { buildArgs as kimiArgs } from "../src/adapters/kimi.js";
+import { buildArgs as zaiArgs } from "../src/adapters/zai.js";
 import { get } from "../src/adapters/index.js";
 import {
   makeCliAdapter,
+  mergeAdapterEnv,
   isUsageLimit,
   parseRunUsage,
   MAX_AGENT_OUTPUT_CHARS,
@@ -79,6 +81,63 @@ test("claude buildArgs appends --model and --effort when given", () => {
   assert.deepEqual(claudeArgs("PROMPT", "/wd", { model: "opus-4.8", effort: "high" }),
     ["-p", "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep", "--dangerously-skip-permissions",
       "--model", "opus-4.8", "--effort", "high", "PROMPT"]);
+});
+
+test("zai reuses claude's argv builder", () => {
+  assert.deepEqual(zaiArgs("PROMPT", "/wd", { model: "glm-4.7" }),
+    claudeArgs("PROMPT", "/wd", { model: "glm-4.7" }));
+});
+
+test("zai is disabled without an API key and enables dynamically when one is set", () => {
+  const originalKey = process.env.ZAI_API_KEY;
+  try {
+    delete process.env.ZAI_API_KEY;
+    assert.match(get("zai").disabled, /ZAI_API_KEY is not set/);
+    process.env.ZAI_API_KEY = "test-key";
+    assert.equal(get("zai").disabled, undefined);
+  } finally {
+    if (originalKey === undefined) delete process.env.ZAI_API_KEY;
+    else process.env.ZAI_API_KEY = originalKey;
+  }
+});
+
+test("mergeAdapterEnv preserves, overrides, and deletes without mutating the base", () => {
+  const base = { inherited: "yes", replaced: "old", removed: "present" };
+  const merged = mergeAdapterEnv(base, { replaced: "new", removed: undefined, added: "value" });
+  assert.deepEqual(merged, { inherited: "yes", replaced: "new", added: "value" });
+  assert.deepEqual(base, { inherited: "yes", replaced: "old", removed: "present" });
+});
+
+test("adapter env overrides reach the child and undefined removes an inherited key", async () => {
+  const inheritedKey = "ORCH_TEST_ADAPTER_INHERITED";
+  const overriddenKey = "ORCH_TEST_ADAPTER_OVERRIDDEN";
+  const deletedKey = "ORCH_TEST_ADAPTER_DELETED";
+  const prior = Object.fromEntries([inheritedKey, overriddenKey, deletedKey].map((key) => [key, process.env[key]]));
+  process.env[inheritedKey] = "inherited";
+  process.env[overriddenKey] = "parent";
+  process.env[deletedKey] = "remove-me";
+  try {
+    const script = `process.stdout.write(JSON.stringify({
+      inherited: process.env[${JSON.stringify(inheritedKey)}],
+      overridden: process.env[${JSON.stringify(overriddenKey)}],
+      deleted: Object.hasOwn(process.env, ${JSON.stringify(deletedKey)}),
+    }) + "\\nAGREE\\n")`;
+    const adapter = makeCliAdapter({
+      name: "env-spy",
+      bin: process.execPath,
+      env: { [overriddenKey]: "adapter", [deletedKey]: undefined },
+      buildArgs: () => nodeScript(script),
+    });
+    const result = await adapter.audit("pr/x/y", tmpdir());
+    assert.match(result.raw, /"inherited":"inherited"/);
+    assert.match(result.raw, /"overridden":"adapter"/);
+    assert.match(result.raw, /"deleted":false/);
+  } finally {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("codex buildArgs appends --model and reasoning-effort config when given", () => {
@@ -176,6 +235,7 @@ test("adapters declare model/effort capability support", () => {
   assert.deepEqual(get("gemini").capabilities, { model: true, effort: false });
   assert.deepEqual(get("grok").capabilities, { model: true, effort: true });
   assert.deepEqual(get("kimi").capabilities, { model: true, effort: false });
+  assert.deepEqual(get("zai").capabilities, { model: true, effort: false });
   assert.deepEqual(get("qwen3-coder-30b").capabilities, { model: false, effort: false });
 });
 

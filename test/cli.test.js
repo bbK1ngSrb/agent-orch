@@ -802,6 +802,48 @@ test("preflight stays green when a prior preflight rewrote adapter.bin to an abs
   }
 });
 
+test("preflight warns when claude inherits an ambient Anthropic base URL", () => {
+  const adapter = adapters.get("claude");
+  const originalBin = adapter.bin;
+  const originalUrl = process.env.ANTHROPIC_BASE_URL;
+  const originalWarn = console.warn;
+  const warnings = [];
+  adapter.bin = process.execPath;
+  process.env.ANTHROPIC_BASE_URL = "https://ambient.example/anthropic";
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    preflight({ agents: ["claude"] });
+  } finally {
+    console.warn = originalWarn;
+    adapter.bin = originalBin;
+    if (originalUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = originalUrl;
+  }
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /ANTHROPIC_BASE_URL/);
+  assert.match(warnings[0], /https:\/\/ambient\.example\/anthropic/);
+});
+
+test("preflight does not warn about ambient Anthropic routing without claude", () => {
+  const adapter = adapters.get("codex");
+  const originalBin = adapter.bin;
+  const originalUrl = process.env.ANTHROPIC_BASE_URL;
+  const originalWarn = console.warn;
+  const warnings = [];
+  adapter.bin = process.execPath;
+  process.env.ANTHROPIC_BASE_URL = "https://ambient.example/anthropic";
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    preflight({ agents: ["codex"] });
+  } finally {
+    console.warn = originalWarn;
+    adapter.bin = originalBin;
+    if (originalUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = originalUrl;
+  }
+  assert.deepEqual(warnings, []);
+});
+
 test("preflight rejects a config naming agy as author or reviewer (#272, #296)", () => {
   assert.throws(() => preflight({ agents: [], author: "agy" }), /agent "agy" is disabled/);
   assert.throws(() => preflight({ agents: [], reviewer: "agy" }), /agent "agy" is disabled/);
