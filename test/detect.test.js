@@ -5,29 +5,62 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveAgentBin as resolveBin } from "../src/agent-bin.js";
 import { detectAgents, formatDetection } from "../src/detect.js";
-import { nativeAgents } from "../src/adapters/index.js";
+import { get, nativeAgents } from "../src/adapters/index.js";
 
 function resolve(found) {
   return (exe) => found.includes(exe) ? exe : null;
 }
 
+// zai's `disabled` reads process.env on every access, so tests that care about
+// it have to own the variable rather than inherit the runner's environment.
+function withZaiKey(value, fn) {
+  const prev = process.env.ZAI_API_KEY;
+  if (value === undefined) delete process.env.ZAI_API_KEY;
+  else process.env.ZAI_API_KEY = value;
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env.ZAI_API_KEY;
+    else process.env.ZAI_API_KEY = prev;
+  }
+}
+
 test("detectAgents: reports CLI agents found by the shared resolver", () => {
   // Derive from the registry so this can't drift when a native adapter is added.
-  const { found, missing } = detectAgents({ resolveAgentBin: resolve(nativeAgents) });
-  assert.deepEqual(found, nativeAgents);
-  assert.deepEqual(missing, ["local (ccr CLI not found: PATH + fallback dirs)"]);
+  const runnable = withZaiKey("k", () => nativeAgents.filter((n) => !get(n).disabled));
+  const { found, missing } = withZaiKey("k", () => detectAgents({ resolveAgentBin: resolve(nativeAgents) }));
+  assert.deepEqual(found, runnable);
+  assert.ok(missing.includes("local (ccr CLI not found: PATH + fallback dirs)"));
+  // Nothing else is missing: every native agent is either runnable or disabled.
+  assert.equal(missing.length, nativeAgents.length - runnable.length + 1);
 });
 
 test("detectAgents: resolves native adapters by their configured executable", () => {
-  const { found, missing } = detectAgents({
+  const { found, missing } = withZaiKey("k", () => detectAgents({
     resolveAgentBin: (exe) => exe === "claude" ? exe : null,
-  });
+  }));
   assert.ok(found.includes("zai"));
   assert.ok(!missing.some((entry) => entry.startsWith("zai ")));
 });
 
+test("detectAgents: a disabled adapter is not detected even when its CLI resolves", () => {
+  const { found, missing } = withZaiKey(undefined, () => detectAgents({
+    resolveAgentBin: (exe) => exe === "claude" ? exe : null,
+  }));
+  assert.ok(!found.includes("zai"));
+  assert.ok(missing.includes("zai (disabled: ZAI_API_KEY is not set)"));
+  assert.ok(found.includes("claude")); // same bin, not disabled — still detected
+});
+
+test("detectAgents: an always-disabled adapter stays out of found and keeps the summary one line", () => {
+  const detection = detectAgents({ resolveAgentBin: resolve(["agy"]) });
+  assert.ok(!detection.found.includes("agy"));
+  assert.ok(detection.missing.some((m) => m.startsWith("agy (disabled: agy cannot be used")));
+  assert.ok(!formatDetection(detection).includes("\n"));
+});
+
 test("detectAgents: reports a missing CLI agent by name", () => {
-  const { found, missing } = detectAgents({ resolveAgentBin: resolve(["claude"]) });
+  const { found, missing } = withZaiKey("k", () => detectAgents({ resolveAgentBin: resolve(["claude"]) }));
   assert.deepEqual(found, ["claude", "zai"]);
   assert.ok(missing.includes("codex (CLI not found: PATH + fallback dirs)"));
   assert.ok(missing.includes("copilot (CLI not found: PATH + fallback dirs)"));

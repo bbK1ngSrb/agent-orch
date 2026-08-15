@@ -31,9 +31,18 @@ export function detectAgents(deps = {}) {
   const found = [];
   const missing = [];
 
+  // Availability must match preflight()'s answer, which checks both the binary
+  // and the adapter's `disabled` flag — an adapter can borrow another agent's
+  // bin (zai runs the `claude` CLI) and still be unrunnable without its own
+  // credentials. The two reasons are reported separately because the remedies
+  // differ: install a CLI vs. set an env var.
   for (const name of nativeAgents) {
-    if (resolveAgentBin(get(name).bin || name)) found.push(name);
-    else missing.push(`${name} (CLI not found: PATH + fallback dirs)`);
+    const adapter = get(name);
+    if (!resolveAgentBin(adapter.bin || name)) missing.push(`${name} (CLI not found: PATH + fallback dirs)`);
+    // First line only: formatDetection() joins everything into one summary
+    // line, and a multi-line reason (agy's spans several sentences) would jam it.
+    else if (adapter.disabled) missing.push(`${name} (disabled: ${String(adapter.disabled).split("\n")[0]})`);
+    else found.push(name);
   }
 
   if (resolveAgentBin("ccr")) {
