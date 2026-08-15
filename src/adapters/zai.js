@@ -9,6 +9,7 @@ const adapter = makeCliAdapter({
   buildArgs,
   env: {
     ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic",
+    ANTHROPIC_API_KEY: undefined,
     get ANTHROPIC_AUTH_TOKEN() {
       return process.env.ZAI_API_KEY;
     },

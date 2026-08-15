@@ -18,9 +18,17 @@ test("detectAgents: reports CLI agents found by the shared resolver", () => {
   assert.deepEqual(missing, ["local (ccr CLI not found: PATH + fallback dirs)"]);
 });
 
+test("detectAgents: resolves native adapters by their configured executable", () => {
+  const { found, missing } = detectAgents({
+    resolveAgentBin: (exe) => exe === "claude" ? exe : null,
+  });
+  assert.ok(found.includes("zai"));
+  assert.ok(!missing.some((entry) => entry.startsWith("zai ")));
+});
+
 test("detectAgents: reports a missing CLI agent by name", () => {
   const { found, missing } = detectAgents({ resolveAgentBin: resolve(["claude"]) });
-  assert.deepEqual(found, ["claude"]);
+  assert.deepEqual(found, ["claude", "zai"]);
   assert.ok(missing.includes("codex (CLI not found: PATH + fallback dirs)"));
   assert.ok(missing.includes("copilot (CLI not found: PATH + fallback dirs)"));
   assert.ok(missing.includes("gemini (CLI not found: PATH + fallback dirs)"));
