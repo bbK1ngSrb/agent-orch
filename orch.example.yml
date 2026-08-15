@@ -9,7 +9,7 @@
 # When no explicit roles are set (next group), orch rotates this pool
 # for the author and takes the next entry as reviewer. Order matters.
 #
-# Built-in: claude, codex, copilot, gemini, agy, grok, kimi
+# Built-in: claude, codex, copilot, gemini, agy, grok, kimi, zai
 # Local llm models (run via ccr, no API cost):
 #   qwen3-coder-30b, deepseek-coder-v2-lite, glm-4.5-air
 #

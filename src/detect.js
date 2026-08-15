@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { nativeAgents } from "./adapters/index.js";
+import { get, nativeAgents } from "./adapters/index.js";
 import localAdapters from "./adapters/local.js";
 import { resolveAgentBin as defaultResolveAgentBin } from "./agent-bin.js";
 
@@ -32,7 +32,7 @@ export function detectAgents(deps = {}) {
   const missing = [];
 
   for (const name of nativeAgents) {
-    if (resolveAgentBin(name)) found.push(name);
+    if (resolveAgentBin(get(name).bin || name)) found.push(name);
     else missing.push(`${name} (CLI not found: PATH + fallback dirs)`);
   }
 
