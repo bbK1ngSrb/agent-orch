@@ -151,7 +151,7 @@ const SCAFFOLD = `# agent-orch config — every key is optional; a commented key
 # When no explicit roles are set (next group), orch rotates this pool
 # for the author and takes the next entry as reviewer. Order matters.
 #
-# Built-in: claude, codex, copilot, gemini, agy, grok, kimi
+# Built-in: claude, codex, copilot, gemini, agy, grok, kimi, zai
 # Local llm models (run via ccr, no API cost):
 #   qwen3-coder-30b, deepseek-coder-v2-lite, glm-4.5-air
 #
@@ -556,6 +556,9 @@ export function preflight(cfg, orchDir, opts = {}) {
           ...(cfg.reviewers || []),
         ].filter(Boolean).map((s) => parseRoleSpec(s).agent),
       ].filter(Boolean));
+  if (names.has("claude") && process.env.ANTHROPIC_BASE_URL !== undefined) {
+    console.warn(`ANTHROPIC_BASE_URL is set to "${process.env.ANTHROPIC_BASE_URL}"; the claude adapter will inherit it.`);
+  }
   for (const name of names) {
     const a = adapters.get(name); // throws on unknown
     if (a.disabled) throw new Error(`agent "${name}" is disabled: ${a.disabled}`);

@@ -15,6 +15,15 @@ const OUTPUT_COMPACT_THRESHOLD = Math.floor(MAX_AGENT_OUTPUT_CHARS * 1.5);
 const OUTPUT_TRUNCATED = `[orch: output truncated to last ${MAX_AGENT_OUTPUT_CHARS} chars]\n`;
 const liveChildren = new Set();
 
+export function mergeAdapterEnv(base, overrides) {
+  if (overrides == null) return base;
+  const merged = { ...base, ...overrides };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete merged[key];
+  }
+  return merged;
+}
+
 function killLiveChildren() {
   for (const pid of liveChildren) killTree(pid);
 }
@@ -204,7 +213,13 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
       finish({ out, raw: out, ok: false });
       return;
     }
-    const child = spawn(spec.bin, spec.args, { cwd, detached: !IS_WINDOWS, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(spec.bin, spec.args, {
+      cwd,
+      env: runOpts.env ? mergeAdapterEnv(process.env, runOpts.env) : process.env,
+      detached: !IS_WINDOWS,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
     if (child.pid != null) liveChildren.add(child.pid);
     timer = setInterval(() => {
       if (!tty) {
@@ -436,7 +451,7 @@ export function appendCliOverrides(args, opts = {}, { model = false, effort = fa
   return args;
 }
 
-export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: true, effort: true } }) {
+export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: true, effort: true }, env: adapterEnv }) {
   const capabilitySupport = normalizeCapabilities(capabilities);
   // Spawns read adapter.bin (not the closed-over param) so preflight can rewrite
   // it to an absolute path when the CLI is found off-PATH in a known install dir.
@@ -451,6 +466,7 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       const result = await runAgent(adapter.bin, args, wd, `${name} authoring`, {
         stageTimeoutMs: opts.stageTimeoutMs,
         stage: "author",
+        env: adapterEnv,
       });
       if (!result.ok) throw new Error(result.out || `Command failed: ${adapter.bin}`);
       const out = result.out;
@@ -479,6 +495,7 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
         stageTimeoutMs: opts.stageTimeoutMs,
         stage: "review",
         round: opts.round,
+        env: adapterEnv,
       });
       const captured = raw || out;
       const usage = parseRunUsage(captured, modelFromArgs(args, opts));
