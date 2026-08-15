@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.314 — 2026-08-15
+- add per-adapter env overrides and a zai (GLM) adapter (#491)
+
 ## v0.4.313 — 2026-08-14
 - Docs describe the integration/base merge as squash-specific; it fires on any divergence (closes [#487](https://github.com/bbk1ng/agent-orch/issues/487))
 
