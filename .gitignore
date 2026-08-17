@@ -12,6 +12,13 @@ docs/*.md
 !docs/idea-detach-dashboard-visibility.md
 !docs/idea-agent-quota-exclusion.md
 !docs/idea-agent-readiness-audit.md
+!docs/cli-simplification-proposal.md
+!docs/cli-simplification-design.md
+!docs/cli-simplification-implementation-plan.md
+!docs/cli-simplification-review-record.md
+!docs/cli-v2-proposal.md
+!docs/cli-v2-design.md
+!docs/cli-v2-implementation-plan.md
 # subdir markdown isn't matched by docs/*.md, so ignore internal doc dirs wholesale
 docs/superpowers/
 tasks/
