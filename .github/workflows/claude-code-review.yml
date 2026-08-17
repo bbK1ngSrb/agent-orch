@@ -22,15 +22,21 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
-      issues: read
+      # write, not read: the GITHUB_TOKEN is scoped per job, so a read-only
+      # pull-requests scope makes it physically impossible for the review agent
+      # to publish a review or an inline comment — the API call is rejected and
+      # the job still exits 0. See issue #495.
+      pull-requests: write
+      issues: write
       id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          fetch-depth: 1
+          # Full history: `git diff base...head` needs the merge base locally,
+          # which a depth-1 shallow clone does not have.
+          fetch-depth: 0
 
       - name: Run Claude Code Review
         id: claude-review
@@ -39,8 +45,22 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           allowed_bots: 'orch-bot[bot]'
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
+      # A green check that means "the job exited 0" is decoration, not a gate.
+      # If the agent had a tool call refused, say so loudly instead.
+      - name: Fail if the review agent was blocked
+        if: always() && steps.claude-review.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        run: |
+          denials=$(jq '[.. | objects | .permission_denials_count? // empty] | max // 0' \
+            "$EXECUTION_FILE")
+          echo "permission_denials_count: $denials"
+          if [ "${denials:-0}" -gt 0 ]; then
+            echo "::error::Review agent had $denials tool call(s) denied; the review is incomplete." >&2
+            exit 1
+          fi
