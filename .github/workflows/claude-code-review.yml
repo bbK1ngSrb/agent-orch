@@ -57,7 +57,12 @@ jobs:
         env:
           EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
         run: |
-          denials=$(jq '[.. | objects | .permission_denials_count? // empty] | max // 0' \
+          # -e/-o pipefail: an unreadable or malformed log must go red, not
+          # silently green — that failure mode is the whole point of this step.
+          # jq -s slurps, so this reads both a JSON array and newline-delimited
+          # JSON; `..` then walks whatever shape the log happens to have.
+          set -euo pipefail
+          denials=$(jq -s '[.. | objects | .permission_denials_count? // empty] | max // 0' \
             "$EXECUTION_FILE")
           echo "permission_denials_count: $denials"
           if [ "${denials:-0}" -gt 0 ]; then
