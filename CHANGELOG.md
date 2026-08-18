@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.327 — 2026-08-18
+- hand-landed: cap the test gate with stageTimeout so a hung suite cannot hold merge.lock (closes #505)
+
 ## v0.4.326 — 2026-08-18
 - hand-landed: allowlist the env handed to agent subprocesses, keeping GH_TOKEN out (closes #502)
 
