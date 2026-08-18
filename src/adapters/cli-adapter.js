@@ -15,6 +15,48 @@ const OUTPUT_COMPACT_THRESHOLD = Math.floor(MAX_AGENT_OUTPUT_CHARS * 1.5);
 const OUTPUT_TRUNCATED = `[orch: output truncated to last ${MAX_AGENT_OUTPUT_CHARS} chars]\n`;
 const liveChildren = new Set();
 
+// Adapter subprocesses run UNTRUSTED code: scanDiff inspects the diff an agent
+// *writes*, never what it can *read* from its own environment. So the child gets
+// a freshly built, allowlisted env instead of a copy of process.env. Allowlist,
+// not blocklist: a blocklist only covers the one credential whoever wrote it
+// happened to think of, and leaves every other ambient secret exposed.
+// Deliberately absent: GH_TOKEN / GITHUB_TOKEN (cli.js mints a GitHub App
+// installation token into GH_TOKEN for orch's own `gh` shell-outs — no agent has
+// business seeing it; copilot uses its HOME login or COPILOT_GITHUB_TOKEN),
+// NODE_OPTIONS (code injection into the Node-based CLIs), ORCH_* (only ever read
+// in the parent, cli-adapter.js:48,61).
+const ENV_ALLOW = new Set([
+  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "TMPDIR", "TMP", "TEMP", "TZ",
+  "SSH_AUTH_SOCK", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+  // Windows: without SystemRoot/windir socket and DNS init fails outright.
+  "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT", "COMSPEC", "USERPROFILE",
+  "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES",
+  "PROGRAMFILES(X86)", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
+]);
+// Families an agent CLI genuinely needs: locale, XDG/config dirs, git identity,
+// and each provider's own auth/endpoint vars. HOME is what lets every CLI find
+// its persisted login (~/.claude, ~/.codex, ~/.copilot, ...), the normal path.
+const ENV_ALLOW_PREFIXES = [
+  "LC_", "XDG_", "GIT_AUTHOR_", "GIT_COMMITTER_",
+  "ANTHROPIC_", "CLAUDE_", "OPENAI_", "CODEX_", "GEMINI_", "GOOGLE_",
+  "XAI_", "GROK_", "KIMI_", "MOONSHOT_", "COPILOT_", "ZAI_", "CCR_",
+];
+
+// Windows env names are case-insensitive in process.env but not in a plain
+// object copy, so match on the uppercased name and keep the original casing.
+export function allowlistEnv(base) {
+  const out = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value === undefined) continue;
+    const name = key.toUpperCase();
+    if (ENV_ALLOW.has(name) || ENV_ALLOW_PREFIXES.some((prefix) => name.startsWith(prefix))) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 export function mergeAdapterEnv(base, overrides) {
   if (overrides == null) return base;
   const merged = { ...base, ...overrides };
@@ -213,9 +255,12 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
       finish({ out, raw: out, ok: false });
       return;
     }
+    const childEnv = allowlistEnv(process.env);
     const child = spawn(spec.bin, spec.args, {
       cwd,
-      env: runOpts.env ? mergeAdapterEnv(process.env, runOpts.env) : process.env,
+      // Allowlist first, adapter overrides last: zai's `ANTHROPIC_API_KEY: undefined`
+      // must delete a key that survived the filter, not one added after it.
+      env: runOpts.env ? mergeAdapterEnv(childEnv, runOpts.env) : childEnv,
       detached: !IS_WINDOWS,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
