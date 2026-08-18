@@ -456,7 +456,8 @@ test("docs document main.autoMerge for the persistent integration PR", () => {
 test("docs explain main.autoMerge is pinned to the verified integration tip (#422 part 4)", () => {
   // tryMergeDirect / openIntegrationPr pass the tip this cycle pushed as sha=.
   // A concurrent peer that advances the head is legitimate green work — 409 is
-  // logged once and that peer owns the newer tip; other errors stay swallowed.
+  // logged once and that peer owns the newer tip; 405 stays swallowed, other
+  // errors are logged.
   for (const doc of [readme, manual]) {
     assert.match(doc, /pinned to the\s+integration tip this cycle (?:pushed and )?verified/i);
     assert.match(

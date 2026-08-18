@@ -1375,8 +1375,11 @@ release:
   this cycle's push and its merge attempt is legitimate green work, not an
   intruder. On 409 (head moved) orch logs once that *integration advanced past
   the commit this cycle verified — the newer cycle will merge it*, does not
-  escalate, and leaves the cycle's `merged` status and PR URL alone; every
-  other error stays swallowed so a still-pending check is not cycle noise. This
+  escalate, and leaves the cycle's `merged` status and PR URL alone. A 405
+  ("not mergeable" — checks pending, review missing, or already merged) stays
+  swallowed so a still-pending check is not cycle noise; every other error
+  (401/403 auth, a bad PR ref, a network failure) is logged once instead of
+  being hidden behind the same "not ready yet" reading. This
   is the fallback for when native auto-merge (`github.autoMergePr`) stalls at
   `BLOCKED` because the review requirement is satisfied only through a ruleset
   `bypass_actors` grant rather than a human approval. The direct merge runs as

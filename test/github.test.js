@@ -691,7 +691,8 @@ test("openIntegrationPr swallows main.autoMerge direct-merge failures so GitHub 
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
   // 405 ("not mergeable yet") is the expected refusal — checks pending, review
   // missing, or already merged. It stays silent so it never becomes cycle noise.
-  assert.ok(!logs.some((m) => /direct merge/.test(m)), "405 merge refusal must stay swallowed silently");
+  // The only log allowed here is the unrelated "updated integration PR" line.
+  assert.deepEqual(logs, ["updated integration PR #12: https://github.com/o/r/pull/12"], "405 merge refusal must stay swallowed silently");
 });
 
 test("openIntegrationPr logs a non-405/409 direct-merge failure instead of hiding it as 'not ready'", async () => {
@@ -717,7 +718,10 @@ test("openIntegrationPr logs a non-405/409 direct-merge failure instead of hidin
     );
 
     assert.equal(r.prUrl, "https://github.com/o/r/pull/12", "PR url must still be returned");
-    assert.ok(logs.some((m) => m.includes(stderr)), `${stderr} must be surfaced, not swallowed`);
+    assert.ok(
+      logs.some((m) => /^direct merge of 12 failed with an unexpected error/.test(m) && m.includes(stderr)),
+      `${stderr} must be surfaced by the merge path itself, not swallowed`,
+    );
   }
 });
 
