@@ -1153,20 +1153,59 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   }
 }
 
+// Which flags each command actually reads. A flag parsed but never consumed by
+// the command it was typed on is a lie about what the command will do — `orch
+// issue 42 --merge` reads as "run and merge" while only `orch pr` consumes
+// --merge. Rather than one bespoke guard per flag, every command declares its
+// flag set here and one check rejects the rest. Entries are derived from what
+// each dispatch branch actually reads, so adding a flag to a command means
+// adding it here too. --help/--version are legal everywhere (see below).
+// Commands with no entry (unknown input, which falls through to usage) are not
+// validated.
+export const COMMAND_FLAGS = {
+  init: ["config-file", "dry", "link"],
+  config: ["config-file"],
+  // `agent add <unregistered>` offers to build, and hands buildAgent the same
+  // flags as `agent build` — so both subcommands share one flag set.
+  agent: ["config-file", "dry", "pr", "author", "authors", "reviewer", "reviewers"],
+  task: ["config-file", "dry", "file", "cheap", "allow-protected", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
+  issue: ["config-file", "dry", "cheap", "allow-protected", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
+  review: ["config-file", "dry", "cheap", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
+  continue: ["config-file", "dry", "no-tidy", "author", "authors", "reviewer", "reviewers"],
+  pr: ["config-file", "dry", "merge", "author", "authors", "reviewer", "reviewers"],
+  release: ["dry"],
+  dashboard: ["json", "limit", "check-history", "once", "plain", "refresh-ms"],
+  completion: [],
+  upgrade: ["check", "dry"],
+  update: ["check", "dry"],
+  mcp: [],
+  version: [],
+  help: [],
+};
+
+// `--help`/`--version` short-circuit main() before any command runs, so they are
+// the *effective* command whenever present: `orch pr 42 --merge --help` prints
+// usage and exits 0 having merged nothing. Asking to merge and asking what the
+// tool is are contradictory requests; neither silently wins.
+export function checkFlags(command, flags) {
+  const effective = flags.help ? "help" : flags.version ? "version" : command;
+  const allowed = COMMAND_FLAGS[effective];
+  if (!allowed) return;
+  for (const name of Object.keys(flags)) {
+    if (name === "help" || name === "version" || allowed.includes(name)) continue;
+    const valid = Object.keys(COMMAND_FLAGS).filter((c) => COMMAND_FLAGS[c].includes(name));
+    throw new Error(
+      `--${name} is not valid with 'orch ${effective}'` +
+      (valid.length ? ` — only with: ${valid.map((c) => `orch ${c}`).join(", ")}` : " — it is not a flag of any command"),
+    );
+  }
+}
+
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
-  // `--merge` is only consumed by `orch pr <n>`. On every other command it used
-  // to parse and vanish, so `orch issue 42 --merge` read as "run and merge" while
-  // doing nothing of the sort. A silently-dropped flag is a lie about what the
-  // command will do; reject it before anything else runs. First statement after
-  // parse deliberately: behind any early return (version/help/upgrade) the flag
-  // is still dropped silently on that command. `--help`/`--version` short-circuit
-  // even `orch pr` — printing usage and exiting 0 while the merge never happens —
-  // so pairing them with `--merge` is a contradiction (do a thing / describe the
-  // tool) and is rejected too rather than silently winning.
-  if (flags.merge && (command !== "pr" || flags.help || flags.version)) {
-    throw new Error("--merge is only valid with 'orch pr <number>', and cannot be combined with --help/--version");
-  }
+  // First statement after parse deliberately: behind any early return
+  // (version/help/upgrade) a misapplied flag is still dropped silently.
+  checkFlags(command, flags);
 
   if (command === "__update-check-child") {
     await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
@@ -1191,6 +1230,11 @@ export async function main(argv, deps = {}) {
 
   const repo = process.cwd();
   const orchDir = join(repo, ".orch");
+  // --dry for the write commands that have no cycle of their own to stub out
+  // (`init`, `agent add`, `pr`, `release`). They used to parse the flag and
+  // mutate anyway — a silent no-op safety rail. Same expression the cycle
+  // commands use below, so ORCH_DRYRUN=1 is honored identically.
+  const dryRun = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
 
   if (!flags.dry && command && command !== "completion") {
     maybeNotifyUpdate({ current: VERSION, json: Boolean(flags.json) }).catch(() => {});
@@ -1221,6 +1265,12 @@ export async function main(argv, deps = {}) {
   const preflightFn = deps.preflight || preflight;
 
   if (command === "init") {
+    if (dryRun) {
+      console.log(`orch (dry): would write ${join(orchDir, "orch.yml")} (only if absent) and ${join(orchDir, "ORCH.md")} (overwrites)`);
+      // --link is the one init effect outside .orch/, so name it explicitly.
+      if (flags.link) console.log("orch (dry): would link .orch/ORCH.md into the agent docs (CLAUDE.md / AGENTS.md / GEMINI.md)");
+      return;
+    }
     // Preflight first, writability-only: it probes .orch/ and fails with a
     // clear message before any real write, so a read-only repo never surfaces
     // a raw EACCES from the mkdir/writeFile below. `agents: []` skips the
@@ -1288,23 +1338,32 @@ export async function main(argv, deps = {}) {
       reportAgentBuildResult(name, result);
       return;
     }
-    const file = configPath(repo);
-    if (!existsSync(file)) throw new Error("no orch.yml — run `orch init` first");
-    if (load(repo).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
+    // Honor --config-file like every other write-capable command: edit the file the
+    // run would actually read, not always the default .orch/orch.yml.
+    const file = flags["config-file"] || configPath(repo);
+    if (!existsSync(file)) throw new Error(`no ${flags["config-file"] ? file : "orch.yml"} — run \`orch init\` first`);
+    if (load(repo, flags["config-file"]).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
     const text = readFileSync(file, "utf8");
     // Two on-disk shapes: inline flow (`agents: [claude, codex]`) and the
     // scaffold's block sequence (`agents:\n  - claude\n  - codex`). Support both
     // so `agent add` edits either without a full YAML round-trip (which would
     // strip the file's comments).
     const inlineRe = /^(agents:\s*\[)([^\]]*)(\])/m;
+    let updated;
     if (inlineRe.test(text)) {
-      writeFileSync(file, text.replace(inlineRe, (_m, open, inner, close) =>
-        `${open}${inner.trim() ? inner.trim() + ", " : ""}${name}${close}`));
+      updated = text.replace(inlineRe, (_m, open, inner, close) =>
+        `${open}${inner.trim() ? inner.trim() + ", " : ""}${name}${close}`);
     } else {
-      const updated = appendAgentToBlockList(text, name);
-      if (!updated) throw new Error("could not find `agents:` list in orch.yml — add it manually");
-      writeFileSync(file, updated);
+      updated = appendAgentToBlockList(text, name);
+      if (!updated) throw new Error(`could not find \`agents:\` list in ${file} — add it manually`);
     }
+    // Dry runs stop here — after the edit is computed, so --dry still surfaces a
+    // config the real run would fail on.
+    if (dryRun) {
+      console.log(`orch (dry): would add ${name} to agents in ${file}`);
+      return;
+    }
+    writeFileSync(file, updated);
     console.log(`orch: added ${name} to agents`);
     return;
   }
@@ -1722,6 +1781,10 @@ export async function main(argv, deps = {}) {
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const n = rest[0];
     if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch pr <number> [--merge]");
+    if (dryRun) {
+      console.log(`orch (dry): would review PR #${n}${flags.merge ? " and merge it if approved" : ""}`);
+      return;
+    }
     preflightFn(cfg, orchDir);
     requireGhAuth((deps.githubDeps || githubDeps)().gh);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -1787,6 +1850,7 @@ export async function main(argv, deps = {}) {
   if (command === "release") {
     const entry = rest.join(" ").trim();
     if (!entry) throw new Error('usage: orch release "<changelog entry>"');
+    if (dryRun) { console.log(`orch (dry): would bump version + CHANGELOG with "${entry}"`); return; }
     const dirty = git.gitTry(["status", "--porcelain"], repo);
     if (!dirty.ok) throw new Error(`orch release: git status failed: ${dirty.out.trim() || "unknown error"}`);
     const dirtyLines = dirty.out.split("\n").map((l) => l.trimEnd()).filter(Boolean);
@@ -1844,7 +1908,7 @@ Options:
   --reviewers <roles>   Set comma-separated reviewers.
   --cheap               Use cheap.role; cheap.paths can auto-route work orders.
   --file <file>         With task, read the work order from a JSON file.
-  --config-file <file>  Config YAML path; with config, write there.
+  --config-file <file>  Config YAML path; with config / agent add, write there.
   --allow-protected     Run even if the work order names a protected path.
   --dry                 Plan without shelling out or changing git.
   --check               With upgrade, check latest version without installing.
