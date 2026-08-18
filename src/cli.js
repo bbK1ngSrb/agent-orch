@@ -1191,6 +1191,11 @@ export async function main(argv, deps = {}) {
 
   const repo = process.cwd();
   const orchDir = join(repo, ".orch");
+  // --dry for the write commands that have no cycle of their own to stub out
+  // (`init`, `agent add`, `pr`, `release`). They used to parse the flag and
+  // mutate anyway — a silent no-op safety rail. Same expression the cycle
+  // commands use below, so ORCH_DRYRUN=1 is honored identically.
+  const dryRun = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
 
   if (!flags.dry && command && command !== "completion") {
     maybeNotifyUpdate({ current: VERSION, json: Boolean(flags.json) }).catch(() => {});
@@ -1221,6 +1226,10 @@ export async function main(argv, deps = {}) {
   const preflightFn = deps.preflight || preflight;
 
   if (command === "init") {
+    if (dryRun) {
+      console.log(`orch (dry): would write ${join(orchDir, "orch.yml")} (only if absent) and ${join(orchDir, "ORCH.md")} (overwrites)`);
+      return;
+    }
     // Preflight first, writability-only: it probes .orch/ and fails with a
     // clear message before any real write, so a read-only repo never surfaces
     // a raw EACCES from the mkdir/writeFile below. `agents: []` skips the
@@ -1291,6 +1300,7 @@ export async function main(argv, deps = {}) {
     const file = configPath(repo);
     if (!existsSync(file)) throw new Error("no orch.yml — run `orch init` first");
     if (load(repo).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
+    if (dryRun) { console.log(`orch (dry): would add ${name} to agents in ${file}`); return; }
     const text = readFileSync(file, "utf8");
     // Two on-disk shapes: inline flow (`agents: [claude, codex]`) and the
     // scaffold's block sequence (`agents:\n  - claude\n  - codex`). Support both
@@ -1722,6 +1732,10 @@ export async function main(argv, deps = {}) {
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const n = rest[0];
     if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch pr <number> [--merge]");
+    if (dryRun) {
+      console.log(`orch (dry): would review PR #${n}${flags.merge ? " and merge it if approved" : ""}`);
+      return;
+    }
     preflightFn(cfg, orchDir);
     requireGhAuth((deps.githubDeps || githubDeps)().gh);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -1787,6 +1801,7 @@ export async function main(argv, deps = {}) {
   if (command === "release") {
     const entry = rest.join(" ").trim();
     if (!entry) throw new Error('usage: orch release "<changelog entry>"');
+    if (dryRun) { console.log(`orch (dry): would bump version + CHANGELOG with "${entry}"`); return; }
     const dirty = git.gitTry(["status", "--porcelain"], repo);
     if (!dirty.ok) throw new Error(`orch release: git status failed: ${dirty.out.trim() || "unknown error"}`);
     const dirtyLines = dirty.out.split("\n").map((l) => l.trimEnd()).filter(Boolean);
