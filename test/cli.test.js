@@ -3242,3 +3242,69 @@ test("unknown command errors instead of printing usage and exiting 0", async () 
   }
   assert.match(logs.join("\n"), /Usage: orch <command>/);
 });
+
+// --dry is a documented safety rail ("plan without shelling out or changing
+// git"), but the write commands with no cycle of their own to stub out — init,
+// agent add, pr, release — parsed the flag and then mutated anyway. Each test
+// below asserts the ABSENT effect (no file written, no version bumped, no
+// shell-out), not the printed line: a log assertion alone would still pass if
+// the real work ran underneath it.
+test("orch init --dry writes nothing", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-init-dry-"));
+  // --link is included: it is the one init effect outside .orch/, writing to the
+  // agent docs in the repo root.
+  const logs = await runMainInRepo(d, ["init", "--link", "--dry"], {
+    preflight() { throw new Error("preflight ran"); },
+    detectAgents: () => { throw new Error("detectAgents ran"); },
+  });
+  assert.equal(existsSync(join(d, ".orch", "orch.yml")), false);
+  assert.equal(existsSync(join(d, ".orch", "ORCH.md")), false);
+  assert.equal(existsSync(join(d, "CLAUDE.md")), false);
+  assert.match(logs.join("\n"), /orch \(dry\)/);
+});
+
+test("orch agent add --dry leaves orch.yml byte-identical", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-dry-"));
+  await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
+  const file = join(d, ".orch", "orch.yml");
+  const before = readFileSync(file, "utf8");
+  const logs = await runMainInRepo(d, ["agent", "add", "gemini", "--dry"]);
+  assert.equal(readFileSync(file, "utf8"), before);
+  assert.match(logs.join("\n"), /orch \(dry\)/);
+  // ...and the real run still edits it, so the guard didn't disable the command.
+  await runMainInRepo(d, ["agent", "add", "gemini"]);
+  assert.match(readFileSync(file, "utf8"), /gemini/);
+});
+
+test("orch pr --merge --dry never preflights, authenticates, or shells out to gh", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-pr-dry-"));
+  const logs = await runMainInRepo(d, ["pr", "123", "--merge", "--dry"], {
+    preflight() { throw new Error("preflight ran"); },
+    githubDeps: () => ({ gh: () => { throw new Error("gh ran"); } }),
+  });
+  assert.match(logs.join("\n"), /orch \(dry\).*#123/);
+  assert.equal(existsSync(join(d, ".orch", "lock")), false, "no lock acquired");
+  // Usage validation still precedes the dry guard.
+  await assert.rejects(
+    () => runMainInRepo(d, ["pr", "abc", "--dry"], { preflight() {} }),
+    /usage: orch pr <number>/,
+  );
+});
+
+test("orch release --dry leaves package.json and CHANGELOG untouched", async () => {
+  const repo = releaseFixture();
+  const before = readFileSync(join(repo, "package.json"), "utf8");
+  const logs = await runMainInRepo(repo, ["release", "would-be entry"], {}); // sanity: real path bumps
+  assert.match(logs.join("\n"), /chore\(release\)/);
+  const bumped = readFileSync(join(repo, "package.json"), "utf8");
+  assert.notEqual(bumped, before);
+
+  const dryRepo = releaseFixture();
+  const pkgBefore = readFileSync(join(dryRepo, "package.json"), "utf8");
+  const dryLogs = await runMainInRepo(dryRepo, ["release", "hand-landed fix", "--dry"]);
+  assert.equal(readFileSync(join(dryRepo, "package.json"), "utf8"), pkgBefore);
+  assert.equal(existsSync(join(dryRepo, "CHANGELOG.md")), false);
+  assert.match(dryLogs.join("\n"), /orch \(dry\)/);
+  // Usage validation still precedes the dry guard.
+  await assert.rejects(() => runMainInRepo(dryRepo, ["release", "--dry"]), /usage: orch release/);
+});
