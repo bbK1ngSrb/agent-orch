@@ -1153,20 +1153,59 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   }
 }
 
+// Which flags each command actually reads. A flag parsed but never consumed by
+// the command it was typed on is a lie about what the command will do — `orch
+// issue 42 --merge` reads as "run and merge" while only `orch pr` consumes
+// --merge. Rather than one bespoke guard per flag, every command declares its
+// flag set here and one check rejects the rest. Entries are derived from what
+// each dispatch branch actually reads, so adding a flag to a command means
+// adding it here too. --help/--version are legal everywhere (see below).
+// Commands with no entry (unknown input, which falls through to usage) are not
+// validated.
+export const COMMAND_FLAGS = {
+  init: ["config-file", "link"],
+  config: ["config-file"],
+  // `agent add <unregistered>` offers to build, and hands buildAgent the same
+  // flags as `agent build` — so both subcommands share one flag set.
+  agent: ["config-file", "dry", "pr", "author", "authors", "reviewer", "reviewers"],
+  task: ["config-file", "dry", "file", "cheap", "allow-protected", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
+  issue: ["config-file", "dry", "cheap", "allow-protected", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
+  review: ["config-file", "dry", "cheap", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
+  continue: ["config-file", "dry", "no-tidy", "author", "authors", "reviewer", "reviewers"],
+  pr: ["config-file", "merge", "author", "authors", "reviewer", "reviewers"],
+  release: [],
+  dashboard: ["json", "limit", "check-history", "once", "plain", "refresh-ms"],
+  completion: [],
+  upgrade: ["check"],
+  update: ["check"],
+  mcp: [],
+  version: [],
+  help: [],
+};
+
+// `--help`/`--version` short-circuit main() before any command runs, so they are
+// the *effective* command whenever present: `orch pr 42 --merge --help` prints
+// usage and exits 0 having merged nothing. Asking to merge and asking what the
+// tool is are contradictory requests; neither silently wins.
+export function checkFlags(command, flags) {
+  const effective = flags.help ? "help" : flags.version ? "version" : command;
+  const allowed = COMMAND_FLAGS[effective];
+  if (!allowed) return;
+  for (const name of Object.keys(flags)) {
+    if (name === "help" || name === "version" || allowed.includes(name)) continue;
+    const valid = Object.keys(COMMAND_FLAGS).filter((c) => COMMAND_FLAGS[c].includes(name));
+    throw new Error(
+      `--${name} is not valid with 'orch ${effective}'` +
+      (valid.length ? ` — only with: ${valid.map((c) => `orch ${c}`).join(", ")}` : " — it is not a flag of any command"),
+    );
+  }
+}
+
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
-  // `--merge` is only consumed by `orch pr <n>`. On every other command it used
-  // to parse and vanish, so `orch issue 42 --merge` read as "run and merge" while
-  // doing nothing of the sort. A silently-dropped flag is a lie about what the
-  // command will do; reject it before anything else runs. First statement after
-  // parse deliberately: behind any early return (version/help/upgrade) the flag
-  // is still dropped silently on that command. `--help`/`--version` short-circuit
-  // even `orch pr` — printing usage and exiting 0 while the merge never happens —
-  // so pairing them with `--merge` is a contradiction (do a thing / describe the
-  // tool) and is rejected too rather than silently winning.
-  if (flags.merge && (command !== "pr" || flags.help || flags.version)) {
-    throw new Error("--merge is only valid with 'orch pr <number>', and cannot be combined with --help/--version");
-  }
+  // First statement after parse deliberately: behind any early return
+  // (version/help/upgrade) a misapplied flag is still dropped silently.
+  checkFlags(command, flags);
 
   if (command === "__update-check-child") {
     await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
