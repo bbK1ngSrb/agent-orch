@@ -16,6 +16,7 @@ import { get } from "../src/adapters/index.js";
 import {
   makeCliAdapter,
   mergeAdapterEnv,
+  allowlistEnv,
   isUsageLimit,
   parseRunUsage,
   MAX_AGENT_OUTPUT_CHARS,
@@ -108,19 +109,39 @@ test("mergeAdapterEnv preserves, overrides, and deletes without mutating the bas
   assert.deepEqual(base, { inherited: "yes", replaced: "old", removed: "present" });
 });
 
-test("adapter env overrides reach the child and undefined removes an inherited key", async () => {
-  const inheritedKey = "ORCH_TEST_ADAPTER_INHERITED";
-  const overriddenKey = "ORCH_TEST_ADAPTER_OVERRIDDEN";
-  const deletedKey = "ORCH_TEST_ADAPTER_DELETED";
-  const prior = Object.fromEntries([inheritedKey, overriddenKey, deletedKey].map((key) => [key, process.env[key]]));
-  process.env[inheritedKey] = "inherited";
+test("allowlistEnv keeps only allowlisted names, case-insensitively", () => {
+  const filtered = allowlistEnv({
+    PATH: "/bin", Path: "C:\\Windows", ProgramData: "C:\\ProgramData",
+    ANTHROPIC_API_KEY: "k", CLAUDE_CODE_OAUTH_TOKEN: "t", https_proxy: "http://p",
+    GH_TOKEN: "ghs_leak", GITHUB_TOKEN: "ghp_leak", AWS_SECRET_ACCESS_KEY: "aws",
+    NODE_OPTIONS: "--require evil.js", ORCH_STAGE_TIMEOUT_MS: "1", SOME_RANDOM_SECRET: "s",
+  });
+  assert.deepEqual(filtered, {
+    PATH: "/bin", Path: "C:\\Windows", ProgramData: "C:\\ProgramData",
+    ANTHROPIC_API_KEY: "k", CLAUDE_CODE_OAUTH_TOKEN: "t", https_proxy: "http://p",
+  });
+});
+
+test("child env is allowlisted: GH_TOKEN and ambient secrets never reach the agent", async () => {
+  const allowedKey = "ANTHROPIC_ORCH_TEST_INHERITED";
+  const overriddenKey = "ANTHROPIC_ORCH_TEST_OVERRIDDEN";
+  const deletedKey = "ANTHROPIC_ORCH_TEST_DELETED";
+  const secretKey = "ORCH_TEST_ADAPTER_SECRET";
+  const keys = [allowedKey, overriddenKey, deletedKey, secretKey, "GH_TOKEN"];
+  const prior = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  process.env[allowedKey] = "inherited";
   process.env[overriddenKey] = "parent";
   process.env[deletedKey] = "remove-me";
+  process.env[secretKey] = "ambient-secret";
+  process.env.GH_TOKEN = "ghs_installation_token";
   try {
     const script = `process.stdout.write(JSON.stringify({
-      inherited: process.env[${JSON.stringify(inheritedKey)}],
+      inherited: process.env[${JSON.stringify(allowedKey)}],
       overridden: process.env[${JSON.stringify(overriddenKey)}],
       deleted: Object.hasOwn(process.env, ${JSON.stringify(deletedKey)}),
+      secret: Object.hasOwn(process.env, ${JSON.stringify(secretKey)}),
+      ghToken: Object.hasOwn(process.env, "GH_TOKEN"),
+      hasPath: Boolean(process.env.PATH || process.env.Path),
     }) + "\\nAGREE\\n")`;
     const adapter = makeCliAdapter({
       name: "env-spy",
@@ -132,6 +153,11 @@ test("adapter env overrides reach the child and undefined removes an inherited k
     assert.match(result.raw, /"inherited":"inherited"/);
     assert.match(result.raw, /"overridden":"adapter"/);
     assert.match(result.raw, /"deleted":false/);
+    // The point of the allowlist: neither orch's own GitHub credential nor any
+    // other ambient variable is visible to the untrusted agent subprocess.
+    assert.match(result.raw, /"secret":false/);
+    assert.match(result.raw, /"ghToken":false/);
+    assert.match(result.raw, /"hasPath":true/);
   } finally {
     for (const [key, value] of Object.entries(prior)) {
       if (value === undefined) delete process.env[key];
