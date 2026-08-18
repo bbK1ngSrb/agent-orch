@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.324 — 2026-08-18
+- hand-landed: agent add honors --config-file and --dry (closes #498)
+
 ## v0.4.323 — 2026-08-18
 - hand-landed: honor --dry on init/pr/release/agent add (closes #497)
 
