@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.319 — 2026-08-18
+- Round counter can drift on crash-during-revise, softening roundCap by one round on resume (closes [#506](https://github.com/bbk1ng/agent-orch/issues/506))
+
 ## v0.4.318 — 2026-08-18
 - orch pr <n> --merge never checks CI/status checks before merging (unlike the integration-PR path) (closes [#508](https://github.com/bbk1ng/agent-orch/issues/508))
 
