@@ -6,7 +6,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -267,6 +267,33 @@ test("orch upgrade --check routes through the self-update runner", async () => {
   });
   assert.deepEqual(calls, [["npm", "view", "@bbk1ng/agent-orch", "version"]]);
   assert.match(out, /upgrade available/);
+});
+
+test("orch upgrade --dry reaches the runner and installs nothing", async () => {
+  // --dry is consumed by runUpgrade, so the per-command flag guard must allow it
+  // on upgrade/update; a missing table entry would reject a working invocation.
+  let out = "";
+  const calls = [];
+  const deps = {
+    stdout: { isTTY: false, write: (chunk) => { out += chunk; } },
+    upgradeDeps: {
+      current: "1.0.0",
+      resolveInstall: () => ({ type: "registry" }),
+      exec: (cmd, args = []) => {
+        calls.push([cmd, ...args]);
+        return "1.1.0";
+      },
+    },
+  };
+  await main(["upgrade", "--dry"], deps);
+  assert.deepEqual(calls, [["npm", "view", "@bbk1ng/agent-orch", "version"]]);
+  assert.match(out, /would run `npm install -g @bbk1ng\/agent-orch@latest`/);
+
+  out = "";
+  calls.length = 0;
+  await main(["update", "--dry"], deps);
+  assert.deepEqual(calls, [["npm", "view", "@bbk1ng/agent-orch", "version"]]);
+  assert.match(out, /would run/);
 });
 
 test("help documents upgrade command and check flag", async () => {
@@ -1392,34 +1419,65 @@ test("pr rejects a non-numeric PR number", async () => {
   await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
 });
 
-test("--merge is rejected outside `orch pr`", async () => {
-  // Only runPr reads flags.merge. Everywhere else the flag parsed and vanished,
-  // which read to a human as "run and merge" while the cycle merged on its own
-  // config default. Reject loudly instead of dropping it.
-  // Includes the commands that return early (version/help/upgrade): the guard
-  // has to sit ahead of those returns, or they exit 0 with the flag dropped —
-  // exactly the silent lie the guard exists to prevent.
-  // Split from #345 per kimi review on the overbundled security-floor branch:
-  // this CLI guard lands alone so it is not gated on scanner review.
-  const argvs = [
-    ["issue", "42", "--merge"], ["task", "x", "--merge"], ["review", "b", "--merge"],
-    ["version", "--merge"], ["help", "--merge"],
-    ["upgrade", "--merge"], ["update", "--merge"],
+test("a flag not read by the command is rejected", async () => {
+  // Every command declares the flags it actually reads (COMMAND_FLAGS); anything
+  // else parsed and vanished, which reads to a human as "run and merge" (--merge)
+  // or "load this config" (--config-file) while nothing of the sort happens.
+  // Reject loudly instead of dropping it. The check sits ahead of the commands
+  // that return early (version/help/upgrade), or they exit 0 with the flag
+  // dropped — exactly the silent lie the guard exists to prevent.
+  const cases = [
+    [["issue", "42", "--merge"], /--merge is not valid with 'orch issue'/],
+    [["task", "x", "--merge"], /--merge is not valid with 'orch task'/],
+    [["review", "b", "--merge"], /--merge is not valid with 'orch review'/],
+    [["version", "--merge"], /--merge is not valid with 'orch version'/],
+    [["help", "--merge"], /--merge is not valid with 'orch help'/],
+    [["upgrade", "--merge"], /--merge is not valid with 'orch upgrade'/],
+    [["update", "--merge"], /--merge is not valid with 'orch update'/],
     // ...including on `pr` itself: --help/--version short-circuit main() before
     // runPr, so `orch pr 42 --merge --help` would print usage and exit 0 having
     // merged nothing. Asking to merge and asking what the tool is are
     // contradictory requests; neither one silently wins.
-    ["pr", "42", "--merge", "--help"], ["pr", "42", "--merge", "-h"], ["pr", "42", "--merge", "--version"],
+    [["pr", "42", "--merge", "--help"], /--merge is not valid with 'orch help'/],
+    [["pr", "42", "--merge", "-h"], /--merge is not valid with 'orch help'/],
+    [["pr", "42", "--merge", "--version"], /--merge is not valid with 'orch version'/],
+    // ...and the same rule for every other flag, not just --merge.
+    [["pr", "5", "--dry"], /--dry is not valid with 'orch pr'/],
+    [["release", "x", "--dry"], /--dry is not valid with 'orch release'/],
+    [["init", "--cheap"], /--cheap is not valid with 'orch init'/],
+    [["dashboard", "--config-file", "x.yml"], /--config-file is not valid with 'orch dashboard'/],
+    [["task", "x", "--limit", "3"], /--limit is not valid with 'orch task'/],
   ];
-  for (const argv of argvs) {
+  for (const [argv, message] of cases) {
     await assert.rejects(
-      () => runMainCapture(argv, { upgradeDeps: { exec: () => assert.fail("upgrade ran despite --merge") } }),
-      /--merge is only valid with 'orch pr <number>'/,
+      () => runMainCapture(argv, { upgradeDeps: { exec: () => assert.fail("upgrade ran despite a bad flag") } }),
+      message,
+      argv.join(" "),
     );
   }
-  // ...and the flag stays legal where it is actually consumed: `pr` gets past
-  // the guard and fails on its own usage check instead.
+  // The message points at where the flag IS legal.
+  await assert.rejects(() => runMainCapture(["issue", "42", "--merge"]), /only with: orch pr/);
+  // ...and a flag stays legal where it is actually consumed: `pr` gets past the
+  // guard and fails on its own usage check instead.
   await assert.rejects(() => runMainCapture(["pr", "abc", "--merge"]), /usage: orch pr <number>/);
+});
+
+test("COMMAND_FLAGS only names flags that exist", () => {
+  // A typo'd entry (`config_file`) would reject a *legal* flag on that command —
+  // the one hard break this guard can introduce. Same for a flag added to
+  // PARSE_OPTIONS and never added here: it becomes rejected everywhere.
+  const known = new Set(Object.keys(PARSE_OPTIONS));
+  const named = new Set();
+  for (const [command, names] of Object.entries(COMMAND_FLAGS)) {
+    for (const name of names) {
+      assert.ok(known.has(name), `orch ${command}: unknown flag --${name}`);
+      named.add(name);
+    }
+  }
+  for (const name of known) {
+    if (name === "help" || name === "version") continue; // legal on every command
+    assert.ok(named.has(name), `--${name} is in PARSE_OPTIONS but no command accepts it`);
+  }
 });
 
 test("dashboard rejects a non-numeric or non-positive --limit", async () => {
