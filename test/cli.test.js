@@ -269,6 +269,33 @@ test("orch upgrade --check routes through the self-update runner", async () => {
   assert.match(out, /upgrade available/);
 });
 
+test("orch upgrade --dry reaches the runner and installs nothing", async () => {
+  // --dry is consumed by runUpgrade, so the per-command flag guard must allow it
+  // on upgrade/update; a missing table entry would reject a working invocation.
+  let out = "";
+  const calls = [];
+  const deps = {
+    stdout: { isTTY: false, write: (chunk) => { out += chunk; } },
+    upgradeDeps: {
+      current: "1.0.0",
+      resolveInstall: () => ({ type: "registry" }),
+      exec: (cmd, args = []) => {
+        calls.push([cmd, ...args]);
+        return "1.1.0";
+      },
+    },
+  };
+  await main(["upgrade", "--dry"], deps);
+  assert.deepEqual(calls, [["npm", "view", "@bbk1ng/agent-orch", "version"]]);
+  assert.match(out, /would run `npm install -g @bbk1ng\/agent-orch@latest`/);
+
+  out = "";
+  calls.length = 0;
+  await main(["update", "--dry"], deps);
+  assert.deepEqual(calls, [["npm", "view", "@bbk1ng/agent-orch", "version"]]);
+  assert.match(out, /would run/);
+});
+
 test("help documents upgrade command and check flag", async () => {
   const prevLog = console.log;
   let out = "";
