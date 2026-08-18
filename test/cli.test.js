@@ -1441,9 +1441,11 @@ test("a flag not read by the command is rejected", async () => {
     [["pr", "42", "--merge", "--help"], /--merge is not valid with 'orch help'/],
     [["pr", "42", "--merge", "-h"], /--merge is not valid with 'orch help'/],
     [["pr", "42", "--merge", "--version"], /--merge is not valid with 'orch version'/],
-    // ...and the same rule for every other flag, not just --merge.
-    [["pr", "5", "--dry"], /--dry is not valid with 'orch pr'/],
-    [["release", "x", "--dry"], /--dry is not valid with 'orch release'/],
+    // ...and the same rule for every other flag, not just --merge. `--dry` is
+    // legal on `pr`/`release`/`init` (they plan without writing), so the
+    // not-read flag exercised here is one those commands genuinely ignore.
+    [["pr", "5", "--cheap"], /--cheap is not valid with 'orch pr'/],
+    [["release", "x", "--cheap"], /--cheap is not valid with 'orch release'/],
     [["init", "--cheap"], /--cheap is not valid with 'orch init'/],
     [["dashboard", "--config-file", "x.yml"], /--config-file is not valid with 'orch dashboard'/],
     [["task", "x", "--limit", "3"], /--limit is not valid with 'orch task'/],

@@ -1163,7 +1163,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
 // Commands with no entry (unknown input, which falls through to usage) are not
 // validated.
 export const COMMAND_FLAGS = {
-  init: ["config-file", "link"],
+  init: ["config-file", "dry", "link"],
   config: ["config-file"],
   // `agent add <unregistered>` offers to build, and hands buildAgent the same
   // flags as `agent build` — so both subcommands share one flag set.
@@ -1172,8 +1172,8 @@ export const COMMAND_FLAGS = {
   issue: ["config-file", "dry", "cheap", "allow-protected", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
   review: ["config-file", "dry", "cheap", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
   continue: ["config-file", "dry", "no-tidy", "author", "authors", "reviewer", "reviewers"],
-  pr: ["config-file", "merge", "author", "authors", "reviewer", "reviewers"],
-  release: [],
+  pr: ["config-file", "dry", "merge", "author", "authors", "reviewer", "reviewers"],
+  release: ["dry"],
   dashboard: ["json", "limit", "check-history", "once", "plain", "refresh-ms"],
   completion: [],
   upgrade: ["check", "dry"],
