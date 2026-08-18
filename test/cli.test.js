@@ -6,7 +6,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -1433,6 +1433,24 @@ test("a flag not read by the command is rejected", async () => {
   // ...and a flag stays legal where it is actually consumed: `pr` gets past the
   // guard and fails on its own usage check instead.
   await assert.rejects(() => runMainCapture(["pr", "abc", "--merge"]), /usage: orch pr <number>/);
+});
+
+test("COMMAND_FLAGS only names flags that exist", () => {
+  // A typo'd entry (`config_file`) would reject a *legal* flag on that command —
+  // the one hard break this guard can introduce. Same for a flag added to
+  // PARSE_OPTIONS and never added here: it becomes rejected everywhere.
+  const known = new Set(Object.keys(PARSE_OPTIONS));
+  const named = new Set();
+  for (const [command, names] of Object.entries(COMMAND_FLAGS)) {
+    for (const name of names) {
+      assert.ok(known.has(name), `orch ${command}: unknown flag --${name}`);
+      named.add(name);
+    }
+  }
+  for (const name of known) {
+    if (name === "help" || name === "version") continue; // legal on every command
+    assert.ok(named.has(name), `--${name} is in PARSE_OPTIONS but no command accepts it`);
+  }
 });
 
 test("dashboard rejects a non-numeric or non-positive --limit", async () => {
