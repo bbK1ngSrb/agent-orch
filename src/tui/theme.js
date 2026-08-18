@@ -30,7 +30,7 @@ export const C = {
 };
 
 export const VERDICT_SYMBOL = { merged: "✓", pr: "!", escalated: "✗", "merge-deferred": "▲" };
-export const STAGE_SYMBOL = { live: "●", started: "●", authoring: "●", review: "●", test: "●" };
+export const STAGE_SYMBOL = { live: "●", started: "●", authored: "●", authoring: "●", review: "●", test: "●" };
 
 // paint() no-ops when color is off and always resets the span so color
 // never bleeds into the box border.
