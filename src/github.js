@@ -60,17 +60,29 @@ function closingLinesFromIntegration(git, repo, base, branch) {
 
 // Optional `sha` pins the merge to the commit this cycle verified. A concurrent
 // cycle may advance the head after that — legitimate green work, not an
-// intruder. On 409 (head moved) log once and leave the newer tip to the cycle
-// that advanced it; every other error stays swallowed (checks still pending is
-// the common, expected case and must not become cycle noise).
+// intruder. Exactly two GitHub refusals are expected here and stay quiet:
+//   - 405 "not mergeable" — checks still pending, review still missing, or the
+//     PR is already merged. The common case; logging it every cycle is noise.
+//   - 409 — head moved (with a sha pin) or the merge is conflicted. With a pin
+//     we log once and leave the newer tip to the cycle that advanced it.
+// Anything else — 401/403 (token expired or lacks permission), 404 (wrong PR
+// ref, see #182), a malformed request, a network failure — is a real problem
+// that recurs every cycle. Swallowing it makes it look identical to "not ready
+// yet", so it gets logged. Still never throws: the PR is already open and the
+// caller must not fail the cycle over a merge that can be retried.
 function tryMergeDirect(gh, prRef, method, sha = null, log = () => {}) {
   try {
     mergeDirect(gh, prRef, method, sha);
   } catch (e) {
-    if (sha && /\b409\b/.test(String(e?.message || ""))) {
+    // gh puts the status in stderr ("(HTTP 405)"); e.message also carries the
+    // command line, whose `/pulls/<N>/merge` path would let PR #405 or #409
+    // match the status pattern and mute itself forever.
+    const msg = String(e?.stderr || e?.message || "");
+    if (sha && /\b409\b/.test(msg)) {
       log("integration advanced past the commit this cycle verified — the newer cycle will merge it");
+    } else if (!/\b(?:405|409)\b/.test(msg)) {
+      log(`direct merge of ${prRef} failed with an unexpected error (not a "not ready yet" refusal): ${redact(msg)}`);
     }
-    /* not ready or not mergeable */
   }
 }
 
@@ -296,7 +308,7 @@ async function pushAndCreatePr(ctx, deps, title, body, headSha = null) {
 // locally (keep the branch + write DECISION.md). Never pushes straight to main.
 export async function demote(ctx, deps) {
   const { repo, orchDir, branch, reviewedSha = null, reason, closes, cfg } = ctx;
-  const { git, gh, notify } = deps;
+  const { git, gh, notify, log = () => {} } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate(orchDir, branch,
       `# Escalation — ${branch}\n\nAuto-merge demoted.\n\n${reason}\n\nNo git remote or gh CLI available to open a PR. The branch is kept for manual review.\n`);
@@ -310,7 +322,7 @@ export async function demote(ctx, deps) {
   const prNumber = prNumberFromUrl(url);
   refreshFallbackPrBody(gh, prNumber, fallbackPrBody(reason, closes, mergeMethod, prNumber || "<PR-number>"));
   if (cfg?.github?.autoMergePr) {
-    tryMergeDirect(gh, prNumber || branch, mergeMethod, reviewedSha);
+    tryMergeDirect(gh, prNumber || branch, mergeMethod, reviewedSha, log);
   }
   return { prUrl: url };
 }
@@ -350,7 +362,7 @@ export async function openPr(ctx, deps) {
       // name here 404s every time, which looks identical to a legitimate
       // not-ready-yet once swallowed (same defect #182 fixed for the
       // integration path).
-      tryMergeDirect(gh, prNumber || branch, cfg.github.mergeMethod, reviewedSha);
+      tryMergeDirect(gh, prNumber || branch, cfg.github.mergeMethod, reviewedSha, log);
     } catch (e) {
       log(`could not enable auto-merge for ${branch}: ${e.message}`);
     }

@@ -734,9 +734,65 @@ test("openIntegrationPr swallows main.autoMerge direct-merge failures so GitHub 
     { gh, git, notify: { escalate() {} }, log: (m) => logs.push(m) },
   );
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
-  // Non-409 refusals (checks pending, not mergeable, etc.) stay silent — must
-  // not become cycle noise once a sha pin is in play.
-  assert.ok(!logs.some((m) => /integration advanced|409/.test(m)), "non-409 merge failure must stay swallowed silently");
+  // 405 ("not mergeable yet") is the expected refusal — checks pending, review
+  // missing, or already merged. It stays silent so it never becomes cycle noise.
+  // The only log allowed here is the unrelated "updated integration PR" line.
+  assert.deepEqual(logs, ["updated integration PR #12: https://github.com/o/r/pull/12"], "405 merge refusal must stay swallowed silently");
+});
+
+test("openIntegrationPr logs a non-405/409 direct-merge failure instead of hiding it as 'not ready'", async () => {
+  // An expired/underprivileged token 403s forever. Swallowed, it is
+  // indistinguishable from "checks still pending"; the operator has no reason
+  // to suspect auth. Log it — but still never escalate: the PR is open and the
+  // merge is retried next cycle.
+  for (const stderr of ["HTTP 403: Resource not accessible by integration", "HTTP 401: Bad credentials", "HTTP 404: Not Found"]) {
+    const logs = [];
+    const gh = (args) => {
+      if (args[0] === "--version") return "gh 2";
+      if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+      if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+      if (args[0] === "api") throw new Error(stderr);
+      return "";
+    };
+    const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+    const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+    const r = await openIntegrationPr(
+      { repo: "/r", orchDir: "/r/.orch", cfg, integrationSha: "integabc123" },
+      { gh, git, notify: { escalate() { throw new Error("must not escalate on a merge failure"); } }, log: (m) => logs.push(m) },
+    );
+
+    assert.equal(r.prUrl, "https://github.com/o/r/pull/12", "PR url must still be returned");
+    assert.ok(
+      logs.some((m) => /^direct merge of 12 failed with an unexpected error/.test(m) && m.includes(stderr)),
+      `${stderr} must be surfaced by the merge path itself, not swallowed`,
+    );
+  }
+});
+
+test("tryMergeDirect classifies on the gh status, not on a PR number that looks like one", async () => {
+  // e.message from execFileSync carries the whole command line, including
+  // `/pulls/405/merge` — matching on it would mute PR #405 permanently. gh puts
+  // the real status in stderr; that is what must decide.
+  const logs = [];
+  const err = new Error("Command failed: gh api -X PUT repos/{owner}/{repo}/pulls/405/merge\n");
+  err.stderr = "gh: Bad credentials (HTTP 401)\n";
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 405, url: "https://github.com/o/r/pull/405" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+    if (args[0] === "api") throw err;
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+  await openIntegrationPr(
+    { repo: "/r", orchDir: "/r/.orch", cfg, integrationSha: "integabc123" },
+    { gh, git, notify: { escalate() {} }, log: (m) => logs.push(m) },
+  );
+
+  assert.ok(logs.some((m) => /Bad credentials/.test(m)), "a 401 on PR #405 must still be logged");
 });
 
 test("openIntegrationPr pins main.autoMerge to the integration tip on create and update paths", async () => {
