@@ -50,6 +50,15 @@ test("liveCycles reflects the latest checkpoint stage", () => {
   assert.equal(c.round, 2);
 });
 
+test("liveCycles renders an authored checkpoint with a status bullet", () => {
+  const d = freshDir();
+  inflight.register(d, "sid-1", { branch: "b1", pid: process.pid, baseSha: "abc" });
+  checkpoint.record(d, "sid-1", { branch: "b1", round: 1, stage: "authored" });
+  const [c] = dashboard.liveCycles(d);
+  assert.equal(c.stage, "authored");
+  assert.match(dashboard.render(d), /\[● authored/);
+});
+
 test("liveCycles maps a started checkpoint to the authoring stage", () => {
   const d = freshDir();
   inflight.register(d, "sid-1", { branch: "b1", pid: process.pid, baseSha: "abc" });
