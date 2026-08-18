@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.318 — 2026-08-18
+- orch pr <n> --merge never checks CI/status checks before merging (unlike the integration-PR path) (closes [#508](https://github.com/bbk1ng/agent-orch/issues/508))
+
 ## v0.4.317 — 2026-08-18
 - hand-landed: log unexpected direct-merge failures instead of swallowing them (closes #504)
 
