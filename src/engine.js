@@ -295,7 +295,7 @@ export async function runCycle(opts, deps) {
           skipTest = false;
         } else {
           notify.phase("gate", `running: ${testCmd}`);
-          ({ pass } = gate.run(testCmd, worktree));
+          ({ pass } = gate.run(testCmd, worktree, stageTimeoutMs));
           notify.phase("gate", testCmd, pass ? "ok" : "fail");
           if (pass) checkpoint?.record(orchDir, sid, { branch, oid: reviewedSha, round, stage: "tested", reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
         }

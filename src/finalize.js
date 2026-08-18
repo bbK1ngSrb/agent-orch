@@ -202,8 +202,10 @@ async function landIntoIntegration(ctx, deps, { integration, integrationBranch, 
     });
   }
 
-  // Guard 2: re-run the test gate against integrated branch state.
-  const { pass } = gate.run(testCmd, integration);
+  // Guard 2: re-run the test gate against integrated branch state. This runs
+  // under merge.lock, so the gate gets the same wall-clock cap as an agent
+  // stage (#505) — a hung test command must not hold the lock forever.
+  const { pass } = gate.run(testCmd, integration, cfg.stageTimeout > 0 ? cfg.stageTimeout * 60_000 : 0);
   if (!pass) {
     git.git(["reset", "--hard", preSha], integration); // roll integration back
     if (quietFail) return { status: "merge-deferred", trigger: "integration-test", reason: "post-merge-test-fail" };

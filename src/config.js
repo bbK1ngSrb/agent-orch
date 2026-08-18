@@ -15,6 +15,8 @@ const DEFAULTS = {
   stageTimeout: 25, // #56: per-stage wall-clock cap in MINUTES; 0 disables. A stalled
                     // codex/claude stage is killed and the cycle fails (nonzero exit)
                     // instead of hanging forever on an infinite "still running" heartbeat.
+                    // #505: the test gate gets the same cap — it runs under merge.lock,
+                    // so a hung test command would stall every concurrent cycle.
   baseBranch: "main", // trunk orch reads from, diffs against, and opens PRs to
   integrationBranch: "orch/integration", // local merge target; baseBranch is advanced only by GitHub PR + ff-only fetch
   merge: "no-ff", // ff-only | no-ff | pr — "pr" skips local integration: an AGREE+green
