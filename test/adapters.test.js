@@ -158,6 +158,14 @@ test("child env is allowlisted: GH_TOKEN and ambient secrets never reach the age
     assert.match(result.raw, /"secret":false/);
     assert.match(result.raw, /"ghToken":false/);
     assert.match(result.raw, /"hasPath":true/);
+    // The branch every adapter but zai takes: no adapter `env:` at all, so the
+    // spawn gets the bare allowlist. Same guarantee must hold there.
+    const plain = makeCliAdapter({ name: "env-spy-plain", bin: process.execPath, buildArgs: () => nodeScript(script) });
+    const plainResult = await plain.audit("pr/x/y", tmpdir());
+    assert.match(plainResult.raw, /"ghToken":false/);
+    assert.match(plainResult.raw, /"secret":false/);
+    assert.match(plainResult.raw, /"hasPath":true/);
+    assert.match(plainResult.raw, /"inherited":"inherited"/);
   } finally {
     for (const [key, value] of Object.entries(prior)) {
       if (value === undefined) delete process.env[key];
