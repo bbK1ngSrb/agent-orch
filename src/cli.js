@@ -1733,6 +1733,7 @@ export async function main(argv, deps = {}) {
         githubDeps(),
       );
       console.log(`orch pr #${n}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${costSuffix(result)}`);
+      if (result.mergeHold) console.log(`orch pr #${n}: NOT merged — ${result.mergeHold}`);
       if (result.status !== "approved") process.exitCode = 2;
     } finally {
       releaseLock(orchDir);
