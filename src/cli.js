@@ -1293,24 +1293,27 @@ export async function main(argv, deps = {}) {
     const file = flags["config-file"] || configPath(repo);
     if (!existsSync(file)) throw new Error(`no ${flags["config-file"] ? file : "orch.yml"} — run \`orch init\` first`);
     if (load(repo, flags["config-file"]).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
-    if (Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1") {
-      console.log(`orch: [dry] would add ${name} to agents in ${file}`);
-      return;
-    }
     const text = readFileSync(file, "utf8");
     // Two on-disk shapes: inline flow (`agents: [claude, codex]`) and the
     // scaffold's block sequence (`agents:\n  - claude\n  - codex`). Support both
     // so `agent add` edits either without a full YAML round-trip (which would
     // strip the file's comments).
     const inlineRe = /^(agents:\s*\[)([^\]]*)(\])/m;
+    let updated;
     if (inlineRe.test(text)) {
-      writeFileSync(file, text.replace(inlineRe, (_m, open, inner, close) =>
-        `${open}${inner.trim() ? inner.trim() + ", " : ""}${name}${close}`));
+      updated = text.replace(inlineRe, (_m, open, inner, close) =>
+        `${open}${inner.trim() ? inner.trim() + ", " : ""}${name}${close}`);
     } else {
-      const updated = appendAgentToBlockList(text, name);
-      if (!updated) throw new Error("could not find `agents:` list in orch.yml — add it manually");
-      writeFileSync(file, updated);
+      updated = appendAgentToBlockList(text, name);
+      if (!updated) throw new Error(`could not find \`agents:\` list in ${file} — add it manually`);
     }
+    // Dry runs stop here — after the edit is computed, so --dry still surfaces a
+    // config the real run would fail on.
+    if (Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1") {
+      console.log(`orch: [dry] would add ${name} to agents in ${file}`);
+      return;
+    }
+    writeFileSync(file, updated);
     console.log(`orch: added ${name} to agents`);
     return;
   }
