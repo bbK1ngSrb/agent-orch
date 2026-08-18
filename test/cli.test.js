@@ -1014,6 +1014,30 @@ test("agent add still appends to a legacy inline `agents: [...]` config", async 
   }
 });
 
+test("agent add honors --config-file and --dry", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-flags-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    mkdirSync(join(d, ".orch"));
+    const dflt = "agents: [claude, codex]\ntest: auto\n";
+    writeFileSync(join(d, ".orch", "orch.yml"), dflt);
+    writeFileSync(join(d, "custom.yml"), "agents: [claude]\n");
+
+    // --dry writes nothing at all.
+    await main(["agent", "add", "copilot", "--config-file", "custom.yml", "--dry"]);
+    assert.equal(readFileSync(join(d, "custom.yml"), "utf8"), "agents: [claude]\n");
+    assert.equal(readFileSync(join(d, ".orch", "orch.yml"), "utf8"), dflt);
+
+    // without --dry the named file is edited, the default one is left alone.
+    await main(["agent", "add", "copilot", "--config-file", "custom.yml"]);
+    assert.equal(readFileSync(join(d, "custom.yml"), "utf8"), "agents: [claude, copilot]\n");
+    assert.equal(readFileSync(join(d, ".orch", "orch.yml"), "utf8"), dflt);
+  } finally {
+    chdir(prev);
+  }
+});
+
 test("agent add validates orch.yml before editing it", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-invalid-"));
   const prev = cwd();

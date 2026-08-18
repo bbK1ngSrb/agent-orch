@@ -1288,9 +1288,15 @@ export async function main(argv, deps = {}) {
       reportAgentBuildResult(name, result);
       return;
     }
-    const file = configPath(repo);
-    if (!existsSync(file)) throw new Error("no orch.yml — run `orch init` first");
-    if (load(repo).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
+    // Honor --config-file like every other write-capable command: edit the file the
+    // run would actually read, not always the default .orch/orch.yml.
+    const file = flags["config-file"] || configPath(repo);
+    if (!existsSync(file)) throw new Error(`no ${flags["config-file"] ? file : "orch.yml"} — run \`orch init\` first`);
+    if (load(repo, flags["config-file"]).agents.includes(name)) { console.log(`orch: ${name} already in agents`); return; }
+    if (Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1") {
+      console.log(`orch: [dry] would add ${name} to agents in ${file}`);
+      return;
+    }
     const text = readFileSync(file, "utf8");
     // Two on-disk shapes: inline flow (`agents: [claude, codex]`) and the
     // scaffold's block sequence (`agents:\n  - claude\n  - codex`). Support both
@@ -1844,7 +1850,7 @@ Options:
   --reviewers <roles>   Set comma-separated reviewers.
   --cheap               Use cheap.role; cheap.paths can auto-route work orders.
   --file <file>         With task, read the work order from a JSON file.
-  --config-file <file>  Config YAML path; with config, write there.
+  --config-file <file>  Config YAML path; with config / agent add, write there.
   --allow-protected     Run even if the work order names a protected path.
   --dry                 Plan without shelling out or changing git.
   --check               With upgrade, check latest version without installing.
