@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.325 — 2026-08-18
+- Integration-PR body refresh silently drops Closes lines when gh pr edit fails on deprecated projectCards (closes [#512](https://github.com/bbk1ng/agent-orch/issues/512))
+
 ## v0.4.324 — 2026-08-18
 - hand-landed: agent add honors --config-file and --dry (closes #498)
 
