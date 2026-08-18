@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.317 — 2026-08-18
+- hand-landed: log unexpected direct-merge failures instead of swallowing them (closes #504)
+
 ## v0.4.316 — 2026-08-18
 - pushAndCreatePr has no find-or-create check; a re-run on an already-PR'd branch crashes the whole process (closes [#503](https://github.com/bbk1ng/agent-orch/issues/503))
 
