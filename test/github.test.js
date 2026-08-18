@@ -6,6 +6,7 @@ function makeDeps({
   status = "approved", state = "OPEN",
   mergedState = "MERGED", mergeCommitOid = "abc123def", ancestorFails = false,
   fetchLockFailures = 0, reviewedSha = "reviewed123def", currentHeadSha = reviewedSha,
+  rollup = null,
 } = {}) {
   const calls = { gh: [], git: [] };
   let fetchAttempts = 0;
@@ -18,6 +19,7 @@ function makeDeps({
         if (args.includes("state,mergeCommit")) {
           return JSON.stringify({ state: mergedState, mergeCommit: mergeCommitOid ? { oid: mergeCommitOid } : null });
         }
+        if (args.includes("statusCheckRollup")) return JSON.stringify({ statusCheckRollup: rollup || [] });
         return JSON.stringify({ number: 7, headRefName: "feature/x", state });
       }
       if (args[0] === "api" && args.some((a) => a.includes("pulls/7/merge"))) {
@@ -93,6 +95,30 @@ test("runPr merges only with merge flag + approved", async () => {
   const blocked = makeDeps({ status: "escalated" });
   await runPr({ ...opts, merge: true }, blocked);
   assert.ok(!blocked._calls.gh.some((c) => c.args[0] === "api"));
+});
+
+test("runPr --merge holds when the PR's CI checks are not green", async () => {
+  // A required check still running: orch's own "approved" verdict must not be
+  // mistaken for CI being green.
+  const pending = makeDeps({ rollup: [{ status: "IN_PROGRESS", conclusion: null }] });
+  const held = await runPr({ ...opts, merge: true }, pending);
+  assert.ok(!pending._calls.gh.some((c) => c.args[0] === "api"), "must not merge while a check is in progress");
+  // the caller must be able to tell "approved" from "approved and merged"
+  assert.equal(held.mergeHold, "checks not green");
+
+  const failed = makeDeps({ rollup: [{ status: "COMPLETED", conclusion: "FAILURE" }] });
+  await runPr({ ...opts, merge: true }, failed);
+  assert.ok(!failed._calls.gh.some((c) => c.args[0] === "api"), "must not merge with a failing check");
+
+  const green = makeDeps({ rollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }, { state: "SUCCESS" }] });
+  await runPr({ ...opts, merge: true }, green);
+  assert.ok(green._calls.gh.some((c) => c.args[0] === "api"), "green checks must still merge");
+
+  // No CI configured at all: the rollup is permanently empty, so --merge stays
+  // usable rather than becoming a silent no-op.
+  const noChecks = makeDeps({ rollup: [] });
+  await runPr({ ...opts, merge: true }, noChecks);
+  assert.ok(noChecks._calls.gh.some((c) => c.args[0] === "api"), "a repo with no checks must still merge");
 });
 
 test("runPr fails closed when the PR head moves during review", async () => {
@@ -174,7 +200,7 @@ test("runPr handles a single reviewer spec and bare-name default", async () => {
 
 test("demote opens a PR when a remote and gh are present", async () => {
   const calls = [];
-  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/7\n"; };
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : args[1] === "list" ? "[]" : "https://github.com/o/r/pull/7\n"; };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   const notify = { escalate: () => { throw new Error("should not escalate when PR opens"); } };
   const reviewedSha = "1111111111111111111111111111111111111111";
@@ -210,7 +236,7 @@ test("issue comment recognizes the merge-deferred verdict", () => {
 
 test("demote with github.autoMergePr directly merges the opened fallback PR", async () => {
   const calls = [];
-  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/170\n"; };
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : args[1] === "list" ? "[]" : "https://github.com/o/r/pull/170\n"; };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
   const reviewedSha = "2222222222222222222222222222222222222222";
@@ -230,7 +256,7 @@ test("demote with github.autoMergePr directly merges the opened fallback PR", as
 
 test("issue bridge: demote appends Closes #N to the PR body so the issue auto-closes", async () => {
   const calls = [];
-  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/1\n"; };
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : args[1] === "list" ? "[]" : "https://x/1\n"; };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   await demote({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reason: "overlap", closes: 53 },
     { gh, git, notify: { escalate() {} } });
@@ -241,7 +267,7 @@ test("issue bridge: demote appends Closes #N to the PR body so the issue auto-cl
 
 test("no closes → PR body carries no Closes line (plain demote unchanged)", async () => {
   const calls = [];
-  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/1\n"; };
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : args[1] === "list" ? "[]" : "https://x/1\n"; };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   await demote({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reason: "overlap" },
     { gh, git, notify: { escalate() {} } });
@@ -267,7 +293,7 @@ test("demote escalates locally when there is no remote", async () => {
 test("§3f: demote redacts a secret-shaped branch in the PR title/body it posts", async () => {
   const token = "ghp_" + "a".repeat(36); // GitHub-PAT shape — survives publicSummary's \w branch sanitizer
   const calls = [];
-  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/1\n"; };
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : args[1] === "list" ? "[]" : "https://x/1\n"; };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   await demote({ repo: "/r", orchDir: "/o", branch: token, reason: "overlap" },
     { gh, git, notify: { escalate() {} } });
@@ -282,7 +308,7 @@ test("§3f: demote redacts a secret-shaped branch in the PR title/body it posts"
 
 test("openPr opens a PR for an agreed+green branch when a remote and gh are present", async () => {
   const calls = [];
-  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/9\n"; };
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : args[1] === "list" ? "[]" : "https://github.com/o/r/pull/9\n"; };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   const notify = { escalate: () => { throw new Error("should not escalate when PR opens"); } };
   const cfg = { github: { mergeMethod: "squash", autoMergePr: false } };
@@ -296,9 +322,52 @@ test("openPr opens a PR for an agreed+green branch when a remote and gh are pres
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge"), "no auto-merge unless opted in");
 });
 
+// Re-running a cycle whose branch already has an open PR used to run `gh pr create`
+// again — nonzero exit, ghShell throws, and nothing catches it before bin/orch.js.
+test("openPr reuses an already-open PR for the branch instead of crashing on re-create", async () => {
+  const calls = [];
+  const logs = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[1] === "list") return JSON.stringify([{ number: 7, url: "https://github.com/o/r/pull/7" }]);
+    if (args[1] === "create") throw new Error("a pull request for branch pr/claude/x-1 into main already exists");
+    return "https://github.com/o/r/pull/9\n";
+  };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+  const cfg = { github: { mergeMethod: "squash", autoMergePr: false } };
+
+  const r = await openPr({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", cfg },
+    { gh, git, notify: { escalate() { throw new Error("should not escalate"); } }, log: (m) => logs.push(m) });
+
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/7");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[2] === "create"), "must not attempt a second pr create");
+  assert.match(logs.join("\n"), /PR already open for pr\/claude\/x-1/);
+});
+
+test("demote reuses an already-open PR and still refreshes its body by number", async () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(["gh", ...args]);
+    if (args[0] === "--version") return "gh 2";
+    if (args[1] === "list") return JSON.stringify([{ number: 7, url: "https://github.com/o/r/pull/7" }]);
+    if (args[1] === "create") throw new Error("a pull request for branch pr/claude/x-1 into main already exists");
+    return "";
+  };
+  const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
+
+  const r = await demote({ repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reason: "overlap" },
+    { gh, git, notify: { escalate() { throw new Error("should not escalate"); } } });
+
+  assert.equal(r.prUrl, "https://github.com/o/r/pull/7");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[2] === "create"));
+  const edit = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit");
+  assert.equal(edit[3], "7", "body refresh must address the existing PR by number");
+});
+
 test("openPr opens the PR against cfg.baseBranch, not main", async () => {
   const calls = [];
-  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/9\n"; };
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : args[1] === "list" ? "[]" : "https://github.com/o/r/pull/9\n"; };
   const git = (args) => { calls.push(["git", ...args]); return args[0] === "remote" ? "origin\n" : ""; };
   const cfg = { baseBranch: "dev", github: { mergeMethod: "squash", autoMergePr: false } };
 
@@ -312,7 +381,7 @@ test("openPr opens the PR against cfg.baseBranch, not main", async () => {
 
 test("openPr with github.autoMergePr enables GitHub auto-merge on the PR it opens", async () => {
   const calls = [];
-  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/9\n"; };
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : args[1] === "list" ? "[]" : "https://x/9\n"; };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
   const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
   const reviewedSha = "4444444444444444444444444444444444444444";
@@ -332,7 +401,7 @@ test("openPr with github.autoMergePr enables GitHub auto-merge on the PR it open
 // auto-merge covers the case where checks already happened to be green.
 test("openPr also attempts a direct merge right after enabling auto-merge", async () => {
   const calls = [];
-  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://x/9\n"; };
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : args[1] === "list" ? "[]" : "https://x/9\n"; };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
   const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
   const reviewedSha = "5555555555555555555555555555555555555555";
@@ -349,7 +418,7 @@ test("openPr also attempts a direct merge right after enabling auto-merge", asyn
 // "checks still pending", so the fallback is silently dead.
 test("openPr addresses the direct merge by PR number, not branch name", async () => {
   const calls = [];
-  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : "https://github.com/o/r/pull/9\n"; };
+  const gh = (args) => { calls.push(["gh", ...args]); return args[0] === "--version" ? "gh 2" : args[1] === "list" ? "[]" : "https://github.com/o/r/pull/9\n"; };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
   const cfg = { github: { mergeMethod: "squash", autoMergePr: true } };
 
@@ -361,6 +430,7 @@ test("openPr addresses the direct merge by PR number, not branch name", async ()
 test("openPr swallows a direct-merge failure (checks still pending is normal)", async () => {
   const gh = (args) => {
     if (args[0] === "--version") return "gh 2";
+    if (args[1] === "list") return "[]";
     if (args[0] === "api") throw new Error("405 not mergeable yet");
     return "https://x/9\n";
   };
@@ -378,6 +448,7 @@ test("openPr still returns the opened PR when enabling auto-merge fails", async 
   const logs = [];
   const gh = (args) => {
     if (args[0] === "--version") return "gh 2";
+    if (args[1] === "list") return "[]";
     if (args[0] === "pr" && args[1] === "merge") throw new Error("auto-merge not allowed: branch protection is not configured");
     return "https://github.com/o/r/pull/9\n";
   };
@@ -689,9 +760,65 @@ test("openIntegrationPr swallows main.autoMerge direct-merge failures so GitHub 
     { gh, git, notify: { escalate() {} }, log: (m) => logs.push(m) },
   );
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
-  // Non-409 refusals (checks pending, not mergeable, etc.) stay silent — must
-  // not become cycle noise once a sha pin is in play.
-  assert.ok(!logs.some((m) => /integration advanced|409/.test(m)), "non-409 merge failure must stay swallowed silently");
+  // 405 ("not mergeable yet") is the expected refusal — checks pending, review
+  // missing, or already merged. It stays silent so it never becomes cycle noise.
+  // The only log allowed here is the unrelated "updated integration PR" line.
+  assert.deepEqual(logs, ["updated integration PR #12: https://github.com/o/r/pull/12"], "405 merge refusal must stay swallowed silently");
+});
+
+test("openIntegrationPr logs a non-405/409 direct-merge failure instead of hiding it as 'not ready'", async () => {
+  // An expired/underprivileged token 403s forever. Swallowed, it is
+  // indistinguishable from "checks still pending"; the operator has no reason
+  // to suspect auth. Log it — but still never escalate: the PR is open and the
+  // merge is retried next cycle.
+  for (const stderr of ["HTTP 403: Resource not accessible by integration", "HTTP 401: Bad credentials", "HTTP 404: Not Found"]) {
+    const logs = [];
+    const gh = (args) => {
+      if (args[0] === "--version") return "gh 2";
+      if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
+      if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+      if (args[0] === "api") throw new Error(stderr);
+      return "";
+    };
+    const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+    const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+    const r = await openIntegrationPr(
+      { repo: "/r", orchDir: "/r/.orch", cfg, integrationSha: "integabc123" },
+      { gh, git, notify: { escalate() { throw new Error("must not escalate on a merge failure"); } }, log: (m) => logs.push(m) },
+    );
+
+    assert.equal(r.prUrl, "https://github.com/o/r/pull/12", "PR url must still be returned");
+    assert.ok(
+      logs.some((m) => /^direct merge of 12 failed with an unexpected error/.test(m) && m.includes(stderr)),
+      `${stderr} must be surfaced by the merge path itself, not swallowed`,
+    );
+  }
+});
+
+test("tryMergeDirect classifies on the gh status, not on a PR number that looks like one", async () => {
+  // e.message from execFileSync carries the whole command line, including
+  // `/pulls/405/merge` — matching on it would mute PR #405 permanently. gh puts
+  // the real status in stderr; that is what must decide.
+  const logs = [];
+  const err = new Error("Command failed: gh api -X PUT repos/{owner}/{repo}/pulls/405/merge\n");
+  err.stderr = "gh: Bad credentials (HTTP 401)\n";
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 405, url: "https://github.com/o/r/pull/405" }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+    if (args[0] === "api") throw err;
+    return "";
+  };
+  const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+  const cfg = { integrationBranch: "orch/integration", github: { mergeMethod: "squash", autoMergePr: false }, main: { autoMerge: true } };
+
+  await openIntegrationPr(
+    { repo: "/r", orchDir: "/r/.orch", cfg, integrationSha: "integabc123" },
+    { gh, git, notify: { escalate() {} }, log: (m) => logs.push(m) },
+  );
+
+  assert.ok(logs.some((m) => /Bad credentials/.test(m)), "a 401 on PR #405 must still be logged");
 });
 
 test("openIntegrationPr pins main.autoMerge to the integration tip on create and update paths", async () => {

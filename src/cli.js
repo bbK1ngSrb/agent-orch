@@ -1733,6 +1733,7 @@ export async function main(argv, deps = {}) {
         githubDeps(),
       );
       console.log(`orch pr #${n}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${costSuffix(result)}`);
+      if (result.mergeHold) console.log(`orch pr #${n}: NOT merged — ${result.mergeHold}`);
       if (result.status !== "approved") process.exitCode = 2;
     } finally {
       releaseLock(orchDir);
@@ -1801,6 +1802,11 @@ export async function main(argv, deps = {}) {
     return;
   }
 
+  // Fall-through. No command at all is a legitimate "show me the tool" request
+  // and exits 0; a command we do not recognise (typo, renamed subcommand in a
+  // stale script) must be an error — exiting 0 tells every scripted caller
+  // checking $? that the run succeeded when nothing ran at all.
+  if (command) throw new Error(`unknown command: ${command} (run 'orch help' for usage)`);
   printUsage();
 }
 

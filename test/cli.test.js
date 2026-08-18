@@ -3166,3 +3166,21 @@ test("orch release without an entry prints usage", async () => {
   const repo = releaseFixture();
   await assert.rejects(() => runMainInRepo(repo, ["release"]), /usage: orch release/);
 });
+
+test("unknown command errors instead of printing usage and exiting 0", async () => {
+  await assert.rejects(
+    // --dry only gates the background update check; dispatch is unaffected.
+    () => main(["tsak", "some change", "--dry"], { preflight() {} }),
+    /unknown command: tsak/,
+  );
+  // Bare `orch` is a real "show me the tool" request: usage, no throw.
+  const logs = [];
+  const orig = console.log;
+  console.log = (m) => logs.push(m);
+  try {
+    await main([], { preflight() {} });
+  } finally {
+    console.log = orig;
+  }
+  assert.match(logs.join("\n"), /Usage: orch <command>/);
+});

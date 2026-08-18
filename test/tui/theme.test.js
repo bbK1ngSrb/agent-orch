@@ -6,6 +6,11 @@ test("stageText keeps the started checkpoint stage visible", () => {
   assert.equal(stageText("started"), "● started");
 });
 
+test("stageText bullets the authored checkpoint stage", () => {
+  // "authored" has no STAGE_LABELS entry, so dashboard passes it through raw.
+  assert.equal(stageText("authored"), "● authored");
+});
+
 test("formatTimestamp renders yyyy-mm-dd HH:mm in UTC from a known instant", () => {
   // Drops the T separator, sub-second .927, and the trailing Z; minute precision.
   assert.equal(formatTimestamp("2026-07-10T11:23:37.927Z"), "2026-07-10 11:23");

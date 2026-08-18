@@ -364,8 +364,10 @@ ruleset bypass grant rather than a human approval. The merge is pinned to the
 integration tip this cycle pushed and verified: a concurrent cycle that advances
 `orch/integration` between the push and the merge attempt gets a logged 409
 ("integration advanced past the commit this cycle verified — the newer cycle will
-merge it") and owns landing the newer tip; other failures stay swallowed so a
-pending check is not cycle noise. The merge runs as whatever
+merge it") and owns landing the newer tip. A 405 ("not mergeable") stays
+swallowed so a pending check is not cycle noise; any other failure — 401/403
+from an expired or underprivileged token, a bad PR ref, a network error — is
+logged rather than passed off as "not ready yet". The merge runs as whatever
 `gh` identity orch is authenticated as, so it only lands if that identity is
 itself in the branch's ruleset `bypass_actors` list. This is necessary because GitHub
 does not allow an actor to approve its own PR, so an orch-authored PR cannot

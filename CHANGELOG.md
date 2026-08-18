@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.4.321 — 2026-08-18
+- Unrecognized orch command falls through to usage text and exits 0 (closes [#499](https://github.com/bbk1ng/agent-orch/issues/499))
+
+## v0.4.320 — 2026-08-18
+- Checkpoint stage "authored" is missing from dashboard.js/theme.js stage-label maps (closes [#507](https://github.com/bbk1ng/agent-orch/issues/507))
+
+## v0.4.319 — 2026-08-18
+- Round counter can drift on crash-during-revise, softening roundCap by one round on resume (closes [#506](https://github.com/bbk1ng/agent-orch/issues/506))
+
+## v0.4.318 — 2026-08-18
+- orch pr <n> --merge never checks CI/status checks before merging (unlike the integration-PR path) (closes [#508](https://github.com/bbk1ng/agent-orch/issues/508))
+
+## v0.4.317 — 2026-08-18
+- hand-landed: log unexpected direct-merge failures instead of swallowing them (closes #504)
+
+## v0.4.316 — 2026-08-18
+- pushAndCreatePr has no find-or-create check; a re-run on an already-PR'd branch crashes the whole process (closes [#503](https://github.com/bbk1ng/agent-orch/issues/503))
+
 ## v0.4.315 — 2026-08-15
 - honor adapter disabled flag in agent detection (#492)
 

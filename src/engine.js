@@ -380,10 +380,20 @@ export async function runCycle(opts, deps) {
         return recordTerminal({ status: "escalated", reason: why, rounds: round });
       }
 
-      notify.phase("revise", `${author.name} revising (round ${round + 1})`);
+      // Count the round BEFORE the author runs, and checkpoint it immediately.
+      // The old order incremented after `author.author()` returned and left the
+      // persist to the next loop's post-audit write, so a crash anywhere in that
+      // window (the revise itself is the minutes-long part) resumed at the
+      // pre-increment round and handed the cycle one extra revision past
+      // `roundCap`. Counting first errs the safe way: a revise that crashes
+      // before committing costs a round rather than granting one. Like
+      // "authored", this stage grants no shortcut — a resume re-audits and
+      // re-gates, so no `oid` pin is needed (there is no cached verdict to pin).
+      round += 1;
+      notify.phase("revise", `${author.name} revising (round ${round})`);
+      checkpoint?.record(orchDir, sid, { branch, round, stage: "revising", closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
       const revised = await author.author(buildRevisionPrompt(verdict.reason), worktree, authorOpts);
       recordUsage("author", author.name, revised, authorOpts.model);
-      round += 1;
     }
   } finally {
     git.pruneWorktree(repo, worktree);
