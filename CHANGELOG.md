@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.321 — 2026-08-18
+- Unrecognized orch command falls through to usage text and exits 0 (closes [#499](https://github.com/bbk1ng/agent-orch/issues/499))
+
 ## v0.4.320 — 2026-08-18
 - Checkpoint stage "authored" is missing from dashboard.js/theme.js stage-label maps (closes [#507](https://github.com/bbk1ng/agent-orch/issues/507))
 
