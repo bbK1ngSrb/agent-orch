@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.322 — 2026-08-18
+- Only --merge gets cross-command flag validation; every other misapplied flag is silently ignored (closes [#500](https://github.com/bbk1ng/agent-orch/issues/500))
+
 ## v0.4.321 — 2026-08-18
 - Unrecognized orch command falls through to usage text and exits 0 (closes [#499](https://github.com/bbk1ng/agent-orch/issues/499))
 
