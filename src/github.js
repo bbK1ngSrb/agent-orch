@@ -426,16 +426,20 @@ export async function openIntegrationPr(ctx, deps) {
   if (open[0]) {
     prRef = String(open[0].number);
     url = open[0].url;
-    // Best-effort cosmetic refresh: title/body are static boilerplate, already
-    // correct from when this persistent PR was first opened, so a failed edit
-    // changes nothing that lands. `gh pr edit` still selects the deprecated
-    // `repository.pullRequest.projectCards` GraphQL field and now exits nonzero
-    // on that alone — must never escalate a green+merged+pushed cycle (#212).
+    // The body is NOT boilerplate: it carries one `Closes #N` line per issue
+    // that landed on the integration branch, and GitHub only auto-closes those
+    // issues by parsing the body when this PR merges. A skipped refresh means
+    // the newest issue ships but stays open. Written over REST rather than
+    // `gh pr edit`, which also selects the retired
+    // `repository.pullRequest.projectCards` GraphQL field and exits nonzero on
+    // that alone even when the edit itself is valid. Still non-fatal — REST can
+    // fail for other reasons and this must never escalate a green+merged+pushed
+    // cycle (#212) — but the log says what may be missing.
     try {
-      gh(["pr", "edit", prRef, "--title", title, "--body", body]);
+      gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${prRef}`, "-f", `title=${title}`, "-f", `body=${body}`]);
       log(`updated integration PR #${prRef}: ${url}`);
     } catch (e) {
-      log(`integration PR #${prRef} metadata refresh skipped (non-fatal): ${e.message}`);
+      log(`integration PR #${prRef} body update failed (non-fatal) — it may be missing Closes references, so merging it may leave shipped issues open: ${e.message}`);
     }
   } else {
     url = gh([

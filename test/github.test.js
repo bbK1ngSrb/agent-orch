@@ -431,7 +431,7 @@ test("openPr swallows a direct-merge failure (checks still pending is normal)", 
   const gh = (args) => {
     if (args[0] === "--version") return "gh 2";
     if (args[1] === "list") return "[]";
-    if (args[0] === "api") throw new Error("405 not mergeable yet");
+    if (args[0] === "api" && args[3].endsWith("/merge")) throw new Error("405 not mergeable yet");
     return "https://x/9\n";
   };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
@@ -496,7 +496,7 @@ test("openIntegrationPr creates the default integration PR and enables auto-merg
   assert.ok(mergeCall.includes("--merge"));
   assert.deepEqual(mergeCall.slice(-2), ["--match-head-commit", integrationSha]);
   assert.equal(mergeCall.includes("--squash"), false);
-  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"), "direct main merge needs main.autoMerge");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.endsWith("/merge"))), "direct main merge needs main.autoMerge");
 });
 
 test("openIntegrationPr puts pending issue closes on the bridge PR body", async () => {
@@ -692,7 +692,7 @@ test("openIntegrationPr skips main.autoMerge direct merge until checks are green
 
   const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
-  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"));
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.endsWith("/merge"))));
 });
 
 test("openIntegrationPr waits when a required check is still EXPECTED (not yet reported)", async () => {
@@ -715,7 +715,7 @@ test("openIntegrationPr waits when a required check is still EXPECTED (not yet r
 
   const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
-  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api"), "a still-EXPECTED required check is not green — the direct merge must wait");
+  assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.endsWith("/merge"))), "a still-EXPECTED required check is not green — the direct merge must wait");
 });
 
 test("openIntegrationPr treats SKIPPED and NEUTRAL required checks as green", async () => {
@@ -749,7 +749,7 @@ test("openIntegrationPr swallows main.autoMerge direct-merge failures so GitHub 
     if (args[0] === "--version") return "gh 2";
     if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
     if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
-    if (args[0] === "api") throw new Error("405 not mergeable yet");
+    if (args[0] === "api" && args[3].endsWith("/merge")) throw new Error("405 not mergeable yet");
     return "";
   };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
@@ -921,7 +921,7 @@ test("openIntegrationPr updates an existing integration PR instead of creating a
   const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
 
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
-  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit" && c[3] === "12"));
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "api" && c[4] === "repos/{owner}/{repo}/pulls/12"));
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
 });
 
@@ -942,8 +942,8 @@ test("openIntegrationPr refreshes an existing bridge PR with pending issue close
 
   await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, { gh, git, notify: { escalate() {} } });
 
-  const edit = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit" && c[3] === "12");
-  assert.match(edit[edit.indexOf("--body") + 1], /Closes #99/);
+  const edit = calls.find((c) => c[0] === "gh" && c[1] === "api" && c[4] === "repos/{owner}/{repo}/pulls/12");
+  assert.match(edit[edit.length - 1], /Closes #99/);
 });
 
 test("openIntegrationPr updates a BEHIND-but-clean integration PR from base", async () => {
@@ -1090,16 +1090,15 @@ test("openIntegrationPr posts the resolver proposal comment when provided", asyn
   assert.match(comment.join(" "), /Reviewer result/);
 });
 
-test("openIntegrationPr swallows a cosmetic 'gh pr edit' failure (Projects-classic GraphQL deprecation) without escalating", async () => {
-  // The push and PR already succeeded; the title/body refresh is best-effort
-  // boilerplate. A nonzero `gh pr edit` (deprecated projectCards field) must not
-  // raise "Decision needed" for a green+merged+pushed cycle (#212).
+test("openIntegrationPr swallows a failed body refresh without escalating", async () => {
+  // The push and PR already succeeded; a failed refresh must not raise
+  // "Decision needed" for a green+merged+pushed cycle (#212) — but the log has
+  // to say the body may now be missing Closes references.
+  const logs = [];
   const gh = (args) => {
     if (args[0] === "--version") return "gh 2";
     if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
-    if (args[0] === "pr" && args[1] === "edit") {
-      throw new Error("GraphQL: Projects (classic) is being deprecated (repository.pullRequest.projectCards)");
-    }
+    if (args[0] === "api" && args[2] === "PATCH") throw new Error("HTTP 502");
     return "";
   };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
@@ -1107,11 +1106,12 @@ test("openIntegrationPr swallows a cosmetic 'gh pr edit' failure (Projects-class
   let escalated = false;
 
   const r = await openIntegrationPr({ repo: "/r", orchDir: "/r/.orch", cfg }, {
-    gh, git, notify: { escalate() { escalated = true; } },
+    gh, git, notify: { escalate() { escalated = true; } }, log: (m) => logs.push(m),
   });
 
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
   assert.equal(escalated, false);
+  assert.ok(logs.some((m) => /Closes references/.test(m)), "log must warn the body may be stale");
 });
 
 test("§3f: runPr comment passes through redact (no raw secret in the body)", async () => {
