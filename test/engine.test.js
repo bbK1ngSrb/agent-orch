@@ -604,6 +604,52 @@ test("resuming from an 'authored' checkpoint grants no shortcut — still audits
   assert.equal(gateRuns, 1, "authored stage must not skip the test gate");
 });
 
+test("the revise checkpoint persists the incremented round before the author runs", async () => {
+  // The round counter enforces roundCap, so it must reach disk before the
+  // minutes-long revise call — not after the NEXT round's audit. Round 1
+  // DISAGREEs, round 2 AGREEs: the record written between them is hand-computed
+  // to be round 2, stage "revising", and it must land before round 2's audit.
+  const deps = makeDeps({
+    verdicts: [
+      { decision: "DISAGREE", reason: "needs work", raw: "" },
+      { decision: "AGREE", reason: "ok", raw: "" },
+    ],
+  });
+  const events = [];
+  deps.checkpoint = {
+    lookup: () => null,
+    record: (_dir, _sid, data) => events.push({ kind: "checkpoint", stage: data.stage, round: data.round }),
+    clear() {},
+  };
+  const inner = deps.adapters.get("rev").audit;
+  deps.adapters.get("rev").audit = async (...args) => { events.push({ kind: "audit" }); return inner(...args); };
+  const r = await runCycle({ ...opts, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.rounds, 2);
+  const revising = events.filter((e) => e.stage === "revising");
+  assert.deepEqual(revising, [{ kind: "checkpoint", stage: "revising", round: 2 }],
+    "one revise checkpoint, carrying the incremented round");
+  const audits = events.map((e, i) => (e.kind === "audit" ? i : -1)).filter((i) => i >= 0);
+  assert.ok(events.indexOf(revising[0]) < audits[1],
+    "the revise checkpoint is written before round 2 is audited, not after");
+});
+
+test("resuming from a 'revising' checkpoint keeps the incremented round and grants no shortcut", async () => {
+  // This is the crash-during-revise resume: the pre-crash round must survive,
+  // so roundCap is not softened by one round per crash.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  let gateRuns = 0;
+  deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
+  const stored = { branch: opts.branch, round: 2, stage: "revising" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "merged");
+  assert.equal(r.rounds, 2, "the resumed cycle counts the round the crash was in");
+  assert.equal(deps._calls.authors, 0, "resume never re-authors");
+  assert.equal(deps._calls.audits, 1, "revising stage must not skip the audit");
+  assert.equal(gateRuns, 1, "revising stage must not skip the test gate");
+});
+
 test("resume:true still runs the scope gate on the resumed work", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   deps.git.attachExistingBranch = () => {};
