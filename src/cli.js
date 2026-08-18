@@ -1228,6 +1228,8 @@ export async function main(argv, deps = {}) {
   if (command === "init") {
     if (dryRun) {
       console.log(`orch (dry): would write ${join(orchDir, "orch.yml")} (only if absent) and ${join(orchDir, "ORCH.md")} (overwrites)`);
+      // --link is the one init effect outside .orch/, so name it explicitly.
+      if (flags.link) console.log("orch (dry): would link .orch/ORCH.md into the agent docs (CLAUDE.md / AGENTS.md / GEMINI.md)");
       return;
     }
     // Preflight first, writability-only: it probes .orch/ and fails with a

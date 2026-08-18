@@ -3193,12 +3193,15 @@ test("unknown command errors instead of printing usage and exiting 0", async () 
 // the real work ran underneath it.
 test("orch init --dry writes nothing", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-init-dry-"));
-  const logs = await runMainInRepo(d, ["init", "--dry"], {
+  // --link is included: it is the one init effect outside .orch/, writing to the
+  // agent docs in the repo root.
+  const logs = await runMainInRepo(d, ["init", "--link", "--dry"], {
     preflight() { throw new Error("preflight ran"); },
     detectAgents: () => { throw new Error("detectAgents ran"); },
   });
   assert.equal(existsSync(join(d, ".orch", "orch.yml")), false);
   assert.equal(existsSync(join(d, ".orch", "ORCH.md")), false);
+  assert.equal(existsSync(join(d, "CLAUDE.md")), false);
   assert.match(logs.join("\n"), /orch \(dry\)/);
 });
 
