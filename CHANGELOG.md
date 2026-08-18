@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.320 — 2026-08-18
+- Checkpoint stage "authored" is missing from dashboard.js/theme.js stage-label maps (closes [#507](https://github.com/bbk1ng/agent-orch/issues/507))
+
 ## v0.4.319 — 2026-08-18
 - Round counter can drift on crash-during-revise, softening roundCap by one round on resume (closes [#506](https://github.com/bbk1ng/agent-orch/issues/506))
 
