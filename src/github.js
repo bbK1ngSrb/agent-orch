@@ -108,10 +108,15 @@ function checkPassed(check) {
   return check.state === "SUCCESS";
 }
 
-function prChecksGreen(gh, prRef) {
+// `emptyIsGreen` decides what an empty rollup means. The integration path polls
+// every cycle, so it treats "no check has reported yet" as not-green and simply
+// retries. `orch pr <n> --merge` is one-shot: on a repo with no CI at all the
+// rollup is permanently empty, and a strict reading would make --merge a
+// silent no-op forever — so that path opts into "no checks configured ⇒ green".
+function prChecksGreen(gh, prRef, { emptyIsGreen = false } = {}) {
   const data = JSON.parse(gh(["pr", "view", String(prRef), "--json", "statusCheckRollup"]) || "{}");
   const checks = data.statusCheckRollup || [];
-  return checks.length > 0 && checks.every(checkPassed);
+  return checks.length ? checks.every(checkPassed) : emptyIsGreen;
 }
 
 // `cached` is a mergeability read the caller already paid for. Pass it ONLY
@@ -216,6 +221,21 @@ export async function runPr(opts, deps) {
     log(`commented on PR #${pr.number}: ${result.status}`);
 
     if (result.status === "approved" && merge) {
+      // "approved" is orch's own agent verdict — it says nothing about the PR's
+      // GitHub CI. Gate the merge on the status-check rollup, the same way the
+      // integration PR path does, so a still-running or failing required check
+      // holds the merge instead of relying on branch protection to catch it.
+      // Fail closed: an unreadable rollup is not a green one.
+      let green;
+      try {
+        green = prChecksGreen(gh, String(n), { emptyIsGreen: true });
+      } catch (e) {
+        throw new Error(`orch pr #${pr.number}: could not read CI status before merging: ${e.message}`, { cause: e });
+      }
+      if (!green) {
+        log(`PR #${pr.number} is approved but its checks are not green — not merging; re-run \`orch pr ${pr.number} --merge\` once CI settles`);
+        return { ...result, mergeHold: "checks not green" };
+      }
       try {
         mergeDirect(gh, String(n), cfg.github.mergeMethod, reviewedSha);
       } catch (e) {

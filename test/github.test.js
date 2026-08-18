@@ -6,6 +6,7 @@ function makeDeps({
   status = "approved", state = "OPEN",
   mergedState = "MERGED", mergeCommitOid = "abc123def", ancestorFails = false,
   fetchLockFailures = 0, reviewedSha = "reviewed123def", currentHeadSha = reviewedSha,
+  rollup = null,
 } = {}) {
   const calls = { gh: [], git: [] };
   let fetchAttempts = 0;
@@ -18,6 +19,7 @@ function makeDeps({
         if (args.includes("state,mergeCommit")) {
           return JSON.stringify({ state: mergedState, mergeCommit: mergeCommitOid ? { oid: mergeCommitOid } : null });
         }
+        if (args.includes("statusCheckRollup")) return JSON.stringify({ statusCheckRollup: rollup || [] });
         return JSON.stringify({ number: 7, headRefName: "feature/x", state });
       }
       if (args[0] === "api" && args.some((a) => a.includes("pulls/7/merge"))) {
@@ -93,6 +95,30 @@ test("runPr merges only with merge flag + approved", async () => {
   const blocked = makeDeps({ status: "escalated" });
   await runPr({ ...opts, merge: true }, blocked);
   assert.ok(!blocked._calls.gh.some((c) => c.args[0] === "api"));
+});
+
+test("runPr --merge holds when the PR's CI checks are not green", async () => {
+  // A required check still running: orch's own "approved" verdict must not be
+  // mistaken for CI being green.
+  const pending = makeDeps({ rollup: [{ status: "IN_PROGRESS", conclusion: null }] });
+  const held = await runPr({ ...opts, merge: true }, pending);
+  assert.ok(!pending._calls.gh.some((c) => c.args[0] === "api"), "must not merge while a check is in progress");
+  // the caller must be able to tell "approved" from "approved and merged"
+  assert.equal(held.mergeHold, "checks not green");
+
+  const failed = makeDeps({ rollup: [{ status: "COMPLETED", conclusion: "FAILURE" }] });
+  await runPr({ ...opts, merge: true }, failed);
+  assert.ok(!failed._calls.gh.some((c) => c.args[0] === "api"), "must not merge with a failing check");
+
+  const green = makeDeps({ rollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }, { state: "SUCCESS" }] });
+  await runPr({ ...opts, merge: true }, green);
+  assert.ok(green._calls.gh.some((c) => c.args[0] === "api"), "green checks must still merge");
+
+  // No CI configured at all: the rollup is permanently empty, so --merge stays
+  // usable rather than becoming a silent no-op.
+  const noChecks = makeDeps({ rollup: [] });
+  await runPr({ ...opts, merge: true }, noChecks);
+  assert.ok(noChecks._calls.gh.some((c) => c.args[0] === "api"), "a repo with no checks must still merge");
 });
 
 test("runPr fails closed when the PR head moves during review", async () => {
