@@ -268,6 +268,21 @@ async function pushAndCreatePr(ctx, deps, title, body, headSha = null) {
   const base = cfg?.baseBranch || "main";
   const refspec = headSha ? `${headSha}:refs/heads/${branch}` : branch;
   git(["push", "-u", "origin", refspec], repo);
+  // Find-or-create, same idiom as openIntegrationPr: `gh pr create` exits
+  // nonzero ("a pull request for branch X into Y already exists") when the
+  // head already has an open PR, and ghShell turns that into a throw with no
+  // catch anywhere up to bin/orch.js — a re-run would crash the whole process.
+  const open = JSON.parse(gh([
+    "pr", "list",
+    "--head", branch,
+    "--base", base,
+    "--state", "open",
+    "--json", "number,url",
+  ]) || "[]");
+  if (open[0]) {
+    log(`PR already open for ${branch}: ${open[0].url}`);
+    return open[0].url;
+  }
   const url = gh([
     "pr", "create", "--head", branch, "--base", base,
     "--title", redact(title),
