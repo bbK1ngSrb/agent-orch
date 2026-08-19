@@ -1227,3 +1227,94 @@ test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as
   // #505: the test gate gets the same wall-clock cap as an agent stage.
   assert.equal(gateArgs[2], 1_800_000, "gate.run is called with stageTimeout in ms");
 });
+
+// --- cycle base: branch from orch/integration when it is ahead of main ---
+
+// git stub for the base-resolution matrix. `integrationTip: null` = the ref does
+// not exist; `contains: false` = integration does not contain base (diverged).
+function cycleBaseDeps(calls, { integrationTip = "itip", baseTip = "btip", contains = true } = {}) {
+  return {
+    adapters: { get: () => ({ name: "claude", async author() {}, async audit() { return { decision: "AGREE", reason: "ok" }; } }) },
+    git: {
+      createTaskBranch: (_repo, _wt, _branch, base) => calls.push(["createTaskBranch", base]),
+      attachExistingBranch() {},
+      pruneWorktree() {},
+      changedFiles: (_repo, _branch, base) => { calls.push(["changedFiles", base]); return ["src/a.js"]; },
+      git: (args) => {
+        calls.push(["git", ...args]);
+        if (args[0] === "rev-parse" && args[1] === "--verify") {
+          const ref = args[args.length - 1];
+          if (ref === "refs/heads/orch/integration") {
+            if (integrationTip === null) throw new Error("unknown revision");
+            return integrationTip;
+          }
+          if (ref === "refs/heads/main") return baseTip;
+          return "sha";
+        }
+        if (args[0] === "merge-base") {
+          if (!contains) throw new Error("not an ancestor");
+          return "";
+        }
+        if (args[0] === "rev-parse") return "base";
+        return "diff summary";
+      },
+    },
+    gate: { detect: () => "npm test", run: () => ({ pass: true }) },
+    scope: { count: (_branch, _worktree, _ignore, base) => { calls.push(["scope", base]); return 0; } },
+    inflight: { setPaths() {} },
+    finalize: async () => ({ status: "merged", reason: "merged", sha: "abc" }),
+    notify: {
+      phase: (...args) => calls.push(["phase", ...args]),
+      writeRound() { return "p"; },
+      buildDecisionBrief: () => "brief", escalate() {},
+      recordRun() {}, cleanupReviews() {},
+    },
+  };
+}
+
+function cycleBaseOpts() {
+  return {
+    mode: "task", task: "do x", branch: "pr/claude/x-1", sid: "1",
+    authorName: "claude", reviewerName: "claude",
+    cfg: {
+      roundCap: 3, baseBranch: "main", integrationBranch: "orch/integration",
+      merge: "ff-only", test: "auto", scope: { maxLines: 10, ignore: [] },
+      docs: { paths: ["*.md", "docs/**", "**/*.md"] },
+    },
+    orchDir: "/o", repo: "/r", worktree: "/o/wt/x",
+  };
+}
+
+test("integration ahead of base → the cycle is branched from and diffed against integration", async () => {
+  const calls = [];
+  const res = await runCycle(cycleBaseOpts(), cycleBaseDeps(calls));
+
+  assert.equal(res.status, "merged");
+  assert.deepEqual(calls.find((c) => c[0] === "createTaskBranch"), ["createTaskBranch", "orch/integration"]);
+  assert.deepEqual(calls.find((c) => c[0] === "scope"), ["scope", "orch/integration"]);
+  assert.ok(calls.some((c) => c[0] === "changedFiles" && c[1] === "orch/integration"));
+  assert.deepEqual(calls.find((c) => c[0] === "git" && c[1] === "rev-parse" && c[2] !== "--verify"),
+    ["git", "rev-parse", "orch/integration"]);
+  // The security scan reads the same narrow range, so it never sees the
+  // already-integrated commits.
+  assert.ok(calls.some((c) => c[0] === "git" && c[1] === "diff" && c.includes("orch/integration...sha")));
+  // Visible to the operator without inspecting refs by hand.
+  assert.ok(calls.some((c) => c[0] === "phase" && c[1] === "worktree" && /base orch\/integration/.test(c[2])));
+});
+
+for (const [name, over] of [
+  ["level with base", { integrationTip: "btip", baseTip: "btip" }],
+  ["absent", { integrationTip: null }],
+  ["diverged (does not contain base)", { contains: false }],
+]) {
+  test(`integration ${name} → the cycle stays on baseBranch`, async () => {
+    const calls = [];
+    const res = await runCycle(cycleBaseOpts(), cycleBaseDeps(calls, over));
+
+    assert.equal(res.status, "merged");
+    assert.deepEqual(calls.find((c) => c[0] === "createTaskBranch"), ["createTaskBranch", "main"]);
+    assert.deepEqual(calls.find((c) => c[0] === "scope"), ["scope", "main"]);
+    assert.ok(calls.some((c) => c[0] === "changedFiles" && c[1] === "main"));
+    assert.ok(!calls.some((c) => c[0] === "phase" && c[1] === "worktree" && /base /.test(c[2])));
+  });
+}
