@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.328 — 2026-08-19
+- Cycles are authored against main but land on orch/integration, so parallel work never sees already-integrated changes (closes [#515](https://github.com/bbk1ng/agent-orch/issues/515))
+
 ## v0.4.327 — 2026-08-18
 - hand-landed: cap the test gate with stageTimeout so a hung suite cannot hold merge.lock (closes #505)
 
