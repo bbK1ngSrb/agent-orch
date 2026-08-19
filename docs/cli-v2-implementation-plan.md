@@ -521,8 +521,9 @@ node bin/orch.js version                            # 0.5.0
 
 Audit-derived defect issues already exist: #497 #498 #499 #500 #501 #502 #503
 #504 #505 #506 #507 #508 — do not re-file; slices reference them. Slice issues
-below are ready to paste (`gh issue create --title "…" --body-file -`). Numbers
-`#TBD` are filled when created; the tracking issue lists them all.
+below were filed on 2026-08-19 as #517–#529 (P1–P13); P0 shipped earlier as
+#502. Each slice heading in this section carries its issue number, and the
+tracking issue #509 holds the same table.
 
 ### Tracking issue
 
@@ -537,14 +538,16 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > one outcome flag (`--until`), a bounded remedy loop, distinct exit codes,
 > per-command flag validation, and removes orch's token and the ambient env
 > from adapter subprocesses (#502).
-> **Slices (one issue each, one orch cycle each):** P0 #TBD · P1 #TBD · P2 #TBD
-> · P3 #TBD · P4 #TBD · P5 #TBD · P6 #TBD · P7 #TBD · P8 #TBD · P9 #TBD · P10
-> #TBD · P11 #TBD · P12 #TBD · P13 #TBD.
+> **Slices (one issue each, one orch cycle each):** P0 #502 (shipped) · P1
+> #517 · P2 #518 · P3 #519 · P4 #520 · P5 #521 · P6 #522 · P7 #523 · P8 #524
+> · P9 #525 · P10 #526 · P11 #527 · P12 #528 · P13 #529.
 > **Defects fixed on the way:** #497 #498 #499 #500 #501 #502 #503 #504 #505
 > #506 #508.
 > **Done when:** plan §7.
 
 ### P0 — `Adapter subprocesses must receive an allowlisted env, never process.env`
+
+**Filed:** #502 (shipped).
 > **What:** `src/adapters/cli-adapter.js:218` spawns every author/reviewer CLI
 > with the parent's full `process.env`; `src/cli.js:1205-1211` puts a repo-scoped
 > App token in `process.env.GH_TOKEN`. An author agent running an untrusted work
@@ -565,6 +568,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > Design: `docs/cli-v2-design.md` §14.1. Closes #502.
 
 ### P1 — `Command schema: per-command flag validation, exit 64, --dry everywhere, generated help`
+
+**Filed:** #517.
 > **What:** flags are declared once (`cli.js:392-416`) but read ad hoc per
 > command, so `--dry` is ignored by `pr` (a real merge can happen, #497),
 > `agent add` ignores `--config-file` (#498), a typo'd command exits 0 (#499),
@@ -582,6 +587,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > `completion.test.js` consumes the schema. Closes #497 #498 #499 #500; part of #501.
 
 ### P2 — `Durable run record (.orch/run-records/<runId>.json) with lineage and resume-with-fresh-budget`
+
+**Filed:** #518.
 > **What:** checkpoint/resume are cleared on every terminal return
 > (`cli.js:1506-1509`, `1684-1693`), so `orch continue` cannot revisit an
 > escalated cycle and nothing persists attempts, remedies, or the merge ordinal.
@@ -593,6 +600,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > exists; `orch continue <runId>` and `<sid>` resolve to it.
 
 ### P3 — `Structured failure classes, fingerprints, remedy chooser; fix round drift`
+
+**Filed:** #519.
 > **What:** outcomes are free-text reasons; a loop needs classes. Also
 > `engine.js:384-386` increments `round` after the revise commit without a
 > checkpoint, so a crash there under-counts rounds on resume (#506).
@@ -605,6 +614,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > after revise 1 → resume at round 2 → escalates after round 3, not 4. Closes #506.
 
 ### P4 — `github.js: idempotent PR create, marker comments, head-bound merge with un-swallowed errors, read primitives`
+
+**Filed:** #520.
 > **What:** `pushAndCreatePr` (`github.js:265-278`) creates unconditionally —
 > a second call throws and kills the process (#503); `tryMergeDirect`
 > (`github.js:66-75`) swallows 401/403 (#504); there is no way to read PR
@@ -623,6 +634,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > #503 #504.
 
 ### P5 — `Run controller + readiness inspector + --until ready (remedy-less)`
+
+**Filed:** #521.
 > **What:** design §6 + §9. **Do:** `src/run-controller.js` (`runUntil`),
 > `src/readiness.js` (`inspect`, `waitReady` with backoff and `ciWaitMinutes`;
 > each expiry consumes an attempt), exit codes 0/2/3 with `blockedReason`,
@@ -636,6 +649,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > unchanged.
 
 ### P6 — `Remedies 1: rebase+repair, integration repair, rotate with quota exclusion, lock scheme`
+
+**Filed:** #522.
 > **What:** design §8a, §8b, §10A, §12. **Do:** adapter `limitPattern` on both
 > seats; in-run exclusion + diverse rotation + `automation.rotateModels`;
 > `rotate` starts a new cycle at round 1 with a cleared checkpoint and
@@ -652,6 +667,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > stalemate at `roundCap: 3` → `rotate` → 3 fresh rounds.
 
 ### P7 — `Remedies 2: reauthor (no split), ask-human via GitHub, continue with fresh budget`
+
+**Filed:** #523.
 > **What:** design §8c, §8d, §5.3. **Do:** `reauthor` from the work order +
 > structured failure history (rewritten narrower for `SCOPE_EXCEEDED`; no child
 > runs); `ask` via issue / PR / draft PR (find-or-create), marker comment,
@@ -662,6 +679,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > from a write user → run resumes; `continue <runId>` after exit 2 proceeds.
 
 ### P8 — `--until merged: exact-head readiness, head-bound merge, verify by ancestry`
+
+**Filed:** #524.
 > **What:** design §10.4–10.8, §12. **Do:** `src/landing.js` under
 > `standing-pr.lock` (whole merge phase): final readiness read for the exact
 > head after the last push; when the repo requires no checks, reconcile the
@@ -676,6 +695,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > local gate ran before merge.
 
 ### P9 — `pr <number|branch>: fold review into pr; owned-branch push authority; CI check before merge`
+
+**Filed:** #525.
 > **What:** `review <branch>` and `pr <n>` run the same review-mode cycle
 > (`engine.js:373-380`); `pr --merge` merges without checking CI (#508). **Do:**
 > resolve number vs branch; `once` audit-only with edit-in-place comment;
@@ -688,6 +709,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > `until:"merged"` rejected by default. Closes #508.
 
 ### P10 — `--detach: background run visible to the existing dashboard`
+
+**Filed:** #526.
 > **What:** FUTURE.md / `docs/idea-detach-dashboard-visibility.md`. **Do:**
 > design §13 lifecycle: detached spawn to `<automation.detachLogDir>/<ts>-<pid>.log`
 > (no rotation), parent waits ≤ 5 s and either prints `run.detached` (exit 0)
@@ -698,6 +721,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > as live with `detached:true`; `orch tsk x --detach` exits 64.
 
 ### P11 — `Config v2 keys (warn mode), config --check/--json, gateTimeout`
+
+**Filed:** #527.
 > **What:** design §15; the wizard needs a TTY (`config-wizard.js:293`);
 > `merge:` collides with `--merge`; `main.autoMerge`/`github.autoMergePr`/
 > `conflictResolution` are subsumed by `--until`; `test` unvalidated;
@@ -711,6 +736,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > warning naming `--until merged`. Closes #505.
 
 ### P12 — `Cutover to v0.5.0: bare == --until ready; remove old commands/flags/keys; docs + migration guide`
+
+**Filed:** #528.
 > **What:** the clean break (owner decision 5/16). **Do:** flip the `--until`
 > default to `ready`; delete `review`, `agent build`, `update`, `--merge`,
 > `--pr`, `--no-banner`, banner, wizard, `main.*`, `github.autoMergePr`,
@@ -723,6 +750,8 @@ below are ready to paste (`gh issue create --title "…" --body-file -`). Number
 > spelling; `orch task x` runs the ready loop; `test/migration.test.js`; suite green.
 
 ### P13 — `Telemetry fields, fault-injection suite, metrics script, v0.5.0 release`
+
+**Filed:** #529.
 > **What:** design §16–17, proposal §7. **Do:** additive `runs.jsonl` fields;
 > redrive `quietFail` lines; `test/v2-faults.test.js` (design §17 matrix) and
 > `test/system-v2.test.js`; `scripts/v2-metrics.mjs` over run records
