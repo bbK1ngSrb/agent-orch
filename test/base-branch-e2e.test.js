@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -103,4 +103,44 @@ test("orch task end-to-end on a repo whose trunk is dev, not main", async () => 
   assert.equal(git.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "dev");
   assert.match(git.git(["log", "--oneline", "orch/integration"], repo), /add a line to a\.txt/);
   assert.match(logs.join("\n"), /merged \(agreed \+ green \+ integrated locally; PR bridge unavailable\)/);
+});
+
+test("a cycle branches from orch/integration while it is ahead of main", async () => {
+  const repo = initRepoOn("main");
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "merge: no-ff\ntest: \"true\"\n");
+  // A commit that lives on integration only — the state an open integration PR
+  // leaves behind, and exactly what a main-based cycle used to be blind to.
+  git.git(["checkout", "-b", "orch/integration"], repo);
+  writeFileSync(join(repo, "b.txt"), "b\n");
+  git.git(["add", "b.txt"], repo);
+  git.git(["commit", "-m", "integrated earlier"], repo);
+  git.git(["checkout", "main"], repo);
+  const integrationTip = git.git(["rev-parse", "orch/integration"], repo);
+
+  const deps = e2eCycleDeps();
+  const getAdapter = deps.adapters.get;
+  let sawIntegratedWork = null;
+  deps.adapters = {
+    get: (name) => {
+      const adapter = getAdapter(name);
+      return {
+        ...adapter,
+        async author(prompt, worktree, opts) {
+          sawIntegratedWork = existsSync(join(worktree, "b.txt"));
+          return adapter.author(prompt, worktree, opts);
+        },
+      };
+    },
+  };
+
+  await runMainInRepo(repo, ["task", "add a line to a.txt", "--no-tidy"], { cycleDeps: deps });
+
+  // The author worked on top of the already-integrated commit...
+  assert.equal(sawIntegratedWork, true);
+  // ...and the cycle's own diff still holds only the new change.
+  assert.deepEqual(git.changedFiles(repo, "orch/integration", integrationTip), ["a.txt"]);
+  // main is untouched: it stays the PR target, not the landing spot.
+  assert.equal(existsSync(join(repo, "b.txt")), false);
+  assert.equal(git.git(["log", "--oneline", "main"], repo).split("\n").length, 1);
 });

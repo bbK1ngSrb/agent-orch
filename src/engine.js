@@ -30,6 +30,14 @@ export async function runCycle(opts, deps) {
   const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false, sid, resume = false } = opts;
   const { adapters, git, gate, scope, notify, finalize, inflight, checkpoint } = deps;
   const baseBranch = cfg.baseBranch || "main";
+  // Cycles land on integrationBranch but used to branch from baseBranch, so work
+  // authored while the integration PR sits open never saw what already landed —
+  // the first meeting was the merge, after review and after the gate. Base the
+  // cycle on integration whenever it is strictly ahead of base; every other case
+  // (missing, level, diverged) falls back to baseBranch, i.e. today's behavior.
+  // cfg.baseBranch stays the PR target and the trunk — this only moves the
+  // branch point and the diff comparisons.
+  const cycleBase = resolveCycleBase(git, repo, baseBranch, cfg.integrationBranch);
   // Role specs carry optional model/effort. Fall back to bare names so callers
   // that pass only authorName/reviewerNames (e.g. the PR bridge) keep working.
   const authorSpec = opts.author || { agent: authorName };
@@ -88,11 +96,11 @@ export async function runCycle(opts, deps) {
   // F5: task mode owns a fresh branch; review mode requires an existing one.
   // A resumed task (#24) re-attaches the quota-aborted branch — its authored
   // commits are already there, so we skip the initial author step below.
-  notify.phase("worktree", `${branch} (${mode}${resume ? ", resume" : ""})`);
+  notify.phase("worktree", `${branch} (${mode}${resume ? ", resume" : ""}${cycleBase !== baseBranch ? `, base ${cycleBase}` : ""})`);
   if (mode === "review" || resume) git.attachExistingBranch(repo, worktree, branch);
-  else git.createTaskBranch(repo, worktree, branch, baseBranch, `${process.pid}\n${sid}`);
+  else git.createTaskBranch(repo, worktree, branch, cycleBase, `${process.pid}\n${sid}`);
 
-  const baseSha = git.git(["rev-parse", baseBranch], repo);
+  const baseSha = git.git(["rev-parse", cycleBase], repo);
 
   // #422: the branch head for one review round. Checkpoints carry it so a resume
   // can prove the recorded verdict belongs to the content the branch holds NOW.
@@ -119,8 +127,8 @@ export async function runCycle(opts, deps) {
   // no cache key we can trust — spawn and don't store.
   const filesByOid = new Map();
   const changedFilesAt = (oid) => {
-    if (!oid) return git.changedFiles(repo, branch, baseBranch);
-    if (!filesByOid.has(oid)) filesByOid.set(oid, git.changedFiles(repo, oid, baseBranch));
+    if (!oid) return git.changedFiles(repo, branch, cycleBase);
+    if (!filesByOid.has(oid)) filesByOid.set(oid, git.changedFiles(repo, oid, cycleBase));
     return filesByOid.get(oid);
   };
 
@@ -156,7 +164,7 @@ export async function runCycle(opts, deps) {
 
       // Scope gate (optional).
       if (cfg.scope.maxLines > 0) {
-        const n = scope.count(branch, worktree, cfg.scope.ignore, baseBranch);
+        const n = scope.count(branch, worktree, cfg.scope.ignore, cycleBase);
         if (n > cfg.scope.maxLines) {
           return recordTerminal(escalate(notify, orchDir, branch, 1,
             `scope: ${n} changed lines exceed cap ${cfg.scope.maxLines} — split the PR`));
@@ -318,8 +326,8 @@ export async function runCycle(opts, deps) {
         }
         let finalDiff, rawPaths;
         try {
-          finalDiff = git.git(["diff", ...SECURITY_DIFF_ARGS, `${baseBranch}...${reviewedSha}`], repo);
-          rawPaths = parseRawPaths(git.git(["diff", ...SECURITY_RAW_ARGS, `${baseBranch}...${reviewedSha}`], repo));
+          finalDiff = git.git(["diff", ...SECURITY_DIFF_ARGS, `${cycleBase}...${reviewedSha}`], repo);
+          rawPaths = parseRawPaths(git.git(["diff", ...SECURITY_RAW_ARGS, `${cycleBase}...${reviewedSha}`], repo));
         } catch (e) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
             `security scan: could not read the final diff (${e.message}) — failing closed, not merging`));
@@ -372,7 +380,7 @@ export async function runCycle(opts, deps) {
           branch,
           reviewerCase: verdict.reason,
           authorCase: mode === "review" ? "(review-only; no author)" : "see prior rounds",
-          diffSummary: safeDiff(git, repo, branch, baseBranch),
+          diffSummary: safeDiff(git, repo, branch, cycleBase),
           rounds: round,
         });
         notify.escalate(orchDir, branch, brief);
@@ -407,6 +415,25 @@ export async function runCycle(opts, deps) {
 function escalate(notify, orchDir, branch, round, reason, body = reason) {
   notify.escalate(orchDir, branch, `# Escalation — ${branch}\n\n${body}\n`);
   return { status: "escalated", reason, rounds: round };
+}
+
+// The base a cycle is actually cut from and diffed against: integrationBranch
+// when it contains baseBranch and holds at least one commit base does not,
+// otherwise baseBranch. Local refs only — no fetch on this path. Any ref we
+// cannot read resolves to baseBranch, so ambiguity keeps the old behavior.
+function resolveCycleBase(git, repo, base, integration) {
+  if (!integration || integration === base) return base;
+  try {
+    // --quiet so a missing integration branch (the normal case on a fresh clone)
+    // exits 1 silently instead of printing `fatal:` on every cycle; fully
+    // qualified so a same-named tag cannot stand in for the branch.
+    const tip = git.git(["rev-parse", "--verify", "--quiet", `refs/heads/${integration}`], repo);
+    const baseTip = git.git(["rev-parse", "--verify", "--quiet", `refs/heads/${base}`], repo);
+    if (tip === baseTip) return base;
+    // Nonzero exit (base not contained → diverged) throws and falls through.
+    git.git(["merge-base", "--is-ancestor", baseTip, tip], repo);
+    return integration;
+  } catch { return base; }
 }
 
 function safeDiff(git, repo, branch, base = "main") {
