@@ -68,3 +68,27 @@ test("spawnSpec on Windows passes native exes through when resolution misses", (
   const spec = spawnSpec(["go", "test", "./..."], "win32", { resolve: () => null });
   assert.deepEqual(spec, { bin: "go", args: ["test", "./..."] });
 });
+
+test("run kills a hung test command at timeoutMs and fails the gate (#505)", () => {
+  const d = mkdtempSync(join(tmpdir(), "gate-timeout-"));
+  const t0 = Date.now();
+  // node fixture, not `sleep`: the Windows CI runner has no POSIX shell tools.
+  const r = run(`node -e setTimeout(()=>{},60000)`, d, 500);
+  const elapsed = Date.now() - t0;
+  assert.equal(r.pass, false, "a timed-out gate fails closed, never passes");
+  assert.match(r.log, /timed out after 500ms/);
+  assert.ok(elapsed < 30_000, `returned in ${elapsed}ms instead of hanging for the full 60s`);
+});
+
+test("run leaves a fast command alone when a timeout is set (no false kill)", () => {
+  const d = mkdtempSync(join(tmpdir(), "gate-timeout-ok-"));
+  const r = run(`node -e process.exit(0)`, d, 60_000);
+  assert.equal(r.pass, true);
+  assert.doesNotMatch(r.log, /timed out/);
+});
+
+test("timeoutMs of 0 disables the cap (stageTimeout: 0 parity)", () => {
+  const d = mkdtempSync(join(tmpdir(), "gate-timeout-off-"));
+  const r = run(`node -e process.exit(0)`, d, 0);
+  assert.equal(r.pass, true);
+});

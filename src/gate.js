@@ -50,11 +50,25 @@ export function spawnSpec(argv, platform = process.platform, deps = {}) {
   return portableSpawnSpec(bin, argv.slice(1), platform, deps.read);
 }
 
-export function run(cmd, cwd) {
+// #505: wall-clock cap, same idea as the author/reviewer stage watchdog. The
+// gate runs while `merge.lock` is held (finalize.js guard 2), so a hung test
+// command stalls every concurrent cycle's merge, not just its own. Timing out
+// fails the gate — never passes it. `timeoutMs <= 0` disables, matching
+// `stageTimeout: 0`.
+// ponytail: kills the direct child only, so a detached grandchild can outlive
+// the gate. We return (lock released), which is the point; upgrade path is a
+// process-group kill, which needs an async spawn and async callers.
+export function run(cmd, cwd, timeoutMs = 0) {
   const argv = splitArgs(cmd || "");
   if (argv.length === 0) return { pass: false, log: "empty test command" };
   const spec = spawnSpec(argv);
-  const r = spawnSync(spec.bin, spec.args, { cwd, encoding: "utf8" });
-  const log = (r.stdout || "") + (r.stderr || "") + (r.error ? String(r.error.message) : "");
+  const r = spawnSync(spec.bin, spec.args, {
+    cwd,
+    encoding: "utf8",
+    ...(timeoutMs > 0 ? { timeout: timeoutMs, killSignal: "SIGKILL" } : {}),
+  });
+  const timedOut = r.error && r.error.code === "ETIMEDOUT";
+  const log = (r.stdout || "") + (r.stderr || "") + (r.error ? String(r.error.message) : "")
+    + (timedOut ? `\ntest gate timed out after ${timeoutMs}ms and was killed` : "");
   return { pass: r.status === 0, log };
 }

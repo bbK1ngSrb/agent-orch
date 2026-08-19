@@ -1199,6 +1199,7 @@ test("checkpoint.record is called with the round's verdict after each fresh audi
 test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as ms (#56)", async () => {
   let authorOpts = null;
   let reviewerOpts = null;
+  let gateArgs = null;
   const author = {
     name: "auth",
     async author(_p, _wd, o) { authorOpts = o; return null; },
@@ -1214,7 +1215,7 @@ test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as
       createTaskBranch() {}, attachExistingBranch() {}, pruneWorktree() {},
       changedFiles() { return ["src/a.js"]; }, git() { return "d"; },
     },
-    gate: { detect: () => "echo", run: () => ({ pass: true, log: "" }) },
+    gate: { detect: () => "echo", run: (...a) => { gateArgs = a; return { pass: true, log: "" }; } },
     scope: { count: () => 0 },
     notify: { phase() {}, writeRound() { return "p"; }, buildDecisionBrief: () => "b", escalate() { return "d"; } },
     inflight: { setPaths() {} },
@@ -1223,4 +1224,6 @@ test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as
   await runCycle({ ...opts, cfg: { ...opts.cfg, stageTimeout: 30 } }, deps);
   assert.equal(authorOpts.stageTimeoutMs, 30 * 60_000, "author stage gets the configured timeout in ms");
   assert.equal(reviewerOpts.stageTimeoutMs, 30 * 60_000, "reviewer stage gets the configured timeout in ms");
+  // #505: the test gate gets the same wall-clock cap as an agent stage.
+  assert.equal(gateArgs[2], 1_800_000, "gate.run is called with stageTimeout in ms");
 });
