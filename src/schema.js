@@ -249,16 +249,20 @@ export function validate(command, flags) {
 // absent here (unknown input) are left to main()'s unknown-command
 // fall-through. `task` has no min: its positional is optional (--file
 // supplies the task instead), and that's a cross-flag rule main()'s own
-// handler still checks.
+// handler still checks. `task` and `release` have no max either: both
+// build free text by joining every remaining word with a space (cli.js does
+// `rest.join(" ")` for each), so an unquoted `orch task add input
+// validation` is three positionals, not one — capping the max here would
+// reject exactly the un-quoted phrasing the handler exists to accept.
 const POSITIONAL_ARITY = {
   init: [0, 0], config: [0, 0], dashboard: [0, 0], mcp: [0, 0],
   upgrade: [0, 0], update: [0, 0], version: [0, 0], help: [0, 0],
-  task: [0, 1], completion: [0, 1],
+  task: [0, Infinity], completion: [0, 1],
   issue: [1, 1, "usage: orch issue <number> [--author ... --reviewer ...]"],
   review: [1, 1, "usage: orch review <branch>"],
   continue: [1, 1, "usage: orch continue <sid>"],
   pr: [1, 1, "usage: orch pr <number> [--merge]"],
-  release: [1, 1, 'usage: orch release "<changelog entry>"'],
+  release: [1, Infinity, 'usage: orch release "<changelog entry>"'],
 };
 
 // Positional/subcommand grammar was previously unchecked: `completion typo`,

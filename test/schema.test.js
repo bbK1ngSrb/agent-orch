@@ -73,6 +73,15 @@ test("positional grammar is enforced before dispatch, not silently accepted", ()
   }
 });
 
+// `task` and `release` build their free text with `rest.join(" ")` in
+// cli.js, so an unquoted `orch task add input validation` arrives as three
+// positionals, not one. Capping the max here once rejected that as "too
+// many arguments" before the handler ever got to join them back together.
+test("task and release accept unquoted multi-word text", () => {
+  assert.doesNotThrow(() => validatePositionals("task", ["add", "input", "validation"], {}));
+  assert.doesNotThrow(() => validatePositionals("release", ["hand-landed", "fix", "(closes", "#5)"], {}));
+});
+
 test("--help and --version are legal on every command", () => {
   for (const command of Object.keys(COMMANDS)) {
     for (const name of GLOBAL_FLAGS) {
