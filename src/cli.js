@@ -1362,18 +1362,11 @@ export async function main(argv, deps = {}) {
       reportAgentBuildResult(name, result);
       return;
     }
-    // Known adapter: there is nothing left to build, so --pr and the role
-    // overrides (only meaningful for the build cycle they configure) have no
-    // effect here — accepting and dropping them is the exact "declared but
-    // inert" defect this schema exists to remove, so refuse instead. --build
-    // itself stays legal (it just means "skip the confirm prompt", which a
-    // known adapter never reaches anyway).
-    const buildOnlyFlags = ["pr", "author", "authors", "reviewer", "reviewers"];
-    for (const flagName of buildOnlyFlags) {
-      if (flags[flagName] !== undefined && flags[flagName] !== false) {
-        throw usageError(`--${flagName} is not valid with 'orch agent add ${name}' — ${name} already has an adapter, so no build runs (use 'orch agent build ${name} --pr' to rebuild it)`);
-      }
-    }
+    // Known adapter: there is nothing left to build. validatePositionals
+    // (schema.js) already refused --pr/the role overrides before main() got
+    // here — they only mean something for a build cycle this path never
+    // runs. --build itself stays legal (it just means "skip the confirm
+    // prompt", which a known adapter never reaches anyway).
     // Honor --config-file like every other write-capable command: edit the file the
     // run would actually read, not always the default .orch/orch.yml.
     const file = flags["config-file"] || configPath(repo);

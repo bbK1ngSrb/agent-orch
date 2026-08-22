@@ -9,6 +9,8 @@
 // Order matters: FLAGS and COMMANDS are rendered into `orch --help` in
 // declaration order, so `help` comes first.
 
+import { get as getAdapter } from "./adapters/index.js";
+
 // Flags. `type` is the parseArgs type plus two refinements the parser
 // enforces itself: "int" (positive integer unless `min` says otherwise) and
 // "enum" (`values`). `label` overrides the left column in the Options block;
@@ -180,6 +182,15 @@ const INTERNAL_COMMANDS = { "__update-check-child": { mutates: false, flags: [] 
 // Subcommand words, for completion. Derived nowhere else: these are positional
 // literals, not flags.
 export const SUBCOMMANDS = { agent: ["add", "build"], completion: ["bash", "install"] };
+
+// Build-only flags: legal on `agent build` (SUBCOMMAND_FLAGS above) but not on
+// `agent add`. They mean something on `add` only while `--build` is about to
+// scaffold a genuinely unregistered adapter; a name orch already has code for
+// never builds regardless of `--build` (see cli.js), so they are always inert
+// there too.
+const AGENT_BUILD_ONLY_FLAGS = SUBCOMMAND_FLAGS["agent build"].filter(
+  (f) => !SUBCOMMAND_FLAGS["agent add"].includes(f),
+);
 
 const EXAMPLES = [
   "orch init --link",
@@ -384,11 +395,25 @@ function validateAgentArgs(rest, flags) {
   if (sub === "build" && flags.build) {
     throw usageError("--build is not valid with 'orch agent build' — building is what the subcommand already does");
   }
-  if (sub === "add" && !flags.build) {
-    const buildOnlyFlags = SUBCOMMAND_FLAGS["agent build"].filter((f) => !SUBCOMMAND_FLAGS["agent add"].includes(f));
-    for (const flagName of buildOnlyFlags) {
-      if (flags[flagName] !== undefined && flags[flagName] !== false) {
-        throw usageError(`--${flagName} is not valid with 'orch agent add' without --build — it only affects the build`);
+  if (sub === "add") {
+    // A name orch already has adapter code for never builds, `--build` or not
+    // (see cli.js's agent-add handler) — so the build-only flags are invalid
+    // there unconditionally. A genuinely unregistered name only makes them
+    // legal once `--build` is present. Checking this here, before
+    // validatePositionals returns to main(), is what stops `agent add
+    // <known> --build --pr` from minting a GitHub App token and firing the
+    // update-check network call before being refused.
+    let known = true;
+    try { getAdapter(name); } catch { known = false; }
+    if (known || !flags.build) {
+      for (const flagName of AGENT_BUILD_ONLY_FLAGS) {
+        if (flags[flagName] !== undefined && flags[flagName] !== false) {
+          throw usageError(
+            known
+              ? `--${flagName} is not valid with 'orch agent add ${name}' — ${name} already has an adapter, so no build runs (use 'orch agent build ${name} --pr' to rebuild it)`
+              : `--${flagName} is not valid with 'orch agent add' without --build — it only affects the build`,
+          );
+        }
       }
     }
   }

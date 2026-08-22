@@ -3771,7 +3771,7 @@ test("a stray positional argument is a usage error, not silently dropped", async
 // inert" defect this schema exists to remove.
 test("agent add and agent build do not share a flag set", async () => {
   await assert.rejects(
-    () => main(["agent", "add", "claude", "--pr"], { preflight() {} }),
+    () => main(["agent", "add", "widget", "--pr"], { preflight() {} }),
     (e) => e.exit === 64 && /--pr is not valid with 'orch agent add' without --build/.test(e.message),
   );
   await assert.rejects(
@@ -3891,6 +3891,46 @@ test("agent add <known-adapter> --build --pr is a usage error, not a silent drop
   );
   // orch.yml is byte-identical — a usage error must not partially apply the add.
   assert.equal(readFileSync(file, "utf8"), before);
+});
+
+// Fourth variant: the round-3 fix's build-only-flags list (cli.js) named
+// pr/author/authors/reviewer/reviewers but left out --allow-large-scope,
+// which SUBCOMMAND_FLAGS["agent build"] declares just as build-only — so
+// `--allow-large-scope` alone validated, reached the known-adapter branch,
+// and was silently dropped exactly like the flags criterion 19 fixed for.
+test("agent add <known-adapter> --build --allow-large-scope is a usage error, not a silent drop", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-known-scope-"));
+  await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
+  const file = join(d, ".orch", "orch.yml");
+  const before = readFileSync(file, "utf8");
+  await assert.rejects(
+    () => runMainInRepo(d, ["agent", "add", "gemini", "--build", "--allow-large-scope"], {
+      buildAgent: async () => assert.fail("buildAgent ran — gemini's adapter code already exists, nothing to build"),
+    }),
+    (e) => e.exit === 64 && /--allow-large-scope is not valid with 'orch agent add gemini'/.test(e.message),
+  );
+  assert.equal(readFileSync(file, "utf8"), before);
+});
+
+// The known-adapter build-only-flags check above used to live deep inside
+// cli.js's `agent` dispatch, which main() only reaches after the
+// update-check network call and the GitHub App auth mint. Moving the check
+// into validatePositionals (schema.js), which main() calls immediately after
+// parse(), means a doomed `agent add <known> --build --pr` never fires either
+// side effect — the same "validate before every side effect" property
+// criterion 17/20 required elsewhere in this schema.
+test("agent add <known-adapter> --build --pr is refused before the update-check side effect fires", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-known-noupdate-"));
+  await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
+  let updateChecked = false;
+  await assert.rejects(
+    () => runMainInRepo(d, ["agent", "add", "gemini", "--build", "--pr"], {
+      maybeNotifyUpdate: () => { updateChecked = true; return Promise.resolve(); },
+      buildAgent: async () => assert.fail("buildAgent ran — gemini's adapter code already exists, nothing to build"),
+    }),
+    (e) => e.exit === 64,
+  );
+  assert.equal(updateChecked, false, "update-check must not fire before a usage error is refused");
 });
 
 test("orch pr --merge --dry never preflights, authenticates, or shells out to gh", async () => {

@@ -105,6 +105,25 @@ test("orch agent add --build completion offers the build-only flags", BASH_SKIP,
   }
 });
 
+// `agent add <name> --build` only legally accepts the build-only flags when
+// <name> is NOT already an adapter orch ships code for — validateAgentArgs
+// (schema.js) refuses them unconditionally for a known name, since a known
+// name never builds regardless of --build. Completion used to widen the flag
+// set on --build alone, without checking <name>, so `orch agent add claude
+// --build --p<TAB>` suggested `--pr` for an invocation the parser refuses.
+test("orch agent add <known-adapter> --build completion does not offer the build-only flags", BASH_SKIP, () => {
+  const offered = new Set(complete(["orch", "agent", "add", "claude", "--build", ""], 5));
+  for (const name of SUBCOMMAND_FLAGS["agent build"]) {
+    if (SUBCOMMAND_FLAGS["agent add"].includes(name)) continue;
+    assert.ok(!offered.has(`--${name}`), `orch agent add claude --build should not offer --${name}`);
+  }
+  // An unregistered name right next to it still gets the full build-only set.
+  const unknown = new Set(complete(["orch", "agent", "add", "totally-new-agent", "--build", ""], 5));
+  for (const name of SUBCOMMAND_FLAGS["agent build"]) {
+    assert.ok(unknown.has(`--${name}`), `orch agent add totally-new-agent --build missing --${name}`);
+  }
+});
+
 // `orch completion bash --dry` used to be offered by tab-completion and then
 // refused by the parser (schema.js's validatePositionals: --dry only applies
 // to `completion install`, since `completion [bash]` only prints). This is
