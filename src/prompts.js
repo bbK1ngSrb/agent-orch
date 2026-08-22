@@ -21,12 +21,16 @@ export function render(name, vars = {}) {
 // goal frame before giving the reference to a reviewer. Quoted lines keep
 // verdict-shaped issue text out of the prompt-echo detector.
 export function buildReviewPromptReference(workOrder) {
-  const value = workOrder && typeof workOrder === "object"
-    ? workOrder
-    : { title: "", problem: String(workOrder || "").trim(), repro_steps: [], suspected_paths: [], acceptance_criteria: [] };
-  const framed = buildAuthorPrompt(value);
-  const match = framed.match(/^BEGIN UNTRUSTED REFERENCE [0-9a-f]{8}\n([\s\S]*?)\nEND UNTRUSTED REFERENCE [0-9a-f]{8}$/m);
-  const body = match?.[1] || "No work order was supplied for this review.";
+  let body = "No work order was supplied for this review.";
+  if (workOrder && typeof workOrder === "object") {
+    const framed = buildAuthorPrompt(workOrder);
+    const match = framed.match(/^BEGIN UNTRUSTED REFERENCE [0-9a-f]{8}\n([\s\S]*?)\nEND UNTRUSTED REFERENCE [0-9a-f]{8}$/m);
+    body = match?.[1] || body;
+  } else if (typeof workOrder === "string" && workOrder.trim()) {
+    const framed = buildAuthorPrompt({ title: "", problem: workOrder.trim(), repro_steps: [], suspected_paths: [], acceptance_criteria: [] });
+    const match = framed.match(/^BEGIN UNTRUSTED REFERENCE [0-9a-f]{8}\n([\s\S]*?)\nEND UNTRUSTED REFERENCE [0-9a-f]{8}$/m);
+    body = match?.[1] || body;
+  }
   const nonce = randomBytes(4).toString("hex");
   return [
     `# Untrusted work-order reference`,

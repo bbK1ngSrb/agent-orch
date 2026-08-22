@@ -69,6 +69,7 @@ export async function runCycle(opts, deps) {
     task,
     authorPrompt: opts.authorPrompt || task,
     workOrder: opts.workOrder || null,
+    allowLargeScope: Boolean(opts.allowLargeScope),
   };
   const runStats = [];
   const reviewOutcomes = [];

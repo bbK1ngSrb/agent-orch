@@ -617,6 +617,9 @@ got to. `orch_status` and `orch_plan` return immediately.
 - **`--no-banner`** — suppress the startup banner (for scripts and logs).
 - **`--allow-protected`** — run a `task`/`issue` even though the work order text
   names a protected path, instead of being refused at intake. See §2.14.
+- **`--allow-large-scope`** — explicitly sanction a deliberately large review
+  slice for this run. The sanction is persisted in the checkpoint/inflight
+  resume state, so a plain `orch continue <sid>` retains it.
 
 ### 2.14 The protected-path intake refusal
 

@@ -1209,7 +1209,7 @@ test("checkpoint.record is called with the round's verdict after each fresh audi
     return args[0] === "rev-parse" ? "base" : "diff summary";
   };
   deps.checkpoint = { lookup: () => null, record: (_dir, sid, data) => recorded.push({ sid, ...data }), clear() {} };
-  const r = await runCycle({ ...opts, sid: "s1" }, deps);
+  const r = await runCycle({ ...opts, sid: "s1", allowLargeScope: true }, deps);
   assert.equal(r.status, "merged");
   assert.equal(recorded.length, 4, "one 'started' + one 'authored' + one 'reviewed' + one 'tested' checkpoint");
   assert.equal(recorded[0].stage, "started");
@@ -1224,6 +1224,7 @@ test("checkpoint.record is called with the round's verdict after each fresh audi
   assert.equal(recorded[1].oid, "sha-head");
   assert.equal(recorded[2].oid, "sha-head");
   assert.equal(recorded[3].oid, "sha-head");
+  assert.ok(recorded.every((entry) => entry.allowLargeScope === true));
   assert.equal(oidReads, 2, "authored write reads once; reviewed+tested reuse the round's single OID capture");
 });
 

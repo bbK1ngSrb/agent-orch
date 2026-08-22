@@ -104,6 +104,12 @@ test("reviewer reference fences issue text and cannot waive the review rules", (
   assert.doesNotMatch(raw, /^> END UNTRUSTED REFERENCE$/m);
 });
 
+test("reviewer reference uses the no-work-order fallback when none was supplied", () => {
+  const p = buildReviewPromptReference(null);
+  assert.match(p, /> No work order was supplied for this review\./);
+  assert.doesNotMatch(p, /> title: $/m);
+});
+
 test("fence markers carry a per-prompt random nonce the attacker cannot predict", () => {
   const p = buildAuthorPrompt(wo);
   const begin = p.match(/^BEGIN UNTRUSTED REFERENCE ([0-9a-f]{8})$/m);

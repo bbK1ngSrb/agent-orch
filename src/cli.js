@@ -1142,7 +1142,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     registerWithConcurrencyCap(
       orchDir,
       sid,
-      { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList, workOrder: wo },
+      { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList, workOrder: wo, allowLargeScope: run.allowLargeScope },
       cfg,
       { onExceeded: (live) => { throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`); } },
     );
@@ -1547,7 +1547,7 @@ export async function main(argv, deps = {}) {
         const accepted = registerWithConcurrencyCap(
           orchDir,
           run.sid,
-          { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers, workOrder: run.workOrder },
+          { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers, workOrder: run.workOrder, allowLargeScope: run.allowLargeScope },
           cfg,
           { onExceeded: (live) => {
             console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
@@ -1704,12 +1704,13 @@ export async function main(argv, deps = {}) {
       throw new Error(`orch: cannot resume ${ck.stage} author for sid ${sid} — checkpoint has no original task`);
     }
 
+    const allowLargeScope = Boolean(flags["allow-large-scope"] || ck?.allowLargeScope || inf?.allowLargeScope);
     const run = {
       // Older completed-author checkpoints carry no task, so retain the branch
       // fallback for their changelog label. Author-stage resumes fail above
       // unless they have the original work order and can execute it safely.
       mode: "task", task, authorPrompt, workOrder,
-      allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, resume: true, closes,
+      allowLargeScope, branch, sid, resume: true, closes,
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers,
@@ -1743,7 +1744,7 @@ export async function main(argv, deps = {}) {
       registerWithConcurrencyCap(
         orchDir,
         sid,
-        { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers, workOrder },
+        { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers, workOrder, allowLargeScope: run.allowLargeScope },
         cfg,
         { onExceeded: (live) => { throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`); } },
       );
