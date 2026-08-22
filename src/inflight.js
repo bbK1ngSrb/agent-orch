@@ -13,10 +13,8 @@ const dir = (orchDir) => join(orchDir, "inflight");
 // too, for the same reason as `closes`: a run that dies before its first review
 // round has no checkpoint yet, so `orch continue` needs this fallback to know
 // which agents/models it should resume with instead of guessing from rotation.
-// `allowLargeScope` is carried here too so a death before the first checkpoint
-// does not silently revoke the operator's explicit sanction on `continue`.
-export function register(orchDir, sid, { branch, pid, baseSha, closes = null, author = null, reviewers = null, workOrder = null, allowLargeScope = false }) {
-  writeRecord(dir(orchDir), sid, { sid, branch, pid, baseSha, closes, author, reviewers, workOrder, allowLargeScope, paths: [] });
+export function register(orchDir, sid, { branch, pid, baseSha, closes = null, author = null, reviewers = null, workOrder = null }) {
+  writeRecord(dir(orchDir), sid, { sid, branch, pid, baseSha, closes, author, reviewers, workOrder, paths: [] });
 }
 
 export function setPaths(orchDir, sid, paths, baseSha) {

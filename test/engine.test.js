@@ -1224,7 +1224,7 @@ test("checkpoint.record is called with the round's verdict after each fresh audi
   assert.equal(recorded[1].oid, "sha-head");
   assert.equal(recorded[2].oid, "sha-head");
   assert.equal(recorded[3].oid, "sha-head");
-  assert.ok(recorded.every((entry) => entry.allowLargeScope === true));
+  assert.ok(recorded.every((entry) => !("allowLargeScope" in entry)));
   assert.equal(oidReads, 2, "authored write reads once; reviewed+tested reuse the round's single OID capture");
 });
 

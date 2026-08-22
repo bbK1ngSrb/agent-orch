@@ -2434,7 +2434,7 @@ test("orch continue <sid> reuses the persisted author/reviewer model+effort by d
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
   assert.equal(auditOpts.length, 1);
   assert.equal(auditOpts[0].model, "gpt-5.1"); // persisted reviewer model, not a re-resolved default
-  assert.equal(auditOpts[0].allowLargeScope, true); // persisted sanction, not the strict default
+  assert.equal(auditOpts[0].allowLargeScope, false); // legacy persisted sanction is not reused
 });
 
 // Codex review: preflight used to validate the FULL current orch.yml (its
@@ -2805,7 +2805,7 @@ test("orch continue <sid> resumes a died-before-checkpoint run via a dead-pid in
     { cycleDeps, finishRun: async () => {} });
 
   assert.equal(authorCalls, 0); // resumed via the inflight record, not a fresh author round
-  assert.equal(auditOpts.allowLargeScope, true); // inflight fallback preserves the sanction too
+  assert.equal(auditOpts.allowLargeScope, false); // legacy inflight sanction is not reused
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
