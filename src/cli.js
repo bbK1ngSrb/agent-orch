@@ -1260,7 +1260,7 @@ export async function main(argv, deps = {}) {
     // build request, it's a malformed subcommand.
     if (rest[0] === "build" || (rest[0] === "add" && flags.build)) {
       const name = rest[1];
-      if (!name) throw new Error("usage: orch agent build <name> [--pr]");
+      if (!name) throw usageError("usage: orch agent build <name> [--pr]");
       const buildFn = deps.buildAgent || buildAgent;
       const result = await buildFn(name, { repo, orchDir, flags, deps });
       if (result.status === "already-registered") { console.log(`orch: ${name} already registered`); return; }
@@ -1272,7 +1272,7 @@ export async function main(argv, deps = {}) {
     // pool in orch.yml, preserving the file's comments. Only registered agents
     // are accepted so the next run's preflight stays valid; an unregistered
     // name offers to build it (interactive only — see `buildAgent`).
-    if (rest[0] !== "add" || !rest[1]) throw new Error("usage: orch agent add <name> | orch agent build <name> [--pr]");
+    if (rest[0] !== "add" || !rest[1]) throw usageError("usage: orch agent add <name> | orch agent build <name> [--pr]");
     const name = rest[1];
     try {
       adapters.get(name); // throws "unknown agent: <name>" for unregistered names
@@ -1330,7 +1330,7 @@ export async function main(argv, deps = {}) {
     let task, authorPrompt, reviewBranch, closes = null, workOrder = null;
     if (command === "issue") {
       const n = rest[0];
-      if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch issue <number> [--author ... --reviewer ...]");
+      if (!/^\d+$/.test(String(n || ""))) throw usageError("usage: orch issue <number> [--author ... --reviewer ...]");
       const wo = fetchIssueWorkOrder(n, (deps.githubDeps || githubDeps)().gh);
       task = wo.title;
       authorPrompt = buildAuthorPrompt(wo);
@@ -1358,10 +1358,10 @@ export async function main(argv, deps = {}) {
         task = rest.join(" ");
         authorPrompt = task;
       }
-      if (!task) throw new Error('usage: orch task "describe the change" (or --file work-order.json)');
+      if (!task) throw usageError('usage: orch task "describe the change" (or --file work-order.json)');
     } else {
       reviewBranch = rest[0];
-      if (!reviewBranch) throw new Error("usage: orch review <branch>");
+      if (!reviewBranch) throw usageError("usage: orch review <branch>");
     }
 
     // §3c intake scan (#394): a task whose text names a protected path almost
@@ -1552,7 +1552,7 @@ export async function main(argv, deps = {}) {
 
   if (command === "continue") {
     const sid = rest[0];
-    if (!sid) throw new Error("usage: orch continue <sid>");
+    if (!sid) throw usageError("usage: orch continue <sid>");
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -1737,7 +1737,7 @@ export async function main(argv, deps = {}) {
   if (command === "pr") {
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const n = rest[0];
-    if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch pr <number> [--merge]");
+    if (!/^\d+$/.test(String(n || ""))) throw usageError("usage: orch pr <number> [--merge]");
     if (dryRun) {
       console.log(`orch (dry): would review PR #${n}${flags.merge ? " and merge it if approved" : ""}`);
       return;
@@ -1805,7 +1805,7 @@ export async function main(argv, deps = {}) {
   // wrote, never a whole-tree reset (see bumpVersion recovery: "written-files").
   if (command === "release") {
     const entry = rest.join(" ").trim();
-    if (!entry) throw new Error('usage: orch release "<changelog entry>"');
+    if (!entry) throw usageError('usage: orch release "<changelog entry>"');
     if (dryRun) { console.log(`orch (dry): would bump version + CHANGELOG with "${entry}"`); return; }
     const dirty = git.gitTry(["status", "--porcelain"], repo);
     if (!dirty.ok) throw new Error(`orch release: git status failed: ${dirty.out.trim() || "unknown error"}`);

@@ -3403,6 +3403,22 @@ test("orch release without an entry prints usage", async () => {
   await assert.rejects(() => runMainInRepo(repo, ["release"]), /usage: orch release/);
 });
 
+test("missing required positional exits 64 like every other usage error", async () => {
+  // These used to throw a plain Error (exit 1), splitting "you typed it wrong"
+  // errors across two exit codes. All usage errors share one contract: 64.
+  await assert.rejects(() => main(["release"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(() => main(["issue", "abc"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(() => main(["task"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(() => main(["review"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(() => main(["continue"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(() => main(["pr", "abc"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(() => main(["agent", "add"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(
+    () => main(["agent", "typo", "widget", "--build"], { preflight() {} }),
+    (e) => e.exit === 64,
+  );
+});
+
 test("unknown command errors instead of printing usage and exiting 0", async () => {
   await assert.rejects(
     // --dry only gates the background update check; dispatch is unaffected.
