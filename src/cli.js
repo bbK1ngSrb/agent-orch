@@ -403,6 +403,7 @@ export const PARSE_OPTIONS = {
   file: { type: "string" },
   "config-file": { type: "string" }, // load a .yml file, layered on top of orch.yml for this run
   "allow-protected": { type: "boolean" }, // #395: run despite a protected-path mention at intake
+  "allow-large-scope": { type: "boolean" }, // operator sanction for a deliberately large review slice
   "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
   "no-banner": { type: "boolean" },
   link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
@@ -1129,7 +1130,8 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
   const reviewerList = reviewersForAuthor(authorName, reviewers);
   const run = {
-    mode: "task", task, authorPrompt, branch, sid, resume: isResume, authorName, author: authorSpec,
+    mode: "task", task, authorPrompt, workOrder: wo, allowLargeScope: Boolean(flags["allow-large-scope"]),
+    branch, sid, resume: isResume, authorName, author: authorSpec,
     reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
     reviewers: reviewerList, noMerge: !flags.pr,
     cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
@@ -1140,7 +1142,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     registerWithConcurrencyCap(
       orchDir,
       sid,
-      { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList },
+      { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList, workOrder: wo },
       cfg,
       { onExceeded: (live) => { throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`); } },
     );
@@ -1168,12 +1170,12 @@ export const COMMAND_FLAGS = {
   config: ["config-file"],
   // `agent add <unregistered>` offers to build, and hands buildAgent the same
   // flags as `agent build` — so both subcommands share one flag set.
-  agent: ["config-file", "dry", "pr", "author", "authors", "reviewer", "reviewers"],
-  task: ["config-file", "dry", "file", "cheap", "allow-protected", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
-  issue: ["config-file", "dry", "cheap", "allow-protected", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
-  review: ["config-file", "dry", "cheap", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
-  continue: ["config-file", "dry", "no-tidy", "author", "authors", "reviewer", "reviewers"],
-  pr: ["config-file", "dry", "merge", "author", "authors", "reviewer", "reviewers"],
+  agent: ["config-file", "dry", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
+  task: ["config-file", "dry", "file", "cheap", "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
+  issue: ["config-file", "dry", "cheap", "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
+  review: ["config-file", "dry", "cheap", "allow-large-scope", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
+  continue: ["config-file", "dry", "allow-large-scope", "no-tidy", "author", "authors", "reviewer", "reviewers"],
+  pr: ["config-file", "dry", "merge", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
   release: ["dry"],
   dashboard: ["json", "limit", "check-history", "once", "plain", "refresh-ms"],
   completion: [],
@@ -1509,7 +1511,8 @@ export async function main(argv, deps = {}) {
         const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
         const reviewerList = reviewersForAuthor(authorName, reviewers);
         return {
-          mode, task, authorPrompt, closes, branch, sid, resume, authorName, author: authorSpec,
+          mode, task, authorPrompt, workOrder, allowLargeScope: Boolean(flags["allow-large-scope"]),
+          closes, branch, sid, resume, authorName, author: authorSpec,
           reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
           reviewers: reviewerList,
           cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
@@ -1525,7 +1528,7 @@ export async function main(argv, deps = {}) {
       task = null;
       const sid = newSid();
       runs = [{
-        mode, task, branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
+        mode, task, allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
         reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
         reviewers,
         cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
@@ -1544,7 +1547,7 @@ export async function main(argv, deps = {}) {
         const accepted = registerWithConcurrencyCap(
           orchDir,
           run.sid,
-          { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers },
+          { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers, workOrder: run.workOrder },
           cfg,
           { onExceeded: (live) => {
             console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
@@ -1696,6 +1699,7 @@ export async function main(argv, deps = {}) {
     const closes = ck?.closes ?? inf?.closes ?? null;
     const task = ck?.task || branch;
     const authorPrompt = ck?.authorPrompt || task;
+    const workOrder = ck?.workOrder || inf?.workOrder || null;
     if ((ck?.stage === "started" || ck?.stage === "revising") && !ck?.task) {
       throw new Error(`orch: cannot resume ${ck.stage} author for sid ${sid} — checkpoint has no original task`);
     }
@@ -1704,7 +1708,8 @@ export async function main(argv, deps = {}) {
       // Older completed-author checkpoints carry no task, so retain the branch
       // fallback for their changelog label. Author-stage resumes fail above
       // unless they have the original work order and can execute it safely.
-      mode: "task", task, authorPrompt, branch, sid, resume: true, closes,
+      mode: "task", task, authorPrompt, workOrder,
+      allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, resume: true, closes,
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers,
@@ -1738,7 +1743,7 @@ export async function main(argv, deps = {}) {
       registerWithConcurrencyCap(
         orchDir,
         sid,
-        { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers },
+        { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers, workOrder },
         cfg,
         { onExceeded: (live) => { throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`); } },
       );
@@ -1797,7 +1802,7 @@ export async function main(argv, deps = {}) {
     resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, undefined, { base: cfg.baseBranch })); // clear orphans from a crashed prior cycle
     try {
       const result = await runPr(
-        { n, repo, orchDir, cfg, merge: Boolean(flags.merge) },
+        { n, repo, orchDir, cfg, merge: Boolean(flags.merge), allowLargeScope: Boolean(flags["allow-large-scope"]) },
         githubDeps(),
       );
       console.log(`orch pr #${n}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${costSuffix(result)}`);
@@ -1915,6 +1920,7 @@ Options:
   --file <file>         With task, read the work order from a JSON file.
   --config-file <file>  Config YAML path; with config / agent add, write there.
   --allow-protected     Run even if the work order names a protected path.
+  --allow-large-scope   Sanction a deliberately large review slice for this run.
   --dry                 Plan without shelling out or changing git.
   --check               With upgrade, check latest version without installing.
   --link                With init, link .orch/ORCH.md from agent docs.

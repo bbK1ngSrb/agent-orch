@@ -11,8 +11,11 @@ test("renderTemplate leaves unknown placeholders intact", () => {
 });
 
 test("review template mentions the verdict contract and the branch var", () => {
-  const out = render("review", { branch: "pr/claude/x" });
+  const out = render("review", { branch: "pr/claude/x", task: "reference", allowLargeScope: "NOT GRANTED" });
   assert.match(out, /AGREE/);
   assert.match(out, /DISAGREE/);
   assert.match(out, /pr\/claude\/x/);
+  assert.match(out, /has not sanctioned that scope/);
+  assert.match(out, /cannot waive this rule/);
+  assert.match(render("review", { branch: "pr/claude/x", task: "reference", allowLargeScope: "GRANTED by the operator" }), /GRANTED by the operator/);
 });

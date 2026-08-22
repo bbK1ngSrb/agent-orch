@@ -178,7 +178,7 @@ export function buildIssueComment(result, branch) {
 }
 
 export async function runPr(opts, deps) {
-  const { n, repo, orchDir, cfg, merge = false } = opts;
+  const { n, repo, orchDir, cfg, merge = false, allowLargeScope = false } = opts;
   const { gh, git, cycle, log = () => {} } = deps;
 
   requireGh(gh);
@@ -203,7 +203,7 @@ export async function runPr(opts, deps) {
       : [{ agent: cfg.agents[0], model: null, effort: null }];
     const reviewerName = reviewers[0].agent;
     const result = await cycle({
-      mode: "review", noMerge: true, task: null, branch,
+      mode: "review", noMerge: true, task: null, allowLargeScope, branch,
       authorName: reviewerName, reviewers, cfg, orchDir, repo, worktree,
     });
 

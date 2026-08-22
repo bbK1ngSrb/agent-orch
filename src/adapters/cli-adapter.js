@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { IS_WINDOWS, killTree, portableSpawnSpec } from "../platform.js";
-import { render } from "../prompts.js";
+import { render, buildReviewPromptReference } from "../prompts.js";
 import { parseVerdict } from "../verdict.js";
 import { estimateCostUsd } from "../pricing.js";
 import { preserveWorktree } from "../git.js";
@@ -568,7 +568,11 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       assertSupported(name, capabilitySupport, opts);
       // `prompt` stays a named binding: the echo detector below compares the
       // captured output against it (#360).
-      const prompt = render("review", { branch });
+      const prompt = render("review", {
+        branch,
+        task: buildReviewPromptReference(opts.task),
+        allowLargeScope: opts.allowLargeScope ? "GRANTED by the operator" : "NOT GRANTED",
+      });
       const args = buildArgs(prompt, wd, opts);
       const { out, raw, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, {
         stageTimeoutMs: opts.stageTimeoutMs,

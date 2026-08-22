@@ -4,14 +4,15 @@ import { runCycle } from "../src/engine.js";
 import { SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "../src/security-review.js";
 
 function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
-  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], phases: [], rounds: [], rawRounds: [], reviewLog: [] };
+  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, auditOpts: [], prompts: [], phases: [], rounds: [], rawRounds: [], reviewLog: [] };
   const reviewerCache = new Map();
   const reviewerFor = (name) => {
     if (!reviewerCache.has(name)) {
       reviewerCache.set(name, {
         name,
-        async audit() {
+        async audit(_branch, _worktree, auditOpts) {
           calls.audits++;
+          calls.auditOpts.push(auditOpts);
           calls.auditsBy[name] = (calls.auditsBy[name] || 0) + 1;
           const list = reviewerVerdicts?.[name] || verdicts;
           const verdict = list[Math.min(calls.auditsBy[name] - 1, list.length - 1)];
@@ -67,6 +68,14 @@ test("AGREE + green gate -> merged", async () => {
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "merged");
   assert.equal(deps._calls.authors, 1);
+});
+
+test("review receives the work order separately from the author prompt", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  const workOrder = { title: "Fix parser", problem: "reject empty input", repro_steps: [], suspected_paths: [], acceptance_criteria: [] };
+  await runCycle({ ...opts, workOrder, allowLargeScope: true, authorPrompt: "author-only frame" }, deps);
+  assert.equal(deps._calls.auditOpts[0].task, workOrder);
+  assert.equal(deps._calls.auditOpts[0].allowLargeScope, true);
 });
 
 test("author and reviewers emit one-line completion results", async () => {
