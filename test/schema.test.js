@@ -80,16 +80,31 @@ test("positional grammar is enforced before dispatch, not silently accepted", ()
   assert.throws(() => validatePositionals("help", ["extra"], {}), (e) => e.exit === 64);
   assert.throws(() => validatePositionals("version", ["extra"], {}), (e) => e.exit === 64);
   assert.doesNotThrow(() => validatePositionals("dashboard", [], {}));
-  for (const [command, message] of [
-    ["issue", /usage: orch issue <number>/],
-    ["review", /usage: orch review <branch>/],
-    ["continue", /usage: orch continue <sid>/],
-    ["pr", /usage: orch pr <number>/],
-    ["release", /usage: orch release/],
+  for (const [command, message, validArg] of [
+    ["issue", /usage: orch issue <number>/, "42"],
+    ["review", /usage: orch review <branch>/, "x"],
+    ["continue", /usage: orch continue <sid>/, "x"],
+    ["pr", /usage: orch pr <number>/, "42"],
+    ["release", /usage: orch release/, "x"],
   ]) {
     assert.throws(() => validatePositionals(command, [], {}), (e) => e.exit === 64 && message.test(e.message), command);
-    assert.doesNotThrow(() => validatePositionals(command, ["x"], {}), command);
+    assert.doesNotThrow(() => validatePositionals(command, [validArg], {}), command);
   }
+});
+
+// `issue`/`pr` take a numeric ID, but that used to be checked deep inside
+// each handler — after main() had already fired the update-check network
+// call and minted a GitHub App token (see cli.js's main()). A non-numeric ID
+// now fails right here, before any of that runs.
+test("issue and pr reject a non-numeric ID before dispatch", () => {
+  assert.throws(
+    () => validatePositionals("issue", ["abc"], {}),
+    (e) => e.exit === 64 && /usage: orch issue <number>/.test(e.message),
+  );
+  assert.throws(
+    () => validatePositionals("pr", ["abc"], {}),
+    (e) => e.exit === 64 && /usage: orch pr <number>/.test(e.message),
+  );
 });
 
 // `task` and `release` build their free text with `rest.join(" ")` in

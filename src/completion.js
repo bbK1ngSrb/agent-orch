@@ -28,10 +28,17 @@ const VALUE_FLAG_PATTERN = Object.entries(FLAGS)
 // subcommands (SUBCOMMAND_FLAGS) don't share a flag set, so offering the
 // union at the "agent" case (as every other command does) would suggest
 // --pr right after `orch agent add`, which the parser refuses.
+// `completion` is excluded too: --dry is only legal on `completion install`
+// (schema.js's validatePositionals refuses it on plain `completion [bash]`),
+// so it gets the same narrower, subcommand-aware treatment below instead of
+// the flat per-command flag list every other command uses.
 const COMMAND_FLAG_CASES = Object.entries(COMMANDS)
-  .filter(([cmd]) => cmd !== "agent")
+  .filter(([cmd]) => cmd !== "agent" && cmd !== "completion")
   .map(([cmd, spec]) => `    ${cmd}) flags="${[...GLOBAL_FLAGS, ...spec.flags].flatMap(flagWords).join(" ")}" ;;`)
   .join("\n");
+const COMPLETION_NO_DRY_FLAGS = [...GLOBAL_FLAGS, ...COMMANDS.completion.flags.filter((f) => f !== "dry")]
+  .flatMap(flagWords).join(" ");
+const COMPLETION_ALL_FLAGS = [...GLOBAL_FLAGS, ...COMMANDS.completion.flags].flatMap(flagWords).join(" ");
 // Static per-subcommand, not per-invocation: `agent add --build` legally
 // accepts the build-only flags (pr/author/reviewer, see validateAgentArgs in
 // schema.js), but completion has no notion of "already typed --build" and
@@ -115,6 +122,12 @@ ${SUBCOMMAND_CASES}
 ${AGENT_SUBCOMMAND_FLAG_CASES}
       *) flags="\${global_flags}" ;;
     esac
+  elif [[ "\${cmd}" == "completion" ]]; then
+    if [[ "\${COMP_WORDS[\$((cmd_index + 1))]}" == "install" ]]; then
+      flags="${COMPLETION_ALL_FLAGS}"
+    else
+      flags="${COMPLETION_NO_DRY_FLAGS}"
+    fi
   else
     case "\${cmd}" in
 ${COMMAND_FLAG_CASES}

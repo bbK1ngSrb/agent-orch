@@ -416,7 +416,7 @@ function splitNames(value) {
   if (value == null) return null;
   const values = Array.isArray(value) ? value : String(value).split(",");
   const names = values.map((v) => String(v).trim()).filter(Boolean);
-  if (names.length === 0) throw new Error("role override must name at least one agent");
+  if (names.length === 0) throw usageError("role override must name at least one agent");
   return names;
 }
 
@@ -447,7 +447,7 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
     };
   }
   if ((authorValue == null) !== (reviewerValue == null))
-    throw new Error("set both --author(s) and --reviewer(s), or neither");
+    throw usageError("set both --author(s) and --reviewer(s), or neither");
   if (authorValue == null) return cfg;
   return {
     ...cfg,
@@ -1196,7 +1196,8 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "upgrade" || command === "update") {
-    await runUpgrade({ flags, stdout: deps.stdout || process.stdout, ...deps.upgradeDeps });
+    const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
+    await runUpgrade({ flags: { ...flags, dry }, stdout: deps.stdout || process.stdout, ...deps.upgradeDeps });
     return;
   }
 
@@ -1272,6 +1273,13 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "config") {
+    // --dry isn't a legal flag on `config` (see schema.js's comment on why),
+    // but ORCH_DRYRUN=1 still applies here like every other write command —
+    // it used to launch the interactive wizard and write orch.yml regardless.
+    if (dryRun) {
+      console.log(`orch (dry): would run the interactive config wizard and write ${flags["config-file"] || join(orchDir, "orch.yml")}`);
+      return;
+    }
     await runConfigWizard({
       repo,
       configFile: flags["config-file"],

@@ -40,8 +40,11 @@ test("completion offers exactly the flags each command's schema declares", BASH_
   // `agent` is excluded: its COMMANDS.flags is the add∪build union (needed by
   // the generic parser matrix test, which has no subcommand to key off), but
   // completion must not offer that union — see the dedicated test below.
+  // `completion` is excluded too: its COMMANDS.flags includes --dry, but
+  // --dry is only legal on the `install` subcommand, not `bash` (the first
+  // subcommand this loop would probe) — see the dedicated test below.
   for (const [command, spec] of Object.entries(COMMANDS)) {
-    if (command === "agent") continue;
+    if (command === "agent" || command === "completion") continue;
     // A command with a mandatory subcommand slot (SUBCOMMANDS) offers only
     // that slot's words right after the command — flags come one position
     // later, once the subcommand itself is typed.
@@ -80,6 +83,18 @@ test("agent add and agent build completion do not offer each other's flags", BAS
       assert.ok(!offered.has(`--${name}`), `orch agent ${sub} completion should not offer --${name}`);
     }
   }
+});
+
+// `orch completion bash --dry` used to be offered by tab-completion and then
+// refused by the parser (schema.js's validatePositionals: --dry only applies
+// to `completion install`, since `completion [bash]` only prints). This is
+// finding 9: the plain, subcommand-agnostic per-command flag list completion
+// used before was flat, so it couldn't tell `bash` and `install` apart.
+test("completion offers --dry only for 'completion install', not 'completion bash'", BASH_SKIP, () => {
+  const bash = new Set(complete(["orch", "completion", "bash", ""], 3));
+  assert.ok(!bash.has("--dry"), "orch completion bash should not offer --dry");
+  const install = new Set(complete(["orch", "completion", "install", ""], 3));
+  assert.ok(install.has("--dry"), "orch completion install should offer --dry");
 });
 
 test("completion offers every subcommand the schema declares", BASH_SKIP, () => {

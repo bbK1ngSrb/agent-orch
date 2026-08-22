@@ -338,6 +338,44 @@ test("orch upgrade --dry reaches the runner and installs nothing", async () => {
   assert.match(out, /would run/);
 });
 
+// ORCH_DRYRUN=1 is the env-var equivalent of --dry every other write command
+// honors (see the `dryRun` computation in main()). `upgrade` used to check
+// only `flags.dry`, so ORCH_DRYRUN=1 alone still ran `npm install -g` for
+// real; `config` used to skip the check entirely and always launch the
+// interactive wizard, since --dry isn't even a legal flag on it.
+test("ORCH_DRYRUN=1 is honored by upgrade and config, not just --dry", async () => {
+  const prev = process.env.ORCH_DRYRUN;
+  process.env.ORCH_DRYRUN = "1";
+  try {
+    let out = "";
+    await main(["upgrade"], {
+      stdout: { isTTY: false, write: (chunk) => { out += chunk; } },
+      upgradeDeps: {
+        current: "1.0.0",
+        resolveInstall: () => ({ type: "registry" }),
+        exec: (cmd, args = []) => {
+          if (cmd === "npm" && args[0] === "install") assert.fail("upgrade installed despite ORCH_DRYRUN=1");
+          return "1.1.0";
+        },
+      },
+    });
+    assert.match(out, /would run `npm install -g @bbk1ng\/agent-orch@latest`/);
+
+    let logged = "";
+    const prevLog = console.log;
+    console.log = (chunk = "") => { logged += `${chunk}\n`; };
+    try {
+      await main(["config"], { preflight() {} });
+    } finally {
+      console.log = prevLog;
+    }
+    assert.match(logged, /orch \(dry\): would run the interactive config wizard/);
+  } finally {
+    if (prev === undefined) delete process.env.ORCH_DRYRUN;
+    else process.env.ORCH_DRYRUN = prev;
+  }
+});
+
 test("help documents upgrade command and check flag", async () => {
   const prevLog = console.log;
   let out = "";
@@ -3556,6 +3594,20 @@ test("missing required positional exits 64 like every other usage error", async 
   await assert.rejects(
     () => main(["agent", "typo", "widget", "--build"], { preflight() {} }),
     (e) => e.exit === 64,
+  );
+});
+
+// applyRoleOverrides used to throw a plain Error for a lopsided --author(s)/
+// --reviewer(s) pair — a usage mistake, but exit 1 instead of the 64 every
+// other "you typed it wrong" case above gets.
+test("a lopsided --author/--reviewer pair exits 64, not 1", () => {
+  assert.throws(
+    () => applyRoleOverrides({ agents: ["claude"] }, { author: "claude" }),
+    (e) => e.exit === 64 && /set both --author\(s\) and --reviewer\(s\)/.test(e.message),
+  );
+  assert.throws(
+    () => applyRoleOverrides({ agents: ["claude"] }, { author: " ", reviewer: "codex" }),
+    (e) => e.exit === 64 && /role override must name at least one agent/.test(e.message),
   );
 });
 

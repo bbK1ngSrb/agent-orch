@@ -308,6 +308,14 @@ export function validatePositionals(command, rest, flags) {
       throw usageError("--dry is only valid with 'orch completion install' — 'orch completion' on its own only prints, it never writes");
     }
   }
+  // `issue`/`pr` take a numeric ID. This used to be checked deep in each
+  // handler, after main() had already fired the update-check network call
+  // and minted a GitHub App token — so `orch issue abc` phoned home and
+  // authed before being refused. Checking it here, alongside arity, rejects
+  // it before any of that runs.
+  if ((command === "issue" || command === "pr") && !/^\d+$/.test(String(rest[0]))) {
+    throw usageError(usage);
+  }
 }
 
 // `agent add` and `agent build` share a positional shape (<name>) but not a
