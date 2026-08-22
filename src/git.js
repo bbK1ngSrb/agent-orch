@@ -111,6 +111,17 @@ export function createTaskBranch(repo, path, branch, base, markerContent = "") {
 // review mode: branch MUST exist (human/other tool made it). Never create it.
 export function attachExistingBranch(repo, path, branch) {
   if (!branchExists(repo, branch)) throw new Error(`branch does not exist: ${branch}`);
+  const listed = gitTry(["worktree", "list", "--porcelain"], repo);
+  if (listed.ok) {
+    let expected = path;
+    try { expected = realpathSync(path); } catch { /* worktree does not exist yet */ }
+    const attached = [...worktreeRecords(listed.out)]
+      .find((record) => normalizePathForCompare(record.path) === normalizePathForCompare(expected));
+    if (attached) {
+      if (attached.branch === branch) return;
+      throw new Error(`worktree path already attached to ${attached.branch || "a detached HEAD"}: ${path}`);
+    }
+  }
   git(["worktree", "add", "--", path, branch], repo);
 }
 

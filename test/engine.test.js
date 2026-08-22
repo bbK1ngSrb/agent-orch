@@ -337,6 +337,8 @@ test("author() throwing (agy's #272 refusal) propagates out of runCycle instead 
   assert.equal(records[0].branch, opts.branch);
   assert.equal(records[0].stage, "started");
   assert.equal(records[0].round, 1);
+  assert.equal(records[0].task, opts.task);
+  assert.equal(records[0].authorPrompt, opts.task);
   assert.equal("oid" in records[0], false, "no commit exists when authoring starts");
   assert.equal(deps._calls.recorded, undefined, "an author failure must not append a terminal run row");
   assert.equal(deps._calls.finalized, undefined, "a crashed author must never reach finalize/merge");
@@ -653,18 +655,19 @@ test("the revise checkpoint persists the incremented round before the author run
     "the revise checkpoint is written before round 2 is audited, not after");
 });
 
-test("resuming from a 'revising' checkpoint keeps the incremented round and grants no shortcut", async () => {
+test("resuming from a 'revising' checkpoint keeps its round and reviewer feedback", async () => {
   // This is the crash-during-revise resume: the pre-crash round must survive,
   // so roundCap is not softened by one round per crash.
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   let gateRuns = 0;
   deps.gate.run = () => { gateRuns++; return { pass: true, log: "" }; };
-  const stored = { branch: opts.branch, round: 2, stage: "revising" };
+  const stored = { branch: opts.branch, round: 2, stage: "revising", reason: "reviewer says fix the race" };
   deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
   const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
   assert.equal(r.status, "merged");
   assert.equal(r.rounds, 2, "the resumed cycle counts the round the crash was in");
-  assert.equal(deps._calls.authors, 0, "resume never re-authors");
+  assert.equal(deps._calls.authors, 1, "the interrupted revision is retried once");
+  assert.match(deps._calls.prompts[0], /reviewer says fix the race/, "retry keeps the prior reviewer feedback");
   assert.equal(deps._calls.audits, 1, "revising stage must not skip the audit");
   assert.equal(gateRuns, 1, "revising stage must not skip the test gate");
 });
