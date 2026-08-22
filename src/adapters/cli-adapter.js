@@ -3,6 +3,7 @@ import { IS_WINDOWS, killTree, portableSpawnSpec } from "../platform.js";
 import { render } from "../prompts.js";
 import { parseVerdict } from "../verdict.js";
 import { estimateCostUsd } from "../pricing.js";
+import { preserveWorktree } from "../git.js";
 
 const OPTS = { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 };
 const DEFAULT_PROGRESS_INTERVAL_MS = 30_000;
@@ -496,6 +497,22 @@ export function appendCliOverrides(args, opts = {}, { model = false, effort = fa
   return args;
 }
 
+function captureAuthorWork(name, wd, { partial = false, baseBranch = "main", reason = "agent failure" } = {}) {
+  execFileSync("git", ["add", "-A"], { cwd: wd, ...OPTS });
+  const staged = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: wd, ...OPTS }).trim();
+  const message = partial
+    ? `wip(author): partial work before ${reason}`
+    : `orch: ${name} authored task`;
+  if (staged) {
+    execFileSync("git", ["commit", "-m", message], { cwd: wd, ...OPTS });
+    return;
+  }
+  if (partial) {
+    const ahead = Number(execFileSync("git", ["rev-list", "--count", `${baseBranch}..HEAD`], { cwd: wd, ...OPTS }).trim());
+    if (ahead > 0) execFileSync("git", ["commit", "--allow-empty", "-m", message], { cwd: wd, ...OPTS });
+  }
+}
+
 export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: true, effort: true }, env: adapterEnv }) {
   const capabilitySupport = normalizeCapabilities(capabilities);
   // Spawns read adapter.bin (not the closed-over param) so preflight can rewrite
@@ -505,7 +522,8 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
     bin, // the actual executable (may differ from name, e.g. local models run via `ccr`)
     capabilities: capabilitySupport,
     async author(task, wd, opts = {}) {
-      // Author must succeed; a failure here is a hard error (no commits made).
+      // Author failure stays a hard error, but partial filesystem work is
+      // captured below before it propagates.
       assertSupported(name, capabilitySupport, opts);
       const args = buildArgs(render("author", { task }), wd, opts);
       const result = await runAgent(adapter.bin, args, wd, `${name} authoring`, {
@@ -513,7 +531,27 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
         stage: "author",
         env: adapterEnv,
       });
-      if (!result.ok) throw new Error(result.out || `Command failed: ${adapter.bin}`);
+      if (!result.ok) {
+        const failure = result.out || `Command failed: ${adapter.bin}`;
+        const reason = /timed out/i.test(failure) ? "timeout"
+          : isUsageLimit(failure) ? "usage limit" : "agent failure";
+        try {
+          captureAuthorWork(name, wd, { partial: true, baseBranch: opts.baseBranch, reason });
+        } catch (captureError) {
+          const failureLabel = reason === "timeout" ? "timed out" : reason;
+          const message = `author ${failureLabel}; WIP capture failed; worktree preserved at ${wd}: ${captureError.message || captureError}`;
+          try { preserveWorktree(wd, message); }
+          catch (markerError) {
+            const error = new Error(`${message}; preservation marker failed: ${markerError.message || markerError}`);
+            error.preserveWorktree = true;
+            throw error;
+          }
+          const error = new Error(message, { cause: captureError });
+          error.preserveWorktree = true;
+          throw error;
+        }
+        throw new Error(failure);
+      }
       const out = result.out;
       const usage = parseRunUsage(out, modelFromArgs(args, opts));
       // The agent edits files in the worktree but cannot be trusted to commit
@@ -521,11 +559,7 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       // at base and the auditor reviews an empty diff. Capture the work
       // deterministically: stage everything, and commit if anything is staged.
       // If the agent already committed (clean tree), this is a harmless no-op.
-      execFileSync("git", ["add", "-A"], { cwd: wd, ...OPTS });
-      const staged = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: wd, ...OPTS }).trim();
-      if (staged) {
-        execFileSync("git", ["commit", "-m", `orch: ${name} authored task`], { cwd: wd, ...OPTS });
-      }
+      captureAuthorWork(name, wd);
       return { usage };
     },
     async audit(branch, wd, opts = {}) {

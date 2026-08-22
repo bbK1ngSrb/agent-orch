@@ -45,7 +45,7 @@ export async function runCycle(opts, deps) {
   // #56: per-stage watchdog. cfg.stageTimeout is in minutes (0 = off); pass it to
   // every stage in ms so a stalled author/reviewer is killed instead of hanging.
   const stageTimeoutMs = cfg?.stageTimeout > 0 ? cfg.stageTimeout * 60_000 : 0;
-  const authorOpts = { model: authorSpec.model, effort: authorSpec.effort, stageTimeoutMs };
+  const authorOpts = { model: authorSpec.model, effort: authorSpec.effort, stageTimeoutMs, baseBranch: cycleBase };
   const reviewerSpecs = opts.reviewers || (opts.reviewerNames || [reviewerName]).map((name) => ({ agent: name }));
   const reviewers = reviewerSpecs.map((s) => ({
     name: s.agent, adapter: adapters.get(s.agent), opts: { model: s.model, effort: s.effort, stageTimeoutMs },
@@ -62,6 +62,13 @@ export async function runCycle(opts, deps) {
   // them unset and get the same value both ways.
   const persistAuthor = opts.persistAuthor || authorSpec;
   const persistReviewers = opts.persistReviewers || reviewerSpecs;
+  const checkpointMeta = {
+    closes: opts.closes || null,
+    author: persistAuthor,
+    reviewers: persistReviewers,
+    task,
+    authorPrompt: opts.authorPrompt || task,
+  };
   const runStats = [];
   const reviewOutcomes = [];
   const done = (result) => {
@@ -101,6 +108,18 @@ export async function runCycle(opts, deps) {
   else git.createTaskBranch(repo, worktree, branch, cycleBase, `${process.pid}\n${sid}`);
 
   const baseSha = git.git(["rev-parse", cycleBase], repo);
+  // A failed author stage is captured as a WIP commit. Derive recovery here so
+  // every resume caller (continue, task retry, PR bridge) re-runs the author
+  // instead of auditing a known-truncated tip.
+  const partialAuthorTip = () => {
+    try {
+      return git.git(["log", "-1", "--format=%s", `refs/heads/${branch}`], repo)
+        .startsWith("wip(author):");
+    } catch { return false; }
+  };
+  const partialAuthor = mode === "task" && resume && partialAuthorTip();
+  const resumeCheckpoint = resume ? checkpoint?.lookup(orchDir, sid) : null;
+  const resumeStage = resumeCheckpoint?.branch === branch ? resumeCheckpoint.stage : null;
 
   // #422: the branch head for one review round. Checkpoints carry it so a resume
   // can prove the recorded verdict belongs to the content the branch holds NOW.
@@ -138,19 +157,23 @@ export async function runCycle(opts, deps) {
   // "no key we can trust" and the diff runs uncached.
   let authoredOid = null;
 
+  let preserveWorktree = false;
   try {
     // F1: author step + scope gate only in task mode. Review never writes.
     if (mode === "task") {
-      // On resume the author's work is already committed on the branch — skip
-      // re-authoring and go straight to audit. The scope gate below still runs,
-      // so a too-big resumed diff is caught even if quota aborted before it ran.
-      if (!resume) {
-        checkpoint?.record(orchDir, sid, { branch, round: 1, stage: "started", closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
+      // Normal resumes already have completed author work and go straight to
+      // audit. A WIP-tipped resume is the exception: it must re-enter authoring.
+      // The scope gate below still catches an oversized resumed diff.
+      if (!resume || resumeStage === "started" || (partialAuthor && resumeStage !== "revising")) {
+        checkpoint?.record(orchDir, sid, { branch, round: 1, stage: "started", ...checkpointMeta });
         notify.phase("author", `${author.name} authoring`);
         // §3b: for untrusted intake (work order), the author runs against a
         // fenced prompt; free-text tasks pass through unchanged.
         const authored = await author.author(opts.authorPrompt || task, worktree, authorOpts);
         recordUsage("author", author.name, authored, authorOpts.model);
+        if (partialAuthor && partialAuthorTip()) {
+          throw new Error("author retry left the partial WIP unchanged — refusing to review or merge incomplete work");
+        }
         notify.phase("author", `${author.name} completed`, "ok");
         // Record the committed work NOW: a crash during round-1 review would
         // otherwise leave neither a checkpoint (first write is post-audit) nor
@@ -159,7 +182,7 @@ export async function runCycle(opts, deps) {
         // neither pendingVerdict nor skipTest, so a resume still audits and
         // gates from round 1 (#422 OID binding unaffected).
         authoredOid = branchOid();
-        checkpoint?.record(orchDir, sid, { branch, oid: authoredOid, round: 1, stage: "authored", closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
+        checkpoint?.record(orchDir, sid, { branch, oid: authoredOid, round: 1, stage: "authored", ...checkpointMeta });
       }
 
       // Scope gate (optional).
@@ -212,7 +235,7 @@ export async function runCycle(opts, deps) {
     let skipTest = false;
     let cachedOid = null;
     if (resume) {
-      const ck = checkpoint?.lookup(orchDir, sid);
+      const ck = resumeCheckpoint;
       if (ck && ck.branch === branch) {
         round = ck.round;
         if (!opts.reviewerOverride) {
@@ -224,6 +247,21 @@ export async function runCycle(opts, deps) {
             pendingVerdict = { decision: ck.decision, reason: ck.reason || "" };
           }
         }
+      }
+    }
+
+    if (mode === "task" && resumeStage === "revising") {
+      if (!resumeCheckpoint.reason) {
+        throw new Error("cannot resume author revision: checkpoint has no reviewer feedback");
+      }
+      notify.phase("revise", `${author.name} revising (round ${round})`);
+      checkpoint?.record(orchDir, sid, {
+        branch, round, stage: "revising", reason: resumeCheckpoint.reason, ...checkpointMeta,
+      });
+      const revised = await author.author(buildRevisionPrompt(resumeCheckpoint.reason), worktree, authorOpts);
+      recordUsage("author", author.name, revised, authorOpts.model);
+      if (partialAuthor && partialAuthorTip()) {
+        throw new Error("author retry left the partial WIP unchanged — refusing to review or merge incomplete work");
       }
     }
 
@@ -280,7 +318,7 @@ export async function runCycle(opts, deps) {
         notify.writeRound(orchDir, branch, round,
           `# Round ${round}\n\nVerdict: ${verdict.decision}\n\nCost: ${formatUsage(totalUsage(runStats))}\n\n${verdict.reason}\n`);
         notify.writeRoundRaw?.(orchDir, branch, round, roundRawOutput(verdicts));
-        checkpoint?.record(orchDir, sid, { branch, oid: reviewedSha, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
+        checkpoint?.record(orchDir, sid, { branch, oid: reviewedSha, round, stage: "reviewed", decision: verdict.decision, reason: verdict.reason, ...checkpointMeta });
 
         // #33: a crashed/nonzero reviewer (agentError) is not a code defect, so
         // revising the author would burn the whole loop for nothing. Escalate
@@ -305,7 +343,7 @@ export async function runCycle(opts, deps) {
           notify.phase("gate", `running: ${testCmd}`);
           ({ pass } = gate.run(testCmd, worktree, stageTimeoutMs));
           notify.phase("gate", testCmd, pass ? "ok" : "fail");
-          if (pass) checkpoint?.record(orchDir, sid, { branch, oid: reviewedSha, round, stage: "tested", reason: verdict.reason, closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
+          if (pass) checkpoint?.record(orchDir, sid, { branch, oid: reviewedSha, round, stage: "tested", reason: verdict.reason, ...checkpointMeta });
         }
         if (!pass) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
@@ -399,12 +437,18 @@ export async function runCycle(opts, deps) {
       // re-gates, so no `oid` pin is needed (there is no cached verdict to pin).
       round += 1;
       notify.phase("revise", `${author.name} revising (round ${round})`);
-      checkpoint?.record(orchDir, sid, { branch, round, stage: "revising", closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
+      checkpoint?.record(orchDir, sid, { branch, round, stage: "revising", reason: verdict.reason, ...checkpointMeta });
       const revised = await author.author(buildRevisionPrompt(verdict.reason), worktree, authorOpts);
       recordUsage("author", author.name, revised, authorOpts.model);
     }
+  } catch (error) {
+    if (error?.preserveWorktree) {
+      preserveWorktree = true;
+      notify.phase("author", error.message || String(error), "fail");
+    }
+    throw error;
   } finally {
-    git.pruneWorktree(repo, worktree);
+    if (!preserveWorktree) git.pruneWorktree(repo, worktree);
   }
 }
 

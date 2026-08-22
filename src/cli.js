@@ -1652,7 +1652,7 @@ export async function main(argv, deps = {}) {
     // A pre-authoring checkpoint or inflight-only fallback may represent a run
     // that died before the author committed anything — neither record proves
     // there's work to review/merge until the branch has a committed diff.
-    if ((inf || ck?.stage === "started") && git.changedFiles(repo, branch, cfg.baseBranch).length === 0) {
+    if ((inf || (ck?.stage === "started" && !ck.task)) && git.changedFiles(repo, branch, cfg.baseBranch).length === 0) {
       if (!dry && ck) checkpoint.clear(orchDir, sid);
       throw new Error(`orch: branch ${branch} (sid ${sid}) has no committed changes — the run died before authoring finished; start a fresh \`orch task\` instead`);
     }
@@ -1694,13 +1694,17 @@ export async function main(argv, deps = {}) {
     // authoritative once a round has completed; the inflight fallback covers a
     // death before that.
     const closes = ck?.closes ?? inf?.closes ?? null;
+    const task = ck?.task || branch;
+    const authorPrompt = ck?.authorPrompt || task;
+    if ((ck?.stage === "started" || ck?.stage === "revising") && !ck?.task) {
+      throw new Error(`orch: cannot resume ${ck.stage} author for sid ${sid} — checkpoint has no original task`);
+    }
 
     const run = {
-      // No original task text survives in the checkpoint/inflight record, so
-      // `task` falls back to the branch name — changelogEntry() and the
-      // terminal summary both read `task`; the raw "continue <sid>" command
-      // is not a meaningful changelog/summary label.
-      mode: "task", task: branch, branch, sid, resume: true, closes,
+      // Older completed-author checkpoints carry no task, so retain the branch
+      // fallback for their changelog label. Author-stage resumes fail above
+      // unless they have the original work order and can execute it safely.
+      mode: "task", task, authorPrompt, branch, sid, resume: true, closes,
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers,

@@ -32,6 +32,13 @@ export function retryOnRefLock(fn, { retries = 2, sleep = sleepSync } = {}) {
 // review-attached user branches (no marker) are never auto-deleted. Sited next
 // to the worktree dir, not inside it, so `git worktree remove` can't touch it.
 const taskMarker = (path) => `${path}.orch-task`;
+const preserveMarker = (path) => `${path}.orch-preserve`;
+
+// Capture failures leave the worktree as the only copy of the author's edits.
+// Keep a sibling marker so a later process's orphan sweep cannot destroy it.
+export function preserveWorktree(path, reason) {
+  writeFileSync(preserveMarker(realpathSync(path)), `${reason}\n`);
+}
 
 // First line of the ownership marker is the owner PID. Empty/garbage → null.
 function ownerPid(markerPath) {
@@ -104,6 +111,17 @@ export function createTaskBranch(repo, path, branch, base, markerContent = "") {
 // review mode: branch MUST exist (human/other tool made it). Never create it.
 export function attachExistingBranch(repo, path, branch) {
   if (!branchExists(repo, branch)) throw new Error(`branch does not exist: ${branch}`);
+  const listed = gitTry(["worktree", "list", "--porcelain"], repo);
+  if (listed.ok) {
+    let expected = path;
+    try { expected = realpathSync(path); } catch { /* worktree does not exist yet */ }
+    const attached = [...worktreeRecords(listed.out)]
+      .find((record) => normalizePathForCompare(record.path) === normalizePathForCompare(expected));
+    if (attached) {
+      if (attached.branch === branch) return;
+      throw new Error(`worktree path already attached to ${attached.branch || "a detached HEAD"}: ${path}`);
+    }
+  }
   git(["worktree", "add", "--", path, branch], repo);
 }
 
@@ -239,6 +257,7 @@ export function pruneWorktree(repo, path) {
   gitTry(["worktree", "remove", "--force", path], repo);
   gitTry(["worktree", "prune"], repo);
   rmSync(taskMarker(canon), { force: true });
+  rmSync(preserveMarker(canon), { force: true });
 }
 
 // Windows paths are case-insensitive at the filesystem level, but git.exe's
@@ -281,6 +300,9 @@ export function reclaimOrphanWorktrees(repo, orchDir, liveBranches = new Set(), 
   if (list.ok) {
     for (const { path, branch } of worktreeRecords(list.out)) {
       if (path && normalize(path).startsWith(wtRoot)) {
+        // A failed author-capture left dirty work here as the only recoverable
+        // copy. This marker deliberately outlives the process that created it.
+        if (existsSync(preserveMarker(path))) continue;
         // Belt 1: branch is registered as in-flight (worktree may not have marker yet —
         // this protects the window between `git worktree add` and `writeFileSync(marker)`).
         if (branch && liveBranches.has(branch)) {
