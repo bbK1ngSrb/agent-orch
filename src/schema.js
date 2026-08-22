@@ -65,7 +65,7 @@ const RUN_FLAGS = [
 // either subcommand still validates on the bare command name (needed by the
 // generic per-command matrix test, which has no subcommand to key off).
 export const SUBCOMMAND_FLAGS = {
-  "agent add": ["config-file", "dry", "build", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
+  "agent add": ["config-file", "dry", "build"],
   "agent build": ["config-file", "dry", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
 };
 
