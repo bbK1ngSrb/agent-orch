@@ -168,6 +168,15 @@ export const COMMANDS = {
   },
 };
 
+// Internal re-exec target (see cli.js's update-check spawn) — never typed by a
+// user. Kept OUT of COMMANDS deliberately: COMMANDS feeds --help and tab
+// completion (Object.keys(COMMANDS)), and this command has nothing to
+// document or complete. But "not in COMMANDS" used to also mean "not
+// validated" — a command with no schema at all skipped validate() entirely,
+// so a stray flag on its argv (there never should be one) would have been
+// silently accepted rather than refused like every real command.
+const INTERNAL_COMMANDS = { "__update-check-child": { mutates: false, flags: [] } };
+
 // Subcommand words, for completion. Derived nowhere else: these are positional
 // literals, not flags.
 export const SUBCOMMANDS = { agent: ["add", "build"], completion: ["bash", "install"] };
@@ -204,6 +213,14 @@ export const COMMAND_FLAGS = Object.fromEntries(
 
 function validateValue(name, raw) {
   const spec = FLAGS[name];
+  // `--file=` / `--config-file=` parse to an empty string, which every caller
+  // then reads with a truthiness check (`if (flags.file)`) — so an explicitly
+  // empty value was silently treated the same as an absent one instead of
+  // being refused. An empty value is never meaningful for any flag that takes
+  // one, so reject it here once instead of per-flag at each call site.
+  if (raw === "") {
+    throw usageError(`--${name} requires a non-empty value`);
+  }
   if (spec.type === "int") {
     const min = spec.min ?? 1;
     const n = Number(raw);
@@ -224,7 +241,7 @@ function validateValue(name, raw) {
 // are not validated here — main()'s fall-through rejects them.
 export function validate(command, flags) {
   const effective = flags.help ? "help" : flags.version ? "version" : command;
-  const spec = COMMANDS[effective];
+  const spec = COMMANDS[effective] || INTERNAL_COMMANDS[effective];
   if (!spec) {
     // No command at all (bare `orch --merge`) used to fall through main()'s
     // no-command branch and print usage with exit 0 — the flag was silently
@@ -260,6 +277,15 @@ export function validate(command, flags) {
   // plan. Rejecting is honest, defaulting to `once` would be a lie.
   if (flags.until && flags.until !== "once") {
     throw usageError(`--until ${flags.until} is not yet available — only --until once (the default)`);
+  }
+  // `--cheap` picks cfg.cheap.role for both roles; combined with an explicit
+  // --author/--reviewer it's ambiguous which one wins. cli.js's
+  // applyCheapOverride already rejected this, but only after the command had
+  // already fetched a GitHub issue / minted an app token — a real side effect
+  // paid for before a usage error that was always coming. Flag-only, so it
+  // belongs here, ahead of every side effect main() runs.
+  if (flags.cheap && (flags.author != null || flags.authors != null || flags.reviewer != null || flags.reviewers != null)) {
+    throw usageError("--cheap cannot be combined with --author/--authors/--reviewer/--reviewers");
   }
 }
 
@@ -326,6 +352,14 @@ export function validatePositionals(command, rest, flags) {
   // rejects it before any of that runs.
   if (command === "task" && flags.file && rest.length) {
     throw usageError("orch task --file takes no positional task text — put the task in the work-order file");
+  }
+  // `task` has no minimum positional count in POSITIONAL_ARITY (--file supplies
+  // the text instead), but it still needs ONE of the two sources. This used to
+  // be checked deep in the `task` handler, after main() had already fired the
+  // update-check network call and minted a GitHub App token for a command that
+  // was always going to be refused.
+  if (command === "task" && !flags.file && rest.length === 0) {
+    throw usageError('usage: orch task "describe the change" (or --file work-order.json)');
   }
 }
 

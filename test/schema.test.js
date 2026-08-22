@@ -289,6 +289,83 @@ test("orch pr --dry performs zero gh calls (real merge stays impossible)", async
   assert.match(logs.join("\n"), /orch \(dry\): would review PR #42 and merge it if approved/);
 });
 
+// `--file=` / `--config-file=` parse to an empty string via parseArgs, and
+// every reader checks `if (flags.file)` — so an explicitly empty value used
+// to be treated exactly like an absent one instead of a usage error.
+test("an empty flag value is a usage error, not silently treated as absent", () => {
+  assert.throws(
+    () => validate("task", parse(["task", "hello", "--file="]).flags),
+    (e) => e.exit === 64 && /--file requires a non-empty value/.test(e.message),
+  );
+  assert.throws(
+    () => validate("config", parse(["config", "--config-file="]).flags),
+    (e) => e.exit === 64 && /--config-file requires a non-empty value/.test(e.message),
+  );
+});
+
+// --cheap forces both roles to cfg.cheap.role; combined with an explicit
+// --author/--reviewer it's ambiguous which one wins. This used to be checked
+// deep inside applyCheapOverride (cli.js), after the command had already
+// fetched a GitHub issue / minted a GitHub App token for a run that was
+// always going to be refused. It is flag-only, so validate() can catch it
+// before any of that runs.
+test("--cheap combined with an explicit role override is a usage error", () => {
+  assert.throws(
+    () => validate("issue", { cheap: true, reviewer: "codex" }),
+    (e) => e.exit === 64 && /--cheap cannot be combined with/.test(e.message),
+  );
+  assert.throws(
+    () => validate("task", { cheap: true, authors: "claude,codex" }),
+    (e) => e.exit === 64 && /--cheap cannot be combined with/.test(e.message),
+  );
+  assert.doesNotThrow(() => validate("issue", { cheap: true }));
+  assert.doesNotThrow(() => validate("issue", { reviewer: "codex" }));
+});
+
+// `task` has no minimum in POSITIONAL_ARITY (--file supplies the text
+// instead), but it still needs ONE of the two sources. This used to be
+// checked deep inside the `task` handler (cli.js), after main() had already
+// fired the update-check network call and minted a GitHub App token for a
+// bare `orch task` that was always going to be refused.
+test("a bare 'orch task' with neither text nor --file is a usage error before dispatch", () => {
+  assert.throws(
+    () => validatePositionals("task", [], {}),
+    (e) => e.exit === 64 && /usage: orch task/.test(e.message),
+  );
+  assert.doesNotThrow(() => validatePositionals("task", ["do", "x"], {}));
+  assert.doesNotThrow(() => validatePositionals("task", [], { file: "wo.json" }));
+});
+
+// The internal update-check re-exec target ("__update-check-child", spawned
+// by cli.js's own update-check code) had no schema entry at all, so it was
+// exempt from validate() entirely — a stray flag on it would have been
+// silently accepted, unlike every real command.
+test("the internal update-check re-exec command rejects a stray flag", () => {
+  assert.throws(
+    () => validate("__update-check-child", { merge: true }),
+    (e) => e.exit === 64,
+  );
+  assert.doesNotThrow(() => validate("__update-check-child", {}));
+  // Not a real command: absent from --help and tab completion.
+  assert.ok(!Object.keys(COMMANDS).includes("__update-check-child"));
+});
+
+// parseArgs silently keeps only the LAST occurrence of a repeated non-boolean
+// flag, so "--until ready --until once" parsed to just {until: "once"} — the
+// first value the user typed was discarded with no error at all.
+test("repeating a single-value flag is a usage error", () => {
+  assert.throws(
+    () => parse(["task", "x", "--until", "ready", "--until", "once"]),
+    (e) => e.exit === 64 && /--until given more than once/.test(e.message),
+  );
+  assert.throws(
+    () => parse(["task", "x", "--file", "a.json", "--file", "a.json"]),
+    (e) => e.exit === 64 && /--file given more than once/.test(e.message),
+  );
+  // Boolean flags aren't affected — "--dry --dry" is redundant, not conflicting.
+  assert.doesNotThrow(() => parse(["task", "x", "--dry", "--dry"]));
+});
+
 test("help renders from the schema: every command and every flag", () => {
   const help = renderHelp();
   // `update` shares upgrade's row ("upgrade, update"), so match the name inside

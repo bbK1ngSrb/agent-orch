@@ -151,6 +151,27 @@ test("completion offers nothing after a bare --", BASH_SKIP, () => {
   assert.deepEqual(complete(["orch", "--", ""], 2), []);
 });
 
+// A flag already typed but illegal for the command/subcommand it precedes —
+// "--merge" isn't legal on `dashboard`, "--build" isn't legal on `agent
+// build` (it's redundant there) — used to be skipped over as though it might
+// be legal for whatever command followed, so completion kept suggesting
+// input for an invocation the parser had already refused.
+test("completion offers nothing once an already-typed flag is illegal for the resolved command", BASH_SKIP, () => {
+  assert.deepEqual(complete(["orch", "--merge", "dashboard", ""], 3), []);
+  assert.deepEqual(complete(["orch", "agent", "--build", "build", ""], 4), []);
+});
+
+// "install" and "--build" are legal anywhere after the command word, not
+// just in the one literal position each of these used to check — completion
+// used to under-offer --dry / --pr when the flag or the subcommand word
+// appeared in the other order.
+test("completion finds 'install' and '--build' regardless of where they sit in the arguments", BASH_SKIP, () => {
+  const dry = new Set(complete(["orch", "completion", "--dry", "install", ""], 4));
+  assert.ok(dry.has("--dry"), "orch completion --dry install should still offer --dry");
+  const pr = new Set(complete(["orch", "agent", "--build", "add", "--pr", ""], 5));
+  assert.ok(pr.has("--pr"), "orch agent --build add --pr should offer --pr");
+});
+
 async function usage() {
   const logs = [];
   const orig = console.log;

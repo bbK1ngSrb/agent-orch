@@ -154,8 +154,11 @@ ${AGENT_SUBCOMMAND_FLAG_CASES}
     # "agent add --build" accepts the build-only flags too (--pr, author/
     # reviewer overrides, --allow-large-scope) — offer them once --build has
     # actually been typed, not before (validateAgentArgs, schema.js).
+    # --build can legally appear anywhere before the name too ("orch agent
+    # --build add widget --pr"), not just after "add" — scanning only from
+    # sub_index missed that ordering and under-offered --pr.
     if [[ "\${sub}" == "add" ]]; then
-      for ((i = sub_index + 1; i < COMP_CWORD; i++)); do
+      for ((i = cmd_index + 1; i < COMP_CWORD; i++)); do
         if [[ "\${COMP_WORDS[\${i}]}" == "--build" ]]; then
           flags="${AGENT_ADD_WITH_BUILD_FLAGS}"
           break
@@ -163,16 +166,42 @@ ${AGENT_SUBCOMMAND_FLAG_CASES}
       done
     fi
   elif [[ "\${cmd}" == "completion" ]]; then
-    if [[ "\${COMP_WORDS[\$((cmd_index + 1))]}" == "install" ]]; then
-      flags="${COMPLETION_ALL_FLAGS}"
-    else
-      flags="${COMPLETION_NO_DRY_FLAGS}"
-    fi
+    # "install" can legally appear anywhere after the command too ("orch
+    # completion --dry install") — checking only the literal next word missed
+    # that ordering and under-offered --dry.
+    flags="${COMPLETION_NO_DRY_FLAGS}"
+    for ((i = cmd_index + 1; i < COMP_CWORD; i++)); do
+      if [[ "\${COMP_WORDS[\${i}]}" == "install" ]]; then
+        flags="${COMPLETION_ALL_FLAGS}"
+        break
+      fi
+    done
   else
     case "\${cmd}" in
 ${COMMAND_FLAG_CASES}
     esac
   fi
+
+  # A flag already typed but illegal for the command/subcommand that follows
+  # ("orch --merge dashboard", "orch agent --build build") must not let
+  # completion continue suggesting input as though the invocation were still
+  # valid — the parser has already refused it by this point.
+  i=1
+  while [[ \${i} -lt \${COMP_CWORD} ]]; do
+    w="\${COMP_WORDS[\${i}]}"
+    if [[ "\${w}" == -* ]]; then
+      if [[ " \${flags} " != *" \${w} "* ]]; then
+        COMPREPLY=()
+        return 0
+      fi
+      case "\${w}" in
+        ${VALUE_FLAG_PATTERN})
+          i=$((i + 1))
+          ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
 
   COMPREPLY=( $(compgen -W "\${flags}" -- "\${cur}") )
 }

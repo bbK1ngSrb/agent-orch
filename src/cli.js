@@ -402,13 +402,25 @@ export { PARSE_OPTIONS, COMMAND_FLAGS };
 export function parse(argv) {
   let parsed;
   try {
-    parsed = parseArgs({ args: argv, allowPositionals: true, options: PARSE_OPTIONS });
+    parsed = parseArgs({ args: argv, allowPositionals: true, options: PARSE_OPTIONS, tokens: true });
   } catch (e) {
     const unknown = /Unknown option '([^']+)'/.exec(e.message);
     if (unknown) throw usageError(`unknown option ${unknown[1]} (run 'orch help' for usage)`);
     throw usageError(e.message.split(". To ")[0]);
   }
-  const { values, positionals } = parsed;
+  const { values, positionals, tokens } = parsed;
+  // parseArgs silently keeps the LAST occurrence of a repeated non-boolean
+  // flag ("--until ready --until once" parsed to just {until: "once"}), so
+  // the first value a user typed was discarded with no error at all — not
+  // even the "declared but inert" usage error this schema exists to raise
+  // for everything else. None of our string/int/enum flags are declared
+  // `multiple`, so a second occurrence is always a mistake, not a list.
+  const seen = new Set();
+  for (const t of tokens) {
+    if (t.kind !== "option" || PARSE_OPTIONS[t.name]?.type === "boolean") continue;
+    if (seen.has(t.name)) throw usageError(`--${t.name} given more than once`);
+    seen.add(t.name);
+  }
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
 }
 
@@ -1218,8 +1230,9 @@ export async function main(argv, deps = {}) {
   // commands use below, so ORCH_DRYRUN=1 is honored identically.
   const dryRun = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
 
-  if (!flags.dry && command && command !== "completion") {
-    maybeNotifyUpdate({ current: VERSION, json: Boolean(flags.json) }).catch(() => {});
+  if (!dryRun && command && command !== "completion") {
+    const notifyFn = deps.maybeNotifyUpdate || maybeNotifyUpdate;
+    notifyFn({ current: VERSION, json: Boolean(flags.json) }).catch(() => {});
   }
 
   // Optional GitHub App auth: if ORCH_APP_ID + ORCH_APP_PRIVATE_KEY are set,
@@ -1348,6 +1361,18 @@ export async function main(argv, deps = {}) {
       const result = await buildFn(name, { repo, orchDir, flags, deps });
       reportAgentBuildResult(name, result);
       return;
+    }
+    // Known adapter: there is nothing left to build, so --pr and the role
+    // overrides (only meaningful for the build cycle they configure) have no
+    // effect here — accepting and dropping them is the exact "declared but
+    // inert" defect this schema exists to remove, so refuse instead. --build
+    // itself stays legal (it just means "skip the confirm prompt", which a
+    // known adapter never reaches anyway).
+    const buildOnlyFlags = ["pr", "author", "authors", "reviewer", "reviewers"];
+    for (const flagName of buildOnlyFlags) {
+      if (flags[flagName] !== undefined && flags[flagName] !== false) {
+        throw usageError(`--${flagName} is not valid with 'orch agent add ${name}' — ${name} already has an adapter, so no build runs (use 'orch agent build ${name} --pr' to rebuild it)`);
+      }
     }
     // Honor --config-file like every other write-capable command: edit the file the
     // run would actually read, not always the default .orch/orch.yml.

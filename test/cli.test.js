@@ -398,15 +398,46 @@ test("ORCH_DRYRUN=1 is honored by upgrade and config, not just --dry", async () 
     });
     assert.match(out, /would run `npm install -g @bbk1ng\/agent-orch@latest`/);
 
+    // `config`'s dry-run guard is what stops this from launching the real,
+    // interactive wizard — if it ever regresses, runConfigWizard would run
+    // against process.cwd() for real, which must never be the developer's
+    // actual checkout. A temp dir makes a guard regression merely fail loud
+    // (ENOENT / a hanging prompt in CI) instead of writing the real repo's
+    // own .orch/orch.yml.
+    const d = mkdtempSync(join(tmpdir(), "orch-dryrun-config-"));
+    const prevCwd = cwd();
+    chdir(d);
     let logged = "";
     const prevLog = console.log;
     console.log = (chunk = "") => { logged += `${chunk}\n`; };
     try {
-      await main(["config"], { preflight() {} });
+      await main(["config"], {
+        preflight() {},
+        inputStart: () => assert.fail("config wizard ran despite ORCH_DRYRUN=1"),
+      });
     } finally {
       console.log = prevLog;
+      chdir(prevCwd);
     }
     assert.match(logged, /orch \(dry\): would run the interactive config wizard/);
+  } finally {
+    if (prev === undefined) delete process.env.ORCH_DRYRUN;
+    else process.env.ORCH_DRYRUN = prev;
+  }
+});
+
+// The background update check only checked `flags.dry`, so ORCH_DRYRUN=1
+// alone still fired a real network call before every command — the same gap
+// `upgrade` and `config` had, just one level up in main().
+test("ORCH_DRYRUN=1 suppresses the background update check", async () => {
+  const prev = process.env.ORCH_DRYRUN;
+  process.env.ORCH_DRYRUN = "1";
+  const d = mkdtempSync(join(tmpdir(), "orch-dryrun-updater-"));
+  try {
+    await runMainInRepo(d, ["init"], {
+      detectAgents: () => ({ found: [], missing: [] }),
+      maybeNotifyUpdate: () => { throw new Error("update check ran despite ORCH_DRYRUN=1"); },
+    });
   } finally {
     if (prev === undefined) delete process.env.ORCH_DRYRUN;
     else process.env.ORCH_DRYRUN = prev;
@@ -746,6 +777,35 @@ test("orch issue rejects a non-numeric argument", async () => {
   await assert.rejects(
     () => main(["issue", "abc", "--dry"], { githubDeps: () => ({ gh: () => "gh 2" }) }),
     /usage: orch issue/,
+  );
+});
+
+// --cheap + an explicit --reviewer is ambiguous (which role wins?) and used
+// to be rejected deep inside applyCheapOverride — after `issue` had already
+// shelled out to `gh issue view` and fetched the issue for a run that was
+// always going to be refused. schema.js's validate() now catches this before
+// main() does anything, so the fetch must never happen.
+test("orch issue --cheap --reviewer is refused before the issue is fetched", async () => {
+  await assert.rejects(
+    () => main(["issue", "1", "--dry", "--cheap", "--reviewer", "codex"], {
+      preflight() {},
+      githubDeps: () => ({ gh: () => { throw new Error("gh ran — issue fetched before validation"); } }),
+    }),
+    (e) => e.exit === 64 && /--cheap cannot be combined with/.test(e.message),
+  );
+});
+
+// `task` has no positional minimum (--file supplies the text instead), so a
+// bare `orch task` used to sail past parsing and reach main()'s update-check
+// network call and GitHub App auth mint before the handler itself finally
+// noticed there was no task text.
+test("a bare 'orch task' is refused before the update check or auth run", async () => {
+  await assert.rejects(
+    () => main(["task"], {
+      preflight() {},
+      maybeNotifyUpdate: () => { throw new Error("update check ran before validation"); },
+    }),
+    (e) => e.exit === 64 && /usage: orch task/.test(e.message),
   );
 });
 
@@ -3804,6 +3864,33 @@ test("agent add <known-adapter> --build still adds it — code existing isn't th
   });
   assert.match(readFileSync(file, "utf8"), /gemini/);
   assert.match(logs.join("\n"), /added gemini to agents/);
+});
+
+// Third variant of the same bug: `agent add <known-adapter> --build --pr`
+// validates (schema.js allows --pr/role overrides alongside --build), but the
+// known-adapter path never runs a build cycle — so --pr and the role
+// overrides, which only mean something for a build, were silently dropped
+// instead of refused. Fix the routing (reject them once, in the branch that
+// skips the build), not the individual flag.
+test("agent add <known-adapter> --build --pr is a usage error, not a silent drop", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-known-pr-"));
+  await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
+  const file = join(d, ".orch", "orch.yml");
+  const before = readFileSync(file, "utf8");
+  await assert.rejects(
+    () => runMainInRepo(d, ["agent", "add", "gemini", "--build", "--pr"], {
+      buildAgent: async () => assert.fail("buildAgent ran — gemini's adapter code already exists, nothing to build"),
+    }),
+    (e) => e.exit === 64 && /--pr is not valid with 'orch agent add gemini'/.test(e.message),
+  );
+  await assert.rejects(
+    () => runMainInRepo(d, ["agent", "add", "gemini", "--build", "--reviewer", "codex"], {
+      buildAgent: async () => assert.fail("buildAgent ran — gemini's adapter code already exists, nothing to build"),
+    }),
+    (e) => e.exit === 64 && /--reviewer is not valid with 'orch agent add gemini'/.test(e.message),
+  );
+  // orch.yml is byte-identical — a usage error must not partially apply the add.
+  assert.equal(readFileSync(file, "utf8"), before);
 });
 
 test("orch pr --merge --dry never preflights, authenticates, or shells out to gh", async () => {
