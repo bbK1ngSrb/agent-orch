@@ -16,7 +16,7 @@ import * as notify from "./notify.js";
 import { acquireLock, releaseLock, acquireBlocking, isPaused } from "./lock.js";
 import { slugify } from "./slug.js";
 import { serve } from "./mcp.js";
-import { PARSE_OPTIONS, COMMAND_FLAGS, renderHelp, usageError, validate as validateFlags } from "./schema.js";
+import { PARSE_OPTIONS, COMMAND_FLAGS, renderHelp, usageError, validate as validateFlags, validatePositionals } from "./schema.js";
 
 const VERSION = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -1148,23 +1148,29 @@ export async function main(argv, deps = {}) {
   // schema rejects a flag this command does not read, `--dry` on a read-only
   // command, and a bad numeric/enum value — all exit 64, before anything runs.
   validateFlags(command, flags);
+  validatePositionals(command, rest, flags);
+
+  // --help/--version describe the tool rather than run it, so they route
+  // ahead of every command-specific branch — including `mcp`, whose dispatch
+  // used to come first and swallow `orch mcp --help`/`--version` into a
+  // hanging JSON-RPC stdio server instead of printing and exiting.
+  if (flags.version || command === "version") { console.log(DISPLAY_VERSION); return; }
+  if (flags.help || command === "help") { printUsage(); return; }
 
   if (command === "__update-check-child") {
     await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
     return;
   }
 
-  // `mcp` dispatches before anything that can print: on this command stdout is
-  // a JSON-RPC transport, so one stray update banner would corrupt the protocol
-  // stream. Early return also skips the GitHub App token mint below — each
-  // cycle the server spawns does its own auth.
+  // `mcp` dispatches before anything else that can print: on this command
+  // stdout is a JSON-RPC transport, so one stray update banner would corrupt
+  // the protocol stream. Early return also skips the GitHub App token mint
+  // below — each cycle the server spawns does its own auth.
   if (command === "mcp") {
     await serve({ repo: process.cwd() });
     return;
   }
 
-  if (flags.version || command === "version") { console.log(DISPLAY_VERSION); return; }
-  if (flags.help || command === "help") { printUsage(); return; }
   if (command === "upgrade" || command === "update") {
     await runUpgrade({ flags, stdout: deps.stdout || process.stdout, ...deps.upgradeDeps });
     return;
@@ -1253,14 +1259,10 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "agent") {
-    // `agent add <name> --build` is the non-interactive spelling of the
-    // "not registered — build it now?" prompt below: same code path, no
-    // question asked, so a headless run can build an adapter too. Gate on
-    // `add`/`build` explicitly — `agent <typo> <name> --build` is not a
-    // build request, it's a malformed subcommand.
-    if (rest[0] === "build" || (rest[0] === "add" && flags.build)) {
+    // validatePositionals (schema.js) already guarantees rest[0] is "add" or
+    // "build" and rest[1] (the name) is present before main() gets here.
+    if (rest[0] === "build") {
       const name = rest[1];
-      if (!name) throw usageError("usage: orch agent build <name> [--pr]");
       const buildFn = deps.buildAgent || buildAgent;
       const result = await buildFn(name, { repo, orchDir, flags, deps });
       if (result.status === "already-registered") { console.log(`orch: ${name} already registered`); return; }
@@ -1269,17 +1271,34 @@ export async function main(argv, deps = {}) {
     }
 
     // `orch agent add <name>` appends a known agent to the `agents:` rotation
-    // pool in orch.yml, preserving the file's comments. Only registered agents
-    // are accepted so the next run's preflight stays valid; an unregistered
-    // name offers to build it (interactive only — see `buildAgent`).
-    if (rest[0] !== "add" || !rest[1]) throw usageError("usage: orch agent add <name> | orch agent build <name> [--pr]");
+    // pool in orch.yml, preserving the file's comments. "Known" means orch's
+    // adapter code has it (adapters.get succeeds) — that is a different
+    // question from whether THIS repo's orch.yml already lists it, which the
+    // `agents.includes(name)` check below answers. An unregistered name (no
+    // adapter code yet) offers to build it — non-interactively via --build,
+    // otherwise via the confirm prompt — and building stops there, exactly
+    // like `agent build`: it scaffolds the adapter, it does not also add it
+    // (the printed tip says to re-run `agent add` once it's merged). Once the
+    // adapter code exists, --build has nothing left to do, so it falls
+    // straight through to the add — it must not be read as "build instead of
+    // add" and skip the add entirely.
     const name = rest[1];
+    let unregistered = null;
     try {
-      adapters.get(name); // throws "unknown agent: <name>" for unregistered names
+      adapters.get(name); // throws "unknown agent: <name>" when no adapter code exists
     } catch (e) {
+      unregistered = e;
+    }
+    if (unregistered) {
+      if (flags.build) {
+        const buildFn = deps.buildAgent || buildAgent;
+        const result = await buildFn(name, { repo, orchDir, flags, deps });
+        reportAgentBuildResult(name, result, { withReason: true });
+        return;
+      }
       const io = deps.io || realIo();
       const answer = await io.confirm(`orch: '${name}' is not a registered agent — build it now? (y/N) `);
-      if (!answer) throw e;
+      if (!answer) throw unregistered;
       const buildFn = deps.buildAgent || buildAgent;
       const result = await buildFn(name, { repo, orchDir, flags, deps });
       reportAgentBuildResult(name, result);
@@ -1349,7 +1368,7 @@ export async function main(argv, deps = {}) {
       if (flags.file) {
         // A stray positional next to --file is ambiguous (two task sources);
         // reject it instead of silently dropping the typed text.
-        if (rest.length) throw new Error("orch task --file takes no positional task text — put the task in the work-order file");
+        if (rest.length) throw usageError("orch task --file takes no positional task text — put the task in the work-order file");
         const wo = parseWorkOrderFile(flags.file);
         task = wo.title;
         authorPrompt = buildAuthorPrompt(wo);

@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
-import { COMMANDS, FLAGS, GLOBAL_FLAGS, validate, renderHelp } from "../src/schema.js";
+import { COMMANDS, FLAGS, GLOBAL_FLAGS, validate, validatePositionals, renderHelp } from "../src/schema.js";
 import { parse, main } from "../src/cli.js";
 import { mkGh } from "./helpers/fake-gh.js";
 
@@ -38,6 +38,38 @@ test("every declared flag validates on its command, every other flag is refused"
         `orch ${command} --${name} should be a usage error`,
       );
     }
+  }
+});
+
+// runConfigWizard (src/config-wizard.js) creates .orch/ and writes orch.yml —
+// `config` is a mutating command. Classifying it `mutates: false` made the
+// generic "--dry has no effect on 'orch config' — it changes nothing"
+// message a lie about a command that does change something.
+test("config is classified as a mutating command", () => {
+  assert.equal(COMMANDS.config.mutates, true);
+});
+
+// `completion typo`, `dashboard extra`, `help extra`, `version extra` used to
+// run the command and ignore the extra argument. And a required positional
+// (a number, a branch, a name) used to be checked deep inside each command's
+// own handler, after main() had already reached the GitHub App auth and
+// preflight setup that runs ahead of every command — validatePositionals runs
+// immediately after parsing, before any of that.
+test("positional grammar is enforced before dispatch, not silently accepted", () => {
+  assert.throws(() => validatePositionals("completion", ["typo"], {}), (e) => e.exit === 64);
+  assert.throws(() => validatePositionals("dashboard", ["extra"], {}), (e) => e.exit === 64);
+  assert.throws(() => validatePositionals("help", ["extra"], {}), (e) => e.exit === 64);
+  assert.throws(() => validatePositionals("version", ["extra"], {}), (e) => e.exit === 64);
+  assert.doesNotThrow(() => validatePositionals("dashboard", [], {}));
+  for (const [command, message] of [
+    ["issue", /usage: orch issue <number>/],
+    ["review", /usage: orch review <branch>/],
+    ["continue", /usage: orch continue <sid>/],
+    ["pr", /usage: orch pr <number>/],
+    ["release", /usage: orch release/],
+  ]) {
+    assert.throws(() => validatePositionals(command, [], {}), (e) => e.exit === 64 && message.test(e.message), command);
+    assert.doesNotThrow(() => validatePositionals(command, ["x"], {}), command);
   }
 });
 

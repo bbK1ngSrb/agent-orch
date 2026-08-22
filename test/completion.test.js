@@ -1,40 +1,103 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { BASH_COMPLETION, installCompletion } from "../src/completion.js";
 import { main } from "../src/cli.js";
-import { COMMANDS, FLAGS, SUBCOMMANDS } from "../src/schema.js";
+import { COMMANDS, FLAGS, GLOBAL_FLAGS, SUBCOMMANDS, SUBCOMMAND_FLAGS } from "../src/schema.js";
 
 test("BASH_COMPLETION registers the completion function for orch", () => {
   assert.match(BASH_COMPLETION, /complete -F _orch_completion orch/);
-  assert.match(BASH_COMPLETION, /add build/);
-  assert.match(BASH_COMPLETION, /upgrade update/);
-  assert.match(BASH_COMPLETION, /--check/);
-  assert.match(BASH_COMPLETION, /--check-history/);
-  assert.match(BASH_COMPLETION, /--allow-protected/);
 });
 
-// Set parity, not spot checks: a completion list that misses a flag the parser
-// accepts hides that flag from <TAB>, which is how users discover a CLI. Both
-// the completion script and the parser now render from src/schema.js, so this
-// checks the renderer against its source — the spot checks above are the
-// backstop that would catch a renderer emitting nothing at all.
-test("BASH_COMPLETION offers every flag the parser accepts", () => {
-  const flags = BASH_COMPLETION.match(/^\s*local flags="([^"]*)"/m)?.[1].split(/\s+/);
-  assert.ok(flags?.length, "could not read the flags list out of BASH_COMPLETION");
-  for (const [name, spec] of Object.entries(FLAGS)) {
-    assert.ok(flags.includes(`--${name}`), `completion flags missing --${name}`);
-    if (spec.short) assert.ok(flags.includes(`-${spec.short}`), `completion flags missing -${spec.short}`);
+// Asserting on the generated script's TEXT (a flat "local flags=..." line) is
+// how the previous version of this file passed while the completion actively
+// offered flags the parser rejects (`orch dashboard --merge`) — the text
+// looked right; the behaviour did not. This sources the real script into a
+// real bash, sets COMP_WORDS/COMP_CWORD exactly as bash-completion would, and
+// reads back the COMPREPLY array _orch_completion actually produced.
+function complete(words, cword) {
+  const quoted = words.map((w) => `'${w.replace(/'/g, `'\\''`)}'`).join(" ");
+  const script = `${BASH_COMPLETION}
+COMP_WORDS=(${quoted})
+COMP_CWORD=${cword}
+_orch_completion
+printf '%s\\n' "\${COMPREPLY[@]}"
+`;
+  return execFileSync("bash", ["-c", script], { encoding: "utf8" })
+    .split("\n")
+    .filter(Boolean);
+}
+
+test("completion offers exactly the flags each command's schema declares", () => {
+  // `agent` is excluded: its COMMANDS.flags is the add∪build union (needed by
+  // the generic parser matrix test, which has no subcommand to key off), but
+  // completion must not offer that union — see the dedicated test below.
+  for (const [command, spec] of Object.entries(COMMANDS)) {
+    if (command === "agent") continue;
+    // A command with a mandatory subcommand slot (SUBCOMMANDS) offers only
+    // that slot's words right after the command — flags come one position
+    // later, once the subcommand itself is typed.
+    const words = SUBCOMMANDS[command]
+      ? ["orch", command, SUBCOMMANDS[command][0], ""]
+      : ["orch", command, ""];
+    const offered = new Set(complete(words, words.length - 1));
+    for (const name of [...GLOBAL_FLAGS, ...spec.flags]) {
+      assert.ok(offered.has(`--${name}`), `orch ${command} completion missing --${name}`);
+    }
+    // The negative case: a flag legal elsewhere but not on this command must
+    // be absent, not merely "also offered" alongside the right ones — this is
+    // what would have caught `dashboard` offering `--merge`.
+    for (const name of Object.keys(FLAGS)) {
+      if (spec.flags.includes(name) || GLOBAL_FLAGS.includes(name)) continue;
+      assert.ok(!offered.has(`--${name}`), `orch ${command} completion should not offer --${name}`);
+    }
   }
 });
 
-// The subcommand words are positional literals, not flags, so they have their
-// own schema entry — and their own way to drift out of the completion script.
-test("BASH_COMPLETION offers every subcommand the schema declares", () => {
+// `agent add` and `agent build` don't share a flag set (schema.js
+// SUBCOMMAND_FLAGS) — completion used to render `agent`'s flag list as one
+// union, so `orch agent add <TAB>` offered `--pr`/`--author`/etc, all of
+// which the parser refuses on `add` without `--build`. This is finding 8 for
+// the one command the generic per-command test above can't cover, because
+// `agent`'s own COMMANDS.flags entry is deliberately that same union.
+test("agent add and agent build completion do not offer each other's flags", () => {
+  for (const [key, flags] of Object.entries(SUBCOMMAND_FLAGS)) {
+    const sub = key.split(" ")[1];
+    const offered = new Set(complete(["orch", "agent", sub, ""], 3));
+    for (const name of [...GLOBAL_FLAGS, ...flags]) {
+      assert.ok(offered.has(`--${name}`), `orch agent ${sub} completion missing --${name}`);
+    }
+    for (const name of Object.keys(FLAGS)) {
+      if (flags.includes(name) || GLOBAL_FLAGS.includes(name)) continue;
+      assert.ok(!offered.has(`--${name}`), `orch agent ${sub} completion should not offer --${name}`);
+    }
+  }
+});
+
+test("completion offers every subcommand the schema declares", () => {
   for (const [command, words] of Object.entries(SUBCOMMANDS)) {
-    const offered = BASH_COMPLETION.match(new RegExp(`${command}\\)[\\s\\S]*?compgen -W "([^"]*)"`))?.[1].split(/\s+/);
-    assert.deepEqual(offered, words, `completion subcommands for ${command}`);
+    assert.deepEqual(complete(["orch", command, ""], 2).sort(), [...words].sort());
   }
+});
+
+test("completion offers nothing right after a value-taking flag", () => {
+  assert.deepEqual(complete(["orch", "task", "--author", ""], 3), []);
+  assert.deepEqual(complete(["orch", "dashboard", "--limit", ""], 3), []);
+});
+
+test("completion finds the command word even when a flag precedes it", () => {
+  // parseArgs (and so orch itself) accepts options before positionals; the
+  // completion script used to assume COMP_WORDS[1] was always the command.
+  const offered = new Set(complete(["orch", "--dry", "pr", ""], 3));
+  assert.ok(offered.has("--merge"), "flag-before-command should still resolve to pr's flags");
+  assert.ok(!offered.has("--file"), "flag-before-command should not fall back to the global flag union");
+});
+
+test("completion at the command position offers every command and the global flags", () => {
+  const offered = complete(["orch", ""], 1);
+  for (const command of Object.keys(COMMANDS)) assert.ok(offered.includes(command), command);
+  for (const name of GLOBAL_FLAGS) assert.ok(offered.includes(`--${name}`), name);
 });
 
 async function usage() {
@@ -56,9 +119,7 @@ test("--help documents every flag the parser accepts", async () => {
   }
 });
 
-test("BASH_COMPLETION offers every command listed in --help", async () => {
-  const commands = BASH_COMPLETION.match(/^\s*local commands="([^"]*)"/m)?.[1].split(/\s+/);
-  assert.ok(commands?.length, "could not read the commands list out of BASH_COMPLETION");
+test("completion offers every command listed in --help", async () => {
   // Names come from the Commands: block of printUsage(); "upgrade, update" is two.
   const documented = new Set(
     (await usage()).match(/\nCommands:\n([\s\S]*?)\n\n/)[1]
@@ -67,17 +128,11 @@ test("BASH_COMPLETION offers every command listed in --help", async () => {
       .filter(Boolean),
   );
   assert.ok(documented.has("config"), "help text no longer documents config — fix the test's parser");
-  for (const name of documented) {
-    assert.ok(commands.includes(name), `completion commands missing ${name}`);
-  }
+  const commands = complete(["orch", ""], 1).filter((w) => !w.startsWith("-"));
+  for (const name of documented) assert.ok(commands.includes(name), `completion commands missing ${name}`);
   // And the reverse: a command offered by tab-completion but absent from --help is
-  // undiscoverable for anyone who reads the help instead of pressing Tab. `version`
-  // drifted this way (#461) — completion offered it, printUsage never listed it.
-  for (const name of commands) {
-    assert.ok(documented.has(name), `--help Commands section missing ${name}`);
-  }
-  // ...and both lists are the schema's, so a command added there shows up in
-  // completion and help together or the parity above fails.
+  // undiscoverable for anyone who reads the help instead of pressing Tab.
+  for (const name of commands) assert.ok(documented.has(name), `--help Commands section missing ${name}`);
   assert.deepEqual([...commands].sort(), Object.keys(COMMANDS).sort());
 });
 

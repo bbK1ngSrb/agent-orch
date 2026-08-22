@@ -636,8 +636,11 @@ That is the difference between "nobody read your flag" and "your flag was
 rejected": `orch issue 42 --file wo.json` used to run against the issue body and
 ignore the file, and `orch pr 42 --merge --dry` used to perform a real merge.
 `--dry` is honoured by every command that changes something and refused on the
-read-only ones (`config`, `dashboard`, `mcp`), where planning nothing is not a
-meaningful request.
+read-only ones (`dashboard`, `mcp`), where planning nothing is not a
+meaningful request. `config` also refuses it, but for a different reason: it
+DOES change something (it writes `.orch/orch.yml`) — it just doesn't have a
+dry mode, so `--dry` is refused the same way any other flag it doesn't read
+would be, not with the read-only commands' "changes nothing" wording.
 
 ### 2.14 The protected-path intake refusal
 

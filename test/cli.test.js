@@ -450,7 +450,7 @@ test("--file rejects a stray positional task argument instead of dropping it", a
   writeFileSync(f, WORK_ORDER); // valid order, so the rejection is about the positional
   await assert.rejects(
     () => main(["task", "stray text", "--file", f, "--dry"]),
-    /--file takes no positional task text/,
+    (e) => e.exit === 64 && /--file takes no positional task text/.test(e.message),
   );
 });
 
@@ -1534,8 +1534,10 @@ test("a flag not read by the command is rejected", async () => {
     // drop it, so the run silently used the issue body instead of the file.
     [["issue", "1", "--file", "f"], /--file is not valid with 'orch issue'/],
     // Read-only commands get the sharper message: --dry cannot "plan" a command
-    // that changes nothing.
-    [["config", "--dry"], /--dry has no effect on 'orch config'/],
+    // that changes nothing. `config` is NOT one of these — runConfigWizard
+    // writes .orch/orch.yml, so it is a mutating command and --dry is simply
+    // not one of its flags (the generic message), not "changes nothing".
+    [["config", "--dry"], /--dry is not valid with 'orch config'/],
     [["dashboard", "--dry"], /--dry has no effect on 'orch dashboard'/],
   ];
   for (const [argv, message] of cases) {
@@ -3413,9 +3415,60 @@ test("missing required positional exits 64 like every other usage error", async 
   await assert.rejects(() => main(["continue"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["pr", "abc"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["agent", "add"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(() => main(["agent", "build"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(
     () => main(["agent", "typo", "widget", "--build"], { preflight() {} }),
     (e) => e.exit === 64,
+  );
+});
+
+// `mcp` serves stdio as a JSON-RPC transport and never returns on its own —
+// if --help/--version don't route ahead of it, `orch mcp --help` hangs
+// instead of printing and exiting.
+test("orch mcp --help and --version print and return instead of entering MCP dispatch", async () => {
+  const logs = await runMainCapture(["mcp", "--help"]);
+  assert.match(logs.join("\n"), /Usage: orch <command>/);
+  const versionLogs = await runMainCapture(["mcp", "--version"]);
+  assert.match(versionLogs.join("\n"), /^v\d/);
+});
+
+// Positional/subcommand grammar used to be unchecked: these all ran the
+// command and silently dropped the extra argument instead of refusing it.
+test("a stray positional argument is a usage error, not silently dropped", async () => {
+  await assert.rejects(() => main(["completion", "typo"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(() => runMainCapture(["dashboard", "extra", "--once"]), (e) => e.exit === 64);
+  await assert.rejects(() => runMainCapture(["help", "extra"]), (e) => e.exit === 64);
+  await assert.rejects(() => runMainCapture(["version", "extra"]), (e) => e.exit === 64);
+});
+
+// `agent add` and `agent build` used to share one flag list, so `--pr` (only
+// meaningful when a build actually happens) validated on a plain `add`, and
+// `--build` (redundant — the subcommand already says so) validated on
+// `build`. Both silently did nothing, which is the exact "declared but
+// inert" defect this schema exists to remove.
+test("agent add and agent build do not share a flag set", async () => {
+  await assert.rejects(
+    () => main(["agent", "add", "claude", "--pr"], { preflight() {} }),
+    (e) => e.exit === 64 && /--pr is not valid with 'orch agent add' without --build/.test(e.message),
+  );
+  await assert.rejects(
+    () => main(["agent", "build", "widget", "--build"], { preflight() {} }),
+    (e) => e.exit === 64 && /--build is not valid with 'orch agent build'/.test(e.message),
+  );
+  // --pr is legal on `agent add <unregistered> --build` (it reaches buildAgent).
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-pr-"));
+  await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
+  let received = null;
+  await runMainInRepo(d, ["agent", "add", "widget", "--build", "--pr"], {
+    buildAgent: async (name, ctx) => { received = ctx.flags.pr; return { status: "approved", branch: "b" }; },
+  });
+  assert.equal(received, true);
+});
+
+test("agent add rejects a trailing extra argument", async () => {
+  await assert.rejects(
+    () => main(["agent", "add", "widget", "extra"], { preflight() {} }),
+    (e) => e.exit === 64 && /'orch agent add' takes a single <name> argument/.test(e.message),
   );
 });
 
@@ -3468,6 +3521,26 @@ test("orch agent add --dry leaves orch.yml byte-identical", async () => {
   // ...and the real run still edits it, so the guard didn't disable the command.
   await runMainInRepo(d, ["agent", "add", "gemini"]);
   assert.match(readFileSync(file, "utf8"), /gemini/);
+});
+
+// `adapters.get(name)` answers "does orch's code have an adapter for this
+// CLI" — a REGISTRY lookup. "Is `name` in THIS repo's agents: list" is a
+// different question, answered by reading orch.yml. `agent add <name>
+// --build` used to conflate them: buildAgent() returns "already-registered"
+// whenever the REGISTRY has the adapter, and the CLI treated that as "done"
+// — so a fresh repo with an empty agents: list, given a name orch already
+// ships code for, printed "already registered" and never touched orch.yml.
+test("agent add <known-adapter> --build still adds it — code existing isn't the same as being in this repo's agents", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-known-"));
+  await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
+  const file = join(d, ".orch", "orch.yml");
+  // gemini ships a real adapter (src/adapters/gemini.js) but a fresh init's
+  // agents: list is just claude/codex — exactly the reviewer's repro.
+  const logs = await runMainInRepo(d, ["agent", "add", "gemini", "--build"], {
+    buildAgent: async () => assert.fail("buildAgent ran — gemini's adapter code already exists, nothing to build"),
+  });
+  assert.match(readFileSync(file, "utf8"), /gemini/);
+  assert.match(logs.join("\n"), /added gemini to agents/);
 });
 
 test("orch pr --merge --dry never preflights, authenticates, or shells out to gh", async () => {

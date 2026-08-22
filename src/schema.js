@@ -56,6 +56,19 @@ const RUN_FLAGS = [
   "allow-large-scope", "author", "authors", "reviewer", "reviewers",
 ];
 
+// `agent add` and `agent build` are one COMMANDS entry (one positional shape,
+// one help block) but NOT one flag set: --build on `agent build` is redundant
+// (the subcommand already says so), and --pr/author/reviewer overrides only
+// mean something when a build actually happens, which a plain `agent add`
+// never does. This is the declaration `validateAgentArgs` and the completion
+// renderer both read; `COMMANDS.agent.flags` is their union so a flag legal on
+// either subcommand still validates on the bare command name (needed by the
+// generic per-command matrix test, which has no subcommand to key off).
+export const SUBCOMMAND_FLAGS = {
+  "agent add": ["config-file", "dry", "build", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
+  "agent build": ["config-file", "dry", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
+};
+
 // Commands. `flags` is what the command actually reads — anything else typed
 // on it is a usage error, not a silent no-op. `mutates: false` marks a
 // read-only command, which is what makes `--dry` on it meaningless rather than
@@ -66,14 +79,17 @@ export const COMMANDS = {
     mutates: true, flags: ["config-file", "dry", "link"],
     rows: [["init", "Scaffold .orch/orch.yml and .orch/ORCH.md."]],
   },
+  // Mutating: runConfigWizard creates .orch/ and writes orch.yml. It is not
+  // read-only, so --dry cannot be waved off with the generic "changes
+  // nothing" message that `mutates: false` produces — that message would be a
+  // lie for this command. --dry isn't in this command's own flags either, so
+  // typing it still fails, just with the honest "not valid with" message.
   config: {
-    mutates: false, flags: ["config-file"],
+    mutates: true, flags: ["config-file"],
     rows: [["config", "Interactively create or edit an orch YAML config."]],
   },
-  // `agent add <unregistered>` offers to build, and hands buildAgent the same
-  // flags as `agent build` — so both subcommands share one flag set.
   agent: {
-    mutates: true, flags: ["config-file", "dry", "build", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
+    mutates: true, flags: [...new Set([...SUBCOMMAND_FLAGS["agent add"], ...SUBCOMMAND_FLAGS["agent build"]])],
     rows: [
       ["agent add <name>", "Add a registered agent to the rotation pool."],
       ["agent build <name>", "Scaffold an adapter via orch's author/audit/test loop."],
@@ -221,6 +237,79 @@ export function validate(command, flags) {
   // plan. Rejecting is honest, defaulting to `once` would be a lie.
   if (flags.until && flags.until !== "once") {
     throw usageError(`--until ${flags.until} is not yet available — only --until once (the default)`);
+  }
+}
+
+// [min, max, usageOnMissing] non-flag arguments after the command word. The
+// third element is the same "usage: ..." message main() used to throw itself,
+// deep inside each command's own handler — moved up here so a missing
+// required positional fails before the GitHub App token mint and preflight
+// checks main() runs ahead of every command, not after them. `agent` is
+// handled separately below (its shape depends on the subcommand). Commands
+// absent here (unknown input) are left to main()'s unknown-command
+// fall-through. `task` has no min: its positional is optional (--file
+// supplies the task instead), and that's a cross-flag rule main()'s own
+// handler still checks.
+const POSITIONAL_ARITY = {
+  init: [0, 0], config: [0, 0], dashboard: [0, 0], mcp: [0, 0],
+  upgrade: [0, 0], update: [0, 0], version: [0, 0], help: [0, 0],
+  task: [0, 1], completion: [0, 1],
+  issue: [1, 1, "usage: orch issue <number> [--author ... --reviewer ...]"],
+  review: [1, 1, "usage: orch review <branch>"],
+  continue: [1, 1, "usage: orch continue <sid>"],
+  pr: [1, 1, "usage: orch pr <number> [--merge]"],
+  release: [1, 1, 'usage: orch release "<changelog entry>"'],
+};
+
+// Positional/subcommand grammar was previously unchecked: `completion typo`,
+// `dashboard extra`, `help extra`, and `version extra` all ran the command and
+// ignored the junk argument instead of refusing it. This runs before any
+// command dispatch, alongside `validate()`, so a malformed invocation never
+// reaches a handler. --help/--version short-circuit main() before dispatch
+// regardless of the command's own arity, so they are exempt here.
+export function validatePositionals(command, rest, flags) {
+  if (flags.help || flags.version) return;
+  if (command === "agent") return validateAgentArgs(rest, flags);
+  const arity = POSITIONAL_ARITY[command];
+  if (!arity) return;
+  const [min, max, usage] = arity;
+  if (rest.length < min) throw usageError(usage);
+  if (rest.length > max) {
+    throw usageError(`'orch ${command}' takes ${max === 0 ? "no arguments" : `at most ${max} argument${max === 1 ? "" : "s"}`} — got ${rest.length}: ${rest.join(" ")}`);
+  }
+  if (command === "completion" && rest[0] && !SUBCOMMANDS.completion.includes(rest[0])) {
+    throw usageError(`unknown 'orch completion' target '${rest[0]}' (expected ${SUBCOMMANDS.completion.join(" or ")})`);
+  }
+}
+
+// `agent add` and `agent build` share a positional shape (<name>) but not a
+// flag set (SUBCOMMAND_FLAGS above): --build on `agent build` is redundant
+// (the subcommand already says so), and the flags that only matter for
+// building an adapter (--pr and the author/reviewer overrides — everything
+// "agent build" reads that "agent add" doesn't) are meaningless on a plain
+// `agent add` that never builds anything — accepting them there would
+// silently ignore them, the exact defect this schema exists to remove.
+function validateAgentArgs(rest, flags) {
+  const [sub, name, ...extra] = rest;
+  if (sub === undefined || !SUBCOMMANDS.agent.includes(sub)) {
+    throw usageError("usage: orch agent add <name> | orch agent build <name> [--pr]");
+  }
+  if (!name) {
+    throw usageError(sub === "build" ? "usage: orch agent build <name> [--pr]" : "usage: orch agent add <name> | orch agent build <name> [--pr]");
+  }
+  if (extra.length) {
+    throw usageError(`'orch agent ${sub}' takes a single <name> argument — got ${extra.length} extra: ${extra.join(" ")}`);
+  }
+  if (sub === "build" && flags.build) {
+    throw usageError("--build is not valid with 'orch agent build' — building is what the subcommand already does");
+  }
+  if (sub === "add" && !flags.build) {
+    const buildOnlyFlags = SUBCOMMAND_FLAGS["agent build"].filter((f) => !SUBCOMMAND_FLAGS["agent add"].includes(f));
+    for (const flagName of buildOnlyFlags) {
+      if (flags[flagName] !== undefined && flags[flagName] !== false) {
+        throw usageError(`--${flagName} is not valid with 'orch agent add' without --build — it only affects the build`);
+      }
+    }
   }
 }
 
