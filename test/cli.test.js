@@ -1236,6 +1236,31 @@ test("agent add offers to build an unregistered agent; accepting delegates to bu
   }
 });
 
+// The interactive prompt above is a dead end for a headless caller (a poller, a
+// CI job, another agent): there is no one to answer it. `--build` is the same
+// path with the question skipped.
+test("agent add --build skips the confirm prompt and builds", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-flag-"));
+  const prev = cwd();
+  chdir(d);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.map(String).join(" "));
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    let calledWith = null;
+    await main(["agent", "add", "widget", "--build"], {
+      io: { confirm: async () => assert.fail("asked for confirmation despite --build") },
+      buildAgent: async (name) => { calledWith = name; return { status: "approved", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }; },
+    });
+    assert.equal(calledWith, "widget");
+    assert.match(logs.join("\n"), /agent build widget: approved/);
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+});
+
 // A6+B4: the confirm path used to hardcode `flags: {}`, silently discarding
 // `--dry`/`--config-file` — a confirmed `--dry` build would run a REAL build
 // (real worktree/branch/merge) because the flag never reached buildAgent. It
@@ -1484,6 +1509,13 @@ test("a flag not read by the command is rejected", async () => {
     [["init", "--cheap"], /--cheap is not valid with 'orch init'/],
     [["dashboard", "--config-file", "x.yml"], /--config-file is not valid with 'orch dashboard'/],
     [["task", "x", "--limit", "3"], /--limit is not valid with 'orch task'/],
+    // --file is read by `task` only: `orch issue 1 --file f` used to parse and
+    // drop it, so the run silently used the issue body instead of the file.
+    [["issue", "1", "--file", "f"], /--file is not valid with 'orch issue'/],
+    // Read-only commands get the sharper message: --dry cannot "plan" a command
+    // that changes nothing.
+    [["config", "--dry"], /--dry has no effect on 'orch config'/],
+    [["dashboard", "--dry"], /--dry has no effect on 'orch dashboard'/],
   ];
   for (const [argv, message] of cases) {
     await assert.rejects(
@@ -1755,7 +1787,10 @@ test("over the concurrency cap, a cycle is skipped (not blocked)", async () => {
     } finally {
       console.log = origLog;
     }
-    assert.equal(process.exitCode, 2);
+    // 3, not 2: the cap is a capacity refusal (nothing ran, retry later), while
+    // 2 means a cycle really ran and did not agree. A caller that retries a 3
+    // is right to; a caller that retries a 2 just burns another cycle.
+    assert.equal(process.exitCode, 3);
     assert.match(logs.join("\n"), /concurrency cap 4 reached/);
   } finally {
     chdir(prev);

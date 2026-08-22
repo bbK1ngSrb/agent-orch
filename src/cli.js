@@ -16,6 +16,7 @@ import * as notify from "./notify.js";
 import { acquireLock, releaseLock, acquireBlocking, isPaused } from "./lock.js";
 import { slugify } from "./slug.js";
 import { serve } from "./mcp.js";
+import { PARSE_OPTIONS, COMMAND_FLAGS, renderHelp, usageError, validate as validateFlags } from "./schema.js";
 
 const VERSION = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -388,41 +389,25 @@ export function linkOrchDoc(repo, agents = [], deps = {}) {
   return targets;
 }
 
-// Single source of truth for the flag set: parse() uses it, and tests assert
-// printUsage() and src/completion.js cover every key so the three can't drift.
-export const PARSE_OPTIONS = {
-  dry: { type: "boolean" },
-  version: { type: "boolean" },
-  help: { type: "boolean", short: "h" },
-  merge: { type: "boolean" },
-  author: { type: "string" },
-  reviewer: { type: "string" },
-  authors: { type: "string" },
-  reviewers: { type: "string" },
-  cheap: { type: "boolean" }, // force author+reviewer to orch.yml cheap.role for this run
-  file: { type: "string" },
-  "config-file": { type: "string" }, // load a .yml file, layered on top of orch.yml for this run
-  "allow-protected": { type: "boolean" }, // #395: run despite a protected-path mention at intake
-  "allow-large-scope": { type: "boolean" }, // operator sanction for a deliberately large review slice
-  "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
-  "no-banner": { type: "boolean" },
-  link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
-  json: { type: "boolean" }, // dashboard: machine-readable output
-  limit: { type: "string" }, // dashboard: run-history entries to show
-  "check-history": { type: "boolean" }, // dashboard: show stale red rows as resolved (view only) when branches are gone
-  once: { type: "boolean" }, // dashboard: force the static one-shot print instead of the live TUI
-  plain: { type: "boolean" }, // dashboard: alias of --once
-  "refresh-ms": { type: "string" }, // dashboard: live TUI poll interval (default 1000)
-  check: { type: "boolean" }, // upgrade: check latest version without installing
-  pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
-};
+// The flag set and the per-command flag lists now live in src/schema.js — one
+// declaration that the parser, `orch --help` and bash completion all read, so
+// the three cannot drift. Re-exported here because they are part of this
+// module's public surface (tests and completion import them from cli.js).
+export { PARSE_OPTIONS, COMMAND_FLAGS };
 
+// Thin wrapper over node's parseArgs: same result shape, but an unknown or
+// malformed flag becomes a usage error (exit 64) with an orch-shaped message
+// instead of node's raw ERR_PARSE_ARGS text.
 export function parse(argv) {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: PARSE_OPTIONS,
-  });
+  let parsed;
+  try {
+    parsed = parseArgs({ args: argv, allowPositionals: true, options: PARSE_OPTIONS });
+  } catch (e) {
+    const unknown = /Unknown option '([^']+)'/.exec(e.message);
+    if (unknown) throw usageError(`unknown option ${unknown[1]} (run 'orch help' for usage)`);
+    throw usageError(e.message.split(". To ")[0]);
+  }
+  const { values, positionals } = parsed;
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
 }
 
@@ -1144,7 +1129,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
       sid,
       { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList, workOrder: wo },
       cfg,
-      { onExceeded: (live) => { throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`); } },
+      { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
     );
   }
   try {
@@ -1156,59 +1141,13 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   }
 }
 
-// Which flags each command actually reads. A flag parsed but never consumed by
-// the command it was typed on is a lie about what the command will do — `orch
-// issue 42 --merge` reads as "run and merge" while only `orch pr` consumes
-// --merge. Rather than one bespoke guard per flag, every command declares its
-// flag set here and one check rejects the rest. Entries are derived from what
-// each dispatch branch actually reads, so adding a flag to a command means
-// adding it here too. --help/--version are legal everywhere (see below).
-// Commands with no entry (unknown input, which falls through to usage) are not
-// validated.
-export const COMMAND_FLAGS = {
-  init: ["config-file", "dry", "link"],
-  config: ["config-file"],
-  // `agent add <unregistered>` offers to build, and hands buildAgent the same
-  // flags as `agent build` — so both subcommands share one flag set.
-  agent: ["config-file", "dry", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
-  task: ["config-file", "dry", "file", "cheap", "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
-  issue: ["config-file", "dry", "cheap", "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
-  review: ["config-file", "dry", "cheap", "allow-large-scope", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
-  continue: ["config-file", "dry", "allow-large-scope", "no-tidy", "author", "authors", "reviewer", "reviewers"],
-  pr: ["config-file", "dry", "merge", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
-  release: ["dry"],
-  dashboard: ["json", "limit", "check-history", "once", "plain", "refresh-ms"],
-  completion: [],
-  upgrade: ["check", "dry"],
-  update: ["check", "dry"],
-  mcp: [],
-  version: [],
-  help: [],
-};
-
-// `--help`/`--version` short-circuit main() before any command runs, so they are
-// the *effective* command whenever present: `orch pr 42 --merge --help` prints
-// usage and exits 0 having merged nothing. Asking to merge and asking what the
-// tool is are contradictory requests; neither silently wins.
-export function checkFlags(command, flags) {
-  const effective = flags.help ? "help" : flags.version ? "version" : command;
-  const allowed = COMMAND_FLAGS[effective];
-  if (!allowed) return;
-  for (const name of Object.keys(flags)) {
-    if (name === "help" || name === "version" || allowed.includes(name)) continue;
-    const valid = Object.keys(COMMAND_FLAGS).filter((c) => COMMAND_FLAGS[c].includes(name));
-    throw new Error(
-      `--${name} is not valid with 'orch ${effective}'` +
-      (valid.length ? ` — only with: ${valid.map((c) => `orch ${c}`).join(", ")}` : " — it is not a flag of any command"),
-    );
-  }
-}
-
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
   // First statement after parse deliberately: behind any early return
-  // (version/help/upgrade) a misapplied flag is still dropped silently.
-  checkFlags(command, flags);
+  // (version/help/upgrade) a misapplied flag is still dropped silently. The
+  // schema rejects a flag this command does not read, `--dry` on a read-only
+  // command, and a bad numeric/enum value — all exit 64, before anything runs.
+  validateFlags(command, flags);
 
   if (command === "__update-check-child") {
     await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
@@ -1314,7 +1253,10 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "agent") {
-    if (rest[0] === "build") {
+    // `agent add <name> --build` is the non-interactive spelling of the
+    // "not registered — build it now?" prompt below: same code path, no
+    // question asked, so a headless run can build an adapter too.
+    if (rest[0] === "build" || flags.build) {
       const name = rest[1];
       if (!name) throw new Error("usage: orch agent build <name> [--pr]");
       const buildFn = deps.buildAgent || buildAgent;
@@ -1551,7 +1493,9 @@ export async function main(argv, deps = {}) {
           cfg,
           { onExceeded: (live) => {
             console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
-            process.exitCode = 2;
+            // 3 = blocked by a policy/capacity limit, distinct from 2 (the cycle
+            // ran and did not agree) — a caller can retry a 3, not a 2.
+            process.exitCode = 3;
           } },
         );
         if (!accepted) {
@@ -1746,7 +1690,7 @@ export async function main(argv, deps = {}) {
         sid,
         { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers, workOrder },
         cfg,
-        { onExceeded: (live) => { throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`); } },
+        { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
       );
     }
     try {
@@ -1832,8 +1776,7 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "dashboard") {
-    const historyLimit = flags.limit ? Number(flags.limit) : 10;
-    if (!Number.isInteger(historyLimit) || historyLimit <= 0) throw new Error("--limit must be a positive integer");
+    const historyLimit = flags.limit ? Number(flags.limit) : 10; // schema validated the value
     const checkHistory = Boolean(flags["check-history"]);
     const once = Boolean(flags.once || flags.plain);
     // Live TUI is the default only for a genuine interactive terminal; every
@@ -1881,69 +1824,12 @@ export async function main(argv, deps = {}) {
   // and exits 0; a command we do not recognise (typo, renamed subcommand in a
   // stale script) must be an error — exiting 0 tells every scripted caller
   // checking $? that the run succeeded when nothing ran at all.
-  if (command) throw new Error(`unknown command: ${command} (run 'orch help' for usage)`);
+  if (command) throw usageError(`unknown command: ${command} (run 'orch help' for usage)`, { showUsage: true });
   printUsage();
 }
 
 function printUsage() {
-  console.log(`orch - Run coding agents in an author, review, test, and merge loop.
-
-Usage: orch <command> [options]
-
-Commands:
-  init                  Scaffold .orch/orch.yml and .orch/ORCH.md.
-  config                Interactively create or edit an orch YAML config.
-  agent add <name>      Add a registered agent to the rotation pool.
-  agent build <name>    Scaffold an adapter via orch's author/audit/test loop.
-  task "change"         Run a cycle and update orch/integration on merge.
-  task --file <file>    Run a cycle from an untrusted JSON work order.
-  issue <number>        Run from a GitHub issue and close it on merge.
-  review <branch>       Audit an existing branch without merging.
-  continue <sid>        Resume an interrupted/stalled cycle from its checkpoint.
-  pr <number>           Review a GitHub PR; add --merge to merge if approved.
-  release "entry"       Bump version + CHANGELOG by hand (autoBump repos only).
-  dashboard             Live status TUI; --once prints the static one-shot.
-  mcp                   Serve orch as an MCP server over stdio (for AI clients).
-  upgrade, update       Self-update the global npm install.
-  completion [bash]     Print the bash completion script (default: bash).
-  completion install    Write the completion script to ~/.orch/completion.bash.
-  version               Print the version (same as --version).
-  help                  Show this help.
-
-Options:
-  -h, --help            Show this help.
-  --version             Print the version.
-  --author <role>       Set author as "<agent> [model] [effort]".
-  --authors <roles>     Set comma-separated authors; each gets a branch.
-  --reviewer <role>     Set reviewer as "<agent> [model] [effort]".
-  --reviewers <roles>   Set comma-separated reviewers.
-  --cheap               Use cheap.role; cheap.paths can auto-route work orders.
-  --file <file>         With task, read the work order from a JSON file.
-  --config-file <file>  Config YAML path; with config / agent add, write there.
-  --allow-protected     Run even if the work order names a protected path.
-  --allow-large-scope   Sanction a deliberately large review slice for this run.
-  --dry                 Plan without shelling out or changing git.
-  --check               With upgrade, check latest version without installing.
-  --link                With init, link .orch/ORCH.md from agent docs.
-  --no-banner           Hide the run banner.
-  --no-tidy             Leave task branches and checkouts after merge.
-  --json                With dashboard, print JSON.
-  --limit <n>           With dashboard, limit history rows.
-  --check-history       Dashboard: show stale red rows resolved (view only).
-  --once, --plain       Dashboard: force the static one-shot print.
-  --refresh-ms <n>      Dashboard: live TUI poll interval ms (default 1000).
-  --merge               With pr, merge approved PRs.
-  --pr                  With agent build, open a PR instead.
-
-Examples:
-  orch init --link
-  orch task "add input validation" --reviewer "codex"
-  orch task --file work-order.json --cheap
-  orch issue 42
-  orch release "hand-landed guardrail fix (closes #N)"
-  orch dashboard --json --limit 5
-
-Full docs: see .orch/ORCH.md in initialized repos and the README.`);
+  console.log(renderHelp());
 }
 
 function costSuffix(result) {

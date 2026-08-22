@@ -1,11 +1,23 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { COMMANDS, FLAGS, SUBCOMMANDS } from "./schema.js";
 
-// Static bash completion script. orch's arg parsing is hand-rolled (no
-// yargs/commander), so this list is maintained by hand alongside printUsage()
-// in cli.js — keep the two in sync when commands/flags change. test/completion.test.js
-// enforces parity against PARSE_OPTIONS and the --help Commands block.
+// Bash completion, rendered from the command schema (src/schema.js) — the same
+// declaration the parser and `orch --help` read, so tab-completion cannot offer
+// a flag the parser rejects (or miss one it accepts). test/completion.test.js
+// checks both renderers against the schema.
+const COMMAND_WORDS = Object.keys(COMMANDS).join(" ");
+const FLAG_WORDS = Object.entries(FLAGS)
+  .flatMap(([name, f]) => (f.short ? [`-${f.short}`] : []).concat(`--${name}`))
+  .join(" ");
+const SUBCOMMAND_CASES = Object.entries(SUBCOMMANDS).map(([cmd, words]) => `    ${cmd})
+      if [[ \${COMP_CWORD} -eq 2 ]]; then
+        COMPREPLY=( $(compgen -W "${words.join(" ")}" -- "\${cur}") )
+        return 0
+      fi
+      ;;`).join("\n");
+
 export const BASH_COMPLETION = `# orch bash completion
 # Install: orch completion install (or) source <(orch completion bash)
 _orch_completion() {
@@ -13,8 +25,8 @@ _orch_completion() {
   COMPREPLY=()
   cur="\${COMP_WORDS[COMP_CWORD]}"
 
-  local commands="init config agent task issue review pr release continue dashboard mcp upgrade update completion version help"
-  local flags="-h --help --version --author --authors --reviewer --reviewers --cheap --file --config-file --allow-protected --allow-large-scope --dry --check --link --no-banner --no-tidy --json --limit --check-history --once --plain --refresh-ms --merge --pr"
+  local commands="${COMMAND_WORDS}"
+  local flags="${FLAG_WORDS}"
 
   if [[ \${COMP_CWORD} -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "\${commands}" -- "\${cur}") )
@@ -22,18 +34,7 @@ _orch_completion() {
   fi
 
   case "\${COMP_WORDS[1]}" in
-    agent)
-      if [[ \${COMP_CWORD} -eq 2 ]]; then
-        COMPREPLY=( $(compgen -W "add build" -- "\${cur}") )
-        return 0
-      fi
-      ;;
-    completion)
-      if [[ \${COMP_CWORD} -eq 2 ]]; then
-        COMPREPLY=( $(compgen -W "bash install" -- "\${cur}") )
-        return 0
-      fi
-      ;;
+${SUBCOMMAND_CASES}
   esac
 
   COMPREPLY=( $(compgen -W "\${flags}" -- "\${cur}") )
