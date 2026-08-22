@@ -18,6 +18,12 @@ test("register/setPaths/deregister roundtrip with a live pid", () => {
   assert.equal(countLive(d), 0);
 });
 
+test("register does not persist the large-scope sanction", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-if-"));
+  register(d, "sanctioned", { branch: "b", pid: process.pid, baseSha: "z", allowLargeScope: true });
+  assert.equal("allowLargeScope" in listLive(d)[0], false);
+});
+
 test("listLive drops dead-pid entries", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-if-"));
   register(d, "dead", { branch: "pr/x/dead", pid: 999999999, baseSha: "z" });

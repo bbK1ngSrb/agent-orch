@@ -68,6 +68,7 @@ export async function runCycle(opts, deps) {
     reviewers: persistReviewers,
     task,
     authorPrompt: opts.authorPrompt || task,
+    workOrder: opts.workOrder || null,
   };
   const runStats = [];
   const reviewOutcomes = [];
@@ -290,7 +291,12 @@ export async function runCycle(opts, deps) {
         const verdicts = await Promise.all(reviewers.map(async (reviewer) => ({
           reviewer: reviewer.name,
           model: reviewer.opts.model,
-          ...(await reviewer.adapter.audit(branch, worktree, { ...reviewer.opts, round })),
+          ...(await reviewer.adapter.audit(branch, worktree, {
+            ...reviewer.opts,
+            round,
+            task: opts.workOrder || task,
+            allowLargeScope: Boolean(opts.allowLargeScope),
+          })),
         })));
         for (const v of verdicts) recordUsage("reviewer", v.reviewer, v, v.model);
         const disagree = verdicts.filter((v) => v.decision !== "AGREE");

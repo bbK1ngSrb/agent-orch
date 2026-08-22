@@ -4,14 +4,15 @@ import { runCycle } from "../src/engine.js";
 import { SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "../src/security-review.js";
 
 function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
-  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, prompts: [], phases: [], rounds: [], rawRounds: [], reviewLog: [] };
+  const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, auditOpts: [], prompts: [], phases: [], rounds: [], rawRounds: [], reviewLog: [] };
   const reviewerCache = new Map();
   const reviewerFor = (name) => {
     if (!reviewerCache.has(name)) {
       reviewerCache.set(name, {
         name,
-        async audit() {
+        async audit(_branch, _worktree, auditOpts) {
           calls.audits++;
+          calls.auditOpts.push(auditOpts);
           calls.auditsBy[name] = (calls.auditsBy[name] || 0) + 1;
           const list = reviewerVerdicts?.[name] || verdicts;
           const verdict = list[Math.min(calls.auditsBy[name] - 1, list.length - 1)];
@@ -67,6 +68,14 @@ test("AGREE + green gate -> merged", async () => {
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "merged");
   assert.equal(deps._calls.authors, 1);
+});
+
+test("review receives the work order separately from the author prompt", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  const workOrder = { title: "Fix parser", problem: "reject empty input", repro_steps: [], suspected_paths: [], acceptance_criteria: [] };
+  await runCycle({ ...opts, workOrder, allowLargeScope: true, authorPrompt: "author-only frame" }, deps);
+  assert.equal(deps._calls.auditOpts[0].task, workOrder);
+  assert.equal(deps._calls.auditOpts[0].allowLargeScope, true);
 });
 
 test("author and reviewers emit one-line completion results", async () => {
@@ -1200,7 +1209,7 @@ test("checkpoint.record is called with the round's verdict after each fresh audi
     return args[0] === "rev-parse" ? "base" : "diff summary";
   };
   deps.checkpoint = { lookup: () => null, record: (_dir, sid, data) => recorded.push({ sid, ...data }), clear() {} };
-  const r = await runCycle({ ...opts, sid: "s1" }, deps);
+  const r = await runCycle({ ...opts, sid: "s1", allowLargeScope: true }, deps);
   assert.equal(r.status, "merged");
   assert.equal(recorded.length, 4, "one 'started' + one 'authored' + one 'reviewed' + one 'tested' checkpoint");
   assert.equal(recorded[0].stage, "started");
@@ -1215,6 +1224,7 @@ test("checkpoint.record is called with the round's verdict after each fresh audi
   assert.equal(recorded[1].oid, "sha-head");
   assert.equal(recorded[2].oid, "sha-head");
   assert.equal(recorded[3].oid, "sha-head");
+  assert.ok(recorded.every((entry) => !("allowLargeScope" in entry)));
   assert.equal(oidReads, 2, "authored write reads once; reviewed+tested reuse the round's single OID capture");
 });
 
