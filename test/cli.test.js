@@ -1261,6 +1261,27 @@ test("agent add --build skips the confirm prompt and builds", async () => {
   }
 });
 
+// `--build` used to trigger on its own, so `orch agent <typo> <name> --build`
+// ran a real build instead of reporting the malformed subcommand.
+test("agent <typo> <name> --build is a usage error, not a build", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-agent-typo-build-"));
+  const prev = cwd();
+  chdir(d);
+  try {
+    await main(["init"], { preflight() {}, detectAgents: () => ({ found: [], missing: [] }) });
+    let built = false;
+    await assert.rejects(
+      () => main(["agent", "typo", "widget", "--build"], {
+        buildAgent: async () => { built = true; return { status: "approved" }; },
+      }),
+      /usage: orch agent add <name> \| orch agent build <name>/,
+    );
+    assert.equal(built, false);
+  } finally {
+    chdir(prev);
+  }
+});
+
 // A6+B4: the confirm path used to hardcode `flags: {}`, silently discarding
 // `--dry`/`--config-file` — a confirmed `--dry` build would run a REAL build
 // (real worktree/branch/merge) because the flag never reached buildAgent. It

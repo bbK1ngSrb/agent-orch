@@ -30,7 +30,6 @@ export const FLAGS = {
     type: "enum", values: ["once", "ready", "merged"], arg: "<mode>",
     help: "One cycle only (once); other modes not yet available.",
   },
-  "max-attempts": { type: "int", min: 0, arg: "<n>", help: "Retry budget for --until; accepted, not yet used." },
   check: { type: "boolean", help: "With upgrade, check latest version without installing." },
   link: { type: "boolean", help: "With init, link .orch/ORCH.md from agent docs." },
   build: { type: "boolean", help: "With agent add, build the adapter without asking." },
@@ -47,13 +46,13 @@ export const FLAGS = {
 };
 
 // Legal on every command: --help/--version describe the tool rather than run
-// it, and --json is a global output switch (only `dashboard` acts on it today;
-// ponytail: the run-event stream is a later slice of the CLI v2 plan).
-export const GLOBAL_FLAGS = ["help", "version", "json"];
+// it. --json is NOT global — only `dashboard` reads it, so it is declared on
+// that command's flag list instead.
+export const GLOBAL_FLAGS = ["help", "version"];
 
 // Flags shared by the commands that run an author/review/test cycle.
 const RUN_FLAGS = [
-  "config-file", "dry", "no-tidy", "no-banner", "until", "max-attempts",
+  "config-file", "dry", "no-tidy", "no-banner", "until",
   "allow-large-scope", "author", "authors", "reviewer", "reviewers",
 ];
 
@@ -108,7 +107,7 @@ export const COMMANDS = {
     rows: [["continue <sid>", "Resume an interrupted/stalled cycle from its checkpoint."]],
   },
   pr: {
-    mutates: true, flags: ["config-file", "dry", "merge", "until", "max-attempts", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
+    mutates: true, flags: ["config-file", "dry", "merge", "until", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
     rows: [["pr <number>", "Review a GitHub PR; add --merge to merge if approved."]],
   },
   release: {
@@ -203,12 +202,8 @@ export function validate(command, flags) {
   const effective = flags.help ? "help" : flags.version ? "version" : command;
   const spec = COMMANDS[effective];
   if (!spec) return;
-  // `mcp` is the one command whose stdout is a transport (newline-delimited
-  // JSON-RPC), not output a human or a script reads — one extra object on it
-  // corrupts the protocol stream, so --json is not granted there.
-  const globals = effective === "mcp" ? GLOBAL_FLAGS.filter((f) => f !== "json") : GLOBAL_FLAGS;
   for (const [name, value] of Object.entries(flags)) {
-    if (globals.includes(name) || spec.flags.includes(name)) {
+    if (GLOBAL_FLAGS.includes(name) || spec.flags.includes(name)) {
       if (value !== true && value !== false) validateValue(name, value);
       continue;
     }

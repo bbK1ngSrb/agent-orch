@@ -41,21 +41,25 @@ test("every declared flag validates on its command, every other flag is refused"
   }
 });
 
-test("--json, --help and --version are legal on every command but mcp", () => {
-  // `orch mcp` speaks JSON-RPC on stdout: one extra object on that stream is a
-  // protocol violation, so the global --json stops at its door.
-  assert.throws(
-    () => validate("mcp", { json: true }),
-    (e) => e.exit === 64 && /--json is not valid with 'orch mcp'/.test(e.message),
-  );
+test("--help and --version are legal on every command", () => {
   for (const command of Object.keys(COMMANDS)) {
     for (const name of GLOBAL_FLAGS) {
-      if (command === "mcp" && name === "json") continue;
       const { flags } = parse([command, `--${name}`]);
       // --help/--version make themselves the effective command, which accepts
       // no other flags — so validate them one at a time.
       assert.doesNotThrow(() => validate(command, flags), `orch ${command} --${name}`);
     }
+  }
+});
+
+test("--json is scoped to dashboard, not global", () => {
+  assert.doesNotThrow(() => validate("dashboard", { json: true }));
+  for (const command of Object.keys(COMMANDS).filter((c) => c !== "dashboard")) {
+    assert.throws(
+      () => validate(command, { json: true }),
+      (e) => e.exit === 64 && /--json is not valid with/.test(e.message),
+      `orch ${command} --json`,
+    );
   }
 });
 
@@ -87,9 +91,14 @@ test("numeric flags are validated, not silently NaN", () => {
   // NaN poll interval inside the live TUI instead of a usage error.
   const { flags } = parse(["dashboard", "--refresh-ms", "abc"]);
   assert.throws(() => validate("dashboard", flags), /--refresh-ms must be a positive integer/);
-  // --max-attempts 0 is meaningful ("one pass, no retries"), so its floor is 0.
-  assert.doesNotThrow(() => validate("task", { "max-attempts": "0" }));
-  assert.throws(() => validate("task", { "max-attempts": "-1" }), /--max-attempts must be a non-negative integer/);
+});
+
+test("--max-attempts is not declared — it would be a silent no-op, nothing reads it yet", () => {
+  assert.equal(FLAGS["max-attempts"], undefined);
+  assert.throws(
+    () => validate("task", { "max-attempts": "1" }),
+    (e) => e.exit === 64 && /--max-attempts is not valid with 'orch task'/.test(e.message),
+  );
 });
 
 test("--until accepts only the mode that exists today", () => {

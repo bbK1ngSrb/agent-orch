@@ -1255,8 +1255,10 @@ export async function main(argv, deps = {}) {
   if (command === "agent") {
     // `agent add <name> --build` is the non-interactive spelling of the
     // "not registered — build it now?" prompt below: same code path, no
-    // question asked, so a headless run can build an adapter too.
-    if (rest[0] === "build" || flags.build) {
+    // question asked, so a headless run can build an adapter too. Gate on
+    // `add`/`build` explicitly — `agent <typo> <name> --build` is not a
+    // build request, it's a malformed subcommand.
+    if (rest[0] === "build" || (rest[0] === "add" && flags.build)) {
       const name = rest[1];
       if (!name) throw new Error("usage: orch agent build <name> [--pr]");
       const buildFn = deps.buildAgent || buildAgent;

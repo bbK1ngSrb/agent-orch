@@ -623,11 +623,12 @@ got to. `orch_status` and `orch_plan` return immediately.
   names a protected path, instead of being refused at intake. See §2.14.
 - **`--allow-large-scope`** — explicitly sanction a deliberately large review
   slice for this run. A plain `orch continue <sid>` requires the flag again.
-- **`--until <mode>` / `--max-attempts <n>`** — declared now so scripts can be
-  written against them, but only `--until once` (the default: run one cycle and
-  stop) exists today. `--until ready` and `--until merged` are refused with exit
-  `64` until the bounded retry loop lands; `--max-attempts` is accepted and
-  currently unused.
+- **`--until <mode>`** — declared now so scripts can be written against it, but
+  only `--until once` (the default: run one cycle and stop) exists today.
+  `--until ready` and `--until merged` are refused with exit `64` until the
+  bounded retry loop lands. `--max-attempts` is not declared yet — nothing
+  reads it, so it stays a usage error rather than a silent no-op until the
+  retry loop that needs it ships.
 
 Every flag is now declared per command in `src/schema.js`, and a flag the
 command does not read is refused with exit `64` rather than parsed and dropped.
