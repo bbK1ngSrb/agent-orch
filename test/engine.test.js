@@ -342,6 +342,25 @@ test("author() throwing (agy's #272 refusal) propagates out of runCycle instead 
   assert.equal(deps._calls.finalized, undefined, "a crashed author must never reach finalize/merge");
 });
 
+test("a failed WIP capture is reported and the sole-copy worktree is not pruned", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  let prunes = 0;
+  deps.git.pruneWorktree = () => { prunes++; };
+  deps.adapters.get("auth").author = async () => {
+    const error = new Error("author timeout; WIP capture failed; worktree preserved at /wt");
+    error.preserveWorktree = true;
+    throw error;
+  };
+
+  await assert.rejects(() => runCycle(opts, deps), /WIP capture failed/);
+  assert.equal(prunes, 0, "engine must not destroy the only copy after capture failure");
+  assert.deepEqual(deps._calls.phases.at(-1), {
+    label: "author",
+    detail: "author timeout; WIP capture failed; worktree preserved at /wt",
+    status: "fail",
+  });
+});
+
 test("DISAGREE then AGREE -> merged on round 2", async () => {
   const deps = makeDeps({
     verdicts: [

@@ -2289,6 +2289,37 @@ test("orch continue <sid> resumes from checkpoint, past review, without re-autho
   assert.equal(ck, null); // completed run clears its checkpoint
 });
 
+test("orch continue <sid> re-runs an interrupted author whose tip is a WIP commit", async () => {
+  const repo = initGitRepo("orch-continue-wip-author-");
+  const sid = "partial1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "partial.txt"), "unfinished\n");
+  gitDep.git(["add", "."], repo);
+  gitDep.git(["commit", "-m", "wip(author): partial work before timeout"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "started", author: { agent: "claude" }, reviewers: [{ agent: "codex" }] });
+
+  let authorCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { authorCalls++; return { usage: {} }; },
+        async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+
+  await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+  assert.equal(authorCalls, 1, "a partial author tip must re-enter authoring before review");
+  assert.equal(gitDep.git(["log", "-1", "--format=%s", branch], repo),
+    "wip(author): partial work before timeout",
+    "a successful no-op author must not relabel unchanged partial work as finished");
+});
+
 test("orch continue <sid> clears a stale checkpoint when the branch was merged and deleted", async () => {
   const repo = initGitRepo("orch-continue-stale-");
   const sid = "5ta1eck";

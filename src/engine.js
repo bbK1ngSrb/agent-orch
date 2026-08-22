@@ -45,7 +45,7 @@ export async function runCycle(opts, deps) {
   // #56: per-stage watchdog. cfg.stageTimeout is in minutes (0 = off); pass it to
   // every stage in ms so a stalled author/reviewer is killed instead of hanging.
   const stageTimeoutMs = cfg?.stageTimeout > 0 ? cfg.stageTimeout * 60_000 : 0;
-  const authorOpts = { model: authorSpec.model, effort: authorSpec.effort, stageTimeoutMs };
+  const authorOpts = { model: authorSpec.model, effort: authorSpec.effort, stageTimeoutMs, baseBranch: cycleBase };
   const reviewerSpecs = opts.reviewers || (opts.reviewerNames || [reviewerName]).map((name) => ({ agent: name }));
   const reviewers = reviewerSpecs.map((s) => ({
     name: s.agent, adapter: adapters.get(s.agent), opts: { model: s.model, effort: s.effort, stageTimeoutMs },
@@ -101,6 +101,16 @@ export async function runCycle(opts, deps) {
   else git.createTaskBranch(repo, worktree, branch, cycleBase, `${process.pid}\n${sid}`);
 
   const baseSha = git.git(["rev-parse", cycleBase], repo);
+  // A failed author stage is captured as a WIP commit. Derive recovery here so
+  // every resume caller (continue, task retry, PR bridge) re-runs the author
+  // instead of auditing a known-truncated tip.
+  let partialAuthor = false;
+  if (mode === "task" && resume) {
+    try {
+      partialAuthor = git.git(["log", "-1", "--format=%s", `refs/heads/${branch}`], repo)
+        .startsWith("wip(author):");
+    } catch { /* unreadable tip follows the normal resume checks below */ }
+  }
 
   // #422: the branch head for one review round. Checkpoints carry it so a resume
   // can prove the recorded verdict belongs to the content the branch holds NOW.
@@ -138,13 +148,14 @@ export async function runCycle(opts, deps) {
   // "no key we can trust" and the diff runs uncached.
   let authoredOid = null;
 
+  let preserveWorktree = false;
   try {
     // F1: author step + scope gate only in task mode. Review never writes.
     if (mode === "task") {
-      // On resume the author's work is already committed on the branch — skip
-      // re-authoring and go straight to audit. The scope gate below still runs,
-      // so a too-big resumed diff is caught even if quota aborted before it ran.
-      if (!resume) {
+      // Normal resumes already have completed author work and go straight to
+      // audit. A WIP-tipped resume is the exception: it must re-enter authoring.
+      // The scope gate below still catches an oversized resumed diff.
+      if (!resume || partialAuthor) {
         checkpoint?.record(orchDir, sid, { branch, round: 1, stage: "started", closes: opts.closes || null, author: persistAuthor, reviewers: persistReviewers });
         notify.phase("author", `${author.name} authoring`);
         // §3b: for untrusted intake (work order), the author runs against a
@@ -403,8 +414,14 @@ export async function runCycle(opts, deps) {
       const revised = await author.author(buildRevisionPrompt(verdict.reason), worktree, authorOpts);
       recordUsage("author", author.name, revised, authorOpts.model);
     }
+  } catch (error) {
+    if (error?.preserveWorktree) {
+      preserveWorktree = true;
+      notify.phase("author", error.message || String(error), "fail");
+    }
+    throw error;
   } finally {
-    git.pruneWorktree(repo, worktree);
+    if (!preserveWorktree) git.pruneWorktree(repo, worktree);
   }
 }
 
