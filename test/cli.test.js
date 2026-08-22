@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -184,6 +184,48 @@ test("GitHub App auth is silent when repo has no origin remote", async () => {
   try {
     await main(["init"], { preflight() {} });
     assert.equal(stderr, "");
+  } finally {
+    process.stderr.write = prevStderrWrite;
+    chdir(prev);
+    for (const [k, v] of Object.entries(prevEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+// An unrecognised command used to fall through past the GitHub App auth mint
+// (main() reached it before the unknown-command check, which lived at the very
+// bottom of the function) — so a typo'd command still tried to mint a token
+// before being refused. Prove the mint no longer runs by putting it somewhere
+// it WOULD fail loudly: a plain (non-git) directory, where `git remote get-url
+// origin` errors with something other than "no such remote" and the catch
+// writes to stderr. No stderr output means the mint was never attempted.
+test("unknown command is rejected before the GitHub App auth mint runs", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-unknown-cmd-"));
+  const prev = cwd();
+  const prevEnv = {
+    GH_TOKEN: process.env.GH_TOKEN,
+    ORCH_APP_ID: process.env.ORCH_APP_ID,
+    ORCH_APP_PRIVATE_KEY: process.env.ORCH_APP_PRIVATE_KEY,
+  };
+  const prevStderrWrite = process.stderr.write;
+  let stderr = "";
+  chdir(d);
+  delete process.env.GH_TOKEN;
+  process.env.ORCH_APP_ID = "1";
+  process.env.ORCH_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx";
+  process.stderr.write = (chunk, ...args) => {
+    stderr += String(chunk);
+    if (typeof args[args.length - 1] === "function") args[args.length - 1]();
+    return true;
+  };
+  try {
+    await assert.rejects(
+      () => main(["bogus-command"], { preflight() {} }),
+      /unknown command: bogus-command/,
+    );
+    assert.equal(stderr, "", "GitHub App auth must not be attempted for an unrecognised command");
   } finally {
     process.stderr.write = prevStderrWrite;
     chdir(prev);
@@ -1842,6 +1884,35 @@ test("registerWithConcurrencyCap removes the rejected run", () => {
   } finally {
     inflight.deregister(orchDir, "cap-peer");
     inflight.deregister(orchDir, "cap-current");
+  }
+});
+
+// A single invocation's author fan-out can see BOTH an escalation (2, a cycle
+// ran and needs review) and a concurrency-cap skip (3, nothing ran, safe to
+// retry) if a concurrent peer process pushes a later run over the cap — see
+// the "3, not 2" comment on the cap test above. process.exitCode is a single
+// global the loop assigns per-run; last-write-wins would let whichever run
+// finishes last decide the reported code regardless of severity. These are
+// hand-computed against the documented priority (2 must survive a later 3;
+// a later 2 must still win over an earlier 3), not observed from the code.
+test("raiseExitCode: 2 (needs review) always wins over 3 (safe to retry), in either order", () => {
+  const saved = process.exitCode;
+  try {
+    process.exitCode = 0;
+    raiseExitCode(2);
+    raiseExitCode(3);
+    assert.equal(process.exitCode, 2, "a later 3 must not downgrade an earlier 2");
+
+    process.exitCode = 0;
+    raiseExitCode(3);
+    raiseExitCode(2);
+    assert.equal(process.exitCode, 2, "a later 2 must still win over an earlier 3");
+
+    process.exitCode = 0;
+    raiseExitCode(3);
+    assert.equal(process.exitCode, 3, "3 alone is still reported");
+  } finally {
+    process.exitCode = saved;
   }
 });
 
@@ -3555,6 +3626,33 @@ test("orch pr --merge --dry never preflights, authenticates, or shells out to gh
   await assert.rejects(
     () => runMainInRepo(d, ["pr", "abc", "--dry"], { preflight() {} }),
     /usage: orch pr <number>/,
+  );
+});
+
+// `orch completion install` writes ~/.orch/completion.bash — a real mutation,
+// like the ones above, that used to have no --dry escape hatch at all (the
+// schema declared `completion` with an empty flag list). Snapshot the real
+// target instead of a fixture: install writes under the real home directory
+// (schema.js/installCompletion take no repo/deps override), so the only safe
+// way to prove --dry touched nothing is to confirm that file is byte-identical
+// (or still absent) before and after, never to actually run the real branch.
+test("orch completion install --dry writes nothing", async () => {
+  const target = join(homedir(), ".orch", "completion.bash");
+  const before = existsSync(target) ? readFileSync(target, "utf8") : null;
+  const logs = await runMainCapture(["completion", "install", "--dry"]);
+  const after = existsSync(target) ? readFileSync(target, "utf8") : null;
+  assert.equal(after, before);
+  assert.match(logs.join("\n"), /orch \(dry\).*completion\.bash/);
+});
+
+test("--dry is only valid with 'orch completion install', not the bare print", async () => {
+  await assert.rejects(
+    () => runMainCapture(["completion", "--dry"]),
+    /--dry is only valid with 'orch completion install'/,
+  );
+  await assert.rejects(
+    () => runMainCapture(["completion", "bash", "--dry"]),
+    /--dry is only valid with 'orch completion install'/,
   );
 });
 

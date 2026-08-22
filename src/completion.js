@@ -32,6 +32,12 @@ const COMMAND_FLAG_CASES = Object.entries(COMMANDS)
   .filter(([cmd]) => cmd !== "agent")
   .map(([cmd, spec]) => `    ${cmd}) flags="${[...GLOBAL_FLAGS, ...spec.flags].flatMap(flagWords).join(" ")}" ;;`)
   .join("\n");
+// Static per-subcommand, not per-invocation: `agent add --build` legally
+// accepts the build-only flags (pr/author/reviewer, see validateAgentArgs in
+// schema.js), but completion has no notion of "already typed --build" and
+// always renders `agent add`'s narrower set — it under-offers rather than
+// ever offering a flag the parser would refuse, which is the property this
+// generator exists to guarantee.
 const AGENT_SUBCOMMAND_FLAG_CASES = Object.entries(SUBCOMMAND_FLAGS)
   .map(([key, flags]) => `      ${key.split(" ")[1]}) flags="${[...GLOBAL_FLAGS, ...flags].flatMap(flagWords).join(" ")}" ;;`)
   .join("\n");

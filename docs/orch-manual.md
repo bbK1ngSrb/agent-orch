@@ -1221,7 +1221,7 @@ before anything is pruned.
 concurrency: 4   # default
 ```
 
-An over-cap launch exits immediately (`exit 2`) rather than queueing:
+An over-cap launch exits immediately (`exit 3`) rather than queueing:
 
 ```
 orch: concurrency cap 4 reached — 5 cycles live; skipping pr/claude/<slug>-<sid>

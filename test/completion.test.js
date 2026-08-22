@@ -6,6 +6,13 @@ import { BASH_COMPLETION, installCompletion } from "../src/completion.js";
 import { main } from "../src/cli.js";
 import { COMMANDS, FLAGS, GLOBAL_FLAGS, SUBCOMMANDS, SUBCOMMAND_FLAGS } from "../src/schema.js";
 
+// complete() below shells out to a real `bash` to exercise the generated
+// script end to end (see its own comment). That binary isn't guaranteed on
+// Windows CI, unlike the POSIX shell stubs the rest of the suite relies on —
+// so every test that calls it is skipped there, same pattern as
+// tag-release-errexit.test.js.
+const BASH_SKIP = { skip: process.platform === "win32" ? "requires a real bash" : false };
+
 test("BASH_COMPLETION registers the completion function for orch", () => {
   assert.match(BASH_COMPLETION, /complete -F _orch_completion orch/);
 });
@@ -29,7 +36,7 @@ printf '%s\\n' "\${COMPREPLY[@]}"
     .filter(Boolean);
 }
 
-test("completion offers exactly the flags each command's schema declares", () => {
+test("completion offers exactly the flags each command's schema declares", BASH_SKIP, () => {
   // `agent` is excluded: its COMMANDS.flags is the add∪build union (needed by
   // the generic parser matrix test, which has no subcommand to key off), but
   // completion must not offer that union — see the dedicated test below.
@@ -61,7 +68,7 @@ test("completion offers exactly the flags each command's schema declares", () =>
 // which the parser refuses on `add` without `--build`. This is finding 8 for
 // the one command the generic per-command test above can't cover, because
 // `agent`'s own COMMANDS.flags entry is deliberately that same union.
-test("agent add and agent build completion do not offer each other's flags", () => {
+test("agent add and agent build completion do not offer each other's flags", BASH_SKIP, () => {
   for (const [key, flags] of Object.entries(SUBCOMMAND_FLAGS)) {
     const sub = key.split(" ")[1];
     const offered = new Set(complete(["orch", "agent", sub, ""], 3));
@@ -75,18 +82,18 @@ test("agent add and agent build completion do not offer each other's flags", () 
   }
 });
 
-test("completion offers every subcommand the schema declares", () => {
+test("completion offers every subcommand the schema declares", BASH_SKIP, () => {
   for (const [command, words] of Object.entries(SUBCOMMANDS)) {
     assert.deepEqual(complete(["orch", command, ""], 2).sort(), [...words].sort());
   }
 });
 
-test("completion offers nothing right after a value-taking flag", () => {
+test("completion offers nothing right after a value-taking flag", BASH_SKIP, () => {
   assert.deepEqual(complete(["orch", "task", "--author", ""], 3), []);
   assert.deepEqual(complete(["orch", "dashboard", "--limit", ""], 3), []);
 });
 
-test("completion finds the command word even when a flag precedes it", () => {
+test("completion finds the command word even when a flag precedes it", BASH_SKIP, () => {
   // parseArgs (and so orch itself) accepts options before positionals; the
   // completion script used to assume COMP_WORDS[1] was always the command.
   const offered = new Set(complete(["orch", "--dry", "pr", ""], 3));
@@ -94,7 +101,7 @@ test("completion finds the command word even when a flag precedes it", () => {
   assert.ok(!offered.has("--file"), "flag-before-command should not fall back to the global flag union");
 });
 
-test("completion at the command position offers every command and the global flags", () => {
+test("completion at the command position offers every command and the global flags", BASH_SKIP, () => {
   const offered = complete(["orch", ""], 1);
   for (const command of Object.keys(COMMANDS)) assert.ok(offered.includes(command), command);
   for (const name of GLOBAL_FLAGS) assert.ok(offered.includes(`--${name}`), name);
@@ -119,7 +126,7 @@ test("--help documents every flag the parser accepts", async () => {
   }
 });
 
-test("completion offers every command listed in --help", async () => {
+test("completion offers every command listed in --help", BASH_SKIP, async () => {
   // Names come from the Commands: block of printUsage(); "upgrade, update" is two.
   const documented = new Set(
     (await usage()).match(/\nCommands:\n([\s\S]*?)\n\n/)[1]

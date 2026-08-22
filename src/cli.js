@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
@@ -16,7 +17,7 @@ import * as notify from "./notify.js";
 import { acquireLock, releaseLock, acquireBlocking, isPaused } from "./lock.js";
 import { slugify } from "./slug.js";
 import { serve } from "./mcp.js";
-import { PARSE_OPTIONS, COMMAND_FLAGS, renderHelp, usageError, validate as validateFlags, validatePositionals } from "./schema.js";
+import { PARSE_OPTIONS, COMMAND_FLAGS, COMMANDS, renderHelp, usageError, validate as validateFlags, validatePositionals } from "./schema.js";
 
 const VERSION = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -931,6 +932,19 @@ export function fetchIssueWorkOrder(n, gh) {
   return v.workOrder;
 }
 
+// 2 (a cycle ran and did not agree) outranks 3 (capacity refusal, nothing ran)
+// when a single invocation's author fan-out sees both: a peer process can push
+// a later run over the cap after an earlier one already escalated, and
+// last-write-wins on process.exitCode would then report 3 — "safe to retry" —
+// hiding the escalation a caller actually needs to go review. Exported as a
+// pure function so the priority itself is unit-testable without racing a real
+// concurrent process to reproduce the mix.
+const EXIT_CODE_PRIORITY = { 2: 2, 3: 1 };
+export function raiseExitCode(code) {
+  const current = process.exitCode || 0;
+  if ((EXIT_CODE_PRIORITY[code] || 0) > (EXIT_CODE_PRIORITY[current] || 0)) process.exitCode = code;
+}
+
 // Register before a cycle starts so the cap counts this run as well. The caller
 // owns the exceeded-cap action because task fan-out skips while single runs throw.
 export function registerWithConcurrencyCap(orchDir, sid, meta, cfg, { onExceeded = () => {} } = {}) {
@@ -1149,6 +1163,16 @@ export async function main(argv, deps = {}) {
   // command, and a bad numeric/enum value — all exit 64, before anything runs.
   validateFlags(command, flags);
   validatePositionals(command, rest, flags);
+
+  // An unrecognised command used to fall through all the way to the bottom of
+  // this function, past the update-check network call and the GitHub App
+  // token mint below — so `orch bogsu` (a typo) still phoned home and minted
+  // a token before being refused. Reject it here, before either can fire.
+  // "__update-check-child" is an internal re-exec target (see below), never
+  // typed by a user, so it is exempt rather than added to the schema.
+  if (command && command !== "__update-check-child" && !COMMANDS[command]) {
+    throw usageError(`unknown command: ${command} (run 'orch help' for usage)`, { showUsage: true });
+  }
 
   // --help/--version describe the tool rather than run it, so they route
   // ahead of every command-specific branch — including `mcp`, whose dispatch
@@ -1516,7 +1540,7 @@ export async function main(argv, deps = {}) {
             console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
             // 3 = blocked by a policy/capacity limit, distinct from 2 (the cycle
             // ran and did not agree) — a caller can retry a 3, not a 2.
-            process.exitCode = 3;
+            raiseExitCode(3);
           } },
         );
         if (!accepted) {
@@ -1539,7 +1563,7 @@ export async function main(argv, deps = {}) {
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.prUrl) prUrls.push(result.prUrl);
         if (result.status === "escalated" || result.status === "merge-deferred") {
-          process.exitCode = 2;
+          raiseExitCode(2);
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
           if (!dry) commentOnIssue(result, run.branch, run.closes, deps.githubDeps || githubDeps);
@@ -1782,6 +1806,10 @@ export async function main(argv, deps = {}) {
 
   if (command === "completion") {
     if (rest[0] === "install") {
+      if (dryRun) {
+        console.log(`orch (dry): would write ${join(homedir(), ".orch", "completion.bash")}`);
+        return;
+      }
       const result = installCompletion();
       if (result.ok) {
         console.log(`orch: wrote completion script to ${result.path}`);

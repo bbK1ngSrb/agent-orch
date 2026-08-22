@@ -49,6 +49,25 @@ test("config is classified as a mutating command", () => {
   assert.equal(COMMANDS.config.mutates, true);
 });
 
+// `completion install` writes ~/.orch/completion.bash, so it needs --dry like
+// every other mutating command — but `completion` (bare, or `completion
+// bash`) only prints, and --dry there would be a silent no-op accepted by
+// validate() alone (it only checks flag membership, not which subcommand).
+// validatePositionals is where completion's subcommand shape is known, so the
+// install-only restriction lives there.
+test("--dry on 'orch completion' is only legal alongside install", () => {
+  assert.doesNotThrow(() => validatePositionals("completion", ["install"], { dry: true }));
+  assert.doesNotThrow(() => validatePositionals("completion", [], {}));
+  assert.throws(
+    () => validatePositionals("completion", [], { dry: true }),
+    (e) => e.exit === 64 && /--dry is only valid with 'orch completion install'/.test(e.message),
+  );
+  assert.throws(
+    () => validatePositionals("completion", ["bash"], { dry: true }),
+    (e) => e.exit === 64 && /--dry is only valid with 'orch completion install'/.test(e.message),
+  );
+});
+
 // `completion typo`, `dashboard extra`, `help extra`, `version extra` used to
 // run the command and ignore the extra argument. And a required positional
 // (a number, a branch, a name) used to be checked deep inside each command's

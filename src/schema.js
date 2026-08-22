@@ -144,7 +144,11 @@ export const COMMANDS = {
   },
   update: { mutates: true, flags: ["check", "dry"], rows: [] }, // alias, documented on upgrade's row
   completion: {
-    mutates: true, flags: [],
+    // `completion install` writes ~/.orch/completion.bash, so it needs --dry
+    // like every other mutating command. `completion [bash]` only prints —
+    // validatePositionals below rejects --dry there instead of letting it
+    // through as a silent no-op on the one subcommand it doesn't apply to.
+    mutates: true, flags: ["dry"],
     rows: [
       ["completion [bash]", "Print the bash completion script (default: bash)."],
       ["completion install", "Write the completion script to ~/.orch/completion.bash."],
@@ -281,8 +285,13 @@ export function validatePositionals(command, rest, flags) {
   if (rest.length > max) {
     throw usageError(`'orch ${command}' takes ${max === 0 ? "no arguments" : `at most ${max} argument${max === 1 ? "" : "s"}`} — got ${rest.length}: ${rest.join(" ")}`);
   }
-  if (command === "completion" && rest[0] && !SUBCOMMANDS.completion.includes(rest[0])) {
-    throw usageError(`unknown 'orch completion' target '${rest[0]}' (expected ${SUBCOMMANDS.completion.join(" or ")})`);
+  if (command === "completion") {
+    if (rest[0] && !SUBCOMMANDS.completion.includes(rest[0])) {
+      throw usageError(`unknown 'orch completion' target '${rest[0]}' (expected ${SUBCOMMANDS.completion.join(" or ")})`);
+    }
+    if (flags.dry && rest[0] !== "install") {
+      throw usageError("--dry is only valid with 'orch completion install' — 'orch completion' on its own only prints, it never writes");
+    }
   }
 }
 
