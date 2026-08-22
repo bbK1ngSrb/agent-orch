@@ -173,6 +173,24 @@ test("--until accepts only the mode that exists today", () => {
   assert.throws(() => validate("task", { until: "forever" }), /--until must be one of: once, ready, merged/);
 });
 
+// `orch review` audits an existing branch: the reviewed author is read off
+// the branch name and review never merges, so --author/--authors (who
+// authors) and --no-tidy (post-merge cleanup) have nothing to act on. RUN_FLAGS
+// used to be shared verbatim across task/issue/review/continue, so these
+// validated on review and silently did nothing — the same "declared but
+// inert" defect the schema exists to remove.
+test("orch review rejects --author/--authors/--no-tidy, which it cannot honour", () => {
+  for (const name of ["author", "authors", "no-tidy"]) {
+    const { flags } = parse(["review", ...sample(name)]);
+    assert.throws(() => validate("review", flags), (e) => e.exit === 64, `orch review --${name}`);
+  }
+  // --reviewer(s)/--cheap ARE honoured (they pick who audits) — still legal.
+  for (const name of ["reviewer", "reviewers", "cheap"]) {
+    const { flags } = parse(["review", ...sample(name)]);
+    assert.doesNotThrow(() => validate("review", flags), `orch review --${name}`);
+  }
+});
+
 test("an unknown option is a usage error, not a raw parseArgs crash", () => {
   assert.throws(
     () => parse(["task", "x", "--nope"]),
@@ -187,6 +205,23 @@ test("an unknown command exits 64 and asks for the usage text", async () => {
     await assert.rejects(
       () => main(["tsk", "x"], { preflight() {} }),
       (e) => e.exit === 64 && e.showUsage === true && /unknown command: tsk/.test(e.message),
+    );
+  } finally {
+    chdir(prev);
+  }
+});
+
+// A flag with no command at all (`orch --merge`) used to fall through
+// main()'s no-command branch, print the usage text, and exit 0 — the flag
+// was silently dropped rather than refused, same "declared but inert" family
+// as every other finding in this file.
+test("a flag with no command is a usage error, not a silent no-op", async () => {
+  const prev = cwd();
+  chdir(mkdtempSync(join(tmpdir(), "orch-schema-bare-flag-")));
+  try {
+    await assert.rejects(
+      () => main(["--merge"], { preflight() {} }),
+      (e) => e.exit === 64 && /--merge requires a command/.test(e.message),
     );
   } finally {
     chdir(prev);

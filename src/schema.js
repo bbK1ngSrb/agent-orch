@@ -221,7 +221,22 @@ function validateValue(name, raw) {
 export function validate(command, flags) {
   const effective = flags.help ? "help" : flags.version ? "version" : command;
   const spec = COMMANDS[effective];
-  if (!spec) return;
+  if (!spec) {
+    // No command at all (bare `orch --merge`) used to fall through main()'s
+    // no-command branch and print usage with exit 0 — the flag was silently
+    // dropped rather than refused. A flag needs a command to be legal on.
+    if (!effective) {
+      for (const name of Object.keys(flags)) {
+        if (GLOBAL_FLAGS.includes(name)) continue;
+        const valid = Object.keys(COMMANDS).filter((c) => COMMANDS[c].flags.includes(name));
+        throw usageError(
+          `--${name} requires a command` +
+          (valid.length ? ` — only with: ${valid.map((c) => `orch ${c}`).join(", ")}` : " — it is not a flag of any command"),
+        );
+      }
+    }
+    return;
+  }
   for (const [name, value] of Object.entries(flags)) {
     if (GLOBAL_FLAGS.includes(name) || spec.flags.includes(name)) {
       if (value !== true && value !== false) validateValue(name, value);

@@ -107,6 +107,15 @@ test("completion at the command position offers every command and the global fla
   for (const name of GLOBAL_FLAGS) assert.ok(offered.includes(`--${name}`), name);
 });
 
+// A bare "--" is parseArgs' end-of-options marker (same convention as
+// getopt): nothing typed after it is ever read as a flag. Completion used to
+// ignore it and keep suggesting flags past it, actively recommending input
+// the parser would only ever treat as a plain positional.
+test("completion offers nothing after a bare --", BASH_SKIP, () => {
+  assert.deepEqual(complete(["orch", "task", "--", ""], 3), []);
+  assert.deepEqual(complete(["orch", "--", ""], 2), []);
+});
+
 async function usage() {
   const logs = [];
   const orig = console.log;

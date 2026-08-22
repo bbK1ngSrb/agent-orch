@@ -61,6 +61,18 @@ _orch_completion() {
       ;;
   esac
 
+  # A bare "--" (parseArgs' end-of-options marker, same as getopt's) means
+  # nothing after it is ever read as a flag — the parser would only ever see
+  # it as a positional. Offering flags past it suggests input the command
+  # would silently treat as a plain argument instead of the option it looks
+  # like.
+  for ((i = 1; i < COMP_CWORD; i++)); do
+    if [[ "\${COMP_WORDS[\${i}]}" == "--" ]]; then
+      COMPREPLY=()
+      return 0
+    fi
+  done
+
   local commands="${COMMAND_WORDS}"
   local global_flags="${GLOBAL_FLAG_WORDS}"
 

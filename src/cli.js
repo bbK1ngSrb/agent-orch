@@ -1806,11 +1806,12 @@ export async function main(argv, deps = {}) {
 
   if (command === "completion") {
     if (rest[0] === "install") {
+      const home = deps.completionDeps?.homedir ? deps.completionDeps.homedir() : homedir();
       if (dryRun) {
-        console.log(`orch (dry): would write ${join(homedir(), ".orch", "completion.bash")}`);
+        console.log(`orch (dry): would write ${join(home, ".orch", "completion.bash")}`);
         return;
       }
-      const result = installCompletion();
+      const result = installCompletion(deps.completionDeps);
       if (result.ok) {
         console.log(`orch: wrote completion script to ${result.path}`);
         console.log(`orch: add this line to your ~/.bashrc to enable it:`);

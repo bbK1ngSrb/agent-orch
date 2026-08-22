@@ -2383,6 +2383,47 @@ test("completed review cycle clears its checkpoint (no false interrupted entry)"
   assert.deepEqual(leftover, []); // ...and the completed run cleared it
 });
 
+// `review` shares task/issue's dry-run mechanism (dryDeps() instead of the
+// real cycle deps), but had no dedicated regression test of its own — every
+// mutating command in the schema needs one, not just the ones this slice
+// touched directly.
+test("orch review --dry never preflights or shells out to a real cycle", async () => {
+  const repo = initGitRepo("orch-review-dry-");
+  gitDep.git(["branch", "pr/claude/some-fix"], repo);
+  const logs = await runMainInRepo(repo, ["review", "pr/claude/some-fix", "--dry"], {
+    preflight() { assert.fail("preflight ran on a dry run"); },
+  });
+  assert.match(logs.join("\n"), /orch \(dry\)/);
+  const dir = join(repo, ".orch", "checkpoints");
+  assert.equal(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")).length : 0, 0);
+});
+
+// The schema's own matrix test (schema.test.js) derives its expectations from
+// FLAGS/COMMANDS, so it can't catch a regression in those declarations
+// themselves — delete --allow-large-scope from the schema and that test gets
+// shorter and stays green. This anchors the flag to real, observed behavior
+// instead: a live `orch task` cycle, through the real parser and engine, with
+// only the adapter faked, and asserts the reviewer actually receives
+// allowLargeScope on its audit() call.
+test("orch task --allow-large-scope reaches the reviewer's audit call", async () => {
+  const repo = initGitRepo("orch-task-allow-large-scope-");
+  let auditOpts = null;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { return { usage: {} }; },
+        async audit(_branch, _worktree, opts) { auditOpts = opts; return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["task", "some task", "--allow-large-scope"], { cycleDeps, finishRun: async () => {} });
+  assert.ok(auditOpts, "audit() was never called");
+  assert.equal(auditOpts.allowLargeScope, true);
+  assert.match(logs.join("\n"), /merged/);
+});
+
 test("orch continue <sid> resumes from checkpoint, past review, without re-authoring", async () => {
   const repo = initGitRepo("orch-continue-");
   const sid = "deadbeef";
@@ -2416,6 +2457,31 @@ test("orch continue <sid> resumes from checkpoint, past review, without re-autho
   assert.deepEqual(finishCalls[0].merged, [branch]);
   const ck = checkpointDep.lookup(join(repo, ".orch"), sid);
   assert.equal(ck, null); // completed run clears its checkpoint
+});
+
+// `continue`'s dry-run guard uses the same `dry ? dryDeps() : ...` switch as
+// task/issue/review, but nothing exercised it directly for this command — a
+// mutating command needs its own regression, not a inference from a sibling
+// command's test.
+test("orch continue <sid> --dry does not merge or clear the checkpoint", async () => {
+  const repo = initGitRepo("orch-continue-dry-");
+  const sid = "deadbeef";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  const logs = await runMainInRepo(repo, ["continue", sid, "--dry"], {
+    preflight() { assert.fail("preflight ran on a dry run"); },
+  });
+
+  assert.match(logs.join("\n"), /orch \(dry\)/);
+  const ck = checkpointDep.lookup(join(repo, ".orch"), sid);
+  assert.ok(ck, "a dry run must not clear the checkpoint it did not act on");
 });
 
 test("orch continue <sid> re-runs an interrupted author whose tip is a WIP commit", async () => {
@@ -3631,18 +3697,29 @@ test("orch pr --merge --dry never preflights, authenticates, or shells out to gh
 
 // `orch completion install` writes ~/.orch/completion.bash — a real mutation,
 // like the ones above, that used to have no --dry escape hatch at all (the
-// schema declared `completion` with an empty flag list). Snapshot the real
-// target instead of a fixture: install writes under the real home directory
-// (schema.js/installCompletion take no repo/deps override), so the only safe
-// way to prove --dry touched nothing is to confirm that file is byte-identical
-// (or still absent) before and after, never to actually run the real branch.
+// schema declared `completion` with an empty flag list). cli.js's dispatch
+// takes a `completionDeps.homedir` override (threaded to installCompletion),
+// so the test points it at a throwaway tmpdir instead of the real home
+// directory — a test whose safety depended on the dry-run guard never
+// regressing (comparing a snapshot of the real file) could corrupt the
+// developer's actual ~/.orch/completion.bash the moment that guard broke.
 test("orch completion install --dry writes nothing", async () => {
-  const target = join(homedir(), ".orch", "completion.bash");
-  const before = existsSync(target) ? readFileSync(target, "utf8") : null;
-  const logs = await runMainCapture(["completion", "install", "--dry"]);
-  const after = existsSync(target) ? readFileSync(target, "utf8") : null;
-  assert.equal(after, before);
+  const home = mkdtempSync(join(tmpdir(), "orch-completion-home-"));
+  const target = join(home, ".orch", "completion.bash");
+  const logs = await runMainCapture(["completion", "install", "--dry"], {
+    completionDeps: { homedir: () => home },
+  });
+  assert.equal(existsSync(target), false);
   assert.match(logs.join("\n"), /orch \(dry\).*completion\.bash/);
+});
+
+test("orch completion install writes the script under the given home directory", async () => {
+  const home = mkdtempSync(join(tmpdir(), "orch-completion-home-"));
+  const target = join(home, ".orch", "completion.bash");
+  await runMainCapture(["completion", "install"], {
+    completionDeps: { homedir: () => home },
+  });
+  assert.equal(existsSync(target), true);
 });
 
 test("--dry is only valid with 'orch completion install', not the bare print", async () => {
