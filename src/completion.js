@@ -48,6 +48,9 @@ const COMPLETION_ALL_FLAGS = [...GLOBAL_FLAGS, ...COMMANDS.completion.flags].fla
 const AGENT_SUBCOMMAND_FLAG_CASES = Object.entries(SUBCOMMAND_FLAGS)
   .map(([key, flags]) => `      ${key.split(" ")[1]}) flags="${[...GLOBAL_FLAGS, ...flags].flatMap(flagWords).join(" ")}" ;;`)
   .join("\n");
+// `agent add --build` legally accepts the build-only flags too (validateAgentArgs
+// in schema.js) — COMMANDS.agent.flags is already declared as that exact union.
+const AGENT_ADD_WITH_BUILD_FLAGS = [...GLOBAL_FLAGS, ...COMMANDS.agent.flags].flatMap(flagWords).join(" ");
 const SUBCOMMAND_CASES = Object.entries(SUBCOMMANDS).map(([cmd, words]) => `    ${cmd})
       COMPREPLY=( $(compgen -W "${words.join(" ")}" -- "\${cur}") )
       return 0
@@ -118,10 +121,47 @@ ${SUBCOMMAND_CASES}
 
   local flags=""
   if [[ "\${cmd}" == "agent" ]]; then
-    case "\${COMP_WORDS[\$((cmd_index + 1))]}" in
+    # The subcommand ("add"/"build") isn't always the very next word — a
+    # global flag can precede it ("orch agent --dry <TAB>" must still offer
+    # "add build", not the global-flag fallback). Find it the same way the
+    # command word itself was found above, skipping flags (and value-taking
+    # flags' values) rather than assuming a fixed position.
+    local sub="" sub_index=0
+    i=$((cmd_index + 1))
+    while [[ \${i} -lt \${COMP_CWORD} ]]; do
+      w="\${COMP_WORDS[\${i}]}"
+      if [[ "\${w}" == -* ]]; then
+        case "\${w}" in
+          ${VALUE_FLAG_PATTERN})
+            i=$((i + 1))
+            ;;
+        esac
+      else
+        sub="\${w}"
+        sub_index=\${i}
+        break
+      fi
+      i=$((i + 1))
+    done
+    if [[ -z "\${sub}" ]]; then
+      COMPREPLY=( $(compgen -W "add build" -- "\${cur}") )
+      return 0
+    fi
+    case "\${sub}" in
 ${AGENT_SUBCOMMAND_FLAG_CASES}
       *) flags="\${global_flags}" ;;
     esac
+    # "agent add --build" accepts the build-only flags too (--pr, author/
+    # reviewer overrides, --allow-large-scope) — offer them once --build has
+    # actually been typed, not before (validateAgentArgs, schema.js).
+    if [[ "\${sub}" == "add" ]]; then
+      for ((i = sub_index + 1; i < COMP_CWORD; i++)); do
+        if [[ "\${COMP_WORDS[\${i}]}" == "--build" ]]; then
+          flags="${AGENT_ADD_WITH_BUILD_FLAGS}"
+          break
+        fi
+      done
+    fi
   elif [[ "\${cmd}" == "completion" ]]; then
     if [[ "\${COMP_WORDS[\$((cmd_index + 1))]}" == "install" ]]; then
       flags="${COMPLETION_ALL_FLAGS}"

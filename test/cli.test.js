@@ -236,6 +236,43 @@ test("unknown command is rejected before the GitHub App auth mint runs", async (
   }
 });
 
+// --dry promises to "plan without shelling out or changing git" (schema.js),
+// but the GitHub App auth mint used to run unconditionally ahead of every
+// command — even a dry run shelled out to `git remote get-url origin` and
+// phoned GitHub for an installation token. Same non-git-dir probe as the
+// unknown-command test above: no stderr means the mint was never attempted.
+test("--dry skips the GitHub App auth mint", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-dry-no-auth-"));
+  const prev = cwd();
+  const prevEnv = {
+    GH_TOKEN: process.env.GH_TOKEN,
+    ORCH_APP_ID: process.env.ORCH_APP_ID,
+    ORCH_APP_PRIVATE_KEY: process.env.ORCH_APP_PRIVATE_KEY,
+  };
+  const prevStderrWrite = process.stderr.write;
+  let stderr = "";
+  chdir(d);
+  delete process.env.GH_TOKEN;
+  process.env.ORCH_APP_ID = "1";
+  process.env.ORCH_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx";
+  process.stderr.write = (chunk, ...args) => {
+    stderr += String(chunk);
+    if (typeof args[args.length - 1] === "function") args[args.length - 1]();
+    return true;
+  };
+  try {
+    await main(["init", "--dry"], { preflight() {} });
+    assert.equal(stderr, "", "GitHub App auth must not be attempted on a dry run");
+  } finally {
+    process.stderr.write = prevStderrWrite;
+    chdir(prev);
+    for (const [k, v] of Object.entries(prevEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
 test("main prints startup banner for task runs on TTY", async () => {
   let out = "";
   await runMainCapture(["task", "hello world", "--dry"], {
@@ -374,6 +411,25 @@ test("ORCH_DRYRUN=1 is honored by upgrade and config, not just --dry", async () 
     if (prev === undefined) delete process.env.ORCH_DRYRUN;
     else process.env.ORCH_DRYRUN = prev;
   }
+});
+
+// `config` mutates (runConfigWizard writes orch.yml), so --dry belongs on it
+// like every other write command — it used to be rejected as "not valid with
+// 'orch config'" even though cli.js already had a dry handler for it.
+test("orch config --dry prints the plan and never runs the wizard", async () => {
+  let logged = "";
+  const prevLog = console.log;
+  console.log = (chunk = "") => { logged += `${chunk}\n`; };
+  try {
+    await main(["config", "--dry"], {
+      preflight() {},
+      stdin: {}, stdout: {},
+      inputStart: () => assert.fail("config wizard ran despite --dry"),
+    });
+  } finally {
+    console.log = prevLog;
+  }
+  assert.match(logged, /orch \(dry\): would run the interactive config wizard/);
 });
 
 test("help documents upgrade command and check flag", async () => {
@@ -1011,10 +1067,28 @@ test("--cheap without cheap.role configured throws", () => {
   assert.throws(() => applyCheapOverride(cfg, { cheap: true }), /cheap.role must be set/);
 });
 
-test("--cheap combined with --author throws", () => {
+test("--cheap combined with --author throws a usage error (exit 64), not a bare Error (exit 1)", () => {
   const cfg = { cheap: { role: "qwen3-coder-30b", paths: [] } };
-  assert.throws(() => applyCheapOverride(cfg, { cheap: true, author: "claude", reviewer: "codex" }),
-    /cannot be combined/);
+  assert.throws(
+    () => applyCheapOverride(cfg, { cheap: true, author: "claude", reviewer: "codex" }),
+    (e) => e.exit === 64 && /cannot be combined/.test(e.message),
+  );
+});
+
+test("--author and --authors together throws instead of silently dropping --author", () => {
+  const cfg = { agents: ["claude", "codex"] };
+  assert.throws(
+    () => applyRoleOverrides(cfg, { author: "claude", authors: "claude,codex", reviewer: "codex" }),
+    (e) => e.exit === 64 && /--author or --authors, not both/.test(e.message),
+  );
+});
+
+test("--reviewer and --reviewers together throws instead of silently dropping --reviewer", () => {
+  const cfg = { agents: ["claude", "codex"] };
+  assert.throws(
+    () => applyRoleOverrides(cfg, { author: "claude", reviewer: "codex", reviewers: "codex,claude" }),
+    (e) => e.exit === 64 && /--reviewer or --reviewers, not both/.test(e.message),
+  );
 });
 
 test("cheap auto-routes when a work order's suspected_paths all match cheap.paths", () => {
@@ -1615,9 +1689,9 @@ test("a flag not read by the command is rejected", async () => {
     [["issue", "1", "--file", "f"], /--file is not valid with 'orch issue'/],
     // Read-only commands get the sharper message: --dry cannot "plan" a command
     // that changes nothing. `config` is NOT one of these — runConfigWizard
-    // writes .orch/orch.yml, so it is a mutating command and --dry is simply
-    // not one of its flags (the generic message), not "changes nothing".
-    [["config", "--dry"], /--dry is not valid with 'orch config'/],
+    // writes .orch/orch.yml, so it is a mutating command; --dry IS one of its
+    // flags (see "orch config --dry prints the plan..." below) rather than
+    // being rejected outright.
     [["dashboard", "--dry"], /--dry has no effect on 'orch dashboard'/],
   ];
   for (const [argv, message] of cases) {

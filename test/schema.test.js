@@ -206,6 +206,32 @@ test("orch review rejects --author/--authors/--no-tidy, which it cannot honour",
   }
 });
 
+// `orch pr` audits an existing GitHub PR's author — applyRoleOverrides is
+// called with allowReviewerOnly, so runPr only ever reads --reviewer(s). A
+// passed --author was silently ignored while runPr assigned the reviewer as
+// authorName, which reads to a human as "I set the author" doing nothing.
+test("orch pr rejects --author/--authors, which it cannot honour", () => {
+  for (const name of ["author", "authors"]) {
+    const { flags } = parse(["pr", ...sample(name)]);
+    assert.throws(() => validate("pr", flags), (e) => e.exit === 64, `orch pr --${name}`);
+  }
+  for (const name of ["reviewer", "reviewers"]) {
+    const { flags } = parse(["pr", ...sample(name)]);
+    assert.doesNotThrow(() => validate("pr", flags), `orch pr --${name}`);
+  }
+});
+
+// `task --file` intake is untrusted (§3a/§3b) and used to be cross-validated
+// deep inside the `task` handler, after main() had already minted a GitHub
+// App token for a run that was about to be refused anyway. validatePositionals
+// runs before any of that.
+test("orch task --file plus a positional is rejected before dispatch", () => {
+  assert.throws(
+    () => validatePositionals("task", ["stray"], { file: "wo.json" }),
+    (e) => e.exit === 64 && /takes no positional task text/.test(e.message),
+  );
+});
+
 test("an unknown option is a usage error, not a raw parseArgs crash", () => {
   assert.throws(
     () => parse(["task", "x", "--nope"]),

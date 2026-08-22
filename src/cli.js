@@ -437,6 +437,15 @@ function configuredReviewers(cfg) {
 }
 
 export function applyRoleOverrides(cfg, flags, opts = {}) {
+  // --author + --authors (or --reviewer + --reviewers) together used to pick
+  // the plural silently and drop the singular — a value the user typed had no
+  // effect and no error told them so. Reject the combination instead.
+  if (flags.author != null && flags.authors != null) {
+    throw usageError("set --author or --authors, not both");
+  }
+  if (flags.reviewer != null && flags.reviewers != null) {
+    throw usageError("set --reviewer or --reviewers, not both");
+  }
   const authorValue = flags.authors ?? flags.author;
   const reviewerValue = flags.reviewers ?? flags.reviewer;
   if (authorValue == null && reviewerValue != null && opts.allowReviewerOnly) {
@@ -467,7 +476,7 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
 export function applyCheapOverride(cfg, flags, workOrder = null) {
   const explicitRoles = Boolean(flags.author || flags.authors || flags.reviewer || flags.reviewers);
   if (flags.cheap) {
-    if (explicitRoles) throw new Error("--cheap cannot be combined with --author/--authors/--reviewer/--reviewers");
+    if (explicitRoles) throw usageError("--cheap cannot be combined with --author/--authors/--reviewer/--reviewers");
     if (!cfg.cheap.role) throw new Error("orch.yml: cheap.role must be set to use --cheap");
     return { ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] };
   }
@@ -1219,7 +1228,11 @@ export async function main(argv, deps = {}) {
   // orch[bot]. Falls back to ambient `gh auth` when unset or on any failure —
   // never a hard dependency. An explicit GH_TOKEN wins and skips minting.
   // ponytail: process.env mutation at the CLI entrypoint; the lazy correct wiring.
-  const appCreds = !process.env.GH_TOKEN && appCredsFromEnv();
+  // Skipped on a dry run: --dry promises to "plan without shelling out or
+  // changing git" (schema.js), but minting a token still shelled out to `git
+  // remote get-url` and phoned home to GitHub — a real side effect a dry run
+  // must not have, regardless of which command asked for it.
+  const appCreds = !dryRun && !process.env.GH_TOKEN && appCredsFromEnv();
   if (appCreds) {
     try {
       const origin = git.gitTry(["remote", "get-url", "origin"], repo);
@@ -1398,9 +1411,8 @@ export async function main(argv, deps = {}) {
       // trusted) is unchanged. `task` stays a short human label (drives slug/resume);
       // `authorPrompt` is what the author actually sees.
       if (flags.file) {
-        // A stray positional next to --file is ambiguous (two task sources);
-        // reject it instead of silently dropping the typed text.
-        if (rest.length) throw usageError("orch task --file takes no positional task text — put the task in the work-order file");
+        // validatePositionals (schema.js) already rejects a stray positional
+        // next to --file (ambiguous: two task sources) before main() gets here.
         const wo = parseWorkOrderFile(flags.file);
         task = wo.title;
         authorPrompt = buildAuthorPrompt(wo);

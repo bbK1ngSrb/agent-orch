@@ -79,13 +79,12 @@ export const COMMANDS = {
     mutates: true, flags: ["config-file", "dry", "link"],
     rows: [["init", "Scaffold .orch/orch.yml and .orch/ORCH.md."]],
   },
-  // Mutating: runConfigWizard creates .orch/ and writes orch.yml. It is not
-  // read-only, so --dry cannot be waved off with the generic "changes
-  // nothing" message that `mutates: false` produces — that message would be a
-  // lie for this command. --dry isn't in this command's own flags either, so
-  // typing it still fails, just with the honest "not valid with" message.
+  // Mutating: runConfigWizard creates .orch/ and writes orch.yml. cli.js
+  // already has a --dry handler for it (prints what it would write instead of
+  // running the wizard) — --dry belongs in this command's own flags so that
+  // handler is reachable instead of being rejected before it ever runs.
   config: {
-    mutates: true, flags: ["config-file"],
+    mutates: true, flags: ["config-file", "dry"],
     rows: [["config", "Interactively create or edit an orch YAML config."]],
   },
   agent: {
@@ -122,8 +121,13 @@ export const COMMANDS = {
     mutates: true, flags: RUN_FLAGS.filter((f) => !["no-banner", "author", "authors"].includes(f)),
     rows: [["continue <sid>", "Resume an interrupted/stalled cycle from its checkpoint."]],
   },
+  // No --author/--authors: runPr only ever reads --reviewer(s) (it audits an
+  // existing PR's author, it never assigns one) — applyRoleOverrides is
+  // called with allowReviewerOnly, so a passed --author was silently ignored
+  // while runPr assigned the reviewer as authorName. Accepting the flag was
+  // the exact "nobody read your flag" lie this schema exists to remove.
   pr: {
-    mutates: true, flags: ["config-file", "dry", "merge", "until", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
+    mutates: true, flags: ["config-file", "dry", "merge", "until", "allow-large-scope", "reviewer", "reviewers"],
     rows: [["pr <number>", "Review a GitHub PR; add --merge to merge if approved."]],
   },
   release: {
@@ -315,6 +319,13 @@ export function validatePositionals(command, rest, flags) {
   // it before any of that runs.
   if ((command === "issue" || command === "pr") && !/^\d+$/.test(String(rest[0]))) {
     throw usageError(usage);
+  }
+  // `task --file` plus a positional is ambiguous (two task sources) and used
+  // to be rejected deep inside the `task` handler, after the same GitHub App
+  // auth mint above had already fired. Checking it here, before dispatch,
+  // rejects it before any of that runs.
+  if (command === "task" && flags.file && rest.length) {
+    throw usageError("orch task --file takes no positional task text — put the task in the work-order file");
   }
 }
 

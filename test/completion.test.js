@@ -85,6 +85,26 @@ test("agent add and agent build completion do not offer each other's flags", BAS
   }
 });
 
+// `orch agent --dry <TAB>` used to fall through to the global-flag fallback:
+// the subcommand-flag lookup assumed "add"/"build" always sat immediately
+// after "agent", so a global flag typed first (legal — parseArgs allows
+// options before positionals) hid it from the lookup entirely.
+test("orch agent --dry completion still offers add/build, not just global flags", BASH_SKIP, () => {
+  const offered = complete(["orch", "agent", "--dry", ""], 3);
+  assert.deepEqual(offered.sort(), [...SUBCOMMANDS.agent].sort());
+});
+
+// `orch agent add --build` legally accepts the build-only flags too
+// (validateAgentArgs, schema.js) — completion used to always render `agent
+// add`'s narrower static flag set regardless of whether --build had already
+// been typed, so `--pr` never appeared even though the parser would accept it.
+test("orch agent add --build completion offers the build-only flags", BASH_SKIP, () => {
+  const offered = new Set(complete(["orch", "agent", "add", "--build", ""], 4));
+  for (const name of SUBCOMMAND_FLAGS["agent build"]) {
+    assert.ok(offered.has(`--${name}`), `orch agent add --build completion missing --${name}`);
+  }
+});
+
 // `orch completion bash --dry` used to be offered by tab-completion and then
 // refused by the parser (schema.js's validatePositionals: --dry only applies
 // to `completion install`, since `completion [bash]` only prints). This is
