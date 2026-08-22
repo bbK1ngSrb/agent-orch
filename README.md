@@ -183,6 +183,8 @@ on top of `orch.yml` for one run; `--no-banner` suppresses the startup banner;
 `--allow-protected` runs a `task`/`issue` whose work order text names a protected path
 (orch's guardrail denylist), which intake otherwise refuses before the cycle starts —
 see the manual §2.14.
+`--allow-large-scope` explicitly sanctions a deliberately large review slice for the
+current run; `orch continue <sid>` requires the flag again.
 
 ## Config (`.orch/orch.yml`, all optional)
 See `orch.example.yml`. Most repos need no config. A bare `orch.yml` at the

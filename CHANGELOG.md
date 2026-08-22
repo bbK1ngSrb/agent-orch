@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.329 — 2026-08-22
+- The reviewer never receives the work order, so it cannot check a change against its requirement — and its unconditional ~3-logical-change rule blocks any planned large slice (closes [#535](https://github.com/bbk1ng/agent-orch/issues/535))
+
 ## v0.4.328 — 2026-08-19
 - Cycles are authored against main but land on orch/integration, so parallel work never sees already-integrated changes (closes [#515](https://github.com/bbk1ng/agent-orch/issues/515))
 

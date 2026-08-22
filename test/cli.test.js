@@ -2412,6 +2412,7 @@ test("orch continue <sid> reuses the persisted author/reviewer model+effort by d
     branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
     author: { agent: "claude", model: "claude-opus-4-8", effort: "high" },
     reviewers: [{ agent: "codex", model: "gpt-5.1", effort: null }],
+    allowLargeScope: true,
   });
 
   const auditOpts = [];
@@ -2433,6 +2434,7 @@ test("orch continue <sid> reuses the persisted author/reviewer model+effort by d
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
   assert.equal(auditOpts.length, 1);
   assert.equal(auditOpts[0].model, "gpt-5.1"); // persisted reviewer model, not a re-resolved default
+  assert.equal(auditOpts[0].allowLargeScope, false); // legacy persisted sanction is not reused
 });
 
 // Codex review: preflight used to validate the FULL current orch.yml (its
@@ -2785,16 +2787,17 @@ test("orch continue <sid> resumes a died-before-checkpoint run via a dead-pid in
   gitDep.git(["checkout", "main"], repo);
 
   const DEAD_PID = 999999999; // above PID_MAX_LIMIT — process.kill(pid, 0) throws ESRCH
-  inflight.register(join(repo, ".orch"), sid, { branch, pid: DEAD_PID, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+  inflight.register(join(repo, ".orch"), sid, { branch, pid: DEAD_PID, baseSha: gitDep.git(["rev-parse", "main"], repo), allowLargeScope: true });
 
   let authorCalls = 0;
+  let auditOpts = null;
   const cycleDeps = {
     ...fakeCycleDeps(),
     adapters: {
       get: (name) => ({
         name,
         async author() { authorCalls++; return { usage: {} }; },
-        async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
+        async audit(_branch, _worktree, opts) { auditOpts = opts; return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; },
       }),
     },
   };
@@ -2802,6 +2805,7 @@ test("orch continue <sid> resumes a died-before-checkpoint run via a dead-pid in
     { cycleDeps, finishRun: async () => {} });
 
   assert.equal(authorCalls, 0); // resumed via the inflight record, not a fresh author round
+  assert.equal(auditOpts.allowLargeScope, false); // legacy inflight sanction is not reused
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 

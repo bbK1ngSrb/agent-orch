@@ -14,7 +14,7 @@ _orch_completion() {
   cur="\${COMP_WORDS[COMP_CWORD]}"
 
   local commands="init config agent task issue review pr release continue dashboard mcp upgrade update completion version help"
-  local flags="-h --help --version --author --authors --reviewer --reviewers --cheap --file --config-file --allow-protected --dry --check --link --no-banner --no-tidy --json --limit --check-history --once --plain --refresh-ms --merge --pr"
+  local flags="-h --help --version --author --authors --reviewer --reviewers --cheap --file --config-file --allow-protected --allow-large-scope --dry --check --link --no-banner --no-tidy --json --limit --check-history --once --plain --refresh-ms --merge --pr"
 
   if [[ \${COMP_CWORD} -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "\${commands}" -- "\${cur}") )
