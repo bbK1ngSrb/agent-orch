@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { buildArgs as agyArgs } from "../src/adapters/agy.js";
@@ -26,6 +26,7 @@ import {
   appendCapturedOutput,
   capturedOutputText,
 } from "../src/adapters/cli-adapter.js";
+import { branchExists, createTaskBranch, git, pruneWorktree, reclaimOrphanWorktrees } from "../src/git.js";
 
 // Fake-agent fixtures spawn `node -e <script>` instead of `sh -c <script>`.
 // A shell (and printf/cat/trap/exit) is POSIX-only — this repo's own CI
@@ -798,6 +799,89 @@ test("author commits worktree changes the agent left uncommitted", async () => {
   const head = g("log", "--oneline").trim().split("\n");
   assert.equal(head.length, 2, "author should add exactly one commit");
   assert.match(g("show", "--stat", "HEAD"), /NEWFILE/);
+});
+
+test("failed author captures dirty work in a partial WIP commit", async () => {
+  const wd = mkdtempSync(join(tmpdir(), "orch-author-wip-"));
+  const g = (...a) => execFileSync("git", a, { cwd: wd, encoding: "utf8" });
+  g("init", "-q", "-b", "main");
+  g("config", "user.email", "t@t");
+  g("config", "user.name", "t");
+  g("commit", "--allow-empty", "-q", "-m", "base");
+  const adapter = makeCliAdapter({
+    name: "writer",
+    bin: process.execPath,
+    buildArgs: () => [...nodeScript("require('fs').writeFileSync(process.argv[1], 'partial'); process.exit(2)"), join(wd, "PARTIAL")],
+  });
+
+  await assert.rejects(() => adapter.author("do work", wd), /Command failed/);
+  assert.equal(g("log", "-1", "--format=%s").trim(), "wip(author): partial work before agent failure");
+  assert.match(g("show", "--stat", "HEAD"), /PARTIAL/);
+});
+
+test("failed author creates an empty WIP marker only when work already exists beyond base", async () => {
+  const wd = mkdtempSync(join(tmpdir(), "orch-author-empty-wip-"));
+  const g = (...a) => execFileSync("git", a, { cwd: wd, encoding: "utf8" });
+  g("init", "-q", "-b", "main");
+  g("config", "user.email", "t@t");
+  g("config", "user.name", "t");
+  g("commit", "--allow-empty", "-q", "-m", "base");
+  g("checkout", "-q", "-b", "work");
+  const adapter = makeCliAdapter({
+    name: "noop",
+    bin: process.execPath,
+    buildArgs: () => nodeScript("process.exit(2)"),
+  });
+
+  await assert.rejects(() => adapter.author("do work", wd, { baseBranch: "main" }), /Command failed/);
+  assert.equal(g("rev-list", "--count", "main..HEAD").trim(), "0", "zero-work branch stays at base");
+
+  writeFileSync(join(wd, "existing.txt"), "work\n");
+  g("add", ".");
+  g("commit", "-q", "-m", "existing work");
+  await assert.rejects(() => adapter.author("continue work", wd, { baseBranch: "main" }), /Command failed/);
+  assert.equal(g("rev-list", "--count", "main..HEAD").trim(), "2");
+  assert.equal(g("log", "-1", "--format=%s").trim(), "wip(author): partial work before agent failure");
+  assert.equal(g("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").trim(), "", "WIP marker is empty");
+});
+
+test("capture failure remains recoverable after a later orphan reclamation", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-author-capture-fail-"));
+  git(["init", "-b", "main"], repo);
+  git(["config", "user.email", "t@t"], repo);
+  git(["config", "user.name", "t"], repo);
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  git(["add", "."], repo);
+  git(["commit", "-m", "base"], repo);
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_writer_capture");
+  createTaskBranch(repo, wt, "pr/writer/capture", "main", "999999999\ncapture-1");
+  const hooksDir = join(repo, ".git", "hooks");
+  mkdirSync(hooksDir, { recursive: true });
+  const hook = join(hooksDir, "pre-commit");
+  writeFileSync(hook, "#!/bin/sh\nexit 1\n");
+  chmodSync(hook, 0o755);
+  const adapter = makeCliAdapter({
+    name: "writer",
+    bin: process.execPath,
+    buildArgs: () => [...nodeScript("require('fs').writeFileSync(process.argv[1], 'recover me'); process.exit(2)"), join(wt, "RECOVERABLE")],
+  });
+
+  const error = await adapter.author("do work", wt, { baseBranch: "main" }).then(
+    () => null,
+    (caught) => caught,
+  );
+  assert.equal(error?.preserveWorktree, true);
+  assert.match(error.message, /WIP capture failed; worktree preserved/);
+
+  reclaimOrphanWorktrees(repo, orchDir);
+  assert.equal(existsSync(join(wt, "RECOVERABLE")), true, "dirty work survives the next run's sweep");
+  assert.match(git(["diff", "--cached", "--name-only"], wt), /RECOVERABLE/);
+  assert.equal(branchExists(repo, "pr/writer/capture"), true);
+
+  rmSync(`${wt}.orch-preserve`, { force: true });
+  rmSync(hook, { force: true });
+  pruneWorktree(repo, wt);
 });
 
 test("audit is fail-safe DISAGREE when the agent exits nonzero (F4)", async () => {

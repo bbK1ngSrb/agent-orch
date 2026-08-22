@@ -2289,6 +2289,44 @@ test("orch continue <sid> resumes from checkpoint, past review, without re-autho
   assert.equal(ck, null); // completed run clears its checkpoint
 });
 
+test("orch continue <sid> re-runs an interrupted author whose tip is a WIP commit", async () => {
+  const repo = initGitRepo("orch-continue-wip-author-");
+  const sid = "partial1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "partial.txt"), "unfinished\n");
+  gitDep.git(["add", "."], repo);
+  gitDep.git(["commit", "-m", "wip(author): partial work before timeout"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "started", task: "fix the real timeout bug", authorPrompt: "fix the real timeout bug", author: { agent: "claude" }, reviewers: [{ agent: "codex" }] });
+
+  let authorCalls = 0;
+  let authoredTask = null;
+  let audits = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author(task) { authorCalls++; authoredTask = task; return { usage: {} }; },
+        async audit() { audits++; return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} }),
+    /partial WIP unchanged/,
+  );
+  assert.equal(authorCalls, 1, "a partial author tip must re-enter authoring before review");
+  assert.equal(authoredTask, "fix the real timeout bug", "resume must execute the original task, never the branch slug");
+  assert.equal(audits, 0, "an unchanged WIP must not reach review or merge");
+  assert.equal(gitDep.git(["log", "-1", "--format=%s", branch], repo),
+    "wip(author): partial work before timeout",
+    "a no-op retry keeps the recoverable WIP tip for another attempt");
+});
+
 test("orch continue <sid> clears a stale checkpoint when the branch was merged and deleted", async () => {
   const repo = initGitRepo("orch-continue-stale-");
   const sid = "5ta1eck";
@@ -2615,6 +2653,7 @@ test("orch continue <sid> reclaims an orphaned worktree left by a killed prior a
   // `continue` will reattach to, left behind by a process that no longer exists.
   const worktree = join(repo, ".orch", "wt", branch.replace(/\//g, "_"));
   gitDep.git(["worktree", "add", "--", worktree, branch], repo);
+  writeFileSync(`${worktree}.orch-preserve`, "capture failed\n");
 
   const cycleDeps = {
     ...fakeCycleDeps(),
@@ -2632,6 +2671,48 @@ test("orch continue <sid> reclaims an orphaned worktree left by a killed prior a
 
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
   assert.equal(finishCalls.length, 1);
+  assert.equal(existsSync(`${worktree}.orch-preserve`), false, "successful resume clears the preservation marker");
+});
+
+test("orch continue <sid> resumes dirty work from a preserved capture failure", async () => {
+  const repo = initGitRepo("orch-continue-preserved-dirty-");
+  const sid = "capture1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["branch", branch], repo);
+  const worktree = join(repo, ".orch", "wt", branch.replace(/\//g, "_"));
+  gitDep.git(["worktree", "add", "--", worktree, branch], repo);
+  writeFileSync(join(worktree, "RECOVERABLE"), "partial work\n");
+  writeFileSync(`${worktree}.orch-preserve`, "index.lock blocked WIP capture\n");
+  checkpointDep.record(join(repo, ".orch"), sid, {
+    branch, round: 1, stage: "started", task: "finish the timeout fix", authorPrompt: "finish the timeout fix",
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
+  });
+
+  let authoredTask = null;
+  let recoveredContent = null;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author(task, wd) {
+          authoredTask = task;
+          gitDep.git(["add", "-A"], wd);
+          gitDep.git(["commit", "-m", "completed preserved author work"], wd);
+          recoveredContent = gitDep.git(["show", "HEAD:RECOVERABLE"], wd);
+          return { usage: {} };
+        },
+        async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+
+  const logs = await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+  assert.equal(authoredTask, "finish the timeout fix");
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.equal(recoveredContent, "partial work");
+  assert.equal(existsSync(`${worktree}.orch-preserve`), false);
 });
 
 test("orch continue <sid> throws when no checkpoint or inflight record exists", async () => {
