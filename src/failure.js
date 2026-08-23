@@ -179,8 +179,20 @@ export function chooseRemedy(failure, record = {}, policy = {}) {
   // disabled via policy.remedies.
   const policyRemedies = policy.remedies;
   const alwaysAllowed = new Set(["integration-repair", "wait"]);
-  let allowed = resolveRemedies(row, failure)
-    .filter((r) => alwaysAllowed.has(r) || !policyRemedies || policyRemedies.includes(r));
+  const rowRemedies = resolveRemedies(row, failure);
+  // Order = priority (design §15): when the operator supplies `policy.remedies`,
+  // its order wins over the row's hard-coded order for the four operator-orderable
+  // remedies. `integration-repair`/`wait` are never operator-orderable (line 177
+  // comment), so they keep their fixed row position instead of being reordered.
+  let allowed = rowRemedies;
+  if (policyRemedies) {
+    const policyOrderable = rowRemedies.filter((r) => !alwaysAllowed.has(r));
+    const orderedQueue = policyRemedies.filter((r) => policyOrderable.includes(r));
+    let qi = 0;
+    allowed = rowRemedies
+      .map((r) => (alwaysAllowed.has(r) ? r : orderedQueue[qi++]))
+      .filter((r) => r !== undefined);
+  }
 
   // Convergence (design §7): two consecutive equal fingerprints skip the
   // remedy that produced the second; three equal fingerprints go to `ask` (or

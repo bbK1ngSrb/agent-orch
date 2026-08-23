@@ -99,6 +99,13 @@ test("chooseRemedy(): policy.remedies filters and reorders candidates", () => {
   assert.equal(d.remedy, "rotate", "rebase is not in policy.remedies, so it is skipped");
 });
 
+test("chooseRemedy(): policy.remedies order overrides the row's hard-coded order", () => {
+  const failure = failureFor("TEST_RED");
+  const d = chooseRemedy(failure, { attempt: 0, retries: {}, failures: [] }, { maxAttempts: 3, remedies: ["rotate", "rebase", "reauthor", "ask"] });
+  assert.equal(d.decision, "remedy");
+  assert.equal(d.remedy, "rotate", "policy.remedies puts rotate before rebase, so rotate wins even though the row lists rebase first");
+});
+
 test("chooseRemedy(): unknown class throws", () => {
   assert.throws(() => chooseRemedy(failureFor("NOT_A_CLASS"), {}, {}), /unknown failure class/);
 });
