@@ -4249,3 +4249,56 @@ test("orch task resuming a sid with an existing run record appends to it instead
   assert.equal(record.cycles.length, 3); // appended, not replaced
   assert.equal(record.cycles[2].attempt, 3);
 });
+
+// Regression: only a `status: "merged"` result landed on the standing
+// integration→main PR — `merge: pr` mode and a demoted (`merge-deferred`)
+// cycle each open a fresh PR scoped to that one branch, so their `kind` must
+// read "per-cycle", not the hardcoded "standing" every result used to get.
+test("orch task records pr.kind as per-cycle for merge:pr mode, standing only for a real merge", async () => {
+  const merged = initGitRepo();
+  await runMainInRepo(merged, ["task", "some task", "--no-tidy"], {
+    cycleDeps: { ...fakeCycleDeps(), finalize: async () => ({ status: "merged", reason: "test", sha: "abc", prUrl: "https://example/pr/standing" }) },
+  });
+  const mergedDir = join(merged, ".orch", "run-records");
+  const mergedRecord = JSON.parse(readFileSync(join(mergedDir, readdirSync(mergedDir)[0]), "utf8"));
+  assert.deepEqual(mergedRecord.pr, { number: null, url: "https://example/pr/standing", kind: "standing" });
+
+  const perCycle = initGitRepo();
+  await runMainInRepo(perCycle, ["task", "some task", "--no-tidy"], {
+    cycleDeps: { ...fakeCycleDeps(), finalize: async () => ({ status: "pr", reason: "test", prUrl: "https://example/pr/123" }) },
+  });
+  const perCycleDir = join(perCycle, ".orch", "run-records");
+  const perCycleRecord = JSON.parse(readFileSync(join(perCycleDir, readdirSync(perCycleDir)[0]), "utf8"));
+  assert.deepEqual(perCycleRecord.pr, { number: null, url: "https://example/pr/123", kind: "per-cycle" });
+});
+
+// Regression: a pre-v2 sid resumed via `orch continue` has no prior run
+// record, so `runRecord.create()` used to fire only after `runCycle`
+// returned — a crash inside runCycle left no record at all, violating
+// design §5's "after any run a record with `outcome` exists".
+test("orch continue on a pre-v2 sid leaves an error record when runCycle throws", async () => {
+  const repo = initGitRepo("orch-continue-crash-");
+  const sid = "deadbeef";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  const crashing = {
+    ...fakeCycleDeps(),
+    adapters: { get: (name) => ({ name, async author() { return { usage: {} }; }, async audit() { throw new Error("boom"); } }) },
+  };
+  await assert.rejects(
+    () => runMainInRepo(repo, ["continue", sid], { cycleDeps: crashing }),
+    /boom/,
+  );
+
+  const dir = join(repo, ".orch", "run-records");
+  const record = JSON.parse(readFileSync(join(dir, `${sid}.json`), "utf8"));
+  assert.equal(record.outcome, "error");
+  assert.equal(record.exit, 1);
+  assert.match(record.lastError, /boom/);
+});

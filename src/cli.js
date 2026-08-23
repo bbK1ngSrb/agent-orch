@@ -1656,7 +1656,10 @@ export async function main(argv, deps = {}) {
             exit: exitForResult(result),
             attempt,
             branch: run.branch,
-            pr: result.prUrl ? { number: null, url: result.prUrl, kind: "standing" } : null,
+            // "merged" landed on the standing integration→main PR; "pr"
+            // (merge: pr mode) and "merge-deferred" (demote) each open a
+            // fresh PR scoped to this cycle's own branch.
+            pr: result.prUrl ? { number: null, url: result.prUrl, kind: result.status === "merged" ? "standing" : "per-cycle" } : null,
             cycles: [
               ...(priorRecord?.cycles || []),
               { sid: run.sid, attempt, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null },
@@ -1868,6 +1871,11 @@ export async function main(argv, deps = {}) {
       runRecord.resumeTerminal(orchDir, priorRun.runId, { maxAttempts: priorRun.attempt + (priorRun.policy?.maxAttempts ?? 1) });
     }
     const runId = priorRun?.runId || sid;
+    // Create the record BEFORE runCycle, not after: a pre-v2 sid with no prior
+    // record must still leave one behind if runCycle throws, or a crashed
+    // continue produces no durable record at all (violates design §5's "after
+    // any run a record with `outcome` exists").
+    if (!dry && !priorRun) runRecord.create(orchDir, { runId, command, argv: argv.map(redact) });
     try {
       const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps({ closes })));
       if (!dry) {
@@ -1882,7 +1890,6 @@ export async function main(argv, deps = {}) {
             cycles: [...priorRun.cycles, { sid, attempt: priorRun.attempt + 1, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
           });
         } else {
-          runRecord.create(orchDir, { runId, command, argv: argv.map(redact) });
           runRecord.update(orchDir, runId, {
             state: "DONE",
             outcome: outcomeForResult(result),

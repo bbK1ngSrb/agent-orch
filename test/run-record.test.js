@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create, update, lookup, resumeTerminal, SCHEMA_VERSION } from "../src/run-record.js";
+import { writeFileAtomic } from "../src/atomic-file.js";
 
 function tmpOrchDir() {
   return mkdtempSync(join(tmpdir(), "orch-run-record-"));
@@ -51,14 +52,22 @@ test("lookup resolves by a cycle sid recorded under a run", () => {
   assert.equal(found.runId, "100-0");
 });
 
-test("atomic write survives a simulated crash (no partial file left)", () => {
+test("atomic write survives a simulated crash (original record untouched, no partial file left)", () => {
   const d = tmpOrchDir();
   create(d, { runId: "100-0", command: "task", argv: [] });
   const path = join(d, "run-records", "100-0.json");
   const before = readFileSync(path, "utf8");
   assert.doesNotThrow(() => JSON.parse(before));
-  update(d, "100-0", { outcome: "reached", exit: 0 });
+
+  // Simulate a process crash between the temp write and the rename that
+  // publishes it: the temp write "succeeds" but rename never completes.
+  assert.throws(() => writeFileAtomic(path, JSON.stringify({ outcome: "corrupt" }), {
+    writeFileSync: () => {},
+    renameSync: () => { throw new Error("simulated crash mid-rename"); },
+  }));
+
   const after = readFileSync(path, "utf8");
+  assert.equal(after, before); // the published record is untouched, not half-written
   assert.doesNotThrow(() => JSON.parse(after));
 });
 
