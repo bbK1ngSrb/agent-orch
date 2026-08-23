@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -1069,6 +1069,11 @@ test("orch task --until ready --json: an uncaught cycle failure still emits run.
   const repo = initGitRepo();
   gitDep.git(["branch", "orch/integration"], repo);
   addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
   const prev = cwd();
   chdir(repo);
   const logs = [];
@@ -1079,6 +1084,7 @@ test("orch task --until ready --json: an uncaught cycle failure still emits run.
       () => main(["task", "some task", "--no-tidy", "--until", "ready", "--json"], {
         preflight() {},
         cycleDeps: { ...fakeCycleDeps(), finalize: async () => { throw new Error("cycle boom"); } },
+        githubDeps: () => ({ gh, git: gitDep.git }),
       }),
       /cycle boom/,
     );
@@ -1218,8 +1224,13 @@ test("orch task --until ready --json: a concurrency-cap skip still emits run.sta
   writeFileSync(join(orchDir, "orch.yml"), "concurrency: 1\n");
   inflight.register(orchDir, "cap-seed", { branch: "pr/test/seed", pid: process.pid, baseSha: "abc" });
   process.exitCode = 0;
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
   try {
-    const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"]);
+    const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
     for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
     const events = logs.map((l) => JSON.parse(l));
     assert.deepEqual(events.map((e) => e.event), ["run.start", "run.end"]);
@@ -1227,6 +1238,42 @@ test("orch task --until ready --json: a concurrency-cap skip still emits run.sta
     assert.equal(events[1].exit, 3);
     assert.equal(process.exitCode, 3);
   } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// Regression guard for #547: the P5 slice shipped two tests that omitted
+// githubDeps, so `--until ready` fell through to the real `gh` binary — green
+// on a machine with authenticated gh, red everywhere else (CI included). This
+// proves the *wiring*, not the readiness logic: with no githubDeps override,
+// the code must still attempt a real `gh` shell-out (never a silent no-op) —
+// verified with PATH cleared so the attempt deterministically fails to find
+// `gh` before it could ever touch a network or credential, on any machine.
+test("orch task --until ready --json: no githubDeps override still shells out to gh (not a silent no-op)", { skip: IS_WINDOWS && "PATH-shim relies on a POSIX shell script" }, async () => {
+  const savedExitCode = process.exitCode;
+  const savedPath = process.env.PATH;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const gitPath = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const shimDir = mkdtempSync(join(tmpdir(), "orch-no-gh-"));
+  symlinkSync(gitPath, join(shimDir, "git"));
+  // Fake `gh`: answers --version (so ghAvailable() sees a real CLI) but fails
+  // `auth status` — this reproduces #547's actual CI shape (gh installed, not
+  // logged in) without ever invoking the real binary or touching a network.
+  writeFileSync(
+    join(shimDir, "gh"),
+    '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh version 2.0.0"; exit 0; fi\necho "gh: not logged in to any GitHub hosts" >&2\nexit 1\n',
+  );
+  chmodSync(join(shimDir, "gh"), 0o755);
+  process.env.PATH = shimDir;
+  try {
+    await assert.rejects(
+      () => runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"]),
+      /gh CLI is not authenticated/,
+    );
+  } finally {
+    process.env.PATH = savedPath;
     process.exitCode = savedExitCode;
   }
 });
