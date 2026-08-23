@@ -232,6 +232,35 @@ test("waitReady: fetches base+integration from origin before reading (design §9
   assert.deepEqual(calls[0], [["fetch", "origin", "main", "orch/integration"], "/repo"]);
 });
 
+// A fetch taken once before the loop leaves every later `inspect` reading
+// refs as stale as the first poll — including a PR that gets merged (by
+// another concurrent cycle re-pinning the standing branch) mid-poll. Refetch
+// every iteration so that transition is visible on the very next read.
+test("waitReady: refetches before every poll iteration, not just once", async () => {
+  let fetches = 0;
+  let calls = 0;
+  const gh = (a) => {
+    if (a[0] === "pr" && a[1] === "view") {
+      calls += 1;
+      return JSON.stringify({
+        number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+        mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null,
+        statusCheckRollup: calls < 3 ? [{ context: "test", state: "PENDING" }] : [{ context: "test", state: "SUCCESS" }],
+      });
+    }
+    return JSON.stringify([{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "test" }] } }]);
+  };
+  const deps = {
+    gh,
+    git: { git: (a) => { if (a[0] === "fetch") fetches += 1; return ""; } },
+    repo: "/repo",
+    sleep: async () => {},
+  };
+  const result = await waitReady({ ...args, cfg: { ...args.cfg, pollSeconds: 1, ciWaitMinutes: 5 } }, deps);
+  assert.equal(result.ready, true);
+  assert.equal(fetches, 3);
+});
+
 test("waitReady: a fetch failure doesn't abort the readiness read", async () => {
   const deps = makeDeps({}, { requiredContexts: [] });
   deps.git = { git: (a) => { if (a[0] === "fetch") throw new Error("network unreachable"); return ""; } };

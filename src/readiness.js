@@ -139,13 +139,6 @@ function defaultSleep(ms) {
 // design §7's table lists per class — same end state, one loop to reason
 // about.
 export async function waitReady({ pr, expectedHead, landing, cfg = {} } = {}, deps) {
-  // design §9: "Read (after `git fetch origin <base> <integration>` so local
-  // refs are fresh)". Best-effort — a fetch failure shouldn't abort the whole
-  // readiness read; `inspect`'s own isAncestor/safeRevParse already fail
-  // closed on stale/missing refs.
-  try {
-    deps.git.git(["fetch", "origin", cfg.baseBranch || "main", cfg.integrationBranch || "orch/integration"], deps.repo);
-  } catch { /* stale refs are handled by inspect()'s fail-closed git reads */ }
   const pollSeconds = cfg.pollSeconds || 30;
   const ciWaitMinutes = cfg.ciWaitMinutes ?? 30;
   const clockNow = () => (deps.now ? deps.now() : Date.now());
@@ -154,6 +147,15 @@ export async function waitReady({ pr, expectedHead, landing, cfg = {} } = {}, de
   let interval = pollSeconds;
   let required;
   for (;;) {
+    // design §9: "Read (after `git fetch origin <base> <integration>` so local
+    // refs are fresh)" — refetched every iteration, not just once, so a state
+    // transition mid-poll (an external merge, an integration re-pin) is seen
+    // on the very next read instead of only after `waitReady` is re-entered.
+    // Best-effort — a fetch failure shouldn't abort the read; `inspect`'s own
+    // isAncestor/safeRevParse already fail closed on stale/missing refs.
+    try {
+      deps.git.git(["fetch", "origin", cfg.baseBranch || "main", cfg.integrationBranch || "orch/integration"], deps.repo);
+    } catch { /* stale refs are handled by inspect()'s fail-closed git reads */ }
     const result = inspect({ pr, expectedHead, landing, cfg, required }, deps);
     if (result.required) required = result.required;
     if (!result.pending) return result;
