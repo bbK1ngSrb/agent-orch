@@ -3,6 +3,7 @@ import { checkPaths } from "./intake/allowlist.js";
 import { buildRevisionPrompt } from "./intake/workorder.js";
 import { scanDiff, formatSecurityFindings, parseRawPaths, SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "./security-review.js";
 import { formatUsage, totalUsage } from "./usage.js";
+import { classify, fingerprint, TRIGGERS } from "./failure.js";
 
 const RAW_OUTPUT_TAIL_CHARS = 12_000;
 const STAGE_RESULT_MAX_CHARS = 200;
@@ -191,7 +192,8 @@ export async function runCycle(opts, deps) {
         const n = scope.count(branch, worktree, cfg.scope.ignore, cycleBase);
         if (n > cfg.scope.maxLines) {
           return recordTerminal(escalate(notify, orchDir, branch, 1,
-            `scope: ${n} changed lines exceed cap ${cfg.scope.maxLines} — split the PR`));
+            `scope: ${n} changed lines exceed cap ${cfg.scope.maxLines} — split the PR`,
+            undefined, classify(TRIGGERS.SCOPE_CAP)));
         }
       }
     }
@@ -273,7 +275,7 @@ export async function runCycle(opts, deps) {
       const reviewedSha = branchOid();
       if (changedFilesAt(reviewedSha).length === 0) {
         return recordTerminal(escalate(notify, orchDir, branch, round,
-          "author produced no changes — nothing to review"));
+          "author produced no changes — nothing to review", undefined, classify(TRIGGERS.EMPTY_DIFF)));
       }
 
       // Re-check a cached shortcut at consumption, not only at resume entry.
@@ -332,14 +334,16 @@ export async function runCycle(opts, deps) {
         const agentErrors = disagree.filter((v) => v.agentError);
         if (agentErrors.length) {
           const reason = `agent error: ${agentErrors.map((v) => `${v.reviewer} ${v.reason}`).join("; ")}`;
-          return recordTerminal(escalate(notify, orchDir, branch, round, reason));
+          return recordTerminal(escalate(notify, orchDir, branch, round, reason,
+            undefined, classify(TRIGGERS.REVIEWER_AGENT_ERROR)));
         }
       }
 
       if (verdict.decision === "AGREE") {
         if (!testCmd) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
-            "no test gate detected — set `test:` in orch.yml or merge manually"));
+            "no test gate detected — set `test:` in orch.yml or merge manually",
+            undefined, classify(TRIGGERS.NO_TEST_COMMAND)));
         }
         let pass;
         if (skipTest) {
@@ -352,8 +356,12 @@ export async function runCycle(opts, deps) {
           if (pass) checkpoint?.record(orchDir, sid, { branch, oid: reviewedSha, round, stage: "tested", reason: verdict.reason, ...checkpointMeta });
         }
         if (!pass) {
+          // design §7 normalizedSummary for TEST_RED is the failing test names;
+          // gate.run() doesn't surface those today, so this fingerprints on the
+          // constant reason string instead — two different red tests currently
+          // fingerprint identically. Revisit once gate.run() exposes test names.
           return recordTerminal(escalate(notify, orchDir, branch, round,
-            "AGREE but tests are red — not merging"));
+            "AGREE but tests are red — not merging", undefined, classify(TRIGGERS.TEST_RED)));
         }
         // §3e: deterministic security floor on the FINAL diff, at the same
         // approve/merge boundary as the §3c protected-path gate below. The LLM
@@ -366,7 +374,8 @@ export async function runCycle(opts, deps) {
         // the one try: a partial view is not a view we scan on.
         if (!reviewedSha) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
-            `security scan: could not read reviewed branch head refs/heads/${branch} — failing closed, not merging`));
+            `security scan: could not read reviewed branch head refs/heads/${branch} — failing closed, not merging`,
+            undefined, classify(TRIGGERS.UNREADABLE_BRANCH_HEAD)));
         }
         let finalDiff, rawPaths;
         try {
@@ -374,14 +383,16 @@ export async function runCycle(opts, deps) {
           rawPaths = parseRawPaths(git.git(["diff", ...SECURITY_RAW_ARGS, `${cycleBase}...${reviewedSha}`], repo));
         } catch (e) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
-            `security scan: could not read the final diff (${e.message}) — failing closed, not merging`));
+            `security scan: could not read the final diff (${e.message}) — failing closed, not merging`,
+            undefined, classify(TRIGGERS.SECURITY_DIFF_UNREADABLE)));
         }
         const security = scanDiff(finalDiff, { ignore: cfg.security?.ignore ?? [], rawPaths });
         if (security.decision !== "AGREE") {
           // summary → the concise reason kept in run logs / the CLI status line;
           // detail → the grouped, deduped, educational note a human reads.
           const { summary, detail } = formatSecurityFindings(security.findings);
-          return recordTerminal(escalate(notify, orchDir, branch, round, summary, detail));
+          return recordTerminal(escalate(notify, orchDir, branch, round, summary, detail,
+            classify(TRIGGERS.SECURITY_SCAN_REJECTED)));
         }
         // PR-bridge audit: report the verdict, let GitHub own the merge. Reviews
         // are kept (not cleaned) so the caller can quote them in a PR comment.
@@ -399,7 +410,8 @@ export async function runCycle(opts, deps) {
         const prot = checkPaths(changed);
         if (!prot.ok) {
           return recordTerminal(escalate(notify, orchDir, branch, round,
-            `protected paths touched: ${prot.violations.join(", ")} — orch will not merge guardrail files`));
+            `protected paths touched: ${prot.violations.join(", ")} — orch will not merge guardrail files`,
+            undefined, classify(TRIGGERS.PROTECTED_PATH)));
         }
         const docsOnly = isDocsOnly(changed, cfg.docs.paths);
         const noop = changed.length === 0;
@@ -415,6 +427,7 @@ export async function runCycle(opts, deps) {
         return done({
           status: fin.status, reason: fin.reason, trigger: fin.trigger, prUrl: fin.prUrl,
           rounds: round, docsOnly, noop,
+          ...(fin.class ? { class: fin.class, fingerprint: fin.fingerprint } : {}),
         });
       }
 
@@ -429,7 +442,11 @@ export async function runCycle(opts, deps) {
         });
         notify.escalate(orchDir, branch, brief);
         const why = mode === "review" ? "review verdict: DISAGREE" : "stalemate after cap";
-        return recordTerminal({ status: "escalated", reason: why, rounds: round });
+        const cls = classify(TRIGGERS.REVIEW_STALEMATE);
+        return recordTerminal({
+          status: "escalated", reason: why, rounds: round,
+          class: cls, fingerprint: fingerprint(cls, verdict.reason),
+        });
       }
 
       // Count the round BEFORE the author runs, and checkpoint it immediately.
@@ -462,9 +479,10 @@ export async function runCycle(opts, deps) {
 // `body` is what the escalation note shows — defaults to `reason` for the many
 // callers that have only a one-liner, but the security gate passes a richer
 // educational detail so the human-facing note reads as more than a jammed string.
-function escalate(notify, orchDir, branch, round, reason, body = reason) {
+function escalate(notify, orchDir, branch, round, reason, body = reason, cls) {
+  if (!cls) throw new Error("engine.escalate: every call site must pass a failure class");
   notify.escalate(orchDir, branch, `# Escalation — ${branch}\n\n${body}\n`);
-  return { status: "escalated", reason, rounds: round };
+  return { status: "escalated", reason, rounds: round, class: cls, fingerprint: fingerprint(cls, reason) };
 }
 
 // The base a cycle is actually cut from and diffed against: integrationBranch
