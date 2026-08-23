@@ -1058,6 +1058,43 @@ test("orch task --until ready --json exits 2 with failureClass REMOTE_AUTH when 
   }
 });
 
+// Re-review finding 1: an uncaught throw anywhere between run.start and the
+// run.end emit (not just the two gh call sites already fail-closed above)
+// used to skip straight to bin/orch.js's outer catch, truncating the --json
+// stream after run.start — a caller doing `... --json | tail -1 | jq .exit`
+// would parse run.start instead of getting a clean error signal. Force a
+// throw the loop doesn't already guard (the cycle itself failing) to prove
+// the catch block now closes the stream out with a run.end before rethrowing.
+test("orch task --until ready --json: an uncaught cycle failure still emits run.end (exit 1) before rethrowing", async () => {
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const prev = cwd();
+  chdir(repo);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    await assert.rejects(
+      () => main(["task", "some task", "--no-tidy", "--until", "ready", "--json"], {
+        preflight() {},
+        cycleDeps: { ...fakeCycleDeps(), finalize: async () => { throw new Error("cycle boom"); } },
+      }),
+      /cycle boom/,
+    );
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+  for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+  const events = logs.map((l) => JSON.parse(l));
+  assert.equal(events[0].event, "run.start");
+  const end = events.find((e) => e.event === "run.end");
+  assert.ok(end, "run.end must still be emitted when the cycle throws");
+  assert.equal(end.outcome, "error");
+  assert.equal(end.exit, 1);
+});
+
 // design §3: `run.start` declares `policy` mandatory, `run.end` declares
 // `usage` mandatory — both were silently omitted before this fix.
 test("orch task --until ready --json: run.start carries policy, run.end carries usage (design §3)", async () => {
@@ -1130,6 +1167,39 @@ test("orch task --until ready --json: the local-main fast-forward notice stays o
   try {
     const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
     for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// Re-review finding 1: `spawnDocsTask`'s "▶ post-merge: docs-update spawned"
+// print fires AFTER run.end (it's spawned once the whole cycle loop is done,
+// cli.js's maybeSpawnDocs call) — under --json + docs.autoUpdate that broke
+// the same "stdout is one JSON object per line" contract as the fast-forward
+// notice above, and specifically broke `... --json | tail -1 | jq .exit`
+// since the plain-text line, not run.end, would be last.
+test("orch task --until ready --json: the docs-update spawn notice stays out of the JSON stream", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "docs:\n  autoUpdate: true\n");
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  const spawnCalls = [];
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"], {
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      spawn: (...args) => { spawnCalls.push(args); return { unref() {} }; },
+    });
+    assert.equal(spawnCalls.length, 1, "docs-update task should have spawned");
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end", "run.end must stay the last stdout line");
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -2415,6 +2485,49 @@ test("raiseExitCode: 2 (needs review) always wins over 3 (safe to retry), in eit
     process.exitCode = 0;
     raiseExitCode(3);
     assert.equal(process.exitCode, 3, "3 alone is still reported");
+  } finally {
+    process.exitCode = saved;
+  }
+});
+
+// Regression: 1 (ERROR) and 4 (WAIT_TIMEOUT) — both real run-controller.js
+// exit codes reachable via raiseExitCode(controller.exit) — were missing from
+// EXIT_CODE_PRIORITY. An unlisted code's priority falls back to 0 via `|| 0`,
+// identical to "nothing raised yet" (process.exitCode starts at 0), so
+// raiseExitCode(1) alone used to leave process.exitCode at 0 — a run that hit
+// an internal error would report success. 1 must win over everything; 4 must
+// still lose to nothing and beat 3 (a landed-but-timed-out run is more
+// actionable than a bare capacity refusal).
+test("raiseExitCode: 1 (error) always wins; 4 (wait-timeout) beats 3", () => {
+  const saved = process.exitCode;
+  try {
+    process.exitCode = 0;
+    raiseExitCode(1);
+    assert.equal(process.exitCode, 1, "1 alone must be reported, not silently dropped");
+
+    process.exitCode = 0;
+    raiseExitCode(2);
+    raiseExitCode(1);
+    assert.equal(process.exitCode, 1, "1 must win over an earlier 2");
+
+    process.exitCode = 0;
+    raiseExitCode(1);
+    raiseExitCode(2);
+    assert.equal(process.exitCode, 1, "a later 2 must not downgrade an earlier 1");
+
+    process.exitCode = 0;
+    raiseExitCode(4);
+    assert.equal(process.exitCode, 4, "4 alone must be reported, not silently dropped");
+
+    process.exitCode = 0;
+    raiseExitCode(3);
+    raiseExitCode(4);
+    assert.equal(process.exitCode, 4, "4 must win over an earlier 3");
+
+    process.exitCode = 0;
+    raiseExitCode(4);
+    raiseExitCode(3);
+    assert.equal(process.exitCode, 4, "a later 3 must not downgrade an earlier 4");
   } finally {
     process.exitCode = saved;
   }

@@ -76,16 +76,22 @@ export function spawnDocsTask(prompt, deps = { spawn }, orchDir) {
   } finally {
     if (fd !== undefined) (deps.closeSync || closeSync)(fd);
   }
-  console.log("▶ post-merge: docs-update spawned");
+  // `quiet` (set by the --json call site below): this print is plain text, and
+  // under --json it fires AFTER `run.end` has already gone out (docs spawn only
+  // happens once the merge loop is done) — a bare console.log there breaks the
+  // design §13 "stdout is one JSON object per line" contract, e.g. `... --json
+  // | tail -1 | jq .exit`. finishRun's human-readable summary already reports
+  // this outcome for non-json callers.
+  if (!deps.quiet) console.log("▶ post-merge: docs-update spawned");
 }
 
 // Loop guard + opt-in gate around spawnDocsTask. Real merge only (never --dry).
 // Skips docs-only merges (the docs-update's own merge can't re-trigger) AND no-op
 // merges (an empty diff would re-spawn forever, since it's not docs-only either).
 export function maybeSpawnDocs(res, cfg, deps = {}, orchDir) {
-  const { dry = false, spawn: spawnFn = spawn } = deps;
+  const { dry = false, spawn: spawnFn = spawn, quiet = false } = deps;
   if (dry || res.status !== "merged" || !cfg.docs.autoUpdate || res.docsOnly || res.noop) return false;
-  spawnDocsTask(cfg.docs.prompt, { spawn: spawnFn }, orchDir);
+  spawnDocsTask(cfg.docs.prompt, { spawn: spawnFn, quiet }, orchDir);
   return true;
 }
 
@@ -1017,7 +1023,18 @@ export function fetchIssueWorkOrder(n, gh) {
 // hiding the escalation a caller actually needs to go review. Exported as a
 // pure function so the priority itself is unit-testable without racing a real
 // concurrent process to reproduce the mix.
-const EXIT_CODE_PRIORITY = { 2: 2, 3: 1 };
+//
+// 1 (ERROR, run-controller.js's EXIT_FOR_STATE) and 4 (WAIT_TIMEOUT) are also
+// reachable via `raiseExitCode(controller.exit)` in the fan-out loop below,
+// but were missing from this table — an unlisted code's priority reads as 0
+// via the `|| 0` fallback, same as "nothing raised yet", so raiseExitCode(1)
+// or raiseExitCode(4) on a fresh process.exitCode of 0 never wins the `>`
+// comparison and silently leaves exitCode at 0 (success) even though the run
+// actually errored or timed out. Ranked by how much a caller needs to see it:
+// 1 (something broke) must survive everything; 2 (needs review) still outranks
+// 3 as established above; 4 (landed, but readiness timed out) is more
+// actionable than a mere capacity refusal so it outranks 3 too.
+const EXIT_CODE_PRIORITY = { 1: 4, 2: 3, 4: 2, 3: 1 };
 export function raiseExitCode(code) {
   const current = process.exitCode || 0;
   if ((EXIT_CODE_PRIORITY[code] || 0) > (EXIT_CODE_PRIORITY[current] || 0)) process.exitCode = code;
@@ -1810,6 +1827,13 @@ export async function main(argv, deps = {}) {
             lastError: toLastError(err),
           });
         }
+        // Same "don't truncate the --json stream after run.start" contract as
+        // the concurrency-cap and --dry paths above — an uncaught throw here
+        // (e.g. a gh call this loop doesn't already fail closed, see
+        // findPrByHeadSafe/prView above) must still close out the event
+        // stream with a run.end before the bin/orch.js catch-all prints to
+        // stderr and exits.
+        if (jsonMode) emit({ event: "run.end", runId: run.sid, outcome: "error", exit: 1, usage: {} });
         throw err;
       } finally {
         if (!dry) inflight.deregister(orchDir, run.sid);
@@ -1818,7 +1842,7 @@ export async function main(argv, deps = {}) {
     // After the cycles: the detached docs-update runs `orch task`, so spawn it
     // outside the loop. maybeSpawnDocs only fires on a real `merged` result.
     let docsPending = false;
-    for (const result of results) docsPending = maybeSpawnDocs(result, cfg, { dry, spawn: deps.spawn }, orchDir) || docsPending;
+    for (const result of results) docsPending = maybeSpawnDocs(result, cfg, { dry, spawn: deps.spawn, quiet: jsonMode }, orchDir) || docsPending;
 
     // #44: a human is at the terminal — tidy up the branches/state orch created and
     // explain it in plain English, instead of dead-ending in an opaque git state.
