@@ -10,6 +10,23 @@
 
 import * as deferredDefault from "./deferred.js";
 import { totalUsage } from "./usage.js";
+import { classify, fingerprint, TRIGGERS } from "./failure.js";
+
+// design §6: trigger id -> failure class, for the demote()/landIntoIntegration
+// callers below. Kept here (not failure.js) because "lock"/"sync"/"overlap"/
+// "dirty-merge"/"integration-test" are finalize.js's own vocabulary — failure.js
+// only knows the TRIGGERS ids they map onto.
+function triggerClass(trigger) {
+  const id = {
+    lock: TRIGGERS.LAND_LOCK,
+    sync: TRIGGERS.LAND_SYNC,
+    overlap: TRIGGERS.LAND_OVERLAP,
+    "dirty-merge": TRIGGERS.LAND_DIRTY_MERGE,
+    "integration-test": TRIGGERS.LAND_INTEGRATION_TEST,
+  }[trigger];
+  if (!id) throw new Error(`finalize.triggerClass: unknown demote trigger "${trigger}"`);
+  return classify(id);
+}
 
 const ISSUE_URL_BASE = "https://github.com/bbk1ng/agent-orch/issues";
 
@@ -53,7 +70,8 @@ function reviewedHeadEscalation(ctx, deps) {
     ...(usage.tokens ? { tokens: usage.tokens } : {}),
     ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
   });
-  return { status: "escalated", reason };
+  const cls = classify(TRIGGERS.LAND_HEAD_MOVED);
+  return { status: "escalated", reason, class: cls, fingerprint: fingerprint(cls, `${reviewed}->${current}`) };
 }
 
 export async function finalize(ctx, deps) {
@@ -75,9 +93,12 @@ export async function finalize(ctx, deps) {
       ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
       ...(r.prUrl ? { prUrl: r.prUrl } : {}),
     });
-    return r.prUrl
-      ? { status: "pr", reason: `agreed + green → PR ${r.prUrl}`, prUrl: r.prUrl }
-      : { status: "escalated", reason: "agreed + green → escalated locally (merge: pr needs a remote + gh CLI)" };
+    if (r.prUrl) return { status: "pr", reason: `agreed + green → PR ${r.prUrl}`, prUrl: r.prUrl };
+    const cls = classify(TRIGGERS.LAND_PR_OPEN_FAILED);
+    return {
+      status: "escalated", reason: "agreed + green → escalated locally (merge: pr needs a remote + gh CLI)",
+      class: cls, fingerprint: fingerprint(cls, "pr-open-failed"),
+    };
   }
 
   if (!(await lock.acquireBlocking(orchDir, "merge.lock"))) {
@@ -192,7 +213,13 @@ async function landIntoIntegration(ctx, deps, { integration, integrationBranch, 
   const message = closes ? `Merge ${branch}\n\nCloses #${closes}` : null;
   const m = git.mergeInWorktree(integration, reviewedSha || branch, cfg.merge, message);
   if (!m.ok) {
-    if (quietFail) return { status: "merge-deferred", trigger: "dirty-merge", reason: m.reason || "conflict" };
+    if (quietFail) {
+      const cls = classify(TRIGGERS.LAND_DIRTY_MERGE);
+      return {
+        status: "merge-deferred", trigger: "dirty-merge", reason: m.reason || "conflict",
+        class: cls, fingerprint: fingerprint(cls, `dirty-merge: ${conflictPaths(m.reason).sort().join(",")}`),
+      };
+    }
     return demote(ctx, deps, {
       trigger: "dirty-merge",
       integrationBranch,
@@ -208,7 +235,13 @@ async function landIntoIntegration(ctx, deps, { integration, integrationBranch, 
   const { pass } = gate.run(testCmd, integration, cfg.stageTimeout > 0 ? cfg.stageTimeout * 60_000 : 0);
   if (!pass) {
     git.git(["reset", "--hard", preSha], integration); // roll integration back
-    if (quietFail) return { status: "merge-deferred", trigger: "integration-test", reason: "post-merge-test-fail" };
+    if (quietFail) {
+      const cls = classify(TRIGGERS.LAND_INTEGRATION_TEST);
+      return {
+        status: "merge-deferred", trigger: "integration-test", reason: "post-merge-test-fail",
+        class: cls, fingerprint: fingerprint(cls, "integration-test failure"),
+      };
+    }
     return demote(ctx, deps, {
       trigger: "integration-test",
       integrationBranch,
@@ -596,10 +629,29 @@ async function demote(ctx, deps, details) {
     ? `escalated for hand-merge into ${integrationBranch}`
     : r.prUrl ? `opened PR ${r.prUrl}` : "kept the branch locally (no remote)";
   const summary = `${outcome}${peer}. Vetted: agents AGREE, tests green, security clean.`;
+  const cls = triggerClass(details.trigger);
   return {
     status: "merge-deferred",
     trigger: details.trigger,
     reason: `${summary}\n${reason}`,
     prUrl: r.prUrl,
+    class: cls,
+    fingerprint: fingerprint(cls, demoteFingerprintSummary(details)),
   };
+}
+
+// design §7 normalizedSummary rule per class: LAND_DIRTY_MERGE fingerprints on
+// the conflicted paths, LAND_OVERLAP on the peer paths; the rest have no
+// per-attempt variable content worth isolating, so the trigger name is enough.
+function demoteFingerprintSummary(details) {
+  if (details.trigger === "dirty-merge") return `dirty-merge: ${conflictPaths(details.mergeReason).sort().join(",")}`;
+  if (details.trigger === "overlap") {
+    const paths = details.overlap?.peers?.length
+      ? details.overlap.peers.flatMap((e) => e.paths || [])
+      : (details.overlap?.peer || []);
+    return `overlap: ${[...paths].sort().join(",")}`;
+  }
+  // "sync" (LAND_SYNC) has no design §7 normalizedSummary rule of its own and
+  // details.mergeReason is deliberately not folded in here — trigger name only.
+  return details.trigger;
 }

@@ -325,6 +325,8 @@ test("path overlap with a peer → merge-deferred (no merge attempted)", async (
   const r = await finalize({ ...ctx(), reviewedSha }, deps);
   assert.equal(r.status, "merge-deferred");
   assert.equal(r.trigger, "overlap");
+  assert.equal(r.class, "LAND_OVERLAP");
+  assert.equal(typeof r.fingerprint, "string");
   assert.match(r.reason, /^opened PR https:\/\/x\/pr\/1; collides with peer peer-2 on src\/a\.js\./);
   assert.match(r.reason, /Vetted: agents AGREE, tests green, security clean\./);
   assert.match(r.reason, /trigger \| overlap/);
@@ -669,6 +671,8 @@ test("merge conflict → merge-deferred (escalate, no per-change PR against main
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merge-deferred");
   assert.equal(r.trigger, "dirty-merge");
+  assert.equal(r.class, "LAND_DIRTY_MERGE");
+  assert.equal(typeof r.fingerprint, "string");
   assert.equal(r.prUrl, null); // never open a per-change agent PR against main
   assert.equal(demoteCalls, 0); // github.demote is the PR-to-main path — must not run
   assert.equal(escalated?.branch, "pr/claude/x-1");
@@ -1057,6 +1061,7 @@ test("merge-lock timeout → merge-deferred without touching the worktree", asyn
   const r = await finalize(ctx(), deps);
   assert.equal(r.status, "merge-deferred");
   assert.equal(r.trigger, "lock");
+  assert.equal(r.class, "LAND_LOCK");
   assert.equal(recorded[0].trigger, "lock");
   assert.match(r.reason, /trigger \| lock/);
   assert.match(r.reason, /next action: retry/);

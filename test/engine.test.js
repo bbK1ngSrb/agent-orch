@@ -70,6 +70,22 @@ test("AGREE + green gate -> merged", async () => {
   assert.equal(deps._calls.authors, 1);
 });
 
+test("finalize's failure class and fingerprint survive onto runCycle's result", async () => {
+  // finalize() (land triggers: lock/sync/overlap/dirty-merge/integration-test/
+  // head-moved/pr-open-failed) is the source of 7 of the 19 mapping rows, but
+  // runCycle's post-finalize return used to hand-pick fields — class/fingerprint
+  // were silently dropped at this exact boundary.
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.finalize = async () => ({
+    status: "merge-deferred", trigger: "overlap", reason: "deferred",
+    class: "LAND_OVERLAP", fingerprint: "deadbeef",
+  });
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "merge-deferred");
+  assert.equal(r.class, "LAND_OVERLAP");
+  assert.equal(r.fingerprint, "deadbeef");
+});
+
 test("review receives the work order separately from the author prompt", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
   const workOrder = { title: "Fix parser", problem: "reject empty input", repro_steps: [], suspected_paths: [], acceptance_criteria: [] };
@@ -278,6 +294,7 @@ test("DISAGREE until cap -> escalated after roundCap rounds", async () => {
   const r = await runCycle(opts, deps);
   assert.equal(r.status, "escalated");
   assert.equal(r.rounds, 3);
+  assert.equal(r.class, "REVIEW_STALEMATE");
   assert.equal(deps._calls.audits, 3);
   assert.equal(deps._calls.authors, 3); // 1 initial author + 2 revises
   // Editorial rejection stays DISAGREE in the metrics log (#299) — not ERROR.
@@ -450,6 +467,8 @@ test("scope cap exceeded -> escalated before review", async () => {
   const r = await runCycle({ ...opts, cfg: { ...opts.cfg, scope: { maxLines: 100, ignore: [] } } }, deps);
   assert.equal(r.status, "escalated");
   assert.match(r.reason, /scope/i);
+  assert.equal(r.class, "SCOPE_EXCEEDED");
+  assert.equal(typeof r.fingerprint, "string");
 });
 
 test("noMerge: AGREE + green -> approved, recorded, no merge/clean (PR bridge)", async () => {
@@ -662,6 +681,28 @@ test("the revise checkpoint persists the incremented round before the author run
   const audits = events.map((e, i) => (e.kind === "audit" ? i : -1)).filter((i) => i >= 0);
   assert.ok(events.indexOf(revising[0]) < audits[1],
     "the revise checkpoint is written before round 2 is audited, not after");
+});
+
+test("#506: crash after revise 1 resumes at round 2 and still escalates after round 3, not 4", async () => {
+  // roundCap: 3. Round 1 DISAGREEd, the revise checkpoint for round 2 landed
+  // (the #506 fix engine.js:444-446), then the process died mid-revise. A
+  // resume must pick up exactly at round 2 — not replay round 1 and not grant
+  // an extra round — so round 2 and round 3 both DISAGREE and the cap fires
+  // at round 3, hand-computed from roundCap: 3, not observed from the run.
+  const deps = makeDeps({
+    verdicts: [
+      { decision: "DISAGREE", reason: "still no", raw: "" },
+      { decision: "DISAGREE", reason: "still no", raw: "" },
+    ],
+  });
+  const stored = { branch: opts.branch, round: 2, stage: "revising", reason: "no" };
+  deps.checkpoint = { lookup: () => stored, record() {}, clear() {} };
+  const r = await runCycle({ ...opts, resume: true, sid: "s1" }, deps);
+  assert.equal(r.status, "escalated");
+  assert.equal(r.reason, "stalemate after cap");
+  assert.equal(r.rounds, 3, "escalates after round 3, not 4");
+  assert.equal(deps._calls.audits, 2, "only round 2 and round 3 are audited");
+  assert.equal(deps._calls.authors, 2, "only the round-2 (resumed) and round-3 revises run");
 });
 
 test("resuming from a 'revising' checkpoint keeps its round and reviewer feedback", async () => {
