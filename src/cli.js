@@ -860,10 +860,12 @@ function dryDeps() {
 // design §9 input for run-controller.js's `runUntil`: maps a LANDED cycle
 // result to the PR readiness is read against. "merged" landed on the standing
 // integration→base PR (design §0 glossary); "pr" (cfg.merge === "pr") opened
-// a PR straight from the cycle's own branch; "approved" (noMerge review: no
-// merge attempted) has no per-cycle PR of its own either, so it reads against
-// the same branch as "pr" — findPrByHead re-reads rather than trusting
-// `cycle.prUrl`'s number (design §5.4 query-before-write).
+// a PR straight from the cycle's own branch. "approved" (engine.js's noMerge
+// path — today only ever set by `runPr()`, github.js:337, which doesn't call
+// `runUntil`) has no per-cycle PR of its own either, so it's mapped the same
+// way here for whenever a future caller routes a noMerge cycle through this
+// path — findPrByHead re-reads rather than trusting `cycle.prUrl`'s number
+// (design §5.4 query-before-write).
 function findPrByHeadSafe(branch, baseBranch, ghDeps, fallbackUrl) {
   // gh (findPrByHead -> deps.gh -> execFileSync) throws on any nonzero exit —
   // no GitHub remote, no auth, network hiccup. That must resolve to "no PR
