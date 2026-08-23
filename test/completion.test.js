@@ -136,9 +136,23 @@ test("completion offers --dry only for 'completion install', not 'completion bas
   assert.ok(install.has("--dry"), "orch completion install should offer --dry");
 });
 
-test("completion offers every subcommand the schema declares", BASH_SKIP, () => {
+// Right after the command word, before any subcommand is typed, a flag can
+// still legally come next too ("orch agent --dry add ...", "orch completion
+// --dry install") — so completion offers the subcommand words plus whatever
+// flags are common to every one of that command's subcommands (GLOBAL_FLAGS
+// always included), not the subcommand words alone.
+test("completion offers every subcommand the schema declares, plus flags legal before any subcommand", BASH_SKIP, () => {
   for (const [command, words] of Object.entries(SUBCOMMANDS)) {
-    assert.deepEqual(complete(["orch", command, ""], 2).sort(), [...words].sort());
+    const subKeys = Object.keys(SUBCOMMAND_FLAGS).filter((k) => k.startsWith(`${command} `));
+    const flagSets = subKeys.map((k) => new Set(SUBCOMMAND_FLAGS[k]));
+    const commonFlags = flagSets.length
+      ? [...flagSets[0]].filter((f) => flagSets.every((s) => s.has(f)))
+      : COMMANDS[command].flags.filter((f) => f !== "dry"); // completion: --dry only legal once "install" is known
+    const expectedFlags = [...new Set([...GLOBAL_FLAGS, ...commonFlags])].flatMap(
+      (name) => (FLAGS[name].short ? [`-${FLAGS[name].short}`] : []).concat(`--${name}`),
+    );
+    const offered = complete(["orch", command, ""], 2);
+    assert.deepEqual(offered.sort(), [...words, ...expectedFlags].sort());
   }
 });
 

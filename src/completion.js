@@ -52,8 +52,19 @@ const AGENT_SUBCOMMAND_FLAG_CASES = Object.entries(SUBCOMMAND_FLAGS)
 // never suggests a flag the parser has just been taught to refuse.
 const AGENT_ADD_WITH_BUILD_FLAGS = [...GLOBAL_FLAGS, ...COMMANDS.agent.flags].flatMap(flagWords).join(" ");
 const KNOWN_AGENT_PATTERN = agentNames.join("|");
+// Right after "agent"/"completion" (subcommand not typed yet), a flag can
+// still legally come next — "orch agent --dry add ..." and "orch completion
+// --dry install" both parse fine, since parseArgs doesn't care where a flag
+// sits relative to the subcommand word. Offering only the subcommand words
+// here under-offered every flag common to all of that command's subcommands.
+// agent: config-file/dry are shared by both "add" and "build" (SUBCOMMAND_FLAGS);
+// completion: COMPLETION_NO_DRY_FLAGS already excludes --dry (illegal before
+// "install" is known to be coming).
+const AGENT_PRE_SUBCOMMAND_FLAGS = [...GLOBAL_FLAGS, ...SUBCOMMAND_FLAGS["agent add"].filter((f) => SUBCOMMAND_FLAGS["agent build"].includes(f))]
+  .flatMap(flagWords).join(" ");
+const SUBCOMMAND_PRE_FLAGS = { agent: AGENT_PRE_SUBCOMMAND_FLAGS, completion: COMPLETION_NO_DRY_FLAGS };
 const SUBCOMMAND_CASES = Object.entries(SUBCOMMANDS).map(([cmd, words]) => `    ${cmd})
-      COMPREPLY=( $(compgen -W "${words.join(" ")}" -- "\${cur}") )
+      COMPREPLY=( $(compgen -W "${words.join(" ")} ${SUBCOMMAND_PRE_FLAGS[cmd]}" -- "\${cur}") )
       return 0
       ;;`).join("\n");
 

@@ -298,6 +298,16 @@ export function validate(command, flags) {
   if (flags.cheap && (flags.author != null || flags.authors != null || flags.reviewer != null || flags.reviewers != null)) {
     throw usageError("--cheap cannot be combined with --author/--authors/--reviewer/--reviewers");
   }
+  // --author + --authors (or --reviewer + --reviewers) together used to pick
+  // the plural silently and drop the singular, only caught deep inside
+  // cli.js's applyRoleOverrides — after the update-check network call and the
+  // GitHub App token mint had already run. Flag-only, so it belongs here too.
+  if (flags.author != null && flags.authors != null) {
+    throw usageError("set --author or --authors, not both");
+  }
+  if (flags.reviewer != null && flags.reviewers != null) {
+    throw usageError("set --reviewer or --reviewers, not both");
+  }
 }
 
 // [min, max, usageOnMissing] non-flag arguments after the command word. The
@@ -323,6 +333,11 @@ const POSITIONAL_ARITY = {
   continue: [1, 1, "usage: orch continue <sid>"],
   pr: [1, 1, "usage: orch pr <number> [--merge]"],
   release: [1, Infinity, 'usage: orch release "<changelog entry>"'],
+  // Internal re-exec target, never typed by a user (see cli.js) — but it still
+  // only reads rest[0] (current version) and rest[1] (cache dir); a stray
+  // third positional used to pass through unchecked instead of being refused
+  // like every other command's excess argument.
+  "__update-check-child": [0, 2],
 };
 
 // Positional/subcommand grammar was previously unchecked: `completion typo`,
@@ -394,6 +409,22 @@ function validateAgentArgs(rest, flags) {
   }
   if (sub === "build" && flags.build) {
     throw usageError("--build is not valid with 'orch agent build' — building is what the subcommand already does");
+  }
+  if (sub === "build") {
+    // A name orch already has adapter code for never builds (cli.js's
+    // buildAgent returns "already-registered" before it reads any flag) — so
+    // --pr/the role overrides/--allow-large-scope are inert there, same as on
+    // `agent add`. Plain `orch agent build <known>` (no build-only flags)
+    // stays legal; it just reports "already registered".
+    let known = true;
+    try { getAdapter(name); } catch { known = false; }
+    if (known) {
+      for (const flagName of AGENT_BUILD_ONLY_FLAGS) {
+        if (flags[flagName] !== undefined && flags[flagName] !== false) {
+          throw usageError(`--${flagName} is not valid with 'orch agent build ${name}' — ${name} already has an adapter, so no build runs`);
+        }
+      }
+    }
   }
   if (sub === "add") {
     // A name orch already has adapter code for never builds, `--build` or not

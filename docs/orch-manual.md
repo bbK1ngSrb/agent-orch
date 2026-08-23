@@ -637,10 +637,10 @@ rejected": `orch issue 42 --file wo.json` used to run against the issue body and
 ignore the file, and `orch pr 42 --merge --dry` used to perform a real merge.
 `--dry` is honoured by every command that changes something and refused on the
 read-only ones (`dashboard`, `mcp`), where planning nothing is not a
-meaningful request. `config` also refuses it, but for a different reason: it
-DOES change something (it writes `.orch/orch.yml`) — it just doesn't have a
-dry mode, so `--dry` is refused the same way any other flag it doesn't read
-would be, not with the read-only commands' "changes nothing" wording.
+meaningful request. `config` changes something too (it writes
+`.orch/orch.yml`), and honours `--dry` like the rest: instead of launching the
+interactive wizard, it prints the path it would write and leaves the file
+untouched.
 
 ### 2.14 The protected-path intake refusal
 

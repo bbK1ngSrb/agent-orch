@@ -795,6 +795,31 @@ test("orch issue --cheap --reviewer is refused before the issue is fetched", asy
   );
 });
 
+// --author + --authors (or --reviewer + --reviewers) together used to pick
+// the plural silently and drop the singular, caught only deep inside
+// applyRoleOverrides (cli.js) — after `issue` had already fetched the issue.
+// This is a flag-only combination, same as --cheap above, so schema.js's
+// validate() now catches it before main() does anything.
+test("orch issue --author and --authors together is refused before the issue is fetched", async () => {
+  await assert.rejects(
+    () => main(["issue", "1", "--dry", "--author", "claude", "--authors", "claude,codex", "--reviewer", "codex"], {
+      preflight() {},
+      githubDeps: () => ({ gh: () => { throw new Error("gh ran — issue fetched before validation"); } }),
+    }),
+    (e) => e.exit === 64 && /set --author or --authors, not both/.test(e.message),
+  );
+});
+
+test("orch issue --reviewer and --reviewers together is refused before the issue is fetched", async () => {
+  await assert.rejects(
+    () => main(["issue", "1", "--dry", "--author", "claude", "--reviewer", "codex", "--reviewers", "codex,claude"], {
+      preflight() {},
+      githubDeps: () => ({ gh: () => { throw new Error("gh ran — issue fetched before validation"); } }),
+    }),
+    (e) => e.exit === 64 && /set --reviewer or --reviewers, not both/.test(e.message),
+  );
+});
+
 // `task` has no positional minimum (--file supplies the text instead), so a
 // bare `orch task` used to sail past parsing and reach main()'s update-check
 // network call and GitHub App auth mint before the handler itself finally
@@ -1347,6 +1372,20 @@ test("agent build --pr routes the cycle through merge: pr instead of a local-onl
   assert.match(logs.join("\n"), /agent build widget: pr /);
 });
 
+// buildAgent's dry path is a real stubbed cycle (dryDeps()), not the
+// print-and-return short-circuit most other write commands use for --dry —
+// nothing exercised that end-to-end before: preflight/git-sync/inflight
+// registration must all be skipped, and the run must still report a result.
+test("agent build --dry runs a stubbed dry cycle without preflight, sync, or registration side effects", async () => {
+  const d = initGitRepo("orch-agentbuild-dry-");
+  const logs = await runMainInRepo(d, ["agent", "build", "widget", "--dry"], {
+    resolveAgentBin: () => "/usr/bin/widget",
+    preflight() { assert.fail("preflight ran despite --dry"); },
+  });
+  assert.match(logs.join("\n"), /agent build widget: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/);
+  assert.equal(existsSync(join(d, ".orch", "inflight")), false, "dry run must not register an inflight cycle");
+});
+
 test("agent build honors --author/--reviewer role overrides instead of the configured/rotated author", async () => {
   const d = initGitRepo("orch-agentbuild-roles-");
   const authoredBy = [];
@@ -1410,6 +1449,48 @@ test("agent build no-ops when the agent is already registered", async () => {
   const d = initGitRepo("orch-agentbuild-known-");
   const logs = await runMainInRepo(d, ["agent", "build", "claude"]);
   assert.match(logs.join("\n"), /already registered/);
+});
+
+// `orch agent build <known-adapter>` shares the exact same "nothing left to
+// build" fate as `agent add <known-adapter> --build` above — buildAgent()
+// returns "already-registered" before it ever reads flags.pr/author/reviewer/
+// allow-large-scope, so those flags used to validate, run the full dispatch,
+// and get silently dropped instead of refused.
+test("agent build <known-adapter> --pr is a usage error, not a silent drop", async () => {
+  const d = initGitRepo("orch-build-known-pr-");
+  await assert.rejects(
+    () => runMainInRepo(d, ["agent", "build", "claude", "--pr"], {
+      buildAgent: async () => assert.fail("buildAgent ran — claude's adapter code already exists, nothing to build"),
+    }),
+    (e) => e.exit === 64 && /--pr is not valid with 'orch agent build claude'/.test(e.message),
+  );
+});
+
+test("agent build <known-adapter> --allow-large-scope is a usage error, not a silent drop", async () => {
+  const d = initGitRepo("orch-build-known-scope-");
+  await assert.rejects(
+    () => runMainInRepo(d, ["agent", "build", "claude", "--allow-large-scope"], {
+      buildAgent: async () => assert.fail("buildAgent ran — claude's adapter code already exists, nothing to build"),
+    }),
+    (e) => e.exit === 64 && /--allow-large-scope is not valid with 'orch agent build claude'/.test(e.message),
+  );
+});
+
+// Same "validate before every side effect" property as the `agent add`
+// variant: the known-adapter check runs in validatePositionals (schema.js),
+// which main() calls immediately after parse() — before the update-check
+// network call.
+test("agent build <known-adapter> --pr is refused before the update-check side effect fires", async () => {
+  const d = initGitRepo("orch-build-known-noupdate-");
+  let updateChecked = false;
+  await assert.rejects(
+    () => runMainInRepo(d, ["agent", "build", "claude", "--pr"], {
+      maybeNotifyUpdate: () => { updateChecked = true; return Promise.resolve(); },
+      buildAgent: async () => assert.fail("buildAgent ran — claude's adapter code already exists, nothing to build"),
+    }),
+    (e) => e.exit === 64,
+  );
+  assert.equal(updateChecked, false, "update-check must not fire before a usage error is refused");
 });
 
 test("agent build rejects a missing CLI before starting the pipeline", async () => {
