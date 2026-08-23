@@ -1170,6 +1170,11 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
   };
 
+  // A resumed sid (isResume above) reuses the ORIGINAL run's runId — look up
+  // its existing record so create() below doesn't stomp attempt/cycles/lastError
+  // back to genesis, and so the terminal update appends this cycle instead of
+  // replacing the whole history.
+  const priorRecord = dry ? null : runRecord.lookup(orchDir, sid);
   if (!dry) {
     const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
     registerWithConcurrencyCap(
@@ -1179,20 +1184,24 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
       cfg,
       { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
     );
-    runRecord.create(orchDir, { runId: sid, command: "agent", argv: [redact(name)] });
+    if (!priorRecord) runRecord.create(orchDir, { runId: sid, command: "agent", argv: [redact(name)] });
   }
   try {
     const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
     if (!dry) {
       resume.clear(orchDir, task, authorName);
       checkpoint.clear(orchDir, sid);
+      const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
       runRecord.update(orchDir, sid, {
         state: "DONE",
         outcome: outcomeForResult(result),
         exit: exitForResult(result),
-        attempt: 0,
+        attempt,
         branch,
-        cycles: [{ sid, attempt: 0, branch, author: authorName, reviewers: reviewerList.map((r) => r.agent), status: result.status, reason: result.reason || null }],
+        cycles: [
+          ...(priorRecord?.cycles || []),
+          { sid, attempt, branch, author: authorName, reviewers: reviewerList.map((r) => r.agent), status: result.status, reason: result.reason || null },
+        ],
       });
     }
     return { ...result, branch };
@@ -1603,6 +1612,11 @@ export async function main(argv, deps = {}) {
     const mergedBranches = []; // cycle branches that actually landed on integration
     const prUrls = [];
     for (const run of runs) {
+      // A resumed run (run.resume) reuses the ORIGINAL run's sid as its runId —
+      // look up its existing record so create() below doesn't stomp
+      // attempt/cycles/lastError back to genesis, and so the terminal update
+      // appends this cycle instead of replacing the whole history.
+      const priorRecord = dry ? null : runRecord.lookup(orchDir, run.sid);
       if (!dry) {
         const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
         const accepted = registerWithConcurrencyCap(
@@ -1622,7 +1636,7 @@ export async function main(argv, deps = {}) {
         }
         // runId == this cycle's sid (design §5.1/§5.3) until the run-controller
         // (P5) can extend a run across more than one cycle. `--dry` writes none.
-        runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact) });
+        if (!priorRecord) runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact) });
       }
       try {
         const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes })));
@@ -1635,14 +1649,18 @@ export async function main(argv, deps = {}) {
         if (!dry) {
           if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
+          const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
           runRecord.update(orchDir, run.sid, {
             state: "DONE",
             outcome: outcomeForResult(result),
             exit: exitForResult(result),
-            attempt: 0,
+            attempt,
             branch: run.branch,
             pr: result.prUrl ? { number: null, url: result.prUrl, kind: "standing" } : null,
-            cycles: [{ sid: run.sid, attempt: 0, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null }],
+            cycles: [
+              ...(priorRecord?.cycles || []),
+              { sid: run.sid, attempt, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null },
+            ],
           });
         }
         console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
@@ -1861,7 +1879,7 @@ export async function main(argv, deps = {}) {
             exit: exitForResult(result),
             attempt: priorRun.attempt + 1,
             branch,
-            cycles: [...priorRun.cycles, { sid, attempt: priorRun.attempt, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
+            cycles: [...priorRun.cycles, { sid, attempt: priorRun.attempt + 1, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
           });
         } else {
           runRecord.create(orchDir, { runId, command, argv: argv.map(redact) });

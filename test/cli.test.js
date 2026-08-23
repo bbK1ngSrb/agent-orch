@@ -4202,4 +4202,50 @@ test("orch continue on a resumable stopped-at-cap record honors a stored maxAtte
   const record = JSON.parse(readFileSync(join(dir, `${sid}.json`), "utf8"));
   assert.equal(record.policy.maxAttempts, 1); // 1 (prior attempt) + 0 (maxAttempts:0), not 2
   assert.equal(record.attempt, 2); // priorRun.attempt (1) + 1 for this resumed cycle
+  // Regression: the appended cycle entry must carry the SAME attempt number as
+  // record.attempt (2), not the stale priorRun.attempt (1) — an off-by-one that
+  // left `cycles` one step behind `attempt` and corrupted the attempt-keyed lineage.
+  assert.equal(record.cycles.length, 2);
+  assert.equal(record.cycles[1].attempt, 2);
+});
+
+// Regression: `orch task` resuming a quota-aborted sid (resolveTaskBranch's
+// resume path — issue #24) reuses that ORIGINAL sid as its runId. Before this
+// fix, the terminal cycle unconditionally called runRecord.create() on that
+// runId, which unconditionally overwrites — resetting attempt/cycles/lastError/
+// createdAt back to genesis and silently violating design §5's "a record is
+// never deleted by orch" (nothing ever prunes/rebuilds these files, so the
+// history is gone for good).
+test("orch task resuming a sid with an existing run record appends to it instead of resetting it", async () => {
+  const repo = initGitRepo();
+  const sid = "resumesid1";
+  const branch = `pr/claude/some-task-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  // The record `resolveTaskBranch` would have written before the original run,
+  // and pinnedResumeAuthor reads to pin the same author on resume.
+  resume.record(join(repo, ".orch"), "some task", "claude", { branch, sid });
+
+  const dir = join(repo, ".orch", "run-records");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${sid}.json`), JSON.stringify({
+    schemaVersion: 1, runId: sid, command: "task", argv: [], policy: null,
+    createdAt: "2020-01-01T00:00:00.000Z", updatedAt: "2020-01-01T00:00:00.000Z",
+    state: "DONE", outcome: "error", exit: 1, attempt: 2, retries: {}, headMovedRepins: 0,
+    lastError: "boom",
+    cycles: [
+      { sid, attempt: 0, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null },
+      { sid, attempt: 1, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null },
+    ],
+  }));
+
+  await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
+
+  const record = JSON.parse(readFileSync(join(dir, `${sid}.json`), "utf8"));
+  assert.equal(record.createdAt, "2020-01-01T00:00:00.000Z"); // create() must not re-run on a resumed sid
+  assert.equal(record.attempt, 3); // priorRecord.attempt (2) + 1 for this resumed cycle
+  assert.equal(record.cycles.length, 3); // appended, not replaced
+  assert.equal(record.cycles[2].attempt, 3);
 });
