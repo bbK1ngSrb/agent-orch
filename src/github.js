@@ -16,11 +16,22 @@ import { redact, publicSummary } from "./redact.js";
 function mergeDirect(gh, prRef, method, sha = null) {
   const args = ["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${prRef}/merge`, "-f", `merge_method=${method}`];
   if (sha) args.push("-f", `sha=${sha}`);
-  gh(args);
+  return gh(args);
 }
 
 function prNumberFromUrl(url) {
   return String(url || "").match(/\/pull\/(\d+)(?:\b|$)/)?.[1] || null;
+}
+
+// `gh` prints `gh: <message> (HTTP <code>)` on stderr for a REST/API failure;
+// execFileSync folds that into error.stderr (or error.message when stderr is
+// unavailable). Pulling the bare 3-digit code out of whichever text we have is
+// the one place that turns a thrown error into an HTTP status — every caller
+// below branches on that number, never on message text.
+function parseHttpStatus(e) {
+  const msg = String(e?.stderr || e?.message || "");
+  const m = msg.match(/\b(\d{3})\b/);
+  return m ? Number(m[1]) : null;
 }
 
 function fallbackPrBody(reason, closes, method, prNumber = "<PR-number>") {
@@ -71,19 +82,13 @@ function closingLinesFromIntegration(git, repo, base, branch) {
 // yet", so it gets logged. Still never throws: the PR is already open and the
 // caller must not fail the cycle over a merge that can be retried.
 function tryMergeDirect(gh, prRef, method, sha = null, log = () => {}) {
-  try {
-    mergeDirect(gh, prRef, method, sha);
-  } catch (e) {
-    // gh puts the status in stderr ("(HTTP 405)"); e.message also carries the
-    // command line, whose `/pulls/<N>/merge` path would let PR #405 or #409
-    // match the status pattern and mute itself forever.
-    const msg = String(e?.stderr || e?.message || "");
-    if (sha && /\b409\b/.test(msg)) {
-      log("integration advanced past the commit this cycle verified — the newer cycle will merge it");
-    } else if (!/\b(?:405|409)\b/.test(msg)) {
-      log(`direct merge of ${prRef} failed with an unexpected error (not a "not ready yet" refusal): ${redact(msg)}`);
-    }
+  const r = mergePrHeadBound(prRef, sha, method, { gh });
+  if (r.result === "head-moved") {
+    if (sha) log("integration advanced past the commit this cycle verified — the newer cycle will merge it");
+    return;
   }
+  if (r.result === "merged" || r.result === "blocked") return;
+  log(`direct merge of ${prRef} failed with an unexpected error (not a "not ready yet" refusal): ${redact(r.message)}`);
 }
 
 // A statusCheckRollup entry is one of two shapes: a CheckRun (GitHub Actions /
@@ -127,6 +132,132 @@ function prHasConflicts(gh, prRef, cached = null) {
   const data = cached
     || JSON.parse(gh(["pr", "view", String(prRef), "--json", "mergeable,mergeStateStatus"]) || "{}");
   return data.mergeable === "CONFLICTING" || data.mergeStateStatus === "DIRTY";
+}
+
+// --- Design §9 read/write primitives — synchronous over deps.gh, HTTP status
+// parsed from the thrown error, never message-text branching. ---
+
+export function prView(n, fields, deps) {
+  const f = Array.isArray(fields) ? fields.join(",") : fields;
+  return JSON.parse(deps.gh(["pr", "view", String(n), "--json", f]) || "{}");
+}
+
+// `--paginate --slurp` wraps every page's array in one outer array; flatten
+// to the single list of comment objects callers expect.
+export function listComments(n, { since } = {}, deps) {
+  const args = ["api", `repos/{owner}/{repo}/issues/${n}/comments`, "--paginate", "--slurp"];
+  if (since) args.push("-f", `since=${since}`);
+  const pages = JSON.parse(deps.gh(args) || "[]");
+  return pages.flat();
+}
+
+export function collaboratorPermission(login, deps) {
+  try {
+    const data = JSON.parse(deps.gh(["api", `repos/{owner}/{repo}/collaborators/${login}/permission`]) || "{}");
+    return { ok: true, permission: data.permission, roleName: data.role_name };
+  } catch (e) {
+    return { ok: false, status: parseHttpStatus(e) };
+  }
+}
+
+export function viewerPermission(deps) {
+  const data = JSON.parse(deps.gh(["api", "repos/{owner}/{repo}"]) || "{}");
+  const perms = data.permissions || {};
+  return { push: !!perms.push, admin: !!perms.admin };
+}
+
+// Rules-API required_status_checks first; classic branch protection only when
+// that comes back empty (a repo can have one or the other, not both). A 403
+// on either read means the required set can't be determined at all.
+export function requiredChecks(base, deps) {
+  let contexts = [];
+  try {
+    const rules = JSON.parse(deps.gh(["api", `repos/{owner}/{repo}/rules/branches/${base}`]) || "[]");
+    contexts = rules
+      .filter((r) => r.type === "required_status_checks")
+      .flatMap((r) => (r.parameters?.required_status_checks || []).map((c) => c.context));
+  } catch (e) {
+    if (parseHttpStatus(e) === 403) return { known: false, contexts: [] };
+  }
+  if (contexts.length) return { known: true, contexts };
+  try {
+    const data = JSON.parse(deps.gh(["api", `repos/{owner}/{repo}/branches/${base}/protection`]) || "{}");
+    return { known: true, contexts: data.required_status_checks?.contexts || [] };
+  } catch (e) {
+    const status = parseHttpStatus(e);
+    return status === 404 ? { known: true, contexts: [] } : { known: false, contexts: [] };
+  }
+}
+
+export function findPrByHead(head, base, { includeDraft = true } = {}, deps) {
+  const list = JSON.parse(deps.gh([
+    "pr", "list", "--head", head, "--base", base, "--state", "open",
+    "--json", "number,url,isDraft,headRefOid",
+  ]) || "[]");
+  const match = includeDraft ? list[0] : list.find((p) => !p.isDraft);
+  return match ? { number: match.number, url: match.url, isDraft: !!match.isDraft, headRefOid: match.headRefOid } : null;
+}
+
+// Find-or-create: `gh pr create` exits nonzero ("a pull request for branch X
+// into Y already exists") when the head already has an open PR — a bare
+// create on a re-run would throw with no catch anywhere up to bin/orch.js.
+export function createPr({ head, base, title, body, draft = false }, deps) {
+  const { gh, log = () => {} } = deps;
+  const existing = findPrByHead(head, base, { includeDraft: true }, deps);
+  if (existing) {
+    log(`PR already open for ${head}: ${existing.url}`);
+    return { ...existing, created: false };
+  }
+  const args = ["pr", "create", "--head", head, "--base", base, "--title", redact(title), "--body", body];
+  if (draft) args.push("--draft");
+  const url = gh(args).trim();
+  log(`opened PR for ${head}: ${url}`);
+  return { number: Number(prNumberFromUrl(url)) || null, url, isDraft: !!draft, headRefOid: null, created: true };
+}
+
+// Create-or-edit-in-place: a hidden `<!-- orch:<marker> -->` tag identifies
+// "our" comment across re-runs so a repeated call updates it instead of
+// piling up a new comment every time.
+export function commentOnce({ kind = "issue", target, body, marker }, deps) {
+  const { gh } = deps;
+  const tag = marker ? `<!-- orch:${marker} -->` : null;
+  const tagged = tag ? `${tag}\n${body}` : body;
+  const existing = tag && listComments(target, {}, deps).find((c) => String(c.body || "").includes(tag));
+  const payload = JSON.stringify({ body: tagged });
+  if (existing) {
+    gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/issues/comments/${existing.id}`, "--input", "-"], payload);
+    return { id: existing.id, created: false };
+  }
+  const out = JSON.parse(gh(["api", "-X", "POST", `repos/{owner}/{repo}/issues/${target}/comments`, "--input", "-"], payload) || "{}");
+  return { id: out.id, created: true };
+}
+
+// Head-bound merge: never throws on an HTTP failure — the caller decides what
+// each discriminant means (blocked/rejected can be retried, head-moved needs
+// a re-pin, not-found means the PR is gone).
+export function mergePrHeadBound(n, headSha, method, deps) {
+  try {
+    const out = mergeDirect(deps.gh, n, method, headSha);
+    let sha;
+    try { sha = JSON.parse(out || "{}").sha; } catch { /* transport returned a non-JSON body; sha stays unknown */ }
+    return { result: "merged", status: 200, message: "", sha };
+  } catch (e) {
+    const status = parseHttpStatus(e);
+    const message = String(e?.stderr || e?.message || "");
+    if (status === 409) return { result: "head-moved", status, message };
+    if (status === 405) return { result: "blocked", status, message };
+    if (status === 404) return { result: "not-found", status, message };
+    return { result: "rejected", status, message };
+  }
+}
+
+export function updateBranch(n, deps) {
+  try {
+    deps.gh(["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${n}/update-branch`]);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, status: parseHttpStatus(e), message: String(e?.stderr || e?.message || "") };
+  }
 }
 
 // Build the PR comment body. §3f: `body` is the constrained machine summary
@@ -217,7 +348,9 @@ export async function runPr(opts, deps) {
       rounds: result.rounds,
     });
     const body = redact(buildComment(result, summary));
-    gh(["pr", "comment", String(n), "--body-file", "-"], body);
+    // A hidden marker keeps this idempotent — a re-run edits the same PR
+    // comment in place instead of piling up a new one every audit.
+    commentOnce({ kind: "pr", target: n, body, marker: "verdict" }, deps);
     log(`commented on PR #${pr.number}: ${result.status}`);
 
     if (result.status === "approved" && merge) {
@@ -236,16 +369,16 @@ export async function runPr(opts, deps) {
         log(`PR #${pr.number} is approved but its checks are not green — not merging; re-run \`orch pr ${pr.number} --merge\` once CI settles`);
         return { ...result, mergeHold: "checks not green" };
       }
-      try {
-        mergeDirect(gh, String(n), cfg.github.mergeMethod, reviewedSha);
-      } catch (e) {
-        if (/\b409\b/.test(String(e?.message || ""))) {
-          throw new Error(
-            `orch pr #${pr.number}: the PR head moved during review — re-run \`orch pr ${pr.number} --merge\` to audit the new head`,
-            { cause: e },
-          );
-        }
-        throw e;
+      const mergeResult = mergePrHeadBound(String(n), reviewedSha, cfg.github.mergeMethod, deps);
+      if (mergeResult.result === "head-moved") {
+        throw new Error(
+          `orch pr #${pr.number}: the PR head moved during review — re-run \`orch pr ${pr.number} --merge\` to audit the new head`,
+        );
+      }
+      if (mergeResult.result !== "merged") {
+        throw new Error(
+          `orch pr #${pr.number}: direct merge failed (HTTP ${mergeResult.status ?? "?"}): ${redact(mergeResult.message)}`,
+        );
       }
       // gh reporting exit 0 isn't proof the commit is actually on origin/main —
       // squash/rebase merges mint a brand-new sha, so we can't just check the
@@ -296,32 +429,11 @@ export function requireGh(gh) {
 // secret-shaped branch name leaks through publicSummary's \w sanitizer otherwise).
 async function pushAndCreatePr(ctx, deps, title, body, headSha = null) {
   const { repo, branch, cfg } = ctx;
-  const { gh, git, log = () => {} } = deps;
+  const { git } = deps;
   const base = cfg?.baseBranch || "main";
   const refspec = headSha ? `${headSha}:refs/heads/${branch}` : branch;
   git(["push", "-u", "origin", refspec], repo);
-  // Find-or-create, same idiom as openIntegrationPr: `gh pr create` exits
-  // nonzero ("a pull request for branch X into Y already exists") when the
-  // head already has an open PR, and ghShell turns that into a throw with no
-  // catch anywhere up to bin/orch.js — a re-run would crash the whole process.
-  const open = JSON.parse(gh([
-    "pr", "list",
-    "--head", branch,
-    "--base", base,
-    "--state", "open",
-    "--json", "number,url",
-  ]) || "[]");
-  if (open[0]) {
-    log(`PR already open for ${branch}: ${open[0].url}`);
-    return open[0].url;
-  }
-  const url = gh([
-    "pr", "create", "--head", branch, "--base", base,
-    "--title", redact(title),
-    "--body", body,
-  ]).trim();
-  log(`opened PR for ${branch}: ${url}`);
-  return url;
+  return createPr({ head: branch, base, title, body }, deps).url;
 }
 
 // Demote an approved-but-unmergeable branch: open a PR if we can, else escalate
@@ -473,10 +585,14 @@ export async function openIntegrationPr(ctx, deps) {
     const state = JSON.parse(gh(["pr", "view", prRef, "--json", "mergeable,mergeStateStatus"]) || "{}");
     mergeState = state;
     if (state.mergeStateStatus === "BEHIND" && state.mergeable !== "CONFLICTING") {
-      gh(["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${prRef}/update-branch`]);
-      updatedFromBase = true;
+      const res = updateBranch(prRef, deps);
       mergeState = null;
-      log(`updated stale integration PR #${prRef} from ${base}`);
+      if (res.ok) {
+        updatedFromBase = true;
+        log(`updated stale integration PR #${prRef} from ${base}`);
+      } else {
+        log(`could not update-branch integration PR #${prRef} (non-fatal): ${res.message}`);
+      }
     }
   } catch (e) {
     mergeState = null;

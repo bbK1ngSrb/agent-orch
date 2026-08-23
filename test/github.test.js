@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runPr, buildComment, buildIssueComment, demote, openPr, openIntegrationPr } from "../src/github.js";
+import {
+  runPr, buildComment, buildIssueComment, demote, openPr, openIntegrationPr,
+  mergePrHeadBound, commentOnce, collaboratorPermission, requiredChecks,
+} from "../src/github.js";
 
 function makeDeps({
   status = "approved", state = "OPEN",
@@ -65,7 +68,7 @@ test("runPr fetches PR head, audits with noMerge, comments", async () => {
   assert.equal(deps._calls.cycleOpts.noMerge, true);
   assert.equal(deps._calls.cycleOpts.branch, "pr-7");
   // posted a comment via stdin — §3f: machine summary only, NEVER reviewer prose
-  const comment = deps._calls.gh.find((c) => c.args[1] === "comment");
+  const comment = deps._calls.gh.find((c) => c.args[0] === "api" && c.args.includes("-X") && c.args.some((a) => String(a).includes("/comments")));
   assert.ok(comment, "a PR comment must be posted");
   assert.ok(!comment.input.includes("reviewer says ok"), "reviewer prose must not reach the public PR");
   assert.match(comment.input, /orch verdict:/);
@@ -88,31 +91,34 @@ test("runPr merges only with merge flag + approved", async () => {
   assert.ok(yes._calls.git.some((a) =>
     a[0] === "merge-base" && a[1] === "--is-ancestor" && a[3] === "refs/remotes/origin/main"));
 
+  const isMergeCall = (c) => c.args[0] === "api" && c.args.some((a) => String(a).includes("/merge"));
+
   const no = makeDeps();
   await runPr({ ...opts, merge: false }, no);
-  assert.ok(!no._calls.gh.some((c) => c.args[0] === "api"));
+  assert.ok(!no._calls.gh.some(isMergeCall));
 
   const blocked = makeDeps({ status: "escalated" });
   await runPr({ ...opts, merge: true }, blocked);
-  assert.ok(!blocked._calls.gh.some((c) => c.args[0] === "api"));
+  assert.ok(!blocked._calls.gh.some(isMergeCall));
 });
 
 test("runPr --merge holds when the PR's CI checks are not green", async () => {
+  const isMergeCall = (c) => c.args[0] === "api" && c.args.some((a) => String(a).includes("/merge"));
   // A required check still running: orch's own "approved" verdict must not be
   // mistaken for CI being green.
   const pending = makeDeps({ rollup: [{ status: "IN_PROGRESS", conclusion: null }] });
   const held = await runPr({ ...opts, merge: true }, pending);
-  assert.ok(!pending._calls.gh.some((c) => c.args[0] === "api"), "must not merge while a check is in progress");
+  assert.ok(!pending._calls.gh.some(isMergeCall), "must not merge while a check is in progress");
   // the caller must be able to tell "approved" from "approved and merged"
   assert.equal(held.mergeHold, "checks not green");
 
   const failed = makeDeps({ rollup: [{ status: "COMPLETED", conclusion: "FAILURE" }] });
   await runPr({ ...opts, merge: true }, failed);
-  assert.ok(!failed._calls.gh.some((c) => c.args[0] === "api"), "must not merge with a failing check");
+  assert.ok(!failed._calls.gh.some(isMergeCall), "must not merge with a failing check");
 
   const green = makeDeps({ rollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }, { state: "SUCCESS" }] });
   await runPr({ ...opts, merge: true }, green);
-  assert.ok(green._calls.gh.some((c) => c.args[0] === "api"), "green checks must still merge");
+  assert.ok(green._calls.gh.some(isMergeCall), "green checks must still merge");
 
   // No CI configured at all: the rollup is permanently empty, so --merge stays
   // usable rather than becoming a silent no-op.
@@ -1118,8 +1124,117 @@ test("§3f: runPr comment passes through redact (no raw secret in the body)", as
   // publicSummary is machine-only, so redact is the belt: prove the posted body is redact()'d.
   const deps = makeDeps();
   await runPr(opts, deps);
-  const comment = deps._calls.gh.find((c) => c.args[1] === "comment");
+  const comment = deps._calls.gh.find((c) => c.args[0] === "api" && c.args.includes("-X") && c.args.some((a) => String(a).includes("/comments")));
   // A clean run has nothing to redact, but the body must be a string that went through it.
   assert.equal(typeof comment.input, "string");
   assert.doesNotMatch(comment.input, /gh[pousr]_[A-Za-z0-9]{36,}/, "no unredacted PAT may appear");
+});
+
+// P4: design §9 primitives — status-only discrimination, never message text.
+for (const [status, result] of [[200, "merged"], [409, "head-moved"], [405, "blocked"], [401, "rejected"], [403, "rejected"], [500, "rejected"]]) {
+  test(`mergePrHeadBound maps HTTP ${status} to "${result}"`, () => {
+    const gh = (args) => {
+      if (status === 200) return "{}";
+      throw new Error(`gh: some message (HTTP ${status})`);
+    };
+    const out = mergePrHeadBound("7", "sha1", "squash", { gh });
+    assert.equal(out.result, result);
+    assert.equal(out.status, status);
+  });
+}
+
+test("commentOnce creates a marked comment, then edits the same comment in place", () => {
+  const calls = [];
+  let posted = null;
+  const gh = (args, input) => {
+    calls.push({ args, input });
+    if (args[0] === "api" && args.includes("--paginate")) {
+      return JSON.stringify(posted ? [posted] : []);
+    }
+    if (args[0] === "api" && args.includes("-X") && args.includes("POST")) {
+      posted = { id: 99, body: JSON.parse(input).body };
+      return JSON.stringify(posted);
+    }
+    if (args[0] === "api" && args.includes("-X") && args.includes("PATCH")) {
+      posted.body = JSON.parse(input).body;
+      return JSON.stringify(posted);
+    }
+    return "";
+  };
+
+  const first = commentOnce({ kind: "pr", target: 7, body: "round 1", marker: "verdict" }, { gh });
+  assert.equal(first.created, true);
+  const second = commentOnce({ kind: "pr", target: 7, body: "round 2", marker: "verdict" }, { gh });
+  assert.equal(second.created, false);
+  assert.equal(second.id, first.id, "the second call must edit the same comment");
+  assert.ok(calls.some((c) => c.args.includes("PATCH") && c.args.some((a) => String(a).includes(`/comments/${first.id}`))));
+  assert.match(posted.body, /round 2/);
+});
+
+test("collaboratorPermission accepts role_name: maintain + permission: write", () => {
+  const gh = () => JSON.stringify({ permission: "write", role_name: "maintain" });
+  const out = collaboratorPermission("octocat", { gh });
+  assert.deepEqual(out, { ok: true, permission: "write", roleName: "maintain" });
+});
+
+test("collaboratorPermission surfaces a 403 as {ok:false}, not a throw", () => {
+  const gh = () => { throw new Error("gh: Forbidden (HTTP 403)"); };
+  const out = collaboratorPermission("octocat", { gh });
+  assert.deepEqual(out, { ok: false, status: 403 });
+});
+
+test("requiredChecks reads the rules array's required_status_checks contexts", () => {
+  const gh = (args) => JSON.stringify([
+    { type: "required_status_checks", parameters: { required_status_checks: [{ context: "test" }, { context: "lint" }] } },
+    { type: "pull_request", parameters: {} },
+  ]);
+  assert.deepEqual(requiredChecks("main", { gh }), { known: true, contexts: ["test", "lint"] });
+});
+
+test("requiredChecks falls back to classic branch protection when the rules array has none", () => {
+  const gh = (args) => (args[1].includes("/rules/")
+    ? "[]"
+    : JSON.stringify({ required_status_checks: { contexts: ["build"] } }));
+  assert.deepEqual(requiredChecks("main", { gh }), { known: true, contexts: ["build"] });
+});
+
+test("requiredChecks reports known:false on a 403 from the rules read", () => {
+  const gh = () => { throw new Error("gh: Forbidden (HTTP 403)"); };
+  assert.deepEqual(requiredChecks("main", { gh }), { known: false, contexts: [] });
+});
+
+test("requiredChecks treats a 404 classic-protection read as no required checks", () => {
+  const gh = (args) => {
+    if (args[1].includes("/rules/")) return "[]";
+    throw new Error("gh: Not Found (HTTP 404)");
+  };
+  assert.deepEqual(requiredChecks("main", { gh }), { known: true, contexts: [] });
+});
+
+test("runPr edits the same PR comment across repeated audits instead of piling up new ones", async () => {
+  let posted = null;
+  const deps = makeDeps();
+  const baseGh = deps.gh;
+  deps.gh = (args, input) => {
+    deps._calls.gh.push({ args, input });
+    if (args[0] === "api" && args.includes("--paginate")) return JSON.stringify(posted ? [posted] : []);
+    if (args[0] === "api" && args.includes("-X") && args.includes("POST")) {
+      posted = { id: 5, body: JSON.parse(input).body };
+      return JSON.stringify(posted);
+    }
+    if (args[0] === "api" && args.includes("-X") && args.includes("PATCH")) {
+      posted.body = JSON.parse(input).body;
+      return JSON.stringify(posted);
+    }
+    deps._calls.gh.pop();
+    return baseGh(args, input);
+  };
+
+  await runPr(opts, deps);
+  await runPr(opts, deps);
+
+  const patches = deps._calls.gh.filter((c) => c.args[0] === "api" && c.args.includes("PATCH"));
+  const posts = deps._calls.gh.filter((c) => c.args[0] === "api" && c.args.includes("-X") && c.args.includes("POST") && c.args.some((a) => String(a).includes("/comments")));
+  assert.equal(posts.length, 1, "only the first audit should create a new comment");
+  assert.equal(patches.length, 1, "the second audit must edit the existing comment, not create another");
 });
