@@ -7,7 +7,8 @@ import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
-import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh } from "./github.js";
+import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh, findPrByHead } from "./github.js";
+import { runUntil } from "./run-controller.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -856,6 +857,35 @@ function dryDeps() {
   };
 }
 
+// design §9 input for run-controller.js's `runUntil`: maps a LANDED cycle
+// result to the PR readiness is read against. "merged" landed on the standing
+// integration→base PR (design §0 glossary); "pr" (cfg.merge === "pr") opened
+// a PR straight from the cycle's own branch — findPrByHead re-reads rather
+// than trusting `cycle.prUrl`'s number (design §5.4 query-before-write).
+function findPrByHeadSafe(branch, baseBranch, ghDeps, fallbackUrl) {
+  // gh (findPrByHead -> deps.gh -> execFileSync) throws on any nonzero exit —
+  // no GitHub remote, no auth, network hiccup. That must resolve to "no PR
+  // found" (REMOTE_UNKNOWN in run-controller.js), not an uncaught throw that
+  // skips straight past run-controller's own error handling to cli.js's
+  // outer catch and truncates the --json stream after run.start.
+  try {
+    return findPrByHead(branch, baseBranch, { includeDraft: true }, ghDeps) || { number: null, url: fallbackUrl };
+  } catch {
+    return { number: null, url: fallbackUrl };
+  }
+}
+
+function resolveLanded(cycle, run, cfg, ghDeps, repo) {
+  const baseBranch = cfg.baseBranch || "main";
+  if (cycle.status === "pr") {
+    const pr = findPrByHeadSafe(run.branch, baseBranch, ghDeps, cycle.prUrl);
+    return { pr, expectedHead: git.git(["rev-parse", run.branch], repo), landing: "pr", branch: run.branch };
+  }
+  const integrationBranch = cfg.integrationBranch || "orch/integration";
+  const pr = findPrByHeadSafe(integrationBranch, baseBranch, ghDeps, cycle.prUrl);
+  return { pr, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "standing", branch: integrationBranch };
+}
+
 function reviewersForAuthor(authorName, reviewerSpecs) {
   const others = reviewerSpecs.filter((s) => s.agent !== authorName);
   return others.length ? others : reviewerSpecs;
@@ -1458,6 +1488,12 @@ export async function main(argv, deps = {}) {
     // reviewer"), matching review/continue/pr and the printUsage example.
     let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
+    // design §4/§6 (P5): the run controller only drives ready/merged — `once`
+    // (the default) is today's single implicit cycle, byte-for-byte unchanged
+    // below. schema.js already refuses --json without --until ready|merged.
+    const until = flags.until || "once";
+    const jsonMode = Boolean(flags.json);
+    const emit = (event) => { if (jsonMode) console.log(JSON.stringify(event)); };
 
     // F3: operator kill switch + one-cycle-at-a-time lock.
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -1616,7 +1652,7 @@ export async function main(argv, deps = {}) {
       }];
     }
 
-    maybePrintRunBanner(cfg, runs, flags, deps.stdout);
+    if (!jsonMode) maybePrintRunBanner(cfg, runs, flags, deps.stdout);
     if (!dry && runs.some((run) => run.resume)) notify.resetKpi(orchDir);
 
     const results = [];
@@ -1649,6 +1685,7 @@ export async function main(argv, deps = {}) {
         // (P5) can extend a run across more than one cycle. `--dry` writes none.
         if (!priorRecord) runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact) });
       }
+      emit({ event: "run.start", runId: run.sid, command, until, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
         const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes })));
         results.push(result);
@@ -1661,28 +1698,86 @@ export async function main(argv, deps = {}) {
           if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
           const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
-          const outcome = outcomeForResult(result);
+          let outcome = outcomeForResult(result);
+          let exit = exitForResult(result);
+          let state = STATE_FOR_OUTCOME[outcome];
+          // "merged" landed on the standing integration→main PR; "pr"
+          // (merge: pr mode) and "merge-deferred" (demote) each open a
+          // fresh PR scoped to this cycle's own branch.
+          let pr = result.prUrl ? { number: null, url: result.prUrl, kind: result.status === "merged" ? "standing" : "per-cycle" } : null;
+          let controller = null;
+          // design §6/§9 (P5): once the local cycle lands, `ready`/`merged`
+          // also wait on the remote standing PR before this run is done —
+          // `once` (bare/default) stops here, unchanged from before P5.
+          if (until !== "once") {
+            const policy = {
+              until,
+              pollSeconds: cfg.automation?.pollSeconds ?? 30,
+              ciWaitMinutes: cfg.automation?.ciWaitMinutes ?? 30,
+              maxAttempts: cfg.automation?.maxAttempts ?? 3,
+              baseBranch: cfg.baseBranch,
+              integrationBranch: cfg.integrationBranch,
+            };
+            const record = {
+              attempt,
+              retries: priorRecord?.retries || {},
+              failures: priorRecord?.failures || [],
+              headMovedRepins: priorRecord?.headMovedRepins || 0,
+              policy: { maxAttempts: policy.maxAttempts },
+            };
+            // Same `deps.githubDeps` override point every other gh call in this
+            // file uses (real git access stays direct — these tests run against
+            // a real temp repo, only the gh CLI itself gets faked).
+            const ghDeps = { gh: (deps.githubDeps || githubDeps)().gh };
+            controller = await runUntil(policy, record, {
+              runCycle: async () => result,
+              resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
+              gh: ghDeps.gh, git, repo,
+            });
+            outcome = controller.outcome;
+            exit = controller.exit;
+            state = controller.state;
+            if (controller.land) pr = { number: controller.land.pr.number, url: controller.land.pr.url, kind: controller.land.landing === "standing" ? "standing" : "per-cycle" };
+            raiseExitCode(exit);
+          }
           runRecord.update(orchDir, run.sid, {
-            state: STATE_FOR_OUTCOME[outcome],
+            state,
             outcome,
-            exit: exitForResult(result),
+            exit,
             attempt,
             branch: run.branch,
-            // "merged" landed on the standing integration→main PR; "pr"
-            // (merge: pr mode) and "merge-deferred" (demote) each open a
-            // fresh PR scoped to this cycle's own branch.
-            pr: result.prUrl ? { number: null, url: result.prUrl, kind: result.status === "merged" ? "standing" : "per-cycle" } : null,
+            pr,
+            ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
+            ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
+            ...(controller?.failure ? { failures: [...(priorRecord?.failures || []), { attempt, class: controller.failure.class, fingerprint: controller.failure.fingerprint, at: new Date().toISOString() }] } : {}),
             cycles: [
               ...(priorRecord?.cycles || []),
               { sid: run.sid, attempt, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null },
             ],
           });
+          emit({
+            event: "run.end", runId: run.sid, outcome, exit,
+            ...(controller?.failure ? { failureClass: controller.failure.class } : {}),
+            ...(controller?.blockedReason ? { blockedReason: controller.blockedReason } : {}),
+            ...(controller?.warnings?.length ? { warnings: controller.warnings } : {}),
+            ...(controller?.note ? { note: controller.note } : {}),
+            ...(pr?.url ? { prUrl: pr.url } : {}),
+          });
+        } else {
+          // `--dry` writes no run record and (design §4) never polls readiness —
+          // still emit run.end under --json so the event stream isn't silently
+          // truncated after run.start.
+          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result), dry: true });
         }
-        console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
+        if (!jsonMode) console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.prUrl) prUrls.push(result.prUrl);
         if (result.status === "escalated" || result.status === "merge-deferred") {
-          raiseExitCode(2);
+          // Under `ready`/`merged` the exit code already came from the run
+          // controller above (STOPPED_AT_CAP=2 or BLOCKED=3 per design §6) —
+          // raising a flat 2 here too is harmless (raiseExitCode keeps the
+          // higher of the two) but only `once` needs this as its only source.
+          if (until === "once") raiseExitCode(2);
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
           if (!dry) commentOnIssue(result, run.branch, run.closes, deps.githubDeps || githubDeps);
@@ -1712,7 +1807,10 @@ export async function main(argv, deps = {}) {
     // docs child (which re-runs `orch task`) safely tidies itself when it lands.
     if (!dry && !flags["no-tidy"] && mergedBranches.length) {
       const finishFn = deps.finishRun || finishRun;
-      const io = deps.io || realIo();
+      // --json: keep tidying (branch cleanup is a real side effect), but a
+      // human-readable print here would land after run.end and break "last
+      // line is JSON" (design §13's stdout contract).
+      const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
       const runStats = results.flatMap((r) => r.runStats || []);
       await finishFn(
         { repo, orchDir, task, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls },

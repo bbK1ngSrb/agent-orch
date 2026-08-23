@@ -52,6 +52,11 @@ const DEFAULTS = {
   release: {
     autoBump: false, // opt-in per repo: patch version bump + CHANGELOG entry after each integrated merge
   },
+  automation: {
+    maxAttempts: 3, // design §4 RunPolicy.maxAttempts — `--until ready|merged` run-controller cap (P5)
+    pollSeconds: 30, // initial readiness poll interval; backs off 2x per attempt, capped at 10 min
+    ciWaitMinutes: 30, // bound on one readiness wait window before it counts as an attempt (REMOTE_CI_TIMEOUT)
+  },
 };
 
 // roundCapKey names the spelling the operator actually wrote, so an error about a
@@ -113,6 +118,12 @@ export function validate(cfg, roundCapKey = "roundCap") {
     throw new Error("orch.yml: docs.paths must be an array of strings");
   if (typeof cfg.release.autoBump !== "boolean")
     throw new Error("orch.yml: release.autoBump must be a boolean");
+  if (!Number.isInteger(cfg.automation.maxAttempts) || cfg.automation.maxAttempts < 0)
+    throw new Error("orch.yml: automation.maxAttempts must be a non-negative integer");
+  if (!Number.isInteger(cfg.automation.pollSeconds) || cfg.automation.pollSeconds < 1)
+    throw new Error("orch.yml: automation.pollSeconds must be a positive integer");
+  if (!Number.isInteger(cfg.automation.ciWaitMinutes) || cfg.automation.ciWaitMinutes < 1)
+    throw new Error("orch.yml: automation.ciWaitMinutes must be a positive integer");
 }
 
 // A role spec is "<agent> [model] [effort]" — whitespace-separated fields.
@@ -200,6 +211,7 @@ export function mergeConfig(user = {}, override = {}) {
     main: { ...DEFAULTS.main, ...(user.main || {}), ...(override.main || {}) },
     docs: { ...DEFAULTS.docs, ...(user.docs || {}), ...(override.docs || {}) },
     release: { ...DEFAULTS.release, ...(user.release || {}), ...(override.release || {}) },
+    automation: { ...DEFAULTS.automation, ...(user.automation || {}), ...(override.automation || {}) },
   };
 }
 

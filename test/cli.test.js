@@ -942,6 +942,119 @@ test("#136: orch task with no remote configured never calls gh, even if gh is in
   await runMainInRepo(repo, ["task", "some task", "--no-tidy"], { githubDeps: () => ({ gh, git: gitDep.git }) });
 });
 
+// P5 acceptance (docs/cli-v2-implementation-plan.md P5): `--until ready --json`
+// waits on the standing integration→base PR after landing and reports the
+// outcome as the last stdout line; bare `orch task` (tested above) is untouched.
+function readinessGh(prView) {
+  return (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false, headRefOid: prView.headRefOid }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify(prView);
+    if (args[0] === "api") return "[]"; // required checks: known, empty
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+}
+
+test("orch task --until ready --json exits 0 on a green standing PR", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 0);
+    assert.equal(last.outcome, "reached");
+    assert.equal(process.exitCode || 0, 0);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch task --until ready --json exits 2 with failureClass REMOTE_BEHIND on a BEHIND standing PR", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "BEHIND", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 2);
+    assert.equal(last.failureClass, "REMOTE_BEHIND");
+    assert.equal(process.exitCode, 2);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// findPrByHead's `gh pr list` throws on any nonzero exit (no GitHub remote,
+// bad auth, network hiccup) — that must resolve to REMOTE_UNKNOWN/exit 2
+// with a full --json stream, not an uncaught throw that skips run-controller's
+// own error handling and truncates the stream after run.start.
+test("orch task --until ready --json exits 2 with failureClass REMOTE_UNKNOWN when gh pr list throws", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "list") throw new Error("gh: could not find any pull requests");
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 2);
+    assert.equal(last.failureClass, "REMOTE_UNKNOWN");
+    assert.equal(process.exitCode, 2);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// Without --no-tidy, a real merge also runs finishRun's tidy-up afterward
+// (see "#44: a merged task run hands cycle branches to finishRun for
+// tidy-up" above) — under --json that print must not land after run.end and
+// break "the last line is the JSON outcome" (design §13, acceptance criterion
+// is literally `... --json | tail -1 | jq .exit`).
+test("orch task --until ready --json: run.end stays the last line even when post-merge tidy also runs", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    assert.ok(logs.length >= 2, "expected at least run.start and run.end");
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 0);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 test("nextAuthor alternates and persists last-author", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
   const cfg = { agents: ["claude", "codex"] };

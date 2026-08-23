@@ -35,8 +35,13 @@ test("every declared flag validates on its command, every other flag is refused"
       // reviewer-only is meaningful there, author-only isn't) — sampling --author
       // alone would otherwise trip that pairing rule for a reason unrelated to
       // what this matrix checks (does the command accept the flag at all).
+      // --json on task/issue/review only validates paired with --until ready
+      // (schema.js: there's no event stream to print on the bare/once path) —
+      // sampling --json alone would otherwise trip that pairing rule for a
+      // reason unrelated to what this matrix checks.
       const extra = ["task", "issue"].includes(command) && ["author", "authors"].includes(name)
-        ? sample("reviewer") : [];
+        ? sample("reviewer")
+        : ["task", "issue", "review"].includes(command) && name === "json" ? ["--until", "ready"] : [];
       const { flags } = parse([command, ...sample(name), ...extra]);
       assert.doesNotThrow(() => validate(command, flags), `orch ${command} --${name}`);
     }
@@ -138,9 +143,19 @@ test("--help and --version are legal on every command", () => {
   }
 });
 
-test("--json is scoped to dashboard, not global", () => {
+test("--json is scoped to dashboard and the run controller (task/issue/review + --until ready), not global", () => {
   assert.doesNotThrow(() => validate("dashboard", { json: true }));
+  const RUN_CONTROLLED = new Set(["task", "issue", "review"]);
   for (const command of Object.keys(COMMANDS).filter((c) => c !== "dashboard")) {
+    if (RUN_CONTROLLED.has(command)) {
+      assert.throws(
+        () => validate(command, { json: true }),
+        (e) => e.exit === 64 && /--json on .* requires --until ready/.test(e.message),
+        `orch ${command} --json (no --until)`,
+      );
+      assert.doesNotThrow(() => validate(command, { json: true, until: "ready" }), `orch ${command} --json --until ready`);
+      continue;
+    }
     assert.throws(
       () => validate(command, { json: true }),
       (e) => e.exit === 64 && /--json is not valid with/.test(e.message),
@@ -187,13 +202,19 @@ test("--max-attempts is not declared — it would be a silent no-op, nothing rea
   );
 });
 
-test("--until accepts only the mode that exists today", () => {
+test("--until ready|merged is available on task/issue/review (P5 run controller); continue/pr aren't wired yet", () => {
   assert.doesNotThrow(() => validate("task", { until: "once" }));
   for (const mode of ["ready", "merged"]) {
+    assert.doesNotThrow(() => validate("task", { until: mode }), mode);
     assert.throws(
-      () => validate("task", { until: mode }),
+      () => validate("continue", { until: mode }),
       (e) => e.exit === 64 && /is not yet available/.test(e.message),
-      mode,
+      `continue ${mode}`,
+    );
+    assert.throws(
+      () => validate("pr", { until: mode }),
+      (e) => e.exit === 64 && /is not yet available/.test(e.message),
+      `pr ${mode}`,
     );
   }
   assert.throws(() => validate("task", { until: "forever" }), /--until must be one of: once, ready, merged/);

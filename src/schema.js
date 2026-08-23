@@ -32,14 +32,14 @@ export const FLAGS = {
   dry: { type: "boolean", help: "Plan without shelling out or changing git." },
   until: {
     type: "enum", values: ["once", "ready", "merged"], arg: "<mode>",
-    help: "One cycle only (once); other modes not yet available.",
+    help: "once (default); ready waits on the PR; merged: not yet.",
   },
   check: { type: "boolean", help: "With upgrade, check latest version without installing." },
   link: { type: "boolean", help: "With init, link .orch/ORCH.md from agent docs." },
   build: { type: "boolean", help: "With agent add, build the adapter without asking." },
   "no-banner": { type: "boolean", help: "Hide the run banner." },
   "no-tidy": { type: "boolean", help: "Leave task branches and checkouts after merge." },
-  json: { type: "boolean", help: "With dashboard, print JSON." },
+  json: { type: "boolean", help: "Print JSON events (dashboard: a snapshot)." },
   limit: { type: "int", arg: "<n>", help: "With dashboard, limit history rows." },
   "check-history": { type: "boolean", help: "Dashboard: show stale red rows resolved (view only)." },
   once: { type: "boolean", label: "--once, --plain", help: "Dashboard: force the static one-shot print." },
@@ -99,14 +99,14 @@ export const COMMANDS = {
     ],
   },
   task: {
-    mutates: true, flags: [...RUN_FLAGS, "file", "cheap", "allow-protected"],
+    mutates: true, flags: [...RUN_FLAGS, "file", "cheap", "allow-protected", "json"],
     rows: [
       ['task "change"', "Run a cycle and update orch/integration on merge."],
       ["task --file <file>", "Run a cycle from an untrusted JSON work order."],
     ],
   },
   issue: {
-    mutates: true, flags: [...RUN_FLAGS, "cheap", "allow-protected"],
+    mutates: true, flags: [...RUN_FLAGS, "cheap", "allow-protected", "json"],
     rows: [["issue <number>", "Run from a GitHub issue and close it on merge."]],
   },
   review: {
@@ -114,7 +114,7 @@ export const COMMANDS = {
     // author (read off the branch name) and never merges, so nothing reads
     // them — accepting and ignoring them is the exact lie this schema exists
     // to remove. --reviewer(s)/--cheap ARE honoured (they pick who audits).
-    mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-tidy", "author", "authors"].includes(f)), "cheap"],
+    mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-tidy", "author", "authors"].includes(f)), "cheap", "json"],
     rows: [["review <branch>", "Audit an existing branch without merging."]],
   },
   continue: {
@@ -285,11 +285,21 @@ export function validate(command, flags) {
       (valid.length ? ` — only with: ${valid.map((c) => `orch ${c}`).join(", ")}` : " — it is not a flag of any command"),
     );
   }
-  // --until is declared now so scripts can be written against it, but only the
-  // single-cycle mode exists; the loop lands in a later slice of the CLI v2
-  // plan. Rejecting is honest, defaulting to `once` would be a lie.
-  if (flags.until && flags.until !== "once") {
-    throw usageError(`--until ${flags.until} is not yet available — only --until once (the default)`);
+  // --until ready|merged (design docs/cli-v2-design.md §6/§9) drives the run
+  // controller added in P5 — wired for task/issue/review, which share one run
+  // loop in cli.js. `continue` and `pr` don't run through that loop yet (their
+  // own run-controller wiring is a later slice); accepting the flag there and
+  // quietly behaving like `once` would be exactly the silently-ignored-flag
+  // lie this schema exists to prevent, so it stays a usage error until they're
+  // wired too.
+  if (flags.until && flags.until !== "once" && (effective === "continue" || effective === "pr")) {
+    throw usageError(`--until ${flags.until} is not yet available with 'orch ${effective}' — only --until once (the default)`);
+  }
+  // --json on a run command only makes sense once `--until` puts the run
+  // through the controller's event stream (P5); on the bare/`once` path
+  // there is nothing to stream, so accepting it would be another silent no-op.
+  if (flags.json && ["task", "issue", "review"].includes(effective) && (!flags.until || flags.until === "once")) {
+    throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged) — the once path has no event stream to print`);
   }
   // `--cheap` picks cfg.cheap.role for both roles; combined with an explicit
   // --author/--reviewer it's ambiguous which one wins. cli.js's
