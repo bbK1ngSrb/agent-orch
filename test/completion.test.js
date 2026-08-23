@@ -124,6 +124,33 @@ test("orch agent add <known-adapter> --build completion does not offer the build
   }
 });
 
+// `agent build <name>` has the same known-name gate as `agent add <name>
+// --build` above, but validateAgentArgs (schema.js) enforces it unconditionally
+// on "build" — no --build flag needed, since building is what the subcommand
+// already does. Completion's gate used to live only inside the "add" arm, so
+// `orch agent build claude <TAB>` still offered --pr/--allow-large-scope/the
+// role flags, each of which the parser then refuses with exit 64.
+test("orch agent build <known-adapter> completion does not offer the build-only flags", BASH_SKIP, () => {
+  const offered = new Set(complete(["orch", "agent", "build", "claude", ""], 4));
+  for (const name of SUBCOMMAND_FLAGS["agent build"]) {
+    if (SUBCOMMAND_FLAGS["agent add"].includes(name)) continue;
+    assert.ok(!offered.has(`--${name}`), `orch agent build claude should not offer --${name}`);
+  }
+  // config-file/dry stay legal on a known name — only the build-only flags drop.
+  for (const name of ["config-file", "dry"]) {
+    assert.ok(offered.has(`--${name}`), `orch agent build claude completion missing --${name}`);
+  }
+});
+
+// The gate must key off the actual typed <name>, not fire unconditionally on
+// "build" — an unregistered name is a real build and still gets the full flag set.
+test("orch agent build <unregistered-name> completion offers the full build flag set", BASH_SKIP, () => {
+  const unknown = new Set(complete(["orch", "agent", "build", "totally-new-agent", ""], 4));
+  for (const name of SUBCOMMAND_FLAGS["agent build"]) {
+    assert.ok(unknown.has(`--${name}`), `orch agent build totally-new-agent missing --${name}`);
+  }
+});
+
 // `orch completion bash --dry` used to be offered by tab-completion and then
 // refused by the parser (schema.js's validatePositionals: --dry only applies
 // to `completion install`, since `completion [bash]` only prints). This is

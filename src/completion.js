@@ -51,6 +51,16 @@ const AGENT_SUBCOMMAND_FLAG_CASES = Object.entries(SUBCOMMAND_FLAGS)
 // is the static list completion checks the typed <name> against below, so it
 // never suggests a flag the parser has just been taught to refuse.
 const AGENT_ADD_WITH_BUILD_FLAGS = [...GLOBAL_FLAGS, ...COMMANDS.agent.flags].flatMap(flagWords).join(" ");
+// The same known-name gate applies on the "build" side too: --pr/the role
+// overrides/--allow-large-scope are build-only flags validateAgentArgs
+// refuses unconditionally once <name> already has adapter code (schema.js's
+// validateAgentArgs, the sub === "build" branch) — a known name never builds,
+// `orch agent build` or not. AGENT_SUBCOMMAND_FLAG_CASES offers the full
+// "agent build" flag set regardless of <name>; this narrower list is swapped
+// in once the typed name matches agentNames below.
+const AGENT_BUILD_ONLY_FLAGS = SUBCOMMAND_FLAGS["agent build"].filter((f) => !SUBCOMMAND_FLAGS["agent add"].includes(f));
+const AGENT_BUILD_KNOWN_FLAGS = [...GLOBAL_FLAGS, ...SUBCOMMAND_FLAGS["agent build"].filter((f) => !AGENT_BUILD_ONLY_FLAGS.includes(f))]
+  .flatMap(flagWords).join(" ");
 const KNOWN_AGENT_PATTERN = agentNames.join("|");
 // A command-specific flag typed BEFORE the command word ("orch --merge <TAB>",
 // "orch --build <TAB>") used to leave every command on offer, including ones
@@ -178,49 +188,55 @@ ${SUBCOMMAND_CASES}
       COMPREPLY=( $(compgen -W "add build" -- "\${cur}") )
       return 0
     fi
+    # <name> (if typed yet) decides whether build-only flags are on offer at
+    # all — on BOTH subcommands, not just "add": a name orch already ships
+    # adapter code for never builds regardless of --build or of "add" vs.
+    # "build" (validateAgentArgs, schema.js, both its sub === "add" and
+    # sub === "build" branches). Scanning this once here, before the
+    # sub-specific case below, is what makes the gate apply to "build" too —
+    # it used to run only inside the "add" arm, so 'orch agent build <known>
+    # <TAB>' still offered --pr/--allow-large-scope/the role flags, each of
+    # which validateAgentArgs then refuses.
+    name=""
+    j=$((sub_index + 1))
+    while [[ \${j} -lt \${COMP_CWORD} ]]; do
+      w="\${COMP_WORDS[\${j}]}"
+      if [[ "\${w}" == -* ]]; then
+        case "\${w}" in
+          ${VALUE_FLAG_PATTERN})
+            j=$((j + 1))
+            ;;
+        esac
+      else
+        name="\${w}"
+        break
+      fi
+      j=$((j + 1))
+    done
+    known_agent=0
+    case "\${name}" in
+      ${KNOWN_AGENT_PATTERN}) known_agent=1 ;;
+    esac
     case "\${sub}" in
 ${AGENT_SUBCOMMAND_FLAG_CASES}
       *) flags="\${global_flags}" ;;
     esac
+    if [[ "\${sub}" == "build" && \${known_agent} -eq 1 ]]; then
+      flags="${AGENT_BUILD_KNOWN_FLAGS}"
+    fi
     # "agent add --build" accepts the build-only flags too (--pr, author/
     # reviewer overrides, --allow-large-scope) — offer them once --build has
     # actually been typed, not before (validateAgentArgs, schema.js).
     # --build can legally appear anywhere before the name too ("orch agent
     # --build add widget --pr"), not just after "add" — scanning only from
     # sub_index missed that ordering and under-offered --pr.
-    # But only when <name> isn't already a name orch ships an adapter for —
-    # that never builds regardless of --build, so the build-only flags stay
-    # invalid there too (validateAgentArgs refuses them unconditionally for a
-    # known name); offering them would suggest input the parser rejects.
-    if [[ "\${sub}" == "add" ]]; then
-      name=""
-      j=$((sub_index + 1))
-      while [[ \${j} -lt \${COMP_CWORD} ]]; do
-        w="\${COMP_WORDS[\${j}]}"
-        if [[ "\${w}" == -* ]]; then
-          case "\${w}" in
-            ${VALUE_FLAG_PATTERN})
-              j=$((j + 1))
-              ;;
-          esac
-        else
-          name="\${w}"
+    if [[ "\${sub}" == "add" && \${known_agent} -eq 0 ]]; then
+      for ((i = cmd_index + 1; i < COMP_CWORD; i++)); do
+        if [[ "\${COMP_WORDS[\${i}]}" == "--build" ]]; then
+          flags="${AGENT_ADD_WITH_BUILD_FLAGS}"
           break
         fi
-        j=$((j + 1))
       done
-      known_agent=0
-      case "\${name}" in
-        ${KNOWN_AGENT_PATTERN}) known_agent=1 ;;
-      esac
-      if [[ \${known_agent} -eq 0 ]]; then
-        for ((i = cmd_index + 1; i < COMP_CWORD; i++)); do
-          if [[ "\${COMP_WORDS[\${i}]}" == "--build" ]]; then
-            flags="${AGENT_ADD_WITH_BUILD_FLAGS}"
-            break
-          fi
-        done
-      fi
     fi
   elif [[ "\${cmd}" == "completion" ]]; then
     # "install" can legally appear anywhere after the command too ("orch
