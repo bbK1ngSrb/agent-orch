@@ -4116,3 +4116,53 @@ test("orch release --dry leaves package.json and CHANGELOG untouched", async () 
   // Usage validation still precedes the dry guard.
   await assert.rejects(() => runMainInRepo(dryRepo, ["release", "--dry"]), /usage: orch release/);
 });
+
+// P2: durable run record (docs/cli-v2-implementation-plan.md §3 P2).
+test("orch task leaves a run record with an outcome", async () => {
+  const repo = initGitRepo();
+  await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
+  const dir = join(repo, ".orch", "run-records");
+  const files = readdirSync(dir);
+  assert.equal(files.length, 1);
+  const record = JSON.parse(readFileSync(join(dir, files[0]), "utf8"));
+  assert.equal(record.outcome, "reached");
+  assert.equal(record.exit, 0);
+  assert.equal(record.command, "task");
+});
+
+test("orch task --dry writes no run record", async () => {
+  const repo = initGitRepo();
+  await runMainInRepo(repo, ["task", "some task", "--dry"]);
+  assert.equal(existsSync(join(repo, ".orch", "run-records")), false);
+});
+
+// Checkpoint/resume/inflight are still cleared on every terminal return (design
+// §5.1: "checkpoint semantics unchanged" — the run-controller that would keep a
+// stopped-at-cap cycle resumable via `continue` is a later slice), so a plain
+// `orch task` escalation leaves a run record `continue` can look up by runId,
+// but nothing left to actually reattach to — same "nothing to resume" refusal
+// a pre-v2 sid gets today. The record itself still gets its budget granted.
+test("orch continue resolves a run by runId, clearing a stopped-at-cap outcome even though the cycle itself is gone", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  const escalating = { ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate after cap", sha: "x" }) };
+  try {
+    await runMainInRepo(repo, ["task", "some task", "--no-tidy"], { cycleDeps: escalating });
+    const dir = join(repo, ".orch", "run-records");
+    const [file] = readdirSync(dir);
+    const runId = file.replace(/\.json$/, "");
+    let record = JSON.parse(readFileSync(join(dir, file), "utf8"));
+    assert.equal(record.outcome, "stopped-at-cap");
+    assert.equal(record.cycles[0].sid, runId); // single-cycle run: runId == its own sid
+
+    await assert.rejects(
+      () => runMainInRepo(repo, ["continue", runId], { cycleDeps: escalating }),
+      /no checkpoint or inflight record/,
+    );
+    record = JSON.parse(readFileSync(join(dir, file), "utf8"));
+    assert.equal(record.outcome, null); // resumeTerminal ran before the checkpoint lookup failed
+    assert.equal(record.exit, null);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});

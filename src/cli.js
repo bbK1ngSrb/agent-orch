@@ -27,6 +27,7 @@ import { newSid } from "./sid.js";
 import * as inflight from "./inflight.js";
 import * as resume from "./resume.js";
 import * as checkpoint from "./checkpoint.js";
+import * as runRecord from "./run-record.js";
 import * as reviewLog from "./review-log.js";
 import { finalize } from "./finalize.js";
 import { validateWorkOrder, buildAuthorPrompt, issueToWorkOrder } from "./intake/workorder.js";
@@ -93,6 +94,18 @@ function cleanStreakSuffix(orchDir, dry) {
 }
 
 const STATUS_COLOR = { merged: C.ok, escalated: C.fail, "merge-deferred": C.fail, pr: C.warn, demoted: C.warn };
+
+// Maps today's single-cycle result to the run record's outcome/exit (design
+// §5.2/§6). "stopped-at-cap" rather than "blocked": until the run-controller
+// (P5) exists, an escalated/merge-deferred cycle IS the whole run hitting its
+// (implicit, single-attempt) cap — exactly the case `continue` should be able
+// to grant a fresh attempt budget for (§5.3).
+function outcomeForResult(result) {
+  return result.status === "escalated" || result.status === "merge-deferred" ? "stopped-at-cap" : "reached";
+}
+function exitForResult(result) {
+  return outcomeForResult(result) === "stopped-at-cap" ? 2 : 0;
+}
 
 export function summaryLine(result, branch, dry, extra, color = false, closes = null) {
   const status = paint(color, STATUS_COLOR[result.status] || "", result.status);
@@ -1592,6 +1605,9 @@ export async function main(argv, deps = {}) {
         if (!accepted) {
           continue;
         }
+        // runId == this cycle's sid (design §5.1/§5.3) until the run-controller
+        // (P5) can extend a run across more than one cycle. `--dry` writes none.
+        runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact) });
       }
       try {
         const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes })));
@@ -1604,6 +1620,15 @@ export async function main(argv, deps = {}) {
         if (!dry) {
           if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
+          runRecord.update(orchDir, run.sid, {
+            state: "DONE",
+            outcome: outcomeForResult(result),
+            exit: exitForResult(result),
+            attempt: 1,
+            branch: run.branch,
+            pr: result.prUrl ? { number: null, url: result.prUrl, kind: "standing" } : null,
+            cycles: [{ sid: run.sid, attempt: 0, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null }],
+          });
         }
         console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
@@ -1645,6 +1670,16 @@ export async function main(argv, deps = {}) {
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
+    // Run-record lookup (design §5.3): resolves by runId OR by any cycle sid
+    // recorded under a run — a pre-v2 sid with no record simply misses here
+    // and falls through to today's checkpoint/inflight resume below. A
+    // terminal `stopped-at-cap`/`wait-timeout` record gets a fresh attempt
+    // budget; the branch/task reattach mechanics stay checkpoint/inflight-driven
+    // until the run-controller (P5) exists to act on that budget.
+    const priorRun = dry ? null : runRecord.lookup(orchDir, sid);
+    if (priorRun) {
+      runRecord.resumeTerminal(orchDir, priorRun.runId, { maxAttempts: priorRun.attempt + (priorRun.policy?.maxAttempts || 1) });
+    }
     // Preflight (adapter registered + CLI on PATH + .orch/ writable) runs below,
     // once the resume's actual author/reviewer agents are known — see the
     // `opts.only` comment on preflight() for why this can't run against the
@@ -1784,10 +1819,31 @@ export async function main(argv, deps = {}) {
         { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
       );
     }
+    const runId = priorRun?.runId || sid;
     try {
       const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps({ closes })));
       if (!dry) {
         checkpoint.clear(orchDir, sid);
+        if (priorRun) {
+          runRecord.update(orchDir, runId, {
+            state: "DONE",
+            outcome: outcomeForResult(result),
+            exit: exitForResult(result),
+            attempt: priorRun.attempt + 1,
+            branch,
+            cycles: [...priorRun.cycles, { sid, attempt: priorRun.attempt, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
+          });
+        } else {
+          runRecord.create(orchDir, { runId, command, argv: argv.map(redact) });
+          runRecord.update(orchDir, runId, {
+            state: "DONE",
+            outcome: outcomeForResult(result),
+            exit: exitForResult(result),
+            attempt: 1,
+            branch,
+            cycles: [{ sid, attempt: 0, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
+          });
+        }
         // Codex review (#125 stalemate): the original `orch task` run that
         // authored this branch wrote a resume.js record (task text + author →
         // branch) BEFORE it ever ran, so a crash mid-cycle leaves it for a retry
