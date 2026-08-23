@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.332 — 2026-08-23
+- CLI v2 P3 — Structured failure classes, fingerprints, remedy chooser; fix round drift (closes [#519](https://github.com/bbk1ng/agent-orch/issues/519))
+
 ## v0.4.331 — 2026-08-23
 - CLI v2 P2 — Durable run record (.orch/run-records/<runId>.json) with lineage and resume-with-fresh-budget (closes [#518](https://github.com/bbk1ng/agent-orch/issues/518))
 
