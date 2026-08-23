@@ -106,6 +106,16 @@ function outcomeForResult(result) {
 function exitForResult(result) {
   return outcomeForResult(result) === "stopped-at-cap" ? 2 : 0;
 }
+// Design §6 terminal states: only the outcomes a single implicit cycle can
+// produce today (no run-controller/readiness slice yet) — "reached" success
+// lands as READY, distinct from STOPPED_AT_CAP/ERROR so `continue` (§5.3) can
+// tell them apart.
+const STATE_FOR_OUTCOME = { reached: "READY", "stopped-at-cap": "STOPPED_AT_CAP" };
+// Design §5.2: `lastError` is `{ message, stack? } | null`, not a bare string.
+function toLastError(err) {
+  const stack = err?.stack ? redact(String(err.stack)) : null;
+  return { message: redact(String(err?.message || err)), ...(stack ? { stack } : {}) };
+}
 
 export function summaryLine(result, branch, dry, extra, color = false, closes = null) {
   const status = paint(color, STATUS_COLOR[result.status] || "", result.status);
@@ -1192,9 +1202,10 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
       resume.clear(orchDir, task, authorName);
       checkpoint.clear(orchDir, sid);
       const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
+      const outcome = outcomeForResult(result);
       runRecord.update(orchDir, sid, {
-        state: "DONE",
-        outcome: outcomeForResult(result),
+        state: STATE_FOR_OUTCOME[outcome],
+        outcome,
         exit: exitForResult(result),
         attempt,
         branch,
@@ -1206,7 +1217,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     }
     return { ...result, branch };
   } catch (err) {
-    if (!dry) runRecord.update(orchDir, sid, { state: "DONE", outcome: "error", exit: 1, lastError: redact(String(err?.message || err)) });
+    if (!dry) runRecord.update(orchDir, sid, { state: "ERROR", outcome: "error", exit: 1, lastError: toLastError(err) });
     throw err;
   } finally {
     if (!dry) inflight.deregister(orchDir, sid);
@@ -1650,9 +1661,10 @@ export async function main(argv, deps = {}) {
           if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
           const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
+          const outcome = outcomeForResult(result);
           runRecord.update(orchDir, run.sid, {
-            state: "DONE",
-            outcome: outcomeForResult(result),
+            state: STATE_FOR_OUTCOME[outcome],
+            outcome,
             exit: exitForResult(result),
             attempt,
             branch: run.branch,
@@ -1678,10 +1690,10 @@ export async function main(argv, deps = {}) {
       } catch (err) {
         if (!dry) {
           runRecord.update(orchDir, run.sid, {
-            state: "DONE",
+            state: "ERROR",
             outcome: "error",
             exit: 1,
-            lastError: redact(String(err?.message || err)),
+            lastError: toLastError(err),
           });
         }
         throw err;
@@ -1880,10 +1892,11 @@ export async function main(argv, deps = {}) {
       const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps({ closes })));
       if (!dry) {
         checkpoint.clear(orchDir, sid);
+        const outcome = outcomeForResult(result);
         if (priorRun) {
           runRecord.update(orchDir, runId, {
-            state: "DONE",
-            outcome: outcomeForResult(result),
+            state: STATE_FOR_OUTCOME[outcome],
+            outcome,
             exit: exitForResult(result),
             attempt: priorRun.attempt + 1,
             branch,
@@ -1891,8 +1904,8 @@ export async function main(argv, deps = {}) {
           });
         } else {
           runRecord.update(orchDir, runId, {
-            state: "DONE",
-            outcome: outcomeForResult(result),
+            state: STATE_FOR_OUTCOME[outcome],
+            outcome,
             exit: exitForResult(result),
             attempt: 0,
             branch,
@@ -1929,7 +1942,7 @@ export async function main(argv, deps = {}) {
         if (!dry) commentOnIssue(result, branch, closes, deps.githubDeps || githubDeps);
       }
     } catch (err) {
-      if (!dry) runRecord.update(orchDir, runId, { state: "DONE", outcome: "error", exit: 1, lastError: redact(String(err?.message || err)) });
+      if (!dry) runRecord.update(orchDir, runId, { state: "ERROR", outcome: "error", exit: 1, lastError: toLastError(err) });
       throw err;
     } finally {
       if (!dry) inflight.deregister(orchDir, sid);

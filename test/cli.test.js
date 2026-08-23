@@ -4126,6 +4126,7 @@ test("orch task leaves a run record with an outcome", async () => {
   assert.equal(files.length, 1);
   const record = JSON.parse(readFileSync(join(dir, files[0]), "utf8"));
   assert.equal(record.outcome, "reached");
+  assert.equal(record.state, "READY");
   assert.equal(record.exit, 0);
   assert.equal(record.command, "task");
 });
@@ -4156,6 +4157,7 @@ test("orch continue on a stopped-at-cap record with nothing to reattach refuses 
     const runId = file.replace(/\.json$/, "");
     let record = JSON.parse(readFileSync(join(dir, file), "utf8"));
     assert.equal(record.outcome, "stopped-at-cap");
+    assert.equal(record.state, "STOPPED_AT_CAP");
     assert.equal(record.cycles[0].sid, runId); // single-cycle run: runId == its own sid
 
     await assert.rejects(
@@ -4189,7 +4191,7 @@ test("orch continue on a resumable stopped-at-cap record honors a stored maxAtte
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${sid}.json`), JSON.stringify({
     schemaVersion: 1, runId: sid, command: "task", argv: [], policy: { maxAttempts: 0 },
-    state: "DONE", outcome: "stopped-at-cap", exit: 2, attempt: 1, retries: {}, headMovedRepins: 0,
+    state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, attempt: 1, retries: {}, headMovedRepins: 0,
     cycles: [{ sid, attempt: 0, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null }],
   }));
 
@@ -4233,8 +4235,8 @@ test("orch task resuming a sid with an existing run record appends to it instead
   writeFileSync(join(dir, `${sid}.json`), JSON.stringify({
     schemaVersion: 1, runId: sid, command: "task", argv: [], policy: null,
     createdAt: "2020-01-01T00:00:00.000Z", updatedAt: "2020-01-01T00:00:00.000Z",
-    state: "DONE", outcome: "error", exit: 1, attempt: 2, retries: {}, headMovedRepins: 0,
-    lastError: "boom",
+    state: "ERROR", outcome: "error", exit: 1, attempt: 2, retries: {}, headMovedRepins: 0,
+    lastError: { message: "boom" },
     cycles: [
       { sid, attempt: 0, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null },
       { sid, attempt: 1, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null },
@@ -4299,6 +4301,43 @@ test("orch continue on a pre-v2 sid leaves an error record when runCycle throws"
   const dir = join(repo, ".orch", "run-records");
   const record = JSON.parse(readFileSync(join(dir, `${sid}.json`), "utf8"));
   assert.equal(record.outcome, "error");
+  assert.equal(record.state, "ERROR");
   assert.equal(record.exit, 1);
-  assert.match(record.lastError, /boom/);
+  assert.match(record.lastError.message, /boom/);
+});
+
+// Design §5.3 acceptance: "`orch continue <runId>` and `<sid>` resolve to it" —
+// a run whose lineage has moved past its first cycle must still be reachable
+// by ANY of its cycles' sids, not just the runId. Only proved at the
+// run-record.js unit level before this (lookup() lineage test); this proves
+// the full `orch continue` command resolves and updates the SAME record file
+// when invoked with a later cycle's sid, distinct from the run's own runId.
+test("orch continue resolves and updates the run record when runId differs from the given sid", async () => {
+  const repo = initGitRepo("orch-continue-lineage-");
+  const runId = "runid-first-cycle";
+  const laterSid = "sid-later-cycle";
+  const branch = `pr/claude/some-fix-${laterSid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  checkpointDep.record(join(repo, ".orch"), laterSid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  const dir = join(repo, ".orch", "run-records");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${runId}.json`), JSON.stringify({
+    schemaVersion: 1, runId, command: "task", argv: [], policy: { maxAttempts: 1 },
+    state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, attempt: 1, retries: {}, headMovedRepins: 0,
+    cycles: [{ sid: laterSid, attempt: 0, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null }],
+  }));
+
+  await runMainInRepo(repo, ["continue", laterSid], { cycleDeps: fakeCycleDeps(), finishRun: async () => {} });
+
+  assert.equal(existsSync(join(dir, `${laterSid}.json`)), false); // no separate record keyed by the cycle sid
+  const record = JSON.parse(readFileSync(join(dir, `${runId}.json`), "utf8"));
+  assert.equal(record.runId, runId);
+  assert.equal(record.attempt, 2);
+  assert.equal(record.cycles.length, 2);
+  assert.equal(record.cycles[1].sid, laterSid);
 });
