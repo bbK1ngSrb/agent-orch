@@ -20,17 +20,17 @@ const LOCK_ORDER = Object.values(LOCK_NAMES);
 // two temp dirs in a test run — never get conflated. acquireLock can then
 // refuse an out-of-order acquisition instead of silently allowing a
 // deadlock-prone one.
-const held = new Map(); // lockPath -> { lockName, count }
+const held = new Map(); // lockPath -> lockName
 
 function assertOrder(lockName, lockPath) {
   const idx = LOCK_ORDER.indexOf(lockName);
   if (idx === -1) return; // not one of the ordered locks — nothing to enforce
-  for (const [heldPath, entry] of held) {
+  for (const [heldPath, heldName] of held) {
     if (heldPath === lockPath) continue;
-    const heldIdx = LOCK_ORDER.indexOf(entry.lockName);
+    const heldIdx = LOCK_ORDER.indexOf(heldName);
     if (heldIdx > idx) {
       throw new Error(
-        `lock order violation: cannot acquire "${lockName}" while holding "${entry.lockName}" ` +
+        `lock order violation: cannot acquire "${lockName}" while holding "${heldName}" ` +
           `(§12 order: ${LOCK_ORDER.join(" -> ")})`,
       );
     }
@@ -48,8 +48,7 @@ export function acquireLock(orchDir, lockName = "lock", retried = false) {
   mkdirSync(orchDir, { recursive: true });
   try {
     writeFileSync(lockPath, String(process.pid), { flag: "wx" });
-    const entry = held.get(lockPath);
-    held.set(lockPath, { lockName, count: (entry?.count || 0) + 1 });
+    held.set(lockPath, lockName); // "wx" guarantees no prior successful acquire without a release between
     return true;
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
@@ -92,6 +91,12 @@ function isStale(lockPath) {
 // it as ours here would just race that path instead of helping it.
 export function releaseLock(orchDir, lockName = "lock") {
   const lockPath = join(orchDir, lockName);
+  // We no longer hold this for ordering purposes the moment we try to give it
+  // up, regardless of whether the pid check below finds it was ever ours —
+  // otherwise a refused release (steal race: someone else now owns the file)
+  // leaves a phantom entry that spuriously blocks a later, legitimate
+  // acquisition of a lower-order lock.
+  held.delete(lockPath);
   let pid;
   try {
     pid = parseInt(readFileSync(lockPath, "utf8").trim(), 10);
@@ -100,9 +105,6 @@ export function releaseLock(orchDir, lockName = "lock") {
   }
   if (pid !== process.pid) return false;
   rmSync(lockPath, { force: true });
-  const entry = held.get(lockPath);
-  if (entry && entry.count > 1) held.set(lockPath, { lockName, count: entry.count - 1 });
-  else held.delete(lockPath);
   return true;
 }
 

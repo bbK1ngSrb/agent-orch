@@ -39,6 +39,18 @@ test("integration-repair.lock: a losing peer's acquire returns false immediately
   releaseLock(d, LOCK_NAMES.INTEGRATION_REPAIR);
 });
 
+test("§12 lock order: a refused release clears the order-tracking entry too, not just a successful one", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-remedies-"));
+  const mergePath = join(d, LOCK_NAMES.MERGE);
+  assert.equal(acquireLock(d, LOCK_NAMES.MERGE), true); // we believe we hold merge.lock (idx 3)
+  writeFileSync(mergePath, String(process.pid + 1)); // simulate a steal: someone else now owns the file
+  assert.equal(releaseLock(d, LOCK_NAMES.MERGE), false); // refused — not our pid
+  // A stale idx-3 entry here would make this legitimate lower-order acquire
+  // throw a spurious order violation even though we hold nothing.
+  assert.doesNotThrow(() => acquireLock(d, LOCK_NAMES.STANDING_PR));
+  releaseLock(d, LOCK_NAMES.STANDING_PR);
+});
+
 test("releaseLock ownership check: a cycle cannot release a lock it does not hold", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-remedies-"));
   const lockPath = join(d, LOCK_NAMES.INTEGRATION_REPAIR);
