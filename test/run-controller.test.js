@@ -65,6 +65,33 @@ test("runUntil: landed cycle, BEHIND standing PR -> STOPPED_AT_CAP, exit 2, fail
   assert.equal(result.failureClass, "REMOTE_BEHIND");
 });
 
+// Regression: `gh pr view` failing mid-poll (revoked token, network hiccup)
+// used to escape `waitReady` uncaught and propagate straight out of
+// `runUntil`, so a caller landed a real cycle and then crashed on the read
+// instead of getting a classified result. `readiness.js` now classifies a
+// 401/403 as REMOTE_AUTH; `runUntil` must surface it like any other readiness
+// failure, not throw.
+test("runUntil: gh pr view 401/403 mid-poll classifies REMOTE_AUTH instead of throwing", async () => {
+  const deps = baseDeps({ gh: () => { throw new Error("gh: Bad credentials (HTTP 401)"); } });
+  const result = await runUntil(POLICY, {}, deps);
+  assert.equal(result.exit, 2);
+  assert.equal(result.outcome, "stopped-at-cap");
+  assert.equal(result.failureClass, "REMOTE_AUTH");
+});
+
+// REMOTE_AUTH's free retry (cap 1) is exhausted on the second occurrence in
+// the same run, at which point chooseRemedy's decision is terminal and
+// run-controller.js's BLOCKED_REASON map turns it into blockedReason "auth"
+// (design §7's `REMOTE_AUTH ... none -> BLOCKED (3)` row).
+test("runUntil: gh pr view 401/403 after the free retry is exhausted -> BLOCKED, blockedReason auth", async () => {
+  const deps = baseDeps({ gh: () => { throw new Error("gh: Bad credentials (HTTP 401)"); } });
+  const record = { retries: { REMOTE_AUTH: 1 } };
+  const result = await runUntil(POLICY, record, deps);
+  assert.equal(result.exit, 3);
+  assert.equal(result.outcome, "blocked");
+  assert.equal(result.blockedReason, "auth");
+});
+
 test("runUntil: cycle escalated locally (no landing) -> classified failure, no remedy available in this slice -> STOPPED_AT_CAP", async () => {
   const deps = baseDeps({
     runCycle: async () => ({ status: "escalated", class: "REVIEW_STALEMATE", fingerprint: "fp1", reason: "stalemate after cap" }),

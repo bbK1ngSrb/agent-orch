@@ -1498,6 +1498,19 @@ export async function main(argv, deps = {}) {
     const until = flags.until || "once";
     const jsonMode = Boolean(flags.json);
     const emit = (event) => { if (jsonMode) console.log(JSON.stringify(event)); };
+    // design §3/§4: `run.start`'s `policy` field — the subset of RunPolicy this
+    // slice actually resolves before the loop starts (the remedy-ladder/roles/
+    // source fields don't exist yet; P5 ships no remedy executor). Built once so
+    // every `run.start` emission below (including the concurrency-cap skip path)
+    // carries the same object `runUntil` is given per-run.
+    const runPolicy = {
+      until,
+      maxAttempts: cfg.automation?.maxAttempts ?? 3,
+      pollSeconds: cfg.automation?.pollSeconds ?? 30,
+      ciWaitMinutes: cfg.automation?.ciWaitMinutes ?? 30,
+      baseBranch: cfg.baseBranch,
+      integrationBranch: cfg.integrationBranch,
+    };
 
     // F3: operator kill switch + one-cycle-at-a-time lock.
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -1682,8 +1695,8 @@ export async function main(argv, deps = {}) {
             // emit the pair here rather than a bare console.log so a skipped run
             // still closes out the event stream instead of just vanishing from it.
             if (jsonMode) {
-              emit({ event: "run.start", runId: run.sid, command, until, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
-              emit({ event: "run.end", runId: run.sid, outcome: "blocked", exit: 3, blockedReason: "concurrency-cap" });
+              emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
+              emit({ event: "run.end", runId: run.sid, outcome: "blocked", exit: 3, blockedReason: "concurrency-cap", usage: {} });
             } else {
               console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
             }
@@ -1699,7 +1712,7 @@ export async function main(argv, deps = {}) {
         // (P5) can extend a run across more than one cycle. `--dry` writes none.
         if (!priorRecord) runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact) });
       }
-      emit({ event: "run.start", runId: run.sid, command, until, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
+      emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
         const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes })));
         results.push(result);
@@ -1724,26 +1737,18 @@ export async function main(argv, deps = {}) {
           // also wait on the remote standing PR before this run is done —
           // `once` (bare/default) stops here, unchanged from before P5.
           if (until !== "once") {
-            const policy = {
-              until,
-              pollSeconds: cfg.automation?.pollSeconds ?? 30,
-              ciWaitMinutes: cfg.automation?.ciWaitMinutes ?? 30,
-              maxAttempts: cfg.automation?.maxAttempts ?? 3,
-              baseBranch: cfg.baseBranch,
-              integrationBranch: cfg.integrationBranch,
-            };
             const record = {
               attempt,
               retries: priorRecord?.retries || {},
               failures: priorRecord?.failures || [],
               headMovedRepins: priorRecord?.headMovedRepins || 0,
-              policy: { maxAttempts: policy.maxAttempts },
+              policy: { maxAttempts: runPolicy.maxAttempts },
             };
             // Same `deps.githubDeps` override point every other gh call in this
             // file uses (real git access stays direct — these tests run against
             // a real temp repo, only the gh CLI itself gets faked).
             const ghDeps = { gh: (deps.githubDeps || githubDeps)().gh };
-            controller = await runUntil(policy, record, {
+            controller = await runUntil(runPolicy, record, {
               runCycle: async () => result,
               resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
               gh: ghDeps.gh, git, repo,
@@ -1770,7 +1775,7 @@ export async function main(argv, deps = {}) {
             ],
           });
           emit({
-            event: "run.end", runId: run.sid, outcome, exit,
+            event: "run.end", runId: run.sid, outcome, exit, usage: result.usage || {},
             ...(controller?.failure ? { failureClass: controller.failure.class } : {}),
             ...(controller?.blockedReason ? { blockedReason: controller.blockedReason } : {}),
             ...(controller?.warnings?.length ? { warnings: controller.warnings } : {}),
@@ -1781,7 +1786,7 @@ export async function main(argv, deps = {}) {
           // `--dry` writes no run record and (design §4) never polls readiness —
           // still emit run.end under --json so the event stream isn't silently
           // truncated after run.start.
-          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result), dry: true });
+          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result), usage: result.usage || {}, dry: true });
         }
         if (!jsonMode) console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);

@@ -5,7 +5,7 @@
 // `prChecksGreen`: that helper backs `orch pr --merge`'s direct-merge path and
 // is left untouched by this slice — unifying the two is tracked in #545, not
 // done here (that gate is out of scope for an agent-reviewed slice).
-import { prView, requiredChecks } from "./github.js";
+import { prView, requiredChecks, parseHttpStatus } from "./github.js";
 
 // CheckRun (GitHub Actions et al — `status`+`conclusion`) vs StatusContext (the
 // legacy commit-status API — `state`). Mirrors github.js's own PASSING_CONCLUSIONS.
@@ -69,11 +69,32 @@ function isAncestor(deps, ancestor, descendant) {
 // this run ("read the required checks once per run", design §9 rule 4) — when
 // omitted, `inspect` fetches it itself so it stays usable standalone (tests).
 export function inspect({ pr, expectedHead, landing, cfg = {}, required } = {}, deps) {
-  const data = prView(
-    pr,
-    "number,state,isDraft,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,url",
-    deps,
-  );
+  let data;
+  try {
+    data = prView(
+      pr,
+      "number,state,isDraft,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,url",
+      deps,
+    );
+  } catch (e) {
+    // `gh pr view` (prView -> deps.gh -> execFileSync) throws on any nonzero
+    // exit — revoked/expired token, network hiccup, `gh` briefly unavailable.
+    // `findPrByHeadSafe` (cli.js) already guards the identical hazard on
+    // `gh pr list`; this read needs the same treatment or a mid-poll failure
+    // here escapes `waitReady`/`runUntil` uncaught and turns an
+    // already-merged-and-pushed cycle into a crashed run instead of a
+    // classified readiness result. A 401/403 is a real, terminal REMOTE_AUTH
+    // (never swallowed — the class exists in failure.js/run-controller.js
+    // precisely for this); anything else can't be pinned to auth, so it's
+    // treated as a transient read — `pending: true` — so `waitReady`'s loop
+    // keeps polling, the same tolerance its own `git fetch` already gets,
+    // until `ciWaitMinutes` gives up (REMOTE_CI_TIMEOUT).
+    const status = parseHttpStatus(e);
+    if (status === 401 || status === 403) {
+      return { ready: false, class: "REMOTE_AUTH", summary: `gh pr view failed (HTTP ${status})` };
+    }
+    return { ready: false, pending: true, summary: "gh pr view failed transiently; retrying" };
+  }
 
   if (data.state === "MERGED") {
     const base = `origin/${cfg.baseBranch || "main"}`;

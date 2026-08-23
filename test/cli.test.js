@@ -1028,6 +1028,60 @@ test("orch task --until ready --json exits 2 with failureClass REMOTE_UNKNOWN wh
   }
 });
 
+// readiness.js's `prView` (`gh pr view`) throws on any nonzero exit the same
+// way `findPrByHead`'s `gh pr list` does above — a revoked token or network
+// hiccup mid-poll must resolve to REMOTE_AUTH/exit 2 with a full --json
+// stream, not an uncaught throw that skips run-controller's own error
+// handling and truncates the stream after run.start.
+test("orch task --until ready --json exits 2 with failureClass REMOTE_AUTH when gh pr view throws 401", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo) }]);
+    if (args[0] === "pr" && args[1] === "view") throw new Error("gh: Bad credentials (HTTP 401)");
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 2);
+    assert.equal(last.failureClass, "REMOTE_AUTH");
+    assert.equal(process.exitCode, 2);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// design §3: `run.start` declares `policy` mandatory, `run.end` declares
+// `usage` mandatory — both were silently omitted before this fix.
+test("orch task --until ready --json: run.start carries policy, run.end carries usage (design §3)", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    const events = logs.map((l) => JSON.parse(l));
+    const start = events.find((e) => e.event === "run.start");
+    const end = events.find((e) => e.event === "run.end");
+    assert.equal(start.policy?.until, "ready");
+    assert.ok(end.usage && typeof end.usage === "object");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 // Without --no-tidy, a real merge also runs finishRun's tidy-up afterward
 // (see "#44: a merged task run hands cycle branches to finishRun for
 // tidy-up" above) — under --json that print must not land after run.end and

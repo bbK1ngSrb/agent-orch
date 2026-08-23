@@ -73,6 +73,22 @@ test("inspect: UNKNOWN mergeable is a pending (retryable) state, not a definite 
   assert.equal(result.class, undefined);
 });
 
+test("inspect: gh pr view 401/403 classifies REMOTE_AUTH instead of throwing", () => {
+  const deps = { gh: () => { throw new Error("gh: Bad credentials (HTTP 401)"); }, git: { git: () => "" }, repo: "/repo" };
+  const result = inspect(args, deps);
+  assert.equal(result.ready, false);
+  assert.equal(result.class, "REMOTE_AUTH");
+  assert.equal(result.pending, undefined);
+});
+
+test("inspect: gh pr view failing with no HTTP status is a pending (transient) read, not a throw", () => {
+  const deps = { gh: () => { throw new Error("network unreachable"); }, git: { git: () => "" }, repo: "/repo" };
+  const result = inspect(args, deps);
+  assert.equal(result.ready, false);
+  assert.equal(result.pending, true);
+  assert.equal(result.class, undefined);
+});
+
 test("inspect: failing required check classifies REMOTE_CI_RED with names", () => {
   const rollup = [{ context: "test", state: "FAILURE" }];
   const result = inspect(args, makeDeps({ statusCheckRollup: rollup }, { requiredContexts: ["test"] }));
@@ -288,4 +304,42 @@ test("waitReady: a fetch failure doesn't abort the readiness read", async () => 
   deps.git = { git: (a) => { if (a[0] === "fetch") throw new Error("network unreachable"); return ""; } };
   const result = await waitReady({ ...args, cfg: { ...args.cfg, pollSeconds: 1, ciWaitMinutes: 1 } }, deps);
   assert.equal(result.ready, true);
+});
+
+// A nonzero `gh pr view` exit anywhere in a wait window up to `ciWaitMinutes`
+// long must never escape `waitReady` uncaught — that would convert an
+// already-merged-and-pushed cycle into a crashed run instead of a classified,
+// resumable result (the exact hazard `findPrByHeadSafe` already guards for
+// `gh pr list` in cli.js).
+test("waitReady: a 401/403 from gh pr view returns REMOTE_AUTH immediately instead of throwing", async () => {
+  let slept = 0;
+  const deps = {
+    gh: () => { throw new Error("gh: Bad credentials (HTTP 401)"); },
+    git: { git: () => "" }, repo: "/repo",
+    sleep: async () => { slept += 1; },
+  };
+  const result = await waitReady({ ...args, cfg: { ...args.cfg, pollSeconds: 1, ciWaitMinutes: 1 } }, deps);
+  assert.equal(result.ready, false);
+  assert.equal(result.class, "REMOTE_AUTH");
+  assert.equal(slept, 0);
+});
+
+test("waitReady: a transient gh pr view failure is retried, not thrown, and still reaches ready", async () => {
+  let calls = 0;
+  const gh = (a) => {
+    if (a[0] === "pr" && a[1] === "view") {
+      calls += 1;
+      if (calls === 1) throw new Error("network unreachable");
+      return JSON.stringify({
+        number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+        mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null,
+        statusCheckRollup: [],
+      });
+    }
+    return JSON.stringify([]);
+  };
+  const deps = { gh, git: { git: () => "" }, repo: "/repo", sleep: async () => {} };
+  const result = await waitReady({ ...args, cfg: { ...args.cfg, pollSeconds: 1, ciWaitMinutes: 5 } }, deps);
+  assert.equal(result.ready, true);
+  assert.equal(calls, 2);
 });
