@@ -56,11 +56,18 @@ function resolveFailure(failure, record, policy) {
 export async function runUntil(policy, record = {}, deps) {
   const cycle = await deps.runCycle();
   // "approved" (engine.js's noMerge path: agreed + green, no merge attempted
-  // — set by `runPr()`'s audit-only cycle, github.js:337) is a success
+  // — set only by `runPr()`'s audit-only cycle, github.js:337) is a success
   // terminal exactly like "merged"/"pr" (engine.js:515) — omitting it here
-  // sent any `--until ready`-driven cycle landing as "approved" into
-  // resolveFailure with an empty `failure.class`, which chooseRemedy then
-  // rejected as an unknown failure class instead of reading readiness.
+  // meant any `runUntil` caller whose cycle lands as "approved" fell into
+  // resolveFailure with an empty `failure.class`, and chooseRemedy rejected
+  // that as an unknown failure class instead of reading readiness. NOTE: as
+  // of this fix `orch review --until ready` cannot actually hit this branch
+  // — `orch review`'s cli.js dispatch never sets `noMerge`, so it lands as
+  // "merged"/"pr" like `orch task`, never "approved"; the only path that
+  // produces "approved" (`orch pr`) doesn't call `runUntil` yet (#546). This
+  // is a real internal-consistency fix, not a currently end-to-end-reachable
+  // one — kept because the inconsistency with engine.js's own success list
+  // is a landmine for whichever caller reaches it next.
   const landed = cycle.status === "merged" || cycle.status === "pr" || cycle.status === "approved";
 
   if (!landed) {
