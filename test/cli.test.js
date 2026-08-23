@@ -4116,3 +4116,228 @@ test("orch release --dry leaves package.json and CHANGELOG untouched", async () 
   // Usage validation still precedes the dry guard.
   await assert.rejects(() => runMainInRepo(dryRepo, ["release", "--dry"]), /usage: orch release/);
 });
+
+// P2: durable run record (docs/cli-v2-implementation-plan.md §3 P2).
+test("orch task leaves a run record with an outcome", async () => {
+  const repo = initGitRepo();
+  await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
+  const dir = join(repo, ".orch", "run-records");
+  const files = readdirSync(dir);
+  assert.equal(files.length, 1);
+  const record = JSON.parse(readFileSync(join(dir, files[0]), "utf8"));
+  assert.equal(record.outcome, "reached");
+  assert.equal(record.state, "READY");
+  assert.equal(record.exit, 0);
+  assert.equal(record.command, "task");
+});
+
+test("orch task --dry writes no run record", async () => {
+  const repo = initGitRepo();
+  await runMainInRepo(repo, ["task", "some task", "--dry"]);
+  assert.equal(existsSync(join(repo, ".orch", "run-records")), false);
+});
+
+// Checkpoint/resume/inflight are still cleared on every terminal return (design
+// §5.1: "checkpoint semantics unchanged" — the run-controller that would keep a
+// stopped-at-cap cycle resumable via `continue` is a later slice), so a plain
+// `orch task` escalation leaves a run record `continue` can look up by runId,
+// but nothing left to actually reattach to — same "nothing to resume" refusal
+// a pre-v2 sid gets today. `resumeTerminal` (the fresh-budget grant, inert
+// until P5) only runs once the checkpoint/inflight lookup has confirmed
+// there's something to reattach — so a refusal must leave the record's
+// outcome/exit exactly as the original cycle left them, not null them out.
+test("orch continue on a stopped-at-cap record with nothing to reattach refuses without corrupting the record", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  const escalating = { ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate after cap", sha: "x" }) };
+  try {
+    await runMainInRepo(repo, ["task", "some task", "--no-tidy"], { cycleDeps: escalating });
+    const dir = join(repo, ".orch", "run-records");
+    const [file] = readdirSync(dir);
+    const runId = file.replace(/\.json$/, "");
+    let record = JSON.parse(readFileSync(join(dir, file), "utf8"));
+    assert.equal(record.outcome, "stopped-at-cap");
+    assert.equal(record.state, "STOPPED_AT_CAP");
+    assert.equal(record.cycles[0].sid, runId); // single-cycle run: runId == its own sid
+
+    await assert.rejects(
+      () => runMainInRepo(repo, ["continue", runId], { cycleDeps: escalating }),
+      /no checkpoint or inflight record/,
+    );
+    record = JSON.parse(readFileSync(join(dir, file), "utf8"));
+    assert.equal(record.outcome, "stopped-at-cap"); // refusal must not touch the record
+    assert.equal(record.exit, 2);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// `--until once` sets policy.maxAttempts: 0 — a legitimate value, not "unset".
+// `priorRun.policy?.maxAttempts || 1` would coerce that 0 to 1 (both `0` and
+// `undefined` are falsy), silently granting a bigger budget than the original
+// run asked for; `?? 1` only substitutes on `null`/`undefined`.
+test("orch continue on a resumable stopped-at-cap record honors a stored maxAttempts:0", async () => {
+  const repo = initGitRepo("orch-continue-maxattempts-");
+  const sid = "deadbeef";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  const dir = join(repo, ".orch", "run-records");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${sid}.json`), JSON.stringify({
+    schemaVersion: 1, runId: sid, command: "task", argv: [], policy: { maxAttempts: 0 },
+    state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, attempt: 1, retries: {}, headMovedRepins: 0,
+    cycles: [{ sid, attempt: 0, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null }],
+  }));
+
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: { get: (name) => ({ name, async author() { return { usage: {} }; }, async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; } }) },
+  };
+  await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  const record = JSON.parse(readFileSync(join(dir, `${sid}.json`), "utf8"));
+  assert.equal(record.policy.maxAttempts, 1); // 1 (prior attempt) + 0 (maxAttempts:0), not 2
+  assert.equal(record.attempt, 2); // priorRun.attempt (1) + 1 for this resumed cycle
+  // Regression: the appended cycle entry must carry the SAME attempt number as
+  // record.attempt (2), not the stale priorRun.attempt (1) — an off-by-one that
+  // left `cycles` one step behind `attempt` and corrupted the attempt-keyed lineage.
+  assert.equal(record.cycles.length, 2);
+  assert.equal(record.cycles[1].attempt, 2);
+});
+
+// Regression: `orch task` resuming a quota-aborted sid (resolveTaskBranch's
+// resume path — issue #24) reuses that ORIGINAL sid as its runId. Before this
+// fix, the terminal cycle unconditionally called runRecord.create() on that
+// runId, which unconditionally overwrites — resetting attempt/cycles/lastError/
+// createdAt back to genesis and silently violating design §5's "a record is
+// never deleted by orch" (nothing ever prunes/rebuilds these files, so the
+// history is gone for good).
+test("orch task resuming a sid with an existing run record appends to it instead of resetting it", async () => {
+  const repo = initGitRepo();
+  const sid = "resumesid1";
+  const branch = `pr/claude/some-task-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  // The record `resolveTaskBranch` would have written before the original run,
+  // and pinnedResumeAuthor reads to pin the same author on resume.
+  resume.record(join(repo, ".orch"), "some task", "claude", { branch, sid });
+
+  const dir = join(repo, ".orch", "run-records");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${sid}.json`), JSON.stringify({
+    schemaVersion: 1, runId: sid, command: "task", argv: [], policy: null,
+    createdAt: "2020-01-01T00:00:00.000Z", updatedAt: "2020-01-01T00:00:00.000Z",
+    state: "ERROR", outcome: "error", exit: 1, attempt: 2, retries: {}, headMovedRepins: 0,
+    lastError: { message: "boom" },
+    cycles: [
+      { sid, attempt: 0, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null },
+      { sid, attempt: 1, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null },
+    ],
+  }));
+
+  await runMainInRepo(repo, ["task", "some task", "--no-tidy"]);
+
+  const record = JSON.parse(readFileSync(join(dir, `${sid}.json`), "utf8"));
+  assert.equal(record.createdAt, "2020-01-01T00:00:00.000Z"); // create() must not re-run on a resumed sid
+  assert.equal(record.attempt, 3); // priorRecord.attempt (2) + 1 for this resumed cycle
+  assert.equal(record.cycles.length, 3); // appended, not replaced
+  assert.equal(record.cycles[2].attempt, 3);
+});
+
+// Regression: only a `status: "merged"` result landed on the standing
+// integration→main PR — `merge: pr` mode and a demoted (`merge-deferred`)
+// cycle each open a fresh PR scoped to that one branch, so their `kind` must
+// read "per-cycle", not the hardcoded "standing" every result used to get.
+test("orch task records pr.kind as per-cycle for merge:pr mode, standing only for a real merge", async () => {
+  const merged = initGitRepo();
+  await runMainInRepo(merged, ["task", "some task", "--no-tidy"], {
+    cycleDeps: { ...fakeCycleDeps(), finalize: async () => ({ status: "merged", reason: "test", sha: "abc", prUrl: "https://example/pr/standing" }) },
+  });
+  const mergedDir = join(merged, ".orch", "run-records");
+  const mergedRecord = JSON.parse(readFileSync(join(mergedDir, readdirSync(mergedDir)[0]), "utf8"));
+  assert.deepEqual(mergedRecord.pr, { number: null, url: "https://example/pr/standing", kind: "standing" });
+
+  const perCycle = initGitRepo();
+  await runMainInRepo(perCycle, ["task", "some task", "--no-tidy"], {
+    cycleDeps: { ...fakeCycleDeps(), finalize: async () => ({ status: "pr", reason: "test", prUrl: "https://example/pr/123" }) },
+  });
+  const perCycleDir = join(perCycle, ".orch", "run-records");
+  const perCycleRecord = JSON.parse(readFileSync(join(perCycleDir, readdirSync(perCycleDir)[0]), "utf8"));
+  assert.deepEqual(perCycleRecord.pr, { number: null, url: "https://example/pr/123", kind: "per-cycle" });
+});
+
+// Regression: a pre-v2 sid resumed via `orch continue` has no prior run
+// record, so `runRecord.create()` used to fire only after `runCycle`
+// returned — a crash inside runCycle left no record at all, violating
+// design §5's "after any run a record with `outcome` exists".
+test("orch continue on a pre-v2 sid leaves an error record when runCycle throws", async () => {
+  const repo = initGitRepo("orch-continue-crash-");
+  const sid = "deadbeef";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  const crashing = {
+    ...fakeCycleDeps(),
+    adapters: { get: (name) => ({ name, async author() { return { usage: {} }; }, async audit() { throw new Error("boom"); } }) },
+  };
+  await assert.rejects(
+    () => runMainInRepo(repo, ["continue", sid], { cycleDeps: crashing }),
+    /boom/,
+  );
+
+  const dir = join(repo, ".orch", "run-records");
+  const record = JSON.parse(readFileSync(join(dir, `${sid}.json`), "utf8"));
+  assert.equal(record.outcome, "error");
+  assert.equal(record.state, "ERROR");
+  assert.equal(record.exit, 1);
+  assert.match(record.lastError.message, /boom/);
+});
+
+// Design §5.3 acceptance: "`orch continue <runId>` and `<sid>` resolve to it" —
+// a run whose lineage has moved past its first cycle must still be reachable
+// by ANY of its cycles' sids, not just the runId. Only proved at the
+// run-record.js unit level before this (lookup() lineage test); this proves
+// the full `orch continue` command resolves and updates the SAME record file
+// when invoked with a later cycle's sid, distinct from the run's own runId.
+test("orch continue resolves and updates the run record when runId differs from the given sid", async () => {
+  const repo = initGitRepo("orch-continue-lineage-");
+  const runId = "runid-first-cycle";
+  const laterSid = "sid-later-cycle";
+  const branch = `pr/claude/some-fix-${laterSid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  checkpointDep.record(join(repo, ".orch"), laterSid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  const dir = join(repo, ".orch", "run-records");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${runId}.json`), JSON.stringify({
+    schemaVersion: 1, runId, command: "task", argv: [], policy: { maxAttempts: 1 },
+    state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, attempt: 1, retries: {}, headMovedRepins: 0,
+    cycles: [{ sid: laterSid, attempt: 0, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null }],
+  }));
+
+  await runMainInRepo(repo, ["continue", laterSid], { cycleDeps: fakeCycleDeps(), finishRun: async () => {} });
+
+  assert.equal(existsSync(join(dir, `${laterSid}.json`)), false); // no separate record keyed by the cycle sid
+  const record = JSON.parse(readFileSync(join(dir, `${runId}.json`), "utf8"));
+  assert.equal(record.runId, runId);
+  assert.equal(record.attempt, 2);
+  assert.equal(record.cycles.length, 2);
+  assert.equal(record.cycles[1].sid, laterSid);
+});
