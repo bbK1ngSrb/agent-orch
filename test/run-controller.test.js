@@ -1,0 +1,198 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { runUntil } from "../src/run-controller.js";
+
+const HEAD = "a".repeat(40);
+const POLICY = { until: "ready", pollSeconds: 1, ciWaitMinutes: 1, maxAttempts: 3 };
+const LAND = { pr: { number: 9, url: "https://github.com/o/r/pull/9" }, expectedHead: HEAD, landing: "standing", branch: "orch/integration" };
+
+// readiness.js's inspect() also reads required-checks (`gh api .../rules/...`)
+// — route both endpoints so requiredChecks() doesn't choke on a PR-view body.
+function ghFake(prViewBody) {
+  return (a) => {
+    if (a[0] === "pr" && a[1] === "view") return JSON.stringify(prViewBody);
+    if (a[0] === "api") return "[]"; // known: true, contexts: [] — empty rollup reads green
+    throw new Error(`unexpected gh call: ${a.join(" ")}`);
+  };
+}
+
+function baseDeps(overrides = {}) {
+  return {
+    runCycle: async () => ({ status: "merged", prUrl: LAND.pr.url }),
+    resolveLanded: () => LAND,
+    gh: ghFake({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+      mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+    }),
+    git: { git: () => "" },
+    repo: "/repo",
+    sleep: async () => {},
+    ...overrides,
+  };
+}
+
+test("runUntil: landed cycle, green standing PR -> READY, exit 0", async () => {
+  const result = await runUntil(POLICY, {}, baseDeps());
+  assert.equal(result.state, "READY");
+  assert.equal(result.outcome, "reached");
+  assert.equal(result.exit, 0);
+});
+
+// Regression: "approved" (engine.js's noMerge path — agreed + green, no
+// merge attempted; set today only by `runPr()`, github.js:337) is a success
+// terminal same as "merged"/"pr" (engine.js:515), not a failure. Before this
+// fix, `landed` only recognized "merged"/"pr", so any `runUntil` caller whose
+// cycle landed as "approved" fell into resolveFailure with an empty
+// failure.class, and chooseRemedy threw "unknown failure class \"undefined\""
+// instead of reading readiness.
+test("runUntil: landed cycle with status 'approved' (noMerge) reads readiness -> READY", async () => {
+  const result = await runUntil(POLICY, {}, baseDeps({ runCycle: async () => ({ status: "approved" }) }));
+  assert.equal(result.state, "READY");
+  assert.equal(result.outcome, "reached");
+  assert.equal(result.exit, 0);
+});
+
+test("runUntil: landed cycle, BEHIND standing PR -> STOPPED_AT_CAP, exit 2, failureClass REMOTE_BEHIND (acceptance criterion)", async () => {
+  const deps = baseDeps({
+    gh: ghFake({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+      mergeable: "MERGEABLE", mergeStateStatus: "BEHIND", reviewDecision: null, statusCheckRollup: [],
+    }),
+  });
+  const result = await runUntil(POLICY, {}, deps);
+  assert.equal(result.exit, 2);
+  assert.equal(result.outcome, "stopped-at-cap");
+  assert.equal(result.failureClass, "REMOTE_BEHIND");
+});
+
+// Regression: `gh pr view` failing mid-poll (revoked token, network hiccup)
+// used to escape `waitReady` uncaught and propagate straight out of
+// `runUntil`, so a caller landed a real cycle and then crashed on the read
+// instead of getting a classified result. `readiness.js` now classifies a
+// 401/403 as REMOTE_AUTH; `runUntil` must surface it like any other readiness
+// failure, not throw.
+test("runUntil: gh pr view 401/403 mid-poll classifies REMOTE_AUTH instead of throwing", async () => {
+  const deps = baseDeps({ gh: () => { throw new Error("gh: Bad credentials (HTTP 401)"); } });
+  const result = await runUntil(POLICY, {}, deps);
+  assert.equal(result.exit, 2);
+  assert.equal(result.outcome, "stopped-at-cap");
+  assert.equal(result.failureClass, "REMOTE_AUTH");
+});
+
+// REMOTE_AUTH's free retry (cap 1) is exhausted on the second occurrence in
+// the same run, at which point chooseRemedy's decision is terminal and
+// run-controller.js's BLOCKED_REASON map turns it into blockedReason "auth"
+// (design §7's `REMOTE_AUTH ... none -> BLOCKED (3)` row).
+test("runUntil: gh pr view 401/403 after the free retry is exhausted -> BLOCKED, blockedReason auth", async () => {
+  const deps = baseDeps({ gh: () => { throw new Error("gh: Bad credentials (HTTP 401)"); } });
+  const record = { retries: { REMOTE_AUTH: 1 } };
+  const result = await runUntil(POLICY, record, deps);
+  assert.equal(result.exit, 3);
+  assert.equal(result.outcome, "blocked");
+  assert.equal(result.blockedReason, "auth");
+});
+
+test("runUntil: cycle escalated locally (no landing) -> classified failure, no remedy available in this slice -> STOPPED_AT_CAP", async () => {
+  const deps = baseDeps({
+    runCycle: async () => ({ status: "escalated", class: "REVIEW_STALEMATE", fingerprint: "fp1", reason: "stalemate after cap" }),
+  });
+  const result = await runUntil(POLICY, {}, deps);
+  assert.equal(result.exit, 2);
+  assert.equal(result.outcome, "stopped-at-cap");
+  assert.equal(result.failureClass, "REVIEW_STALEMATE");
+});
+
+test("runUntil: cycle escalated on a BLOCKED-terminal class (protected path) -> exit 3 with blockedReason", async () => {
+  const deps = baseDeps({
+    runCycle: async () => ({ status: "escalated", class: "POLICY_PROTECTED_PATH", fingerprint: "fp2", reason: "protected paths touched" }),
+  });
+  const result = await runUntil(POLICY, {}, deps);
+  assert.equal(result.exit, 3);
+  assert.equal(result.outcome, "blocked");
+  assert.equal(result.blockedReason, "guardrail-path");
+});
+
+test("runUntil: --until merged stops at readiness (exit 2) — merge phase ships in P8", async () => {
+  const deps = baseDeps();
+  const result = await runUntil({ ...POLICY, until: "merged" }, {}, deps);
+  assert.equal(result.exit, 2);
+  assert.equal(result.state, "STOPPED_AT_CAP");
+  assert.equal(result.note, "merge phase ships in P8");
+});
+
+// Regression: `--until merged` must actually reach readiness before stopping
+// short of the merge — not skip the wait entirely and always claim "merge
+// ships in P8" regardless of whether the PR is even mergeable yet.
+test("runUntil: --until merged still classifies a real readiness failure (waitReady isn't skipped)", async () => {
+  const deps = baseDeps({
+    gh: ghFake({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+      mergeable: "MERGEABLE", mergeStateStatus: "BEHIND", reviewDecision: null, statusCheckRollup: [],
+    }),
+  });
+  const result = await runUntil({ ...POLICY, until: "merged" }, {}, deps);
+  assert.equal(result.failureClass, "REMOTE_BEHIND");
+  assert.notEqual(result.note, "merge phase ships in P8");
+});
+
+test("runUntil: merge-deferred (demoted) cycle is treated the same as escalated", async () => {
+  const deps = baseDeps({
+    runCycle: async () => ({ status: "merge-deferred", trigger: "dirty-merge", class: "LAND_DIRTY_MERGE", fingerprint: "fp3" }),
+  });
+  const result = await runUntil(POLICY, {}, deps);
+  assert.equal(result.exit, 2);
+  assert.equal(result.failureClass, "LAND_DIRTY_MERGE");
+});
+
+test("runUntil: a head-moved re-pin under the cap still reaches READY", async () => {
+  const newHead = "c".repeat(40);
+  const deps = baseDeps({
+    resolveLanded: () => ({ ...LAND, expectedHead: HEAD }),
+    gh: ghFake({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: newHead, baseRefName: "main",
+      mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+    }),
+    git: { git: (a) => (a[0] === "rev-parse" ? newHead : "") },
+  });
+  const result = await runUntil(POLICY, { headMovedRepins: 0 }, deps);
+  assert.equal(result.state, "READY");
+  assert.equal(result.headMovedRepins, 1);
+});
+
+test("runUntil: a head-moved re-pin past the cap gives up (STOPPED_AT_CAP)", async () => {
+  const newHead = "c".repeat(40);
+  const deps = baseDeps({
+    resolveLanded: () => ({ ...LAND, expectedHead: HEAD }),
+    gh: ghFake({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: newHead, baseRefName: "main",
+      mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+    }),
+    git: { git: (a) => (a[0] === "rev-parse" ? newHead : "") },
+  });
+  const result = await runUntil(POLICY, { headMovedRepins: 3 }, deps);
+  assert.equal(result.state, "STOPPED_AT_CAP");
+  assert.equal(result.exit, 2);
+});
+
+// run-controller.js has no attempt counter of its own — record.attempt is
+// bumped once per top-level invocation by cli.js regardless of outcome
+// (design §10.2's "each expiry consumes an attempt" holds by construction of
+// that caller, not by anything runUntil does). This test only covers what
+// runUntil DOES own: once chooseRemedy sees the cap already reached, a
+// REMOTE_CI_TIMEOUT is terminal (STOPPED_AT_CAP), not a free retry.
+test("runUntil: a CI wait that times out is terminal once the attempt cap is already reached -> STOPPED_AT_CAP", async () => {
+  const deps = baseDeps({
+    gh: ghFake({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+      mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null,
+      statusCheckRollup: [{ context: "test", state: "PENDING" }],
+    }),
+  });
+  let now = 0;
+  deps.now = () => now;
+  deps.sleep = async (ms) => { now += ms; };
+  const record = { attempt: POLICY.maxAttempts }; // already at the cap
+  const result = await runUntil(POLICY, record, deps);
+  assert.equal(result.failureClass, "REMOTE_CI_TIMEOUT");
+  assert.equal(result.exit, 2);
+});
