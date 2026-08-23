@@ -24,6 +24,16 @@ export const recordFile = (dir, key) => {
   return join(dir, `${key}.json`);
 };
 
+// A sid is always CLI-generated (`<pid>-<base36counter>`, see sid.js) — but
+// `orch continue <sid>` accepts operator-typed input as this key unvalidated.
+// `key` above goes straight into `join()`, so a sid containing "/" or ".."
+// can walk the path outside `dir`. Shared here (was duplicated in
+// deferred.js) so every store — not just deferred's — can reject one.
+export function isSafeSid(sid) {
+  return typeof sid === "string" && sid !== "" && !sid.includes("/") && !sid.includes("\0")
+    && !sid.includes("..");
+}
+
 // Stamps `ts` unless the caller already carries one (deferred.record returns
 // its payload, ts included, so it must match what lands on disk).
 export function writeRecord(dir, key, data) {

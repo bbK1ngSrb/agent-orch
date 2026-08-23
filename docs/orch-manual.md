@@ -488,6 +488,10 @@ doesn't rewrite an existing inline array into block style, it just appends in
 whichever form is already there. For an agent orch doesn't know at all, use
 `orch agent build <name>` (§2.8) instead — `add` registers, `build` creates.
 
+Given an unknown name, `add` offers to build it and waits for a `y`. That
+prompt is a dead end for anything headless (a poller, CI, another agent), so
+`orch agent add <name> --build` takes the same path with the question skipped.
+
 ### 2.12 `orch completion [bash]` / `orch completion install`
 
 Prints (or installs to `~/.orch/completion.bash`) the bash tab-completion
@@ -619,6 +623,24 @@ got to. `orch_status` and `orch_plan` return immediately.
   names a protected path, instead of being refused at intake. See §2.14.
 - **`--allow-large-scope`** — explicitly sanction a deliberately large review
   slice for this run. A plain `orch continue <sid>` requires the flag again.
+- **`--until <mode>`** — declared now so scripts can be written against it, but
+  only `--until once` (the default: run one cycle and stop) exists today.
+  `--until ready` and `--until merged` are refused with exit `64` until the
+  bounded retry loop lands. `--max-attempts` is not declared yet — nothing
+  reads it, so it stays a usage error rather than a silent no-op until the
+  retry loop that needs it ships.
+
+Every flag is now declared per command in `src/schema.js`, and a flag the
+command does not read is refused with exit `64` rather than parsed and dropped.
+That is the difference between "nobody read your flag" and "your flag was
+rejected": `orch issue 42 --file wo.json` used to run against the issue body and
+ignore the file, and `orch pr 42 --merge --dry` used to perform a real merge.
+`--dry` is honoured by every command that changes something and refused on the
+read-only ones (`dashboard`, `mcp`), where planning nothing is not a
+meaningful request. `config` changes something too (it writes
+`.orch/orch.yml`), and honours `--dry` like the rest: instead of launching the
+interactive wizard, it prints the path it would write and leaves the file
+untouched.
 
 ### 2.14 The protected-path intake refusal
 
@@ -796,23 +818,27 @@ merge and avoids that overlap.
 |---|---|
 | `0` | Normal completion: merged, approved, or a successful dry run. |
 | `1` | An uncaught exception (`bin/orch.js:5`): orch itself broke. |
-| `2` | An escalation, `merge-deferred`, a non-approved `orch pr`, or the concurrency cap being hit. |
+| `2` | An escalation, `merge-deferred`, or a non-approved `orch pr`. |
+| `3` | Blocked before deciding anything: the concurrency cap was reached. |
+| `64` | A usage error: unknown command, unknown flag, a flag the command does not read, or a bad flag value. |
 
 Exit `2` for a cycle outcome is not a crash. It means orch is working
 correctly and declining to land something on its own — a human should decide
 this — which is why halting the rest of a `&&` chain is usually sensible.
-There is one important batching gotcha: the concurrency cap shares exit `2`
-with escalation. If another cycle is already live and the cap is reached, orch
-prints:
+
+Exit `3` is deliberately *not* `2`. If another cycle is already live and the cap
+is reached, orch prints:
 
 ```text
 orch: concurrency cap N reached — M cycles live; skipping <branch>
 ```
 
-Nothing was reviewed or decided in that case; the issue was skipped. At the
-shell, the two outcomes are indistinguishable, so read the printed line rather
-than relying on the exit status alone. The `2` status is set in the `agent build`,
-`task`/`issue`/`review`, `continue`, and `pr` handlers for the relevant outcomes.
+Nothing was reviewed or decided in that case; the issue was skipped, so retrying
+later is the right response — whereas retrying a `2` just burns another cycle on
+a decision a human already needs to make. The `2` status is set in the `agent
+build`, `task`/`issue`/`review`, `continue`, and `pr` handlers for the relevant
+outcomes; `3` comes from the concurrency cap in the same handlers, and `64` from
+the command schema (`src/schema.js`) before any command runs.
 
 After a halt, use `orch dashboard` for the full run history. The durable record
 is `.orch/runs.jsonl`; its rows include `ts`, `branch`, `sid`, `verdict`,
@@ -1195,7 +1221,7 @@ before anything is pruned.
 concurrency: 4   # default
 ```
 
-An over-cap launch exits immediately (`exit 2`) rather than queueing:
+An over-cap launch exits immediately (`exit 3`) rather than queueing:
 
 ```
 orch: concurrency cap 4 reached — 5 cycles live; skipping pr/claude/<slug>-<sid>

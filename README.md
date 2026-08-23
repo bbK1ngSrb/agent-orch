@@ -323,7 +323,7 @@ orch task "add rate-limit header" --authors codex  --reviewers claude &
 ```
 
 **Concurrency cap.** Set `concurrency: 4` in `.orch/orch.yml` (default 4). An
-over-cap launch exits immediately with code 2 and logs:
+over-cap launch exits immediately with code 3 and logs:
 
 ```
 orch: concurrency cap 4 reached — 5 cycles live; skipping pr/claude/<slug>-<sid>

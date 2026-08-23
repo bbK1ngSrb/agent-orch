@@ -7,18 +7,13 @@
 // self-heal policy for corrupt records.
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.js";
-import { readRecord, recordFile, removeRecord, scanDir, writeRecord } from "./sid-store.js";
+import { isSafeSid as safeSid, readRecord, recordFile, removeRecord, scanDir, writeRecord } from "./sid-store.js";
 
 // One automatic redrive after the initial overlap demote. A second failure
 // (rebase conflict, dirty merge, or post-merge gate) leaves the peer for a human.
 export const MAX_REDRIVE_ATTEMPTS = 1;
 
 const dir = (orchDir) => join(orchDir, "deferred");
-
-function safeSid(sid) {
-  return typeof sid === "string" && sid !== "" && !sid.includes("/") && !sid.includes("\0")
-    && !sid.includes("..");
-}
 
 // Snapshot enough of the demoted cycle for a lock-held redrive in finalize.
 // `redriveAttempts` counts finished auto-retries (0 = not yet retried).
