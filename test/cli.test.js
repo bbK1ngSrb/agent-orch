@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -940,6 +940,342 @@ test("#136: orch task with no remote configured never calls gh, even if gh is in
   const repo = initGitRepo();
   const gh = () => { throw new Error("gh should not be called when no remote is configured"); };
   await runMainInRepo(repo, ["task", "some task", "--no-tidy"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+});
+
+// P5 acceptance (docs/cli-v2-implementation-plan.md P5): `--until ready --json`
+// waits on the standing integration→base PR after landing and reports the
+// outcome as the last stdout line; bare `orch task` (tested above) is untouched.
+function readinessGh(prView) {
+  return (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false, headRefOid: prView.headRefOid }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify(prView);
+    if (args[0] === "api") return "[]"; // required checks: known, empty
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+}
+
+test("orch task --until ready --json exits 0 on a green standing PR", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 0);
+    assert.equal(last.outcome, "reached");
+    assert.equal(process.exitCode || 0, 0);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch task --until ready --json exits 2 with failureClass REMOTE_BEHIND on a BEHIND standing PR", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "BEHIND", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 2);
+    assert.equal(last.failureClass, "REMOTE_BEHIND");
+    assert.equal(process.exitCode, 2);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// findPrByHead's `gh pr list` throws on any nonzero exit (no GitHub remote,
+// bad auth, network hiccup) — that must resolve to REMOTE_UNKNOWN/exit 2
+// with a full --json stream, not an uncaught throw that skips run-controller's
+// own error handling and truncates the stream after run.start.
+test("orch task --until ready --json exits 2 with failureClass REMOTE_UNKNOWN when gh pr list throws", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "list") throw new Error("gh: could not find any pull requests");
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 2);
+    assert.equal(last.failureClass, "REMOTE_UNKNOWN");
+    assert.equal(process.exitCode, 2);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// readiness.js's `prView` (`gh pr view`) throws on any nonzero exit the same
+// way `findPrByHead`'s `gh pr list` does above — a revoked token or network
+// hiccup mid-poll must resolve to REMOTE_AUTH/exit 2 with a full --json
+// stream, not an uncaught throw that skips run-controller's own error
+// handling and truncates the stream after run.start.
+test("orch task --until ready --json exits 2 with failureClass REMOTE_AUTH when gh pr view throws 401", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo) }]);
+    if (args[0] === "pr" && args[1] === "view") throw new Error("gh: Bad credentials (HTTP 401)");
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 2);
+    assert.equal(last.failureClass, "REMOTE_AUTH");
+    assert.equal(process.exitCode, 2);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// Re-review finding 1: an uncaught throw anywhere between run.start and the
+// run.end emit (not just the two gh call sites already fail-closed above)
+// used to skip straight to bin/orch.js's outer catch, truncating the --json
+// stream after run.start — a caller doing `... --json | tail -1 | jq .exit`
+// would parse run.start instead of getting a clean error signal. Force a
+// throw the loop doesn't already guard (the cycle itself failing) to prove
+// the catch block now closes the stream out with a run.end before rethrowing.
+test("orch task --until ready --json: an uncaught cycle failure still emits run.end (exit 1) before rethrowing", async () => {
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  const prev = cwd();
+  chdir(repo);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    await assert.rejects(
+      () => main(["task", "some task", "--no-tidy", "--until", "ready", "--json"], {
+        preflight() {},
+        cycleDeps: { ...fakeCycleDeps(), finalize: async () => { throw new Error("cycle boom"); } },
+        githubDeps: () => ({ gh, git: gitDep.git }),
+      }),
+      /cycle boom/,
+    );
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+  }
+  for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+  const events = logs.map((l) => JSON.parse(l));
+  assert.equal(events[0].event, "run.start");
+  const end = events.find((e) => e.event === "run.end");
+  assert.ok(end, "run.end must still be emitted when the cycle throws");
+  assert.equal(end.outcome, "error");
+  assert.equal(end.exit, 1);
+});
+
+// design §3: `run.start` declares `policy` mandatory, `run.end` declares
+// `usage` mandatory — both were silently omitted before this fix.
+test("orch task --until ready --json: run.start carries policy, run.end carries usage (design §3)", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    const events = logs.map((l) => JSON.parse(l));
+    const start = events.find((e) => e.event === "run.start");
+    const end = events.find((e) => e.event === "run.end");
+    assert.equal(start.policy?.until, "ready");
+    assert.ok(end.usage && typeof end.usage === "object");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// Without --no-tidy, a real merge also runs finishRun's tidy-up afterward
+// (see "#44: a merged task run hands cycle branches to finishRun for
+// tidy-up" above) — under --json that print must not land after run.end and
+// break "the last line is the JSON outcome" (design §13, acceptance criterion
+// is literally `... --json | tail -1 | jq .exit`).
+test("orch task --until ready --json: run.end stays the last line even when post-merge tidy also runs", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    assert.ok(logs.length >= 2, "expected at least run.start and run.end");
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 0);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// design §13: stdout under --json is one JSON object per line, nothing else.
+// The local-main fast-forward notice (`git.syncMainFromOrigin`) used to print
+// unconditionally, which would have broken `... --json | tail -1 | jq .exit`
+// on any run that happened to fast-forward — force that path with a peer push.
+test("orch task --until ready --json: the local-main fast-forward notice stays out of the JSON stream", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  const { peer } = addOriginWithPeer(repo);
+  writeFileSync(join(peer, "b.txt"), "1\n");
+  gitDep.git(["add", "."], peer);
+  gitDep.git(["commit", "-m", "peer commit"], peer);
+  gitDep.git(["push", "origin", "main"], peer);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// Re-review finding 1: `spawnDocsTask`'s "▶ post-merge: docs-update spawned"
+// print fires AFTER run.end (it's spawned once the whole cycle loop is done,
+// cli.js's maybeSpawnDocs call) — under --json + docs.autoUpdate that broke
+// the same "stdout is one JSON object per line" contract as the fast-forward
+// notice above, and specifically broke `... --json | tail -1 | jq .exit`
+// since the plain-text line, not run.end, would be last.
+test("orch task --until ready --json: the docs-update spawn notice stays out of the JSON stream", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "docs:\n  autoUpdate: true\n");
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  const spawnCalls = [];
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"], {
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      spawn: (...args) => { spawnCalls.push(args); return { unref() {} }; },
+    });
+    assert.equal(spawnCalls.length, 1, "docs-update task should have spawned");
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end", "run.end must stay the last stdout line");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// design §13: `run.end` always carries `blockedReason` when exit == 3
+// (values include "concurrency-cap") — the skipped run must close out the
+// event stream, not just print a bare human line while --json is active.
+test("orch task --until ready --json: a concurrency-cap skip still emits run.start/run.end with blockedReason", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const orchDir = join(repo, ".orch");
+  mkdirSync(orchDir, { recursive: true });
+  writeFileSync(join(orchDir, "orch.yml"), "concurrency: 1\n");
+  inflight.register(orchDir, "cap-seed", { branch: "pr/test/seed", pid: process.pid, baseSha: "abc" });
+  process.exitCode = 0;
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+    const events = logs.map((l) => JSON.parse(l));
+    assert.deepEqual(events.map((e) => e.event), ["run.start", "run.end"]);
+    assert.equal(events[1].blockedReason, "concurrency-cap");
+    assert.equal(events[1].exit, 3);
+    assert.equal(process.exitCode, 3);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// Regression guard for #547: the P5 slice shipped two tests that omitted
+// githubDeps, so `--until ready` fell through to the real `gh` binary — green
+// on a machine with authenticated gh, red everywhere else (CI included). This
+// proves the *wiring*, not the readiness logic: with no githubDeps override,
+// the code must still attempt a real `gh` shell-out (never a silent no-op) —
+// verified with PATH cleared so the attempt deterministically fails to find
+// `gh` before it could ever touch a network or credential, on any machine.
+test("orch task --until ready --json: no githubDeps override still shells out to gh (not a silent no-op)", { skip: IS_WINDOWS && "PATH-shim relies on a POSIX shell script" }, async () => {
+  const savedExitCode = process.exitCode;
+  const savedPath = process.env.PATH;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const gitPath = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const shimDir = mkdtempSync(join(tmpdir(), "orch-no-gh-"));
+  symlinkSync(gitPath, join(shimDir, "git"));
+  // Fake `gh`: answers --version (so ghAvailable() sees a real CLI) but fails
+  // `auth status` — this reproduces #547's actual CI shape (gh installed, not
+  // logged in) without ever invoking the real binary or touching a network.
+  writeFileSync(
+    join(shimDir, "gh"),
+    '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh version 2.0.0"; exit 0; fi\necho "gh: not logged in to any GitHub hosts" >&2\nexit 1\n',
+  );
+  chmodSync(join(shimDir, "gh"), 0o755);
+  process.env.PATH = shimDir;
+  try {
+    await assert.rejects(
+      () => runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"]),
+      /gh CLI is not authenticated/,
+    );
+  } finally {
+    process.env.PATH = savedPath;
+    process.exitCode = savedExitCode;
+  }
 });
 
 test("nextAuthor alternates and persists last-author", () => {
@@ -2196,6 +2532,49 @@ test("raiseExitCode: 2 (needs review) always wins over 3 (safe to retry), in eit
     process.exitCode = 0;
     raiseExitCode(3);
     assert.equal(process.exitCode, 3, "3 alone is still reported");
+  } finally {
+    process.exitCode = saved;
+  }
+});
+
+// Regression: 1 (ERROR) and 4 (WAIT_TIMEOUT) — both real run-controller.js
+// exit codes reachable via raiseExitCode(controller.exit) — were missing from
+// EXIT_CODE_PRIORITY. An unlisted code's priority falls back to 0 via `|| 0`,
+// identical to "nothing raised yet" (process.exitCode starts at 0), so
+// raiseExitCode(1) alone used to leave process.exitCode at 0 — a run that hit
+// an internal error would report success. 1 must win over everything; 4 must
+// still lose to nothing and beat 3 (a landed-but-timed-out run is more
+// actionable than a bare capacity refusal).
+test("raiseExitCode: 1 (error) always wins; 4 (wait-timeout) beats 3", () => {
+  const saved = process.exitCode;
+  try {
+    process.exitCode = 0;
+    raiseExitCode(1);
+    assert.equal(process.exitCode, 1, "1 alone must be reported, not silently dropped");
+
+    process.exitCode = 0;
+    raiseExitCode(2);
+    raiseExitCode(1);
+    assert.equal(process.exitCode, 1, "1 must win over an earlier 2");
+
+    process.exitCode = 0;
+    raiseExitCode(1);
+    raiseExitCode(2);
+    assert.equal(process.exitCode, 1, "a later 2 must not downgrade an earlier 1");
+
+    process.exitCode = 0;
+    raiseExitCode(4);
+    assert.equal(process.exitCode, 4, "4 alone must be reported, not silently dropped");
+
+    process.exitCode = 0;
+    raiseExitCode(3);
+    raiseExitCode(4);
+    assert.equal(process.exitCode, 4, "4 must win over an earlier 3");
+
+    process.exitCode = 0;
+    raiseExitCode(4);
+    raiseExitCode(3);
+    assert.equal(process.exitCode, 4, "a later 3 must not downgrade an earlier 4");
   } finally {
     process.exitCode = saved;
   }

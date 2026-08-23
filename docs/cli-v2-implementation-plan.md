@@ -226,10 +226,13 @@ forced empty) → `STOPPED_AT_CAP` (2) / `BLOCKED` (3) with `blockedReason`;
 `ciWaitMinutes` bounds each wait and an expiry consumes an attempt; `once`
 parity path formalised (no readiness read); `--json` events; `merged` is
 accepted but stops at `READINESS` with "merge phase ships in P8" (exit 2) —
-stated in `--help` until P8. Also updates `prChecksGreen` callers to the §9
-rule 4 predicate.
+stated in `--help` until P8. Does **not** update `prChecksGreen` callers
+(`orch pr --merge`'s merge gate) to the §9 rule 4 predicate — that gate is out
+of scope for a run-controller/readiness-inspector slice; `orch pr --merge` and
+`--until ready|merged` knowingly read two different green predicates until a
+dedicated follow-up unifies them (tracked in #545).
 **Files.** new `src/run-controller.js`, `src/readiness.js`; `src/cli.js` run
-commands call `runUntil` when `until !== "once"`; `src/github.js` (rule 4).
+commands call `runUntil` when `until !== "once"`.
 **Tests.** `test/readiness.test.js` (fixtures per `mergeStateStatus`, checks,
 `reviewDecision`, draft, closed, external merge, head-moved-still-ancestor,
 empty rollup × required known-empty/known-nonempty/unknown);
@@ -410,7 +413,7 @@ in scope: #507 (dashboard `authored` label — dashboard untouched).
 | P2 | + `run-record.test.js`; `cli.test.js` | additive |
 | P3 | + `failure.test.js`; `engine.test.js`, `finalize.test.js` (additive `class`) | additive |
 | P4 | `github.test.js` (fake-gh scripting), `finalize.test.js` | additive; old `openIntegrationPr` tests kept |
-| P5 | + `readiness.test.js`, `run-controller.test.js`; `cli.test.js` (`--until ready` happy path); `github.test.js` (rule 4 predicate) | `--until` explicit only; bare-command tests untouched |
+| P5 | + `readiness.test.js`, `run-controller.test.js`; `cli.test.js` (`--until ready` happy path) | `--until` explicit only; bare-command tests untouched |
 | P6 | + `remedies.test.js`; `adapters.test.js` (limitPattern), `lock.test.js`, `conflict-resolution.test.js` (function moved → thin alias until P12) | new files mostly |
 | P7 | `remedies.test.js`, `cli.test.js` (`continue` fresh budget) | additive |
 | P8 | + `landing.test.js`; `github.test.js` | additive |
@@ -641,8 +644,9 @@ tracking issue #509 holds the same table.
 > each expiry consumes an attempt), exit codes 0/2/3 with `blockedReason`,
 > `--json` events; `--until ready|merged` become available (not default;
 > `merged` stops at readiness until P8, stated in `--help`); `once` = strict
-> parity (no readiness read); update `prChecksGreen` callers to the §9 rule 4
-> predicate.
+> parity (no readiness read); `prChecksGreen` callers (`orch pr --merge`'s
+> merge gate) are **not** updated to the §9 rule 4 predicate — out of scope
+> for this slice, tracked in #545.
 > **Accept:** `readiness.test.js`, `run-controller.test.js`; in a fixture repo
 > `orch task "x" --until ready --json` exits 0 on a green fake standing PR and 2
 > with `failureClass:"REMOTE_BEHIND"` on a `BEHIND` one; bare `orch task "x"`

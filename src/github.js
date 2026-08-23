@@ -28,7 +28,7 @@ function prNumberFromUrl(url) {
 // unavailable). Pulling the bare 3-digit code out of whichever text we have is
 // the one place that turns a thrown error into an HTTP status — every caller
 // below branches on that number, never on message text.
-function parseHttpStatus(e) {
+export function parseHttpStatus(e) {
   const msg = String(e?.stderr || e?.message || "");
   const m = msg.match(/\bHTTP (\d{3})\b/);
   return m ? Number(m[1]) : null;

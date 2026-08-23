@@ -7,7 +7,8 @@ import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
-import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh } from "./github.js";
+import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh, findPrByHead } from "./github.js";
+import { runUntil } from "./run-controller.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -75,16 +76,22 @@ export function spawnDocsTask(prompt, deps = { spawn }, orchDir) {
   } finally {
     if (fd !== undefined) (deps.closeSync || closeSync)(fd);
   }
-  console.log("▶ post-merge: docs-update spawned");
+  // `quiet` (set by the --json call site below): this print is plain text, and
+  // under --json it fires AFTER `run.end` has already gone out (docs spawn only
+  // happens once the merge loop is done) — a bare console.log there breaks the
+  // design §13 "stdout is one JSON object per line" contract, e.g. `... --json
+  // | tail -1 | jq .exit`. finishRun's human-readable summary already reports
+  // this outcome for non-json callers.
+  if (!deps.quiet) console.log("▶ post-merge: docs-update spawned");
 }
 
 // Loop guard + opt-in gate around spawnDocsTask. Real merge only (never --dry).
 // Skips docs-only merges (the docs-update's own merge can't re-trigger) AND no-op
 // merges (an empty diff would re-spawn forever, since it's not docs-only either).
 export function maybeSpawnDocs(res, cfg, deps = {}, orchDir) {
-  const { dry = false, spawn: spawnFn = spawn } = deps;
+  const { dry = false, spawn: spawnFn = spawn, quiet = false } = deps;
   if (dry || res.status !== "merged" || !cfg.docs.autoUpdate || res.docsOnly || res.noop) return false;
-  spawnDocsTask(cfg.docs.prompt, { spawn: spawnFn }, orchDir);
+  spawnDocsTask(cfg.docs.prompt, { spawn: spawnFn, quiet }, orchDir);
   return true;
 }
 
@@ -856,6 +863,39 @@ function dryDeps() {
   };
 }
 
+// design §9 input for run-controller.js's `runUntil`: maps a LANDED cycle
+// result to the PR readiness is read against. "merged" landed on the standing
+// integration→base PR (design §0 glossary); "pr" (cfg.merge === "pr") opened
+// a PR straight from the cycle's own branch. "approved" (engine.js's noMerge
+// path — today only ever set by `runPr()`, github.js:337, which doesn't call
+// `runUntil`) has no per-cycle PR of its own either, so it's mapped the same
+// way here for whenever a future caller routes a noMerge cycle through this
+// path — findPrByHead re-reads rather than trusting `cycle.prUrl`'s number
+// (design §5.4 query-before-write).
+function findPrByHeadSafe(branch, baseBranch, ghDeps, fallbackUrl) {
+  // gh (findPrByHead -> deps.gh -> execFileSync) throws on any nonzero exit —
+  // no GitHub remote, no auth, network hiccup. That must resolve to "no PR
+  // found" (REMOTE_UNKNOWN in run-controller.js), not an uncaught throw that
+  // skips straight past run-controller's own error handling to cli.js's
+  // outer catch and truncates the --json stream after run.start.
+  try {
+    return findPrByHead(branch, baseBranch, { includeDraft: true }, ghDeps) || { number: null, url: fallbackUrl };
+  } catch {
+    return { number: null, url: fallbackUrl };
+  }
+}
+
+function resolveLanded(cycle, run, cfg, ghDeps, repo) {
+  const baseBranch = cfg.baseBranch || "main";
+  if (cycle.status === "pr" || cycle.status === "approved") {
+    const pr = findPrByHeadSafe(run.branch, baseBranch, ghDeps, cycle.prUrl);
+    return { pr, expectedHead: git.git(["rev-parse", run.branch], repo), landing: "pr", branch: run.branch };
+  }
+  const integrationBranch = cfg.integrationBranch || "orch/integration";
+  const pr = findPrByHeadSafe(integrationBranch, baseBranch, ghDeps, cycle.prUrl);
+  return { pr, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "standing", branch: integrationBranch };
+}
+
 function reviewersForAuthor(authorName, reviewerSpecs) {
   const others = reviewerSpecs.filter((s) => s.agent !== authorName);
   return others.length ? others : reviewerSpecs;
@@ -983,7 +1023,18 @@ export function fetchIssueWorkOrder(n, gh) {
 // hiding the escalation a caller actually needs to go review. Exported as a
 // pure function so the priority itself is unit-testable without racing a real
 // concurrent process to reproduce the mix.
-const EXIT_CODE_PRIORITY = { 2: 2, 3: 1 };
+//
+// 1 (ERROR, run-controller.js's EXIT_FOR_STATE) and 4 (WAIT_TIMEOUT) are also
+// reachable via `raiseExitCode(controller.exit)` in the fan-out loop below,
+// but were missing from this table — an unlisted code's priority reads as 0
+// via the `|| 0` fallback, same as "nothing raised yet", so raiseExitCode(1)
+// or raiseExitCode(4) on a fresh process.exitCode of 0 never wins the `>`
+// comparison and silently leaves exitCode at 0 (success) even though the run
+// actually errored or timed out. Ranked by how much a caller needs to see it:
+// 1 (something broke) must survive everything; 2 (needs review) still outranks
+// 3 as established above; 4 (landed, but readiness timed out) is more
+// actionable than a mere capacity refusal so it outranks 3 too.
+const EXIT_CODE_PRIORITY = { 1: 4, 2: 3, 4: 2, 3: 1 };
 export function raiseExitCode(code) {
   const current = process.exitCode || 0;
   if ((EXIT_CODE_PRIORITY[code] || 0) > (EXIT_CODE_PRIORITY[current] || 0)) process.exitCode = code;
@@ -1458,6 +1509,25 @@ export async function main(argv, deps = {}) {
     // reviewer"), matching review/continue/pr and the printUsage example.
     let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
+    // design §4/§6 (P5): the run controller only drives ready/merged — `once`
+    // (the default) is today's single implicit cycle, byte-for-byte unchanged
+    // below. schema.js already refuses --json without --until ready|merged.
+    const until = flags.until || "once";
+    const jsonMode = Boolean(flags.json);
+    const emit = (event) => { if (jsonMode) console.log(JSON.stringify(event)); };
+    // design §3/§4: `run.start`'s `policy` field — the subset of RunPolicy this
+    // slice actually resolves before the loop starts (the remedy-ladder/roles/
+    // source fields don't exist yet; P5 ships no remedy executor). Built once so
+    // every `run.start` emission below (including the concurrency-cap skip path)
+    // carries the same object `runUntil` is given per-run.
+    const runPolicy = {
+      until,
+      maxAttempts: cfg.automation?.maxAttempts ?? 3,
+      pollSeconds: cfg.automation?.pollSeconds ?? 30,
+      ciWaitMinutes: cfg.automation?.ciWaitMinutes ?? 30,
+      baseBranch: cfg.baseBranch,
+      integrationBranch: cfg.integrationBranch,
+    };
 
     // F3: operator kill switch + one-cycle-at-a-time lock.
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -1477,7 +1547,8 @@ export async function main(argv, deps = {}) {
       // Warn only — never block: the operator decides whether to resume, inspect
       // or stage another branch.
       const prior = priorStagedBranches({ repo, orchDir, closes, task });
-      if (prior.length) console.log(formatPriorStagedBranches(closes, prior));
+      // design §13: stdout under --json is one JSON object per line, nothing else.
+      if (prior.length && !jsonMode) console.log(formatPriorStagedBranches(closes, prior));
     } else if (mode === "task") {
       // §3a/§3b: a --file task is UNTRUSTED intake — it must be a JSON work order,
       // validated for shape, then wrapped in a neutralized fence the author treats
@@ -1573,7 +1644,7 @@ export async function main(argv, deps = {}) {
       if (mode === "task") {
         const sync = git.syncMainFromOrigin(repo, cfg.baseBranch);
         if (!sync.ok) throw new Error(`orch: cannot start from stale ${cfg.baseBranch}: ${sync.reason}`);
-        if (sync.updated) console.log(`orch: fast-forwarded local ${cfg.baseBranch} from origin/${cfg.baseBranch}`);
+        if (sync.updated && !jsonMode) console.log(`orch: fast-forwarded local ${cfg.baseBranch} from origin/${cfg.baseBranch}`);
       }
       liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
       // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers.
@@ -1616,7 +1687,7 @@ export async function main(argv, deps = {}) {
       }];
     }
 
-    maybePrintRunBanner(cfg, runs, flags, deps.stdout);
+    if (!jsonMode) maybePrintRunBanner(cfg, runs, flags, deps.stdout);
     if (!dry && runs.some((run) => run.resume)) notify.resetKpi(orchDir);
 
     const results = [];
@@ -1636,7 +1707,16 @@ export async function main(argv, deps = {}) {
           { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers, workOrder: run.workOrder },
           cfg,
           { onExceeded: (live) => {
-            console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
+            // design §13: stdout under --json is one JSON object per line, nothing
+            // else, and `run.end` always carries `blockedReason` when exit == 3 —
+            // emit the pair here rather than a bare console.log so a skipped run
+            // still closes out the event stream instead of just vanishing from it.
+            if (jsonMode) {
+              emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
+              emit({ event: "run.end", runId: run.sid, outcome: "blocked", exit: 3, blockedReason: "concurrency-cap", usage: {} });
+            } else {
+              console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
+            }
             // 3 = blocked by a policy/capacity limit, distinct from 2 (the cycle
             // ran and did not agree) — a caller can retry a 3, not a 2.
             raiseExitCode(3);
@@ -1649,6 +1729,7 @@ export async function main(argv, deps = {}) {
         // (P5) can extend a run across more than one cycle. `--dry` writes none.
         if (!priorRecord) runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact) });
       }
+      emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
         const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes })));
         results.push(result);
@@ -1661,28 +1742,78 @@ export async function main(argv, deps = {}) {
           if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
           checkpoint.clear(orchDir, run.sid);
           const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
-          const outcome = outcomeForResult(result);
+          let outcome = outcomeForResult(result);
+          let exit = exitForResult(result);
+          let state = STATE_FOR_OUTCOME[outcome];
+          // "merged" landed on the standing integration→main PR; "pr"
+          // (merge: pr mode) and "merge-deferred" (demote) each open a
+          // fresh PR scoped to this cycle's own branch.
+          let pr = result.prUrl ? { number: null, url: result.prUrl, kind: result.status === "merged" ? "standing" : "per-cycle" } : null;
+          let controller = null;
+          // design §6/§9 (P5): once the local cycle lands, `ready`/`merged`
+          // also wait on the remote standing PR before this run is done —
+          // `once` (bare/default) stops here, unchanged from before P5.
+          if (until !== "once") {
+            const record = {
+              attempt,
+              retries: priorRecord?.retries || {},
+              failures: priorRecord?.failures || [],
+              headMovedRepins: priorRecord?.headMovedRepins || 0,
+              policy: { maxAttempts: runPolicy.maxAttempts },
+            };
+            // Same `deps.githubDeps` override point every other gh call in this
+            // file uses (real git access stays direct — these tests run against
+            // a real temp repo, only the gh CLI itself gets faked).
+            const ghDeps = { gh: (deps.githubDeps || githubDeps)().gh };
+            controller = await runUntil(runPolicy, record, {
+              runCycle: async () => result,
+              resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
+              gh: ghDeps.gh, git, repo,
+            });
+            outcome = controller.outcome;
+            exit = controller.exit;
+            state = controller.state;
+            if (controller.land) pr = { number: controller.land.pr.number, url: controller.land.pr.url, kind: controller.land.landing === "standing" ? "standing" : "per-cycle" };
+            raiseExitCode(exit);
+          }
           runRecord.update(orchDir, run.sid, {
-            state: STATE_FOR_OUTCOME[outcome],
+            state,
             outcome,
-            exit: exitForResult(result),
+            exit,
             attempt,
             branch: run.branch,
-            // "merged" landed on the standing integration→main PR; "pr"
-            // (merge: pr mode) and "merge-deferred" (demote) each open a
-            // fresh PR scoped to this cycle's own branch.
-            pr: result.prUrl ? { number: null, url: result.prUrl, kind: result.status === "merged" ? "standing" : "per-cycle" } : null,
+            pr,
+            ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
+            ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
+            ...(controller?.failure ? { failures: [...(priorRecord?.failures || []), { attempt, class: controller.failure.class, fingerprint: controller.failure.fingerprint, at: new Date().toISOString() }] } : {}),
             cycles: [
               ...(priorRecord?.cycles || []),
               { sid: run.sid, attempt, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null },
             ],
           });
+          emit({
+            event: "run.end", runId: run.sid, outcome, exit, usage: result.usage || {},
+            ...(controller?.failure ? { failureClass: controller.failure.class } : {}),
+            ...(controller?.blockedReason ? { blockedReason: controller.blockedReason } : {}),
+            ...(controller?.warnings?.length ? { warnings: controller.warnings } : {}),
+            ...(controller?.note ? { note: controller.note } : {}),
+            ...(pr?.url ? { prUrl: pr.url } : {}),
+          });
+        } else {
+          // `--dry` writes no run record and (design §4) never polls readiness —
+          // still emit run.end under --json so the event stream isn't silently
+          // truncated after run.start.
+          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result), usage: result.usage || {}, dry: true });
         }
-        console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
+        if (!jsonMode) console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.prUrl) prUrls.push(result.prUrl);
         if (result.status === "escalated" || result.status === "merge-deferred") {
-          raiseExitCode(2);
+          // Under `ready`/`merged` the exit code already came from the run
+          // controller above (STOPPED_AT_CAP=2 or BLOCKED=3 per design §6) —
+          // raising a flat 2 here too is harmless (raiseExitCode keeps the
+          // higher of the two) but only `once` needs this as its only source.
+          if (until === "once") raiseExitCode(2);
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
           if (!dry) commentOnIssue(result, run.branch, run.closes, deps.githubDeps || githubDeps);
@@ -1696,6 +1827,13 @@ export async function main(argv, deps = {}) {
             lastError: toLastError(err),
           });
         }
+        // Same "don't truncate the --json stream after run.start" contract as
+        // the concurrency-cap and --dry paths above — an uncaught throw here
+        // (e.g. a gh call this loop doesn't already fail closed, see
+        // findPrByHeadSafe/prView above) must still close out the event
+        // stream with a run.end before the bin/orch.js catch-all prints to
+        // stderr and exits.
+        if (jsonMode) emit({ event: "run.end", runId: run.sid, outcome: "error", exit: 1, usage: {} });
         throw err;
       } finally {
         if (!dry) inflight.deregister(orchDir, run.sid);
@@ -1704,7 +1842,7 @@ export async function main(argv, deps = {}) {
     // After the cycles: the detached docs-update runs `orch task`, so spawn it
     // outside the loop. maybeSpawnDocs only fires on a real `merged` result.
     let docsPending = false;
-    for (const result of results) docsPending = maybeSpawnDocs(result, cfg, { dry, spawn: deps.spawn }, orchDir) || docsPending;
+    for (const result of results) docsPending = maybeSpawnDocs(result, cfg, { dry, spawn: deps.spawn, quiet: jsonMode }, orchDir) || docsPending;
 
     // #44: a human is at the terminal — tidy up the branches/state orch created and
     // explain it in plain English, instead of dead-ending in an opaque git state.
@@ -1712,7 +1850,10 @@ export async function main(argv, deps = {}) {
     // docs child (which re-runs `orch task`) safely tidies itself when it lands.
     if (!dry && !flags["no-tidy"] && mergedBranches.length) {
       const finishFn = deps.finishRun || finishRun;
-      const io = deps.io || realIo();
+      // --json: keep tidying (branch cleanup is a real side effect), but a
+      // human-readable print here would land after run.end and break "last
+      // line is JSON" (design §13's stdout contract).
+      const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
       const runStats = results.flatMap((r) => r.runStats || []);
       await finishFn(
         { repo, orchDir, task, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls },
