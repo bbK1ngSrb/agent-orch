@@ -4141,8 +4141,11 @@ test("orch task --dry writes no run record", async () => {
 // stopped-at-cap cycle resumable via `continue` is a later slice), so a plain
 // `orch task` escalation leaves a run record `continue` can look up by runId,
 // but nothing left to actually reattach to — same "nothing to resume" refusal
-// a pre-v2 sid gets today. The record itself still gets its budget granted.
-test("orch continue resolves a run by runId, clearing a stopped-at-cap outcome even though the cycle itself is gone", async () => {
+// a pre-v2 sid gets today. `resumeTerminal` (the fresh-budget grant, inert
+// until P5) only runs once the checkpoint/inflight lookup has confirmed
+// there's something to reattach — so a refusal must leave the record's
+// outcome/exit exactly as the original cycle left them, not null them out.
+test("orch continue on a stopped-at-cap record with nothing to reattach refuses without corrupting the record", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo();
   const escalating = { ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate after cap", sha: "x" }) };
@@ -4160,9 +4163,43 @@ test("orch continue resolves a run by runId, clearing a stopped-at-cap outcome e
       /no checkpoint or inflight record/,
     );
     record = JSON.parse(readFileSync(join(dir, file), "utf8"));
-    assert.equal(record.outcome, null); // resumeTerminal ran before the checkpoint lookup failed
-    assert.equal(record.exit, null);
+    assert.equal(record.outcome, "stopped-at-cap"); // refusal must not touch the record
+    assert.equal(record.exit, 2);
   } finally {
     process.exitCode = savedExitCode;
   }
+});
+
+// `--until once` sets policy.maxAttempts: 0 — a legitimate value, not "unset".
+// `priorRun.policy?.maxAttempts || 1` would coerce that 0 to 1 (both `0` and
+// `undefined` are falsy), silently granting a bigger budget than the original
+// run asked for; `?? 1` only substitutes on `null`/`undefined`.
+test("orch continue on a resumable stopped-at-cap record honors a stored maxAttempts:0", async () => {
+  const repo = initGitRepo("orch-continue-maxattempts-");
+  const sid = "deadbeef";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  const dir = join(repo, ".orch", "run-records");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${sid}.json`), JSON.stringify({
+    schemaVersion: 1, runId: sid, command: "task", argv: [], policy: { maxAttempts: 0 },
+    state: "DONE", outcome: "stopped-at-cap", exit: 2, attempt: 1, retries: {}, headMovedRepins: 0,
+    cycles: [{ sid, attempt: 0, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null }],
+  }));
+
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: { get: (name) => ({ name, async author() { return { usage: {} }; }, async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; } }) },
+  };
+  await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  const record = JSON.parse(readFileSync(join(dir, `${sid}.json`), "utf8"));
+  assert.equal(record.policy.maxAttempts, 1); // 1 (prior attempt) + 0 (maxAttempts:0), not 2
+  assert.equal(record.attempt, 2); // priorRun.attempt (1) + 1 for this resumed cycle
 });

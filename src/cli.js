@@ -1179,11 +1179,26 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
       cfg,
       { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
     );
+    runRecord.create(orchDir, { runId: sid, command: "agent", argv: [redact(name)] });
   }
   try {
     const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps()));
-    if (!dry) { resume.clear(orchDir, task, authorName); checkpoint.clear(orchDir, sid); }
+    if (!dry) {
+      resume.clear(orchDir, task, authorName);
+      checkpoint.clear(orchDir, sid);
+      runRecord.update(orchDir, sid, {
+        state: "DONE",
+        outcome: outcomeForResult(result),
+        exit: exitForResult(result),
+        attempt: 0,
+        branch,
+        cycles: [{ sid, attempt: 0, branch, author: authorName, reviewers: reviewerList.map((r) => r.agent), status: result.status, reason: result.reason || null }],
+      });
+    }
     return { ...result, branch };
+  } catch (err) {
+    if (!dry) runRecord.update(orchDir, sid, { state: "DONE", outcome: "error", exit: 1, lastError: redact(String(err?.message || err)) });
+    throw err;
   } finally {
     if (!dry) inflight.deregister(orchDir, sid);
   }
@@ -1624,7 +1639,7 @@ export async function main(argv, deps = {}) {
             state: "DONE",
             outcome: outcomeForResult(result),
             exit: exitForResult(result),
-            attempt: 1,
+            attempt: 0,
             branch: run.branch,
             pr: result.prUrl ? { number: null, url: result.prUrl, kind: "standing" } : null,
             cycles: [{ sid: run.sid, attempt: 0, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null }],
@@ -1639,6 +1654,16 @@ export async function main(argv, deps = {}) {
           // no one watching stdout, and the DECISION.md file is local-only.
           if (!dry) commentOnIssue(result, run.branch, run.closes, deps.githubDeps || githubDeps);
         }
+      } catch (err) {
+        if (!dry) {
+          runRecord.update(orchDir, run.sid, {
+            state: "DONE",
+            outcome: "error",
+            exit: 1,
+            lastError: redact(String(err?.message || err)),
+          });
+        }
+        throw err;
       } finally {
         if (!dry) inflight.deregister(orchDir, run.sid);
       }
@@ -1677,9 +1702,6 @@ export async function main(argv, deps = {}) {
     // budget; the branch/task reattach mechanics stay checkpoint/inflight-driven
     // until the run-controller (P5) exists to act on that budget.
     const priorRun = dry ? null : runRecord.lookup(orchDir, sid);
-    if (priorRun) {
-      runRecord.resumeTerminal(orchDir, priorRun.runId, { maxAttempts: priorRun.attempt + (priorRun.policy?.maxAttempts || 1) });
-    }
     // Preflight (adapter registered + CLI on PATH + .orch/ writable) runs below,
     // once the resume's actual author/reviewer agents are known — see the
     // `opts.only` comment on preflight() for why this can't run against the
@@ -1819,6 +1841,14 @@ export async function main(argv, deps = {}) {
         { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
       );
     }
+    // Only reached once a checkpoint/inflight record proved there's actually
+    // something to reattach — grant the fresh budget here, not at the earlier
+    // lookup, or every refusal path above (no branch, no committed changes, no
+    // registered author) would have already erased outcome/exit/retries on a
+    // record that never got resumed.
+    if (priorRun) {
+      runRecord.resumeTerminal(orchDir, priorRun.runId, { maxAttempts: priorRun.attempt + (priorRun.policy?.maxAttempts ?? 1) });
+    }
     const runId = priorRun?.runId || sid;
     try {
       const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps({ closes })));
@@ -1839,7 +1869,7 @@ export async function main(argv, deps = {}) {
             state: "DONE",
             outcome: outcomeForResult(result),
             exit: exitForResult(result),
-            attempt: 1,
+            attempt: 0,
             branch,
             cycles: [{ sid, attempt: 0, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
           });
@@ -1873,6 +1903,9 @@ export async function main(argv, deps = {}) {
         process.exitCode = 2;
         if (!dry) commentOnIssue(result, branch, closes, deps.githubDeps || githubDeps);
       }
+    } catch (err) {
+      if (!dry) runRecord.update(orchDir, runId, { state: "DONE", outcome: "error", exit: 1, lastError: redact(String(err?.message || err)) });
+      throw err;
     } finally {
       if (!dry) inflight.deregister(orchDir, sid);
     }
