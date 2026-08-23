@@ -15,6 +15,11 @@ function sample(name) {
   if (f.type === "boolean") return [`--${name}`];
   if (f.type === "int") return [`--${name}`, "1"];
   if (f.type === "enum") return [`--${name}`, f.values[0]];
+  // author/authors/reviewer/reviewers are role specs — validate() now parses
+  // them (parseRoleSpec/parseRoleSpecs, schema.js) and rejects an unregistered
+  // agent, so the generic "x" placeholder every other string flag uses would
+  // fail here for a reason unrelated to what this matrix actually checks.
+  if (["author", "authors", "reviewer", "reviewers"].includes(name)) return [`--${name}`, "claude"];
   return [`--${name}`, "x"];
 }
 
@@ -26,7 +31,13 @@ test("every declared flag validates on its command, every other flag is refused"
   const all = Object.keys(FLAGS);
   for (const [command, spec] of Object.entries(COMMANDS)) {
     for (const name of spec.flags) {
-      const { flags } = parse([command, ...sample(name)]);
+      // task/issue reject --author(s) without a paired --reviewer(s) (schema.js:
+      // reviewer-only is meaningful there, author-only isn't) — sampling --author
+      // alone would otherwise trip that pairing rule for a reason unrelated to
+      // what this matrix checks (does the command accept the flag at all).
+      const extra = ["task", "issue"].includes(command) && ["author", "authors"].includes(name)
+        ? sample("reviewer") : [];
+      const { flags } = parse([command, ...sample(name), ...extra]);
       assert.doesNotThrow(() => validate(command, flags), `orch ${command} --${name}`);
     }
     for (const name of all) {
@@ -378,4 +389,90 @@ test("help renders from the schema: every command and every flag", () => {
     if (!f.help && name !== "plain") continue;
     assert.match(help, new RegExp(`--${name}(?![\\w-])`), `help missing --${name}`);
   }
+});
+
+// `orch continue <sid>` uses the positional directly as a sid-store key
+// (checkpoint.js/inflight.js via sid-store.js's `join(dir, key + ".json")`).
+// A sid is always CLI-generated, but this positional is operator-typed and
+// used unchecked — `orch continue ../../etc/passwd` could `join()` outside
+// .orch/checkpoints and (via sid-store.js's corrupt-file self-heal) delete a
+// file it was never meant to touch.
+test("orch continue rejects a sid that could path-traverse out of the store", () => {
+  for (const sid of ["../../etc/passwd", "a/b", "..", "a/../../b", "\0"]) {
+    assert.throws(
+      () => validatePositionals("continue", [sid], {}),
+      (e) => e.exit === 64 && /invalid sid/.test(e.message),
+      sid,
+    );
+  }
+  assert.doesNotThrow(() => validatePositionals("continue", ["12345-a"], {}));
+});
+
+// `--author`/`--authors`/`--reviewer`/`--reviewers` name an agent; an
+// unregistered one used to surface deep inside preflight() (cli.js) — after
+// the update-check network call and GitHub App token mint main() fires ahead
+// of every command. parseRoleSpec/parseRoleSpecs (config.js) already throw
+// for an unknown agent; validate() now runs them before any side effect.
+test("an unregistered agent in a role flag is a usage error before dispatch", () => {
+  for (const name of ["author", "reviewer"]) {
+    assert.throws(
+      () => validate("task", { [name]: "not-a-real-agent", ...(name === "author" ? { reviewer: "claude" } : { author: "claude" }) }),
+      (e) => e.exit === 64 && /unknown agent/.test(e.message),
+      `orch task --${name}`,
+    );
+  }
+  for (const name of ["authors", "reviewers"]) {
+    assert.throws(
+      () => validate("task", { [name]: "not-a-real-agent", ...(name === "authors" ? { reviewers: "claude" } : { authors: "claude" }) }),
+      (e) => e.exit === 64 && /unknown agent/.test(e.message),
+      `orch task --${name}`,
+    );
+  }
+  assert.doesNotThrow(() => validate("task", { author: "claude", reviewer: "codex" }));
+});
+
+// `task`/`issue` are the only commands whose schema carries all four role
+// flags: --reviewer(s) alone is meaningful (rotate author, force reviewer —
+// cli.js's applyRoleOverrides passes allowReviewerOnly for these), but
+// --author(s) alone is not. That rejection used to surface only once
+// applyRoleOverrides ran, deep inside the command handler, after main()'s
+// update-check/token-mint side effects.
+test("orch task/issue reject --author(s) without a paired --reviewer(s)", () => {
+  for (const command of ["task", "issue"]) {
+    assert.throws(
+      () => validate(command, { author: "claude" }),
+      (e) => e.exit === 64 && /set both --author\(s\) and --reviewer\(s\), or neither/.test(e.message),
+      `orch ${command} --author`,
+    );
+    assert.doesNotThrow(() => validate(command, { reviewer: "claude" }), `orch ${command} --reviewer`);
+    assert.doesNotThrow(() => validate(command, { author: "claude", reviewer: "codex" }), `orch ${command} both`);
+  }
+});
+
+// buildAgent's applyRoleOverrides call (cli.js) is NOT given allowReviewerOnly
+// — a build's author/reviewer are either both overridden or both left to
+// rotation, never just one. That rule used to surface only once buildAgent
+// ran, after main()'s update-check/token-mint side effects.
+test("orch agent build rejects a lone --author or --reviewer", () => {
+  assert.throws(
+    () => validatePositionals("agent", ["build", "newagent"], { author: "claude" }),
+    (e) => e.exit === 64 && /set both --author\(s\) and --reviewer\(s\), or neither/.test(e.message),
+  );
+  assert.throws(
+    () => validatePositionals("agent", ["build", "newagent"], { reviewer: "claude" }),
+    (e) => e.exit === 64 && /set both --author\(s\) and --reviewer\(s\), or neither/.test(e.message),
+  );
+  assert.doesNotThrow(() =>
+    validatePositionals("agent", ["build", "newagent"], { author: "claude", reviewer: "codex" }));
+  assert.doesNotThrow(() => validatePositionals("agent", ["build", "newagent"], {}));
+});
+
+// `orch task "   "` (whitespace-only) used to pass main()'s `if (!task)`
+// check — a string of only spaces is truthy — and run a cycle with a blank
+// task label. This lives in cli.js (the join happens there), not
+// validatePositionals, so it's exercised through main() below in cli.test.js;
+// this test only pins the positional-arity contract that whitespace-only
+// text is still ONE positional, not zero.
+test("a whitespace-only task positional still satisfies POSITIONAL_ARITY (cli.js rejects the content)", () => {
+  assert.doesNotThrow(() => validatePositionals("task", ["   "], {}));
 });

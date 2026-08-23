@@ -10,6 +10,8 @@
 // declaration order, so `help` comes first.
 
 import { get as getAdapter } from "./adapters/index.js";
+import { parseRoleSpec, parseRoleSpecs } from "./config.js";
+import { isSafeSid } from "./sid-store.js";
 
 // Flags. `type` is the parseArgs type plus two refinements the parser
 // enforces itself: "int" (positive integer unless `min` says otherwise) and
@@ -308,6 +310,31 @@ export function validate(command, flags) {
   if (flags.reviewer != null && flags.reviewers != null) {
     throw usageError("set --reviewer or --reviewers, not both");
   }
+  // An unregistered/misspelled agent in --author(s)/--reviewer(s) used to
+  // surface deep inside preflight() — after the same update-check network
+  // call and GitHub App token mint above had already run for a run that was
+  // always going to be refused. parseRoleSpec/parseRoleSpecs already call
+  // getAdapter and throw for an unknown agent; run them here too, flag-only,
+  // ahead of every side effect.
+  for (const [name, parser] of [["author", parseRoleSpec], ["reviewer", parseRoleSpec], ["authors", parseRoleSpecs], ["reviewers", parseRoleSpecs]]) {
+    if (flags[name] == null) continue;
+    try { parser(flags[name]); }
+    catch (e) { throw usageError(`--${name}: ${e.message}`); }
+  }
+  // `task`/`issue` are the only commands whose schema legally carries all
+  // four role flags (see COMMANDS above): --reviewer(s) alone is meaningful
+  // there ("rotate author, force this reviewer" — cli.js's
+  // applyRoleOverrides passes allowReviewerOnly for these), but --author(s)
+  // alone is not — cli.js used to reject it only once applyRoleOverrides ran,
+  // deep inside the command handler, after the same update-check/token-mint
+  // side effects above.
+  if (["task", "issue"].includes(effective)) {
+    const authorSet = flags.author != null || flags.authors != null;
+    const reviewerSet = flags.reviewer != null || flags.reviewers != null;
+    if (authorSet && !reviewerSet) {
+      throw usageError("set both --author(s) and --reviewer(s), or neither");
+    }
+  }
 }
 
 // [min, max, usageOnMissing] non-flag arguments after the command word. The
@@ -363,6 +390,18 @@ export function validatePositionals(command, rest, flags) {
     if (flags.dry && rest[0] !== "install") {
       throw usageError("--dry is only valid with 'orch completion install' — 'orch completion' on its own only prints, it never writes");
     }
+  }
+  // `continue <sid>` uses the positional directly as a sid-store key
+  // (checkpoint.js/inflight.js, via sid-store.js's `join(dir, key + ".json")`)
+  // — a sid is always CLI-generated (sid.js), but this positional is
+  // operator-typed and used unchecked, so `orch continue ../../etc/passwd`
+  // could `join()` outside .orch/checkpoints and (via sid-store.js's
+  // corrupt-file self-heal) delete or read a file it was never meant to
+  // touch. Reject anything that isn't a plausible sid before it ever reaches
+  // a store, same "before any side effect" placement as every other check
+  // in this function.
+  if (command === "continue" && !isSafeSid(rest[0])) {
+    throw usageError(`invalid sid '${rest[0]}' — a sid never contains '/', '..', or a NUL byte`);
   }
   // `issue`/`pr` take a numeric ID. This used to be checked deep in each
   // handler, after main() had already fired the update-check network call
@@ -447,6 +486,16 @@ function validateAgentArgs(rest, flags) {
         }
       }
     }
+  }
+  // Unlike task/issue, buildAgent's applyRoleOverrides call (cli.js) is NOT
+  // given allowReviewerOnly — a build's author/reviewer are either both
+  // overridden or both left to rotation, never just one. That rule used to
+  // surface only once buildAgent ran, after the update-check network call
+  // and GitHub App token mint main() fires ahead of every command.
+  const authorSet = flags.author != null || flags.authors != null;
+  const reviewerSet = flags.reviewer != null || flags.reviewers != null;
+  if (authorSet !== reviewerSet) {
+    throw usageError("set both --author(s) and --reviewer(s), or neither");
   }
 }
 

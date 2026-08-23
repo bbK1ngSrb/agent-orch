@@ -71,7 +71,7 @@ const SUBCOMMAND_CASES = Object.entries(SUBCOMMANDS).map(([cmd, words]) => `    
 export const BASH_COMPLETION = `# orch bash completion
 # Install: orch completion install (or) source <(orch completion bash)
 _orch_completion() {
-  local cur prev cmd cmd_index i w j name known_agent
+  local cur prev cmd cmd_index i w j name known_agent wname
   COMPREPLY=()
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
@@ -205,15 +205,33 @@ ${AGENT_SUBCOMMAND_FLAG_CASES}
     fi
   elif [[ "\${cmd}" == "completion" ]]; then
     # "install" can legally appear anywhere after the command too ("orch
-    # completion --dry install") — checking only the literal next word missed
-    # that ordering and under-offered --dry.
-    flags="${COMPLETION_NO_DRY_FLAGS}"
+    # completion --dry install"), so find the subcommand word (if any) the
+    # same flag-skipping way "agent"'s sub is found above, instead of only
+    # checking the literal next word.
+    local sub=""
     for ((i = cmd_index + 1; i < COMP_CWORD; i++)); do
-      if [[ "\${COMP_WORDS[\${i}]}" == "install" ]]; then
-        flags="${COMPLETION_ALL_FLAGS}"
-        break
+      w="\${COMP_WORDS[\${i}]}"
+      if [[ "\${w}" != -* ]]; then
+        sub="\${w}"
       fi
     done
+    # --dry is illegal on plain "orch completion" but legal once "install" is
+    # coming — and while the subcommand word hasn't been typed YET, it still
+    # might be "install", so treating --dry as illegal the instant it's typed
+    # (before "install" follows) rejected a perfectly legal ordering wholesale
+    # ("orch completion --dry <TAB>" returned nothing). Only a subcommand word
+    # that has actually landed and isn't "install" rules --dry out for good.
+    if [[ -z "\${sub}" || "\${sub}" == "install" ]]; then
+      flags="${COMPLETION_ALL_FLAGS}"
+    else
+      flags="${COMPLETION_NO_DRY_FLAGS}"
+    fi
+    # SUBCOMMAND_CASES above only offers "bash install" for the single word
+    # right after "completion" ($cmd_index + 1) — once a flag has taken that
+    # slot instead, the subcommand words must still be offered here.
+    if [[ -z "\${sub}" ]]; then
+      flags="${SUBCOMMANDS.completion.join(" ")} \${flags}"
+    fi
   else
     case "\${cmd}" in
 ${COMMAND_FLAG_CASES}
@@ -223,12 +241,17 @@ ${COMMAND_FLAG_CASES}
   # A flag already typed but illegal for the command/subcommand that follows
   # ("orch --merge dashboard", "orch agent --build build") must not let
   # completion continue suggesting input as though the invocation were still
-  # valid — the parser has already refused it by this point.
+  # valid — the parser has already refused it by this point. parseArgs also
+  # accepts "--flag=value" as one word; matching that literal word against
+  # $flags (which only ever holds bare "--flag" names) always missed, so a
+  # perfectly legal "orch task --author=claude <TAB>" wrongly looked illegal
+  # and returned nothing. Strip a trailing "=value" before checking legality.
   i=1
   while [[ \${i} -lt \${COMP_CWORD} ]]; do
     w="\${COMP_WORDS[\${i}]}"
     if [[ "\${w}" == -* ]]; then
-      if [[ " \${flags} " != *" \${w} "* ]]; then
+      wname="\${w%%=*}"
+      if [[ " \${flags} " != *" \${wname} "* ]]; then
         COMPREPLY=()
         return 0
       fi

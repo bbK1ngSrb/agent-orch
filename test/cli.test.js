@@ -444,6 +444,38 @@ test("ORCH_DRYRUN=1 suppresses the background update check", async () => {
   }
 });
 
+// "__update-check-child" (the detached re-exec target spawnChecker spawns) is
+// declared read-only in INTERNAL_COMMANDS and has no --dry flag of its own —
+// but it unconditionally wrote ~/.orch/update-check.json regardless of
+// ORCH_DRYRUN=1, because main() returned from this branch before `dryRun` was
+// even computed. A real invocation would also make a real network call
+// (fetchLatestFromNpm), so this only asserts the cache file: if the fix
+// regresses, this test either fails on the missing-file assertion or hangs
+// on a real npm registry request instead of finishing instantly.
+test("ORCH_DRYRUN=1 stops the update-check re-exec child from writing its cache", async () => {
+  const prev = process.env.ORCH_DRYRUN;
+  process.env.ORCH_DRYRUN = "1";
+  const cacheDir = mkdtempSync(join(tmpdir(), "orch-dryrun-child-"));
+  try {
+    await main(["__update-check-child", "1.0.0", cacheDir]);
+    assert.ok(!existsSync(join(cacheDir, "update-check.json")));
+  } finally {
+    if (prev === undefined) delete process.env.ORCH_DRYRUN;
+    else process.env.ORCH_DRYRUN = prev;
+  }
+});
+
+// `orch task "   "` (whitespace-only) passed the old `if (!task)` check — a
+// string of only spaces is truthy — and would have gone on to run a cycle
+// with a blank task label/branch slug.
+test("orch task rejects a whitespace-only task text", async () => {
+  const repo = initGitRepo();
+  await assert.rejects(
+    () => runMainInRepo(repo, ["task", "   "]),
+    (e) => e.exit === 64 && /usage: orch task/.test(e.message),
+  );
+});
+
 // `config` mutates (runConfigWizard writes orch.yml), so --dry belongs on it
 // like every other write command — it used to be rejected as "not valid with
 // 'orch config'" even though cli.js already had a dry handler for it.

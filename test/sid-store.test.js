@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readRecord, recordFile, removeRecord, scanDir, writeRecord } from "../src/sid-store.js";
+import { isSafeSid, readRecord, recordFile, removeRecord, scanDir, writeRecord } from "../src/sid-store.js";
 
 const IS_WINDOWS = process.platform === "win32";
 
@@ -97,4 +97,18 @@ test("writeRecord creates the dir recursively", () => {
   const d = join(freshDir(), "nested", "store");
   writeRecord(d, "k1", { v: 1 });
   assert.equal(readRecord(d, "k1").v, 1);
+});
+
+// `recordFile` interpolates `key` straight into `join(dir, key + ".json")` —
+// a key from an operator-typed sid (see `orch continue <sid>`, cli.js) could
+// walk outside `dir`. isSafeSid is the shared guard schema.js's
+// validatePositionals uses to reject that before it ever reaches a store
+// (was previously duplicated only in deferred.js, and only there).
+test("isSafeSid rejects anything that could path-traverse or isn't a plausible key", () => {
+  for (const bad of ["../../etc/passwd", "a/b", "..", "", "\0", null, undefined, 42]) {
+    assert.equal(isSafeSid(bad), false, JSON.stringify(bad));
+  }
+  for (const good of ["12345-a", "abc123", "0-0"]) {
+    assert.equal(isSafeSid(good), true, good);
+  }
 });

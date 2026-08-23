@@ -1203,7 +1203,15 @@ export async function main(argv, deps = {}) {
   if (flags.help || command === "help") { printUsage(); return; }
 
   if (command === "__update-check-child") {
-    await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
+    // Detached re-exec target (spawnChecker in update-check.js) — it has no
+    // --dry flag of its own (INTERNAL_COMMANDS declares it read-only), but it
+    // still writes ~/.orch/update-check.json on every real invocation. ORCH_DRYRUN=1
+    // must be honored here identically to every other command that writes,
+    // or a dry run of the *parent* command still leaves this real network
+    // call + cache write running detached in the background.
+    if (process.env.ORCH_DRYRUN !== "1") {
+      await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
+    }
     return;
   }
 
@@ -1439,7 +1447,7 @@ export async function main(argv, deps = {}) {
         task = rest.join(" ");
         authorPrompt = task;
       }
-      if (!task) throw usageError('usage: orch task "describe the change" (or --file work-order.json)');
+      if (!task || !task.trim()) throw usageError('usage: orch task "describe the change" (or --file work-order.json)');
     } else {
       reviewBranch = rest[0];
       if (!reviewBranch) throw usageError("usage: orch review <branch>");

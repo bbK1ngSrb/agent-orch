@@ -258,6 +258,28 @@ test("installCompletion writes the script under <home>/.orch and reports the pat
   assert.equal(written.content, BASH_COMPLETION);
 });
 
+// parseArgs also accepts "--flag=value" as one word, not just "--flag value"
+// as two. The already-typed-flag legality recheck only ever matched the bare
+// flag name against `flags`, so a perfectly legal "orch task --author=claude
+// <TAB>" was wrongly treated as an illegal already-typed flag and returned
+// nothing, same as an actually-illegal flag would.
+test("completion still offers flags after a legal --flag=value", BASH_SKIP, () => {
+  const offered = new Set(complete(["orch", "task", "--author=claude", ""], 3));
+  assert.ok(offered.has("--reviewer"), "orch task --author=claude should still offer --reviewer");
+});
+
+// "orch completion --dry <TAB>" (subcommand not typed yet) used to return
+// nothing at all: SUBCOMMAND_CASES only offers "bash install" for the single
+// word right after "completion", and the already-typed-flag recheck loop
+// treated --dry as illegal until "install" had ALSO already been typed —
+// even though --dry legally precedes "install".
+test("orch completion --dry offers install/bash and keeps --dry legal before the subcommand lands", BASH_SKIP, () => {
+  const offered = new Set(complete(["orch", "completion", "--dry", ""], 3));
+  assert.ok(offered.has("install"), "orch completion --dry should still offer install");
+  assert.ok(offered.has("bash"), "orch completion --dry should still offer bash");
+  assert.ok(offered.has("--dry"), "orch completion --dry should not treat --dry as already-illegal");
+});
+
 test("installCompletion never throws — reports failure instead", () => {
   const result = installCompletion({
     homedir: () => "/fake/home",
