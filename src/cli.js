@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
@@ -16,6 +17,7 @@ import * as notify from "./notify.js";
 import { acquireLock, releaseLock, acquireBlocking, isPaused } from "./lock.js";
 import { slugify } from "./slug.js";
 import { serve } from "./mcp.js";
+import { PARSE_OPTIONS, COMMAND_FLAGS, COMMANDS, renderHelp, usageError, validate as validateFlags, validatePositionals } from "./schema.js";
 
 const VERSION = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -388,41 +390,37 @@ export function linkOrchDoc(repo, agents = [], deps = {}) {
   return targets;
 }
 
-// Single source of truth for the flag set: parse() uses it, and tests assert
-// printUsage() and src/completion.js cover every key so the three can't drift.
-export const PARSE_OPTIONS = {
-  dry: { type: "boolean" },
-  version: { type: "boolean" },
-  help: { type: "boolean", short: "h" },
-  merge: { type: "boolean" },
-  author: { type: "string" },
-  reviewer: { type: "string" },
-  authors: { type: "string" },
-  reviewers: { type: "string" },
-  cheap: { type: "boolean" }, // force author+reviewer to orch.yml cheap.role for this run
-  file: { type: "string" },
-  "config-file": { type: "string" }, // load a .yml file, layered on top of orch.yml for this run
-  "allow-protected": { type: "boolean" }, // #395: run despite a protected-path mention at intake
-  "allow-large-scope": { type: "boolean" }, // operator sanction for a deliberately large review slice
-  "no-tidy": { type: "boolean" }, // #44: skip post-run completion/cleanup
-  "no-banner": { type: "boolean" },
-  link: { type: "boolean" }, // init: also wire .orch/ORCH.md into the agent file
-  json: { type: "boolean" }, // dashboard: machine-readable output
-  limit: { type: "string" }, // dashboard: run-history entries to show
-  "check-history": { type: "boolean" }, // dashboard: show stale red rows as resolved (view only) when branches are gone
-  once: { type: "boolean" }, // dashboard: force the static one-shot print instead of the live TUI
-  plain: { type: "boolean" }, // dashboard: alias of --once
-  "refresh-ms": { type: "string" }, // dashboard: live TUI poll interval (default 1000)
-  check: { type: "boolean" }, // upgrade: check latest version without installing
-  pr: { type: "boolean" }, // agent build: land via PR instead of a local-only branch
-};
+// The flag set and the per-command flag lists now live in src/schema.js — one
+// declaration that the parser, `orch --help` and bash completion all read, so
+// the three cannot drift. Re-exported here because they are part of this
+// module's public surface (tests and completion import them from cli.js).
+export { PARSE_OPTIONS, COMMAND_FLAGS };
 
+// Thin wrapper over node's parseArgs: same result shape, but an unknown or
+// malformed flag becomes a usage error (exit 64) with an orch-shaped message
+// instead of node's raw ERR_PARSE_ARGS text.
 export function parse(argv) {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: PARSE_OPTIONS,
-  });
+  let parsed;
+  try {
+    parsed = parseArgs({ args: argv, allowPositionals: true, options: PARSE_OPTIONS, tokens: true });
+  } catch (e) {
+    const unknown = /Unknown option '([^']+)'/.exec(e.message);
+    if (unknown) throw usageError(`unknown option ${unknown[1]} (run 'orch help' for usage)`);
+    throw usageError(e.message.split(". To ")[0]);
+  }
+  const { values, positionals, tokens } = parsed;
+  // parseArgs silently keeps the LAST occurrence of a repeated non-boolean
+  // flag ("--until ready --until once" parsed to just {until: "once"}), so
+  // the first value a user typed was discarded with no error at all — not
+  // even the "declared but inert" usage error this schema exists to raise
+  // for everything else. None of our string/int/enum flags are declared
+  // `multiple`, so a second occurrence is always a mistake, not a list.
+  const seen = new Set();
+  for (const t of tokens) {
+    if (t.kind !== "option" || PARSE_OPTIONS[t.name]?.type === "boolean") continue;
+    if (seen.has(t.name)) throw usageError(`--${t.name} given more than once`);
+    seen.add(t.name);
+  }
   return { command: positionals[0], rest: positionals.slice(1), flags: values };
 }
 
@@ -430,7 +428,7 @@ function splitNames(value) {
   if (value == null) return null;
   const values = Array.isArray(value) ? value : String(value).split(",");
   const names = values.map((v) => String(v).trim()).filter(Boolean);
-  if (names.length === 0) throw new Error("role override must name at least one agent");
+  if (names.length === 0) throw usageError("role override must name at least one agent");
   return names;
 }
 
@@ -451,6 +449,15 @@ function configuredReviewers(cfg) {
 }
 
 export function applyRoleOverrides(cfg, flags, opts = {}) {
+  // --author + --authors (or --reviewer + --reviewers) together used to pick
+  // the plural silently and drop the singular — a value the user typed had no
+  // effect and no error told them so. Reject the combination instead.
+  if (flags.author != null && flags.authors != null) {
+    throw usageError("set --author or --authors, not both");
+  }
+  if (flags.reviewer != null && flags.reviewers != null) {
+    throw usageError("set --reviewer or --reviewers, not both");
+  }
   const authorValue = flags.authors ?? flags.author;
   const reviewerValue = flags.reviewers ?? flags.reviewer;
   if (authorValue == null && reviewerValue != null && opts.allowReviewerOnly) {
@@ -461,7 +468,7 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
     };
   }
   if ((authorValue == null) !== (reviewerValue == null))
-    throw new Error("set both --author(s) and --reviewer(s), or neither");
+    throw usageError("set both --author(s) and --reviewer(s), or neither");
   if (authorValue == null) return cfg;
   return {
     ...cfg,
@@ -481,7 +488,7 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
 export function applyCheapOverride(cfg, flags, workOrder = null) {
   const explicitRoles = Boolean(flags.author || flags.authors || flags.reviewer || flags.reviewers);
   if (flags.cheap) {
-    if (explicitRoles) throw new Error("--cheap cannot be combined with --author/--authors/--reviewer/--reviewers");
+    if (explicitRoles) throw usageError("--cheap cannot be combined with --author/--authors/--reviewer/--reviewers");
     if (!cfg.cheap.role) throw new Error("orch.yml: cheap.role must be set to use --cheap");
     return { ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] };
   }
@@ -946,6 +953,19 @@ export function fetchIssueWorkOrder(n, gh) {
   return v.workOrder;
 }
 
+// 2 (a cycle ran and did not agree) outranks 3 (capacity refusal, nothing ran)
+// when a single invocation's author fan-out sees both: a peer process can push
+// a later run over the cap after an earlier one already escalated, and
+// last-write-wins on process.exitCode would then report 3 — "safe to retry" —
+// hiding the escalation a caller actually needs to go review. Exported as a
+// pure function so the priority itself is unit-testable without racing a real
+// concurrent process to reproduce the mix.
+const EXIT_CODE_PRIORITY = { 2: 2, 3: 1 };
+export function raiseExitCode(code) {
+  const current = process.exitCode || 0;
+  if ((EXIT_CODE_PRIORITY[code] || 0) > (EXIT_CODE_PRIORITY[current] || 0)) process.exitCode = code;
+}
+
 // Register before a cycle starts so the cap counts this run as well. The caller
 // owns the exceeded-cap action because task fan-out skips while single runs throw.
 export function registerWithConcurrencyCap(orchDir, sid, meta, cfg, { onExceeded = () => {} } = {}) {
@@ -1144,7 +1164,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
       sid,
       { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList, workOrder: wo },
       cfg,
-      { onExceeded: (live) => { throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`); } },
+      { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
     );
   }
   try {
@@ -1156,78 +1176,57 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   }
 }
 
-// Which flags each command actually reads. A flag parsed but never consumed by
-// the command it was typed on is a lie about what the command will do — `orch
-// issue 42 --merge` reads as "run and merge" while only `orch pr` consumes
-// --merge. Rather than one bespoke guard per flag, every command declares its
-// flag set here and one check rejects the rest. Entries are derived from what
-// each dispatch branch actually reads, so adding a flag to a command means
-// adding it here too. --help/--version are legal everywhere (see below).
-// Commands with no entry (unknown input, which falls through to usage) are not
-// validated.
-export const COMMAND_FLAGS = {
-  init: ["config-file", "dry", "link"],
-  config: ["config-file"],
-  // `agent add <unregistered>` offers to build, and hands buildAgent the same
-  // flags as `agent build` — so both subcommands share one flag set.
-  agent: ["config-file", "dry", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
-  task: ["config-file", "dry", "file", "cheap", "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
-  issue: ["config-file", "dry", "cheap", "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
-  review: ["config-file", "dry", "cheap", "allow-large-scope", "no-tidy", "no-banner", "author", "authors", "reviewer", "reviewers"],
-  continue: ["config-file", "dry", "allow-large-scope", "no-tidy", "author", "authors", "reviewer", "reviewers"],
-  pr: ["config-file", "dry", "merge", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
-  release: ["dry"],
-  dashboard: ["json", "limit", "check-history", "once", "plain", "refresh-ms"],
-  completion: [],
-  upgrade: ["check", "dry"],
-  update: ["check", "dry"],
-  mcp: [],
-  version: [],
-  help: [],
-};
-
-// `--help`/`--version` short-circuit main() before any command runs, so they are
-// the *effective* command whenever present: `orch pr 42 --merge --help` prints
-// usage and exits 0 having merged nothing. Asking to merge and asking what the
-// tool is are contradictory requests; neither silently wins.
-export function checkFlags(command, flags) {
-  const effective = flags.help ? "help" : flags.version ? "version" : command;
-  const allowed = COMMAND_FLAGS[effective];
-  if (!allowed) return;
-  for (const name of Object.keys(flags)) {
-    if (name === "help" || name === "version" || allowed.includes(name)) continue;
-    const valid = Object.keys(COMMAND_FLAGS).filter((c) => COMMAND_FLAGS[c].includes(name));
-    throw new Error(
-      `--${name} is not valid with 'orch ${effective}'` +
-      (valid.length ? ` — only with: ${valid.map((c) => `orch ${c}`).join(", ")}` : " — it is not a flag of any command"),
-    );
-  }
-}
-
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
   // First statement after parse deliberately: behind any early return
-  // (version/help/upgrade) a misapplied flag is still dropped silently.
-  checkFlags(command, flags);
+  // (version/help/upgrade) a misapplied flag is still dropped silently. The
+  // schema rejects a flag this command does not read, `--dry` on a read-only
+  // command, and a bad numeric/enum value — all exit 64, before anything runs.
+  validateFlags(command, flags);
+  validatePositionals(command, rest, flags);
+
+  // An unrecognised command used to fall through all the way to the bottom of
+  // this function, past the update-check network call and the GitHub App
+  // token mint below — so `orch bogsu` (a typo) still phoned home and minted
+  // a token before being refused. Reject it here, before either can fire.
+  // "__update-check-child" is an internal re-exec target (see below), never
+  // typed by a user, so it is exempt rather than added to the schema.
+  if (command && command !== "__update-check-child" && !COMMANDS[command]) {
+    throw usageError(`unknown command: ${command} (run 'orch help' for usage)`, { showUsage: true });
+  }
+
+  // --help/--version describe the tool rather than run it, so they route
+  // ahead of every command-specific branch — including `mcp`, whose dispatch
+  // used to come first and swallow `orch mcp --help`/`--version` into a
+  // hanging JSON-RPC stdio server instead of printing and exiting.
+  if (flags.version || command === "version") { console.log(DISPLAY_VERSION); return; }
+  if (flags.help || command === "help") { printUsage(); return; }
 
   if (command === "__update-check-child") {
-    await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
+    // Detached re-exec target (spawnChecker in update-check.js) — it has no
+    // --dry flag of its own (INTERNAL_COMMANDS declares it read-only), but it
+    // still writes ~/.orch/update-check.json on every real invocation. ORCH_DRYRUN=1
+    // must be honored here identically to every other command that writes,
+    // or a dry run of the *parent* command still leaves this real network
+    // call + cache write running detached in the background.
+    if (process.env.ORCH_DRYRUN !== "1") {
+      await runUpdateCheckChild({ current: rest[0] || VERSION, cacheDir: rest[1] });
+    }
     return;
   }
 
-  // `mcp` dispatches before anything that can print: on this command stdout is
-  // a JSON-RPC transport, so one stray update banner would corrupt the protocol
-  // stream. Early return also skips the GitHub App token mint below — each
-  // cycle the server spawns does its own auth.
+  // `mcp` dispatches before anything else that can print: on this command
+  // stdout is a JSON-RPC transport, so one stray update banner would corrupt
+  // the protocol stream. Early return also skips the GitHub App token mint
+  // below — each cycle the server spawns does its own auth.
   if (command === "mcp") {
     await serve({ repo: process.cwd() });
     return;
   }
 
-  if (flags.version || command === "version") { console.log(DISPLAY_VERSION); return; }
-  if (flags.help || command === "help") { printUsage(); return; }
   if (command === "upgrade" || command === "update") {
-    await runUpgrade({ flags, stdout: deps.stdout || process.stdout, ...deps.upgradeDeps });
+    const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
+    await runUpgrade({ flags: { ...flags, dry }, stdout: deps.stdout || process.stdout, ...deps.upgradeDeps });
     return;
   }
 
@@ -1239,8 +1238,9 @@ export async function main(argv, deps = {}) {
   // commands use below, so ORCH_DRYRUN=1 is honored identically.
   const dryRun = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
 
-  if (!flags.dry && command && command !== "completion") {
-    maybeNotifyUpdate({ current: VERSION, json: Boolean(flags.json) }).catch(() => {});
+  if (!dryRun && command && command !== "completion") {
+    const notifyFn = deps.maybeNotifyUpdate || maybeNotifyUpdate;
+    notifyFn({ current: VERSION, json: Boolean(flags.json) }).catch(() => {});
   }
 
   // Optional GitHub App auth: if ORCH_APP_ID + ORCH_APP_PRIVATE_KEY are set,
@@ -1249,7 +1249,11 @@ export async function main(argv, deps = {}) {
   // orch[bot]. Falls back to ambient `gh auth` when unset or on any failure —
   // never a hard dependency. An explicit GH_TOKEN wins and skips minting.
   // ponytail: process.env mutation at the CLI entrypoint; the lazy correct wiring.
-  const appCreds = !process.env.GH_TOKEN && appCredsFromEnv();
+  // Skipped on a dry run: --dry promises to "plan without shelling out or
+  // changing git" (schema.js), but minting a token still shelled out to `git
+  // remote get-url` and phoned home to GitHub — a real side effect a dry run
+  // must not have, regardless of which command asked for it.
+  const appCreds = !dryRun && !process.env.GH_TOKEN && appCredsFromEnv();
   if (appCreds) {
     try {
       const origin = git.gitTry(["remote", "get-url", "origin"], repo);
@@ -1303,6 +1307,13 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "config") {
+    // --dry isn't a legal flag on `config` (see schema.js's comment on why),
+    // but ORCH_DRYRUN=1 still applies here like every other write command —
+    // it used to launch the interactive wizard and write orch.yml regardless.
+    if (dryRun) {
+      console.log(`orch (dry): would run the interactive config wizard and write ${flags["config-file"] || join(orchDir, "orch.yml")}`);
+      return;
+    }
     await runConfigWizard({
       repo,
       configFile: flags["config-file"],
@@ -1314,9 +1325,10 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "agent") {
+    // validatePositionals (schema.js) already guarantees rest[0] is "add" or
+    // "build" and rest[1] (the name) is present before main() gets here.
     if (rest[0] === "build") {
       const name = rest[1];
-      if (!name) throw new Error("usage: orch agent build <name> [--pr]");
       const buildFn = deps.buildAgent || buildAgent;
       const result = await buildFn(name, { repo, orchDir, flags, deps });
       if (result.status === "already-registered") { console.log(`orch: ${name} already registered`); return; }
@@ -1325,22 +1337,44 @@ export async function main(argv, deps = {}) {
     }
 
     // `orch agent add <name>` appends a known agent to the `agents:` rotation
-    // pool in orch.yml, preserving the file's comments. Only registered agents
-    // are accepted so the next run's preflight stays valid; an unregistered
-    // name offers to build it (interactive only — see `buildAgent`).
-    if (rest[0] !== "add" || !rest[1]) throw new Error("usage: orch agent add <name> | orch agent build <name> [--pr]");
+    // pool in orch.yml, preserving the file's comments. "Known" means orch's
+    // adapter code has it (adapters.get succeeds) — that is a different
+    // question from whether THIS repo's orch.yml already lists it, which the
+    // `agents.includes(name)` check below answers. An unregistered name (no
+    // adapter code yet) offers to build it — non-interactively via --build,
+    // otherwise via the confirm prompt — and building stops there, exactly
+    // like `agent build`: it scaffolds the adapter, it does not also add it
+    // (the printed tip says to re-run `agent add` once it's merged). Once the
+    // adapter code exists, --build has nothing left to do, so it falls
+    // straight through to the add — it must not be read as "build instead of
+    // add" and skip the add entirely.
     const name = rest[1];
+    let unregistered = null;
     try {
-      adapters.get(name); // throws "unknown agent: <name>" for unregistered names
+      adapters.get(name); // throws "unknown agent: <name>" when no adapter code exists
     } catch (e) {
+      unregistered = e;
+    }
+    if (unregistered) {
+      if (flags.build) {
+        const buildFn = deps.buildAgent || buildAgent;
+        const result = await buildFn(name, { repo, orchDir, flags, deps });
+        reportAgentBuildResult(name, result, { withReason: true });
+        return;
+      }
       const io = deps.io || realIo();
       const answer = await io.confirm(`orch: '${name}' is not a registered agent — build it now? (y/N) `);
-      if (!answer) throw e;
+      if (!answer) throw unregistered;
       const buildFn = deps.buildAgent || buildAgent;
       const result = await buildFn(name, { repo, orchDir, flags, deps });
       reportAgentBuildResult(name, result);
       return;
     }
+    // Known adapter: there is nothing left to build. validatePositionals
+    // (schema.js) already refused --pr/the role overrides before main() got
+    // here — they only mean something for a build cycle this path never
+    // runs. --build itself stays legal (it just means "skip the confirm
+    // prompt", which a known adapter never reaches anyway).
     // Honor --config-file like every other write-capable command: edit the file the
     // run would actually read, not always the default .orch/orch.yml.
     const file = flags["config-file"] || configPath(repo);
@@ -1386,7 +1420,7 @@ export async function main(argv, deps = {}) {
     let task, authorPrompt, reviewBranch, closes = null, workOrder = null;
     if (command === "issue") {
       const n = rest[0];
-      if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch issue <number> [--author ... --reviewer ...]");
+      if (!/^\d+$/.test(String(n || ""))) throw usageError("usage: orch issue <number> [--author ... --reviewer ...]");
       const wo = fetchIssueWorkOrder(n, (deps.githubDeps || githubDeps)().gh);
       task = wo.title;
       authorPrompt = buildAuthorPrompt(wo);
@@ -1403,9 +1437,8 @@ export async function main(argv, deps = {}) {
       // trusted) is unchanged. `task` stays a short human label (drives slug/resume);
       // `authorPrompt` is what the author actually sees.
       if (flags.file) {
-        // A stray positional next to --file is ambiguous (two task sources);
-        // reject it instead of silently dropping the typed text.
-        if (rest.length) throw new Error("orch task --file takes no positional task text — put the task in the work-order file");
+        // validatePositionals (schema.js) already rejects a stray positional
+        // next to --file (ambiguous: two task sources) before main() gets here.
         const wo = parseWorkOrderFile(flags.file);
         task = wo.title;
         authorPrompt = buildAuthorPrompt(wo);
@@ -1414,10 +1447,10 @@ export async function main(argv, deps = {}) {
         task = rest.join(" ");
         authorPrompt = task;
       }
-      if (!task) throw new Error('usage: orch task "describe the change" (or --file work-order.json)');
+      if (!task || !task.trim()) throw usageError('usage: orch task "describe the change" (or --file work-order.json)');
     } else {
       reviewBranch = rest[0];
-      if (!reviewBranch) throw new Error("usage: orch review <branch>");
+      if (!reviewBranch) throw usageError("usage: orch review <branch>");
     }
 
     // §3c intake scan (#394): a task whose text names a protected path almost
@@ -1551,7 +1584,9 @@ export async function main(argv, deps = {}) {
           cfg,
           { onExceeded: (live) => {
             console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
-            process.exitCode = 2;
+            // 3 = blocked by a policy/capacity limit, distinct from 2 (the cycle
+            // ran and did not agree) — a caller can retry a 3, not a 2.
+            raiseExitCode(3);
           } },
         );
         if (!accepted) {
@@ -1574,7 +1609,7 @@ export async function main(argv, deps = {}) {
         if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
         if (result.prUrl) prUrls.push(result.prUrl);
         if (result.status === "escalated" || result.status === "merge-deferred") {
-          process.exitCode = 2;
+          raiseExitCode(2);
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
           if (!dry) commentOnIssue(result, run.branch, run.closes, deps.githubDeps || githubDeps);
@@ -1606,7 +1641,7 @@ export async function main(argv, deps = {}) {
 
   if (command === "continue") {
     const sid = rest[0];
-    if (!sid) throw new Error("usage: orch continue <sid>");
+    if (!sid) throw usageError("usage: orch continue <sid>");
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
@@ -1746,7 +1781,7 @@ export async function main(argv, deps = {}) {
         sid,
         { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers, workOrder },
         cfg,
-        { onExceeded: (live) => { throw new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`); } },
+        { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
       );
     }
     try {
@@ -1791,7 +1826,7 @@ export async function main(argv, deps = {}) {
   if (command === "pr") {
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const n = rest[0];
-    if (!/^\d+$/.test(String(n || ""))) throw new Error("usage: orch pr <number> [--merge]");
+    if (!/^\d+$/.test(String(n || ""))) throw usageError("usage: orch pr <number> [--merge]");
     if (dryRun) {
       console.log(`orch (dry): would review PR #${n}${flags.merge ? " and merge it if approved" : ""}`);
       return;
@@ -1817,7 +1852,12 @@ export async function main(argv, deps = {}) {
 
   if (command === "completion") {
     if (rest[0] === "install") {
-      const result = installCompletion();
+      const home = deps.completionDeps?.homedir ? deps.completionDeps.homedir() : homedir();
+      if (dryRun) {
+        console.log(`orch (dry): would write ${join(home, ".orch", "completion.bash")}`);
+        return;
+      }
+      const result = installCompletion(deps.completionDeps);
       if (result.ok) {
         console.log(`orch: wrote completion script to ${result.path}`);
         console.log(`orch: add this line to your ~/.bashrc to enable it:`);
@@ -1832,8 +1872,7 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "dashboard") {
-    const historyLimit = flags.limit ? Number(flags.limit) : 10;
-    if (!Number.isInteger(historyLimit) || historyLimit <= 0) throw new Error("--limit must be a positive integer");
+    const historyLimit = flags.limit ? Number(flags.limit) : 10; // schema validated the value
     const checkHistory = Boolean(flags["check-history"]);
     const once = Boolean(flags.once || flags.plain);
     // Live TUI is the default only for a genuine interactive terminal; every
@@ -1860,7 +1899,7 @@ export async function main(argv, deps = {}) {
   // wrote, never a whole-tree reset (see bumpVersion recovery: "written-files").
   if (command === "release") {
     const entry = rest.join(" ").trim();
-    if (!entry) throw new Error('usage: orch release "<changelog entry>"');
+    if (!entry) throw usageError('usage: orch release "<changelog entry>"');
     if (dryRun) { console.log(`orch (dry): would bump version + CHANGELOG with "${entry}"`); return; }
     const dirty = git.gitTry(["status", "--porcelain"], repo);
     if (!dirty.ok) throw new Error(`orch release: git status failed: ${dirty.out.trim() || "unknown error"}`);
@@ -1881,69 +1920,12 @@ export async function main(argv, deps = {}) {
   // and exits 0; a command we do not recognise (typo, renamed subcommand in a
   // stale script) must be an error — exiting 0 tells every scripted caller
   // checking $? that the run succeeded when nothing ran at all.
-  if (command) throw new Error(`unknown command: ${command} (run 'orch help' for usage)`);
+  if (command) throw usageError(`unknown command: ${command} (run 'orch help' for usage)`, { showUsage: true });
   printUsage();
 }
 
 function printUsage() {
-  console.log(`orch - Run coding agents in an author, review, test, and merge loop.
-
-Usage: orch <command> [options]
-
-Commands:
-  init                  Scaffold .orch/orch.yml and .orch/ORCH.md.
-  config                Interactively create or edit an orch YAML config.
-  agent add <name>      Add a registered agent to the rotation pool.
-  agent build <name>    Scaffold an adapter via orch's author/audit/test loop.
-  task "change"         Run a cycle and update orch/integration on merge.
-  task --file <file>    Run a cycle from an untrusted JSON work order.
-  issue <number>        Run from a GitHub issue and close it on merge.
-  review <branch>       Audit an existing branch without merging.
-  continue <sid>        Resume an interrupted/stalled cycle from its checkpoint.
-  pr <number>           Review a GitHub PR; add --merge to merge if approved.
-  release "entry"       Bump version + CHANGELOG by hand (autoBump repos only).
-  dashboard             Live status TUI; --once prints the static one-shot.
-  mcp                   Serve orch as an MCP server over stdio (for AI clients).
-  upgrade, update       Self-update the global npm install.
-  completion [bash]     Print the bash completion script (default: bash).
-  completion install    Write the completion script to ~/.orch/completion.bash.
-  version               Print the version (same as --version).
-  help                  Show this help.
-
-Options:
-  -h, --help            Show this help.
-  --version             Print the version.
-  --author <role>       Set author as "<agent> [model] [effort]".
-  --authors <roles>     Set comma-separated authors; each gets a branch.
-  --reviewer <role>     Set reviewer as "<agent> [model] [effort]".
-  --reviewers <roles>   Set comma-separated reviewers.
-  --cheap               Use cheap.role; cheap.paths can auto-route work orders.
-  --file <file>         With task, read the work order from a JSON file.
-  --config-file <file>  Config YAML path; with config / agent add, write there.
-  --allow-protected     Run even if the work order names a protected path.
-  --allow-large-scope   Sanction a deliberately large review slice for this run.
-  --dry                 Plan without shelling out or changing git.
-  --check               With upgrade, check latest version without installing.
-  --link                With init, link .orch/ORCH.md from agent docs.
-  --no-banner           Hide the run banner.
-  --no-tidy             Leave task branches and checkouts after merge.
-  --json                With dashboard, print JSON.
-  --limit <n>           With dashboard, limit history rows.
-  --check-history       Dashboard: show stale red rows resolved (view only).
-  --once, --plain       Dashboard: force the static one-shot print.
-  --refresh-ms <n>      Dashboard: live TUI poll interval ms (default 1000).
-  --merge               With pr, merge approved PRs.
-  --pr                  With agent build, open a PR instead.
-
-Examples:
-  orch init --link
-  orch task "add input validation" --reviewer "codex"
-  orch task --file work-order.json --cheap
-  orch issue 42
-  orch release "hand-landed guardrail fix (closes #N)"
-  orch dashboard --json --limit 5
-
-Full docs: see .orch/ORCH.md in initialized repos and the README.`);
+  console.log(renderHelp());
 }
 
 function costSuffix(result) {

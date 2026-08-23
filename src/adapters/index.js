@@ -17,6 +17,12 @@ const REGISTRY = { ...NATIVE, ...local };
 // added — a new adapter here is probed and doc-checked automatically.
 export const nativeAgents = Object.keys(NATIVE);
 
+// Every name orch's code has an adapter for, native or local-routed — the
+// answer to "does `agent add <name>` have anything to build", known without
+// touching a repo's orch.yml (that answers "is it in THIS repo's agents:
+// list", a different question — see cli.js's agent-add handler).
+export const agentNames = Object.keys(REGISTRY);
+
 export function get(name) {
   const a = REGISTRY[name];
   if (!a) throw new Error(`unknown agent: ${name}`);
