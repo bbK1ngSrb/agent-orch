@@ -98,3 +98,21 @@ test("writeRecord creates the dir recursively", () => {
   writeRecord(d, "k1", { v: 1 });
   assert.equal(readRecord(d, "k1").v, 1);
 });
+
+test("recordFile rejects a traversal key and touches nothing outside the store", () => {
+  const root = freshDir();
+  const d = join(root, "orch", "checkpoints");
+  writeFileSync(join(root, "victim.json"), JSON.stringify({ precious: true }));
+  const traversalKey = "../../victim";
+  assert.throws(() => recordFile(d, traversalKey), /unsafe key/);
+  assert.throws(() => readRecord(d, traversalKey), /unsafe key/);
+  assert.throws(() => removeRecord(d, traversalKey), /unsafe key/);
+  assert.equal(existsSync(join(root, "victim.json")), true, "file outside the store survives");
+});
+
+test("recordFile rejects separators, absolute paths, and empty keys", () => {
+  const d = freshDir();
+  for (const bad of ["a/b", "a\\b", "/etc/passwd", "", "..", "a.b"]) {
+    assert.throws(() => recordFile(d, bad), /unsafe key/, `expected throw for ${JSON.stringify(bad)}`);
+  }
+});

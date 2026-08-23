@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.330 — 2026-08-23
+- Path traversal in sid-store: an unsanitised sid escapes the record store and silently deletes files outside it (closes [#538](https://github.com/bbk1ng/agent-orch/issues/538))
+
 ## v0.4.329 — 2026-08-22
 - The reviewer never receives the work order, so it cannot check a change against its requirement — and its unconditional ~3-logical-change rule blocks any planned large slice (closes [#535](https://github.com/bbk1ng/agent-orch/issues/535))
 
