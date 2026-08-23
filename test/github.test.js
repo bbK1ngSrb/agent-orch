@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   runPr, buildComment, buildIssueComment, demote, openPr, openIntegrationPr,
-  mergePrHeadBound, commentOnce, collaboratorPermission, requiredChecks,
+  mergePrHeadBound, commentOnce, collaboratorPermission, requiredChecks, listComments,
 } from "../src/github.js";
 
 function makeDeps({
@@ -437,7 +437,7 @@ test("openPr swallows a direct-merge failure (checks still pending is normal)", 
   const gh = (args) => {
     if (args[0] === "--version") return "gh 2";
     if (args[1] === "list") return "[]";
-    if (args[0] === "api" && args[3].endsWith("/merge")) throw new Error("405 not mergeable yet");
+    if (args[0] === "api" && args[3].endsWith("/merge")) throw new Error("gh: Pull Request is not mergeable (HTTP 405)");
     return "https://x/9\n";
   };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
@@ -755,7 +755,7 @@ test("openIntegrationPr swallows main.autoMerge direct-merge failures so GitHub 
     if (args[0] === "--version") return "gh 2";
     if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
     if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
-    if (args[0] === "api" && args[3].endsWith("/merge")) throw new Error("405 not mergeable yet");
+    if (args[0] === "api" && args[3].endsWith("/merge")) throw new Error("gh: Pull Request is not mergeable (HTTP 405)");
     return "";
   };
   const git = (args) => (args[0] === "remote" ? "origin\n" : "");
@@ -1169,6 +1169,24 @@ test("commentOnce creates a marked comment, then edits the same comment in place
   assert.equal(second.id, first.id, "the second call must edit the same comment");
   assert.ok(calls.some((c) => c.args.includes("PATCH") && c.args.some((a) => String(a).includes(`/comments/${first.id}`))));
   assert.match(posted.body, /round 2/);
+});
+
+test("listComments does not pass --slurp (absent before gh 2.47) and returns the paginated array as-is", () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(args);
+    return JSON.stringify([{ id: 1, body: "hi" }]);
+  };
+  const out = listComments(7, {}, { gh });
+  assert.deepEqual(out, [{ id: 1, body: "hi" }]);
+  assert.ok(calls[0].includes("--paginate"));
+  assert.ok(!calls[0].includes("--slurp"), "--slurp is not available on gh < 2.47");
+});
+
+test("parseHttpStatus (via collaboratorPermission) ignores bare 3-digit tokens that aren't an HTTP status", () => {
+  const gh = () => { throw new Error("failed to run git rev-parse in pr #409 checkout"); };
+  const out = collaboratorPermission("octocat", { gh });
+  assert.deepEqual(out, { ok: false, status: null });
 });
 
 test("collaboratorPermission accepts role_name: maintain + permission: write", () => {

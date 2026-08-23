@@ -30,7 +30,7 @@ function prNumberFromUrl(url) {
 // below branches on that number, never on message text.
 function parseHttpStatus(e) {
   const msg = String(e?.stderr || e?.message || "");
-  const m = msg.match(/\b(\d{3})\b/);
+  const m = msg.match(/\bHTTP (\d{3})\b/);
   return m ? Number(m[1]) : null;
 }
 
@@ -142,13 +142,13 @@ export function prView(n, fields, deps) {
   return JSON.parse(deps.gh(["pr", "view", String(n), "--json", f]) || "{}");
 }
 
-// `--paginate --slurp` wraps every page's array in one outer array; flatten
-// to the single list of comment objects callers expect.
+// The comments endpoint returns a JSON array per page; `--paginate` alone
+// (no `--slurp`, absent before gh 2.47) concatenates those arrays into one
+// flat array — exactly the list of comment objects callers expect.
 export function listComments(n, { since } = {}, deps) {
-  const args = ["api", `repos/{owner}/{repo}/issues/${n}/comments`, "--paginate", "--slurp"];
+  const args = ["api", `repos/{owner}/{repo}/issues/${n}/comments`, "--paginate"];
   if (since) args.push("-f", `since=${since}`);
-  const pages = JSON.parse(deps.gh(args) || "[]");
-  return pages.flat();
+  return JSON.parse(deps.gh(args) || "[]");
 }
 
 export function collaboratorPermission(login, deps) {
