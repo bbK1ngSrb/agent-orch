@@ -280,6 +280,21 @@ test("orch completion --dry offers install/bash and keeps --dry legal before the
   assert.ok(offered.has("--dry"), "orch completion --dry should not treat --dry as already-illegal");
 });
 
+// A command-specific flag typed BEFORE the command word used to leave every
+// command on offer, even ones the parser refuses it on: `orch --merge <TAB>`
+// offered `dashboard`, `init`, etc., though `--merge` (schema.js) is only
+// legal on `pr` — completion never narrowed the command list by an
+// already-typed flag's actual owners.
+test("a command-specific flag typed before the command word narrows the offered commands", BASH_SKIP, () => {
+  const merge = complete(["orch", "--merge", ""], 2).filter((w) => !w.startsWith("-"));
+  assert.deepEqual(merge, ["pr"]);
+  const build = complete(["orch", "--build", ""], 2).filter((w) => !w.startsWith("-"));
+  assert.deepEqual(build, ["agent"]);
+  // A flag legal on nearly every command (--dry) must not over-narrow.
+  const dry = complete(["orch", "--dry", ""], 2).filter((w) => !w.startsWith("-"));
+  assert.ok(dry.includes("task") && dry.includes("pr") && dry.length > 5, "dry-eligible commands should stay broad");
+});
+
 test("installCompletion never throws — reports failure instead", () => {
   const result = installCompletion({
     homedir: () => "/fake/home",

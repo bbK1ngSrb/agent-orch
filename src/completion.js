@@ -52,6 +52,17 @@ const AGENT_SUBCOMMAND_FLAG_CASES = Object.entries(SUBCOMMAND_FLAGS)
 // never suggests a flag the parser has just been taught to refuse.
 const AGENT_ADD_WITH_BUILD_FLAGS = [...GLOBAL_FLAGS, ...COMMANDS.agent.flags].flatMap(flagWords).join(" ");
 const KNOWN_AGENT_PATTERN = agentNames.join("|");
+// A command-specific flag typed BEFORE the command word ("orch --merge <TAB>",
+// "orch --build <TAB>") used to leave every command on offer, including ones
+// the parser refuses it on (`--merge` is only legal on `pr`; the schema's own
+// validate() already rejects a command-less `--merge` unless it names `pr` —
+// see schema.js's "no command at all" branch) — completion just never read
+// that same ownership. One case arm per non-global flag, narrowing the
+// candidate command list to whichever commands actually declare it.
+const FLAG_COMMAND_OWNERS_CASES = Object.keys(FLAGS)
+  .filter((name) => !GLOBAL_FLAGS.includes(name))
+  .map((name) => `      --${name}) owners="${Object.keys(COMMANDS).filter((c) => COMMANDS[c].flags.includes(name)).join(" ")}" ;;`)
+  .join("\n");
 // Right after "agent"/"completion" (subcommand not typed yet), a flag can
 // still legally come next — "orch agent --dry add ..." and "orch completion
 // --dry install" both parse fine, since parseArgs doesn't care where a flag
@@ -71,7 +82,7 @@ const SUBCOMMAND_CASES = Object.entries(SUBCOMMANDS).map(([cmd, words]) => `    
 export const BASH_COMPLETION = `# orch bash completion
 # Install: orch completion install (or) source <(orch completion bash)
 _orch_completion() {
-  local cur prev cmd cmd_index i w j name known_agent wname
+  local cur prev cmd cmd_index i w j name known_agent wname owners
   COMPREPLY=()
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
@@ -107,6 +118,14 @@ _orch_completion() {
   while [[ \${i} -lt \${COMP_CWORD} ]]; do
     w="\${COMP_WORDS[\${i}]}"
     if [[ "\${w}" == -* ]]; then
+      wname="\${w%%=*}"
+      owners=""
+      case "\${wname}" in
+${FLAG_COMMAND_OWNERS_CASES}
+      esac
+      if [[ -n "\${owners}" ]]; then
+        commands=$(comm -12 <(tr ' ' '\\n' <<< "\${commands}" | sort) <(tr ' ' '\\n' <<< "\${owners}" | sort) | tr '\\n' ' ')
+      fi
       case "\${w}" in
         ${VALUE_FLAG_PATTERN})
           i=$((i + 1))
