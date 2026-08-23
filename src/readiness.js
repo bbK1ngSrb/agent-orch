@@ -24,20 +24,25 @@ function contextOf(entry) {
   return entry.context || entry.name;
 }
 
-// design §9 rule 4. `required.known === false` (a 403 on both required-checks
-// reads) can never be resolved by waiting, so it reports "unknown" rather than
-// "pending" — the caller decides what unknown means for its `until` mode.
+// design §9 rule 4: "every statusCheckRollup entry terminal-green" is
+// unconditional — it holds regardless of whether the required-context set is
+// knowable. `required.known === false` (a 403, or any other non-404 error, on
+// both required-checks reads) only means "can't confirm every required
+// context is present"; it must never suppress a FAILURE already sitting in
+// the rollup. Check the rollup itself first, then let `!required.known`
+// downgrade an otherwise-green read to "unknown" rather than "pending" — the
+// caller decides what unknown means for its `until` mode.
 function checksGreen(rollup, required) {
   const list = rollup || [];
+  const failing = list.filter((e) => !checkTerminalGreen(e) && !checkPending(e)).map(contextOf);
+  if (failing.length) return { state: "red", failing };
+  if (list.some(checkPending)) return { state: "pending" };
   if (!required.known) return { state: "unknown" };
   const requiredSet = new Set(required.contexts);
   if (list.length === 0) return { state: requiredSet.size === 0 ? "green" : "pending" };
   for (const ctx of requiredSet) {
     if (!list.some((e) => contextOf(e) === ctx)) return { state: "pending" };
   }
-  const failing = list.filter((e) => !checkTerminalGreen(e) && !checkPending(e)).map(contextOf);
-  if (failing.length) return { state: "red", failing };
-  if (list.some(checkPending)) return { state: "pending" };
   return { state: "green" };
 }
 
@@ -126,12 +131,21 @@ function defaultSleep(ms) {
 
 // Polls `inspect` with 2x backoff (cap 10 min) until ready, a definite
 // failure, or `automation.ciWaitMinutes` elapses (→ REMOTE_CI_TIMEOUT — design
-// §10.2: "each expiry consumes an attempt", enforced by run-controller.js, not
-// here). ponytail: transient states (mergeable UNKNOWN, a required context
-// short of 3 rereads) share this one backoff loop instead of the separate
-// short free-retry windows design §7's table lists per class — same end
-// state, one loop to reason about.
+// §10.2: "each expiry consumes an attempt", true simply because cli.js bumps
+// `record.attempt` once per top-level invocation regardless of outcome — this
+// module has no attempt counter of its own to enforce). ponytail: transient
+// states (mergeable UNKNOWN, a required context short of 3 rereads) share
+// this one backoff loop instead of the separate short free-retry windows
+// design §7's table lists per class — same end state, one loop to reason
+// about.
 export async function waitReady({ pr, expectedHead, landing, cfg = {} } = {}, deps) {
+  // design §9: "Read (after `git fetch origin <base> <integration>` so local
+  // refs are fresh)". Best-effort — a fetch failure shouldn't abort the whole
+  // readiness read; `inspect`'s own isAncestor/safeRevParse already fail
+  // closed on stale/missing refs.
+  try {
+    deps.git.git(["fetch", "origin", cfg.baseBranch || "main", cfg.integrationBranch || "orch/integration"], deps.repo);
+  } catch { /* stale refs are handled by inspect()'s fail-closed git reads */ }
   const pollSeconds = cfg.pollSeconds || 30;
   const ciWaitMinutes = cfg.ciWaitMinutes ?? 30;
   const clockNow = () => (deps.now ? deps.now() : Date.now());

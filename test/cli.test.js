@@ -1055,6 +1055,58 @@ test("orch task --until ready --json: run.end stays the last line even when post
   }
 });
 
+// design §13: stdout under --json is one JSON object per line, nothing else.
+// The local-main fast-forward notice (`git.syncMainFromOrigin`) used to print
+// unconditionally, which would have broken `... --json | tail -1 | jq .exit`
+// on any run that happened to fast-forward — force that path with a peer push.
+test("orch task --until ready --json: the local-main fast-forward notice stays out of the JSON stream", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  const { peer } = addOriginWithPeer(repo);
+  writeFileSync(join(peer, "b.txt"), "1\n");
+  gitDep.git(["add", "."], peer);
+  gitDep.git(["commit", "-m", "peer commit"], peer);
+  gitDep.git(["push", "origin", "main"], peer);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+// design §13: `run.end` always carries `blockedReason` when exit == 3
+// (values include "concurrency-cap") — the skipped run must close out the
+// event stream, not just print a bare human line while --json is active.
+test("orch task --until ready --json: a concurrency-cap skip still emits run.start/run.end with blockedReason", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const orchDir = join(repo, ".orch");
+  mkdirSync(orchDir, { recursive: true });
+  writeFileSync(join(orchDir, "orch.yml"), "concurrency: 1\n");
+  inflight.register(orchDir, "cap-seed", { branch: "pr/test/seed", pid: process.pid, baseSha: "abc" });
+  process.exitCode = 0;
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--until", "ready", "--json"]);
+    for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
+    const events = logs.map((l) => JSON.parse(l));
+    assert.deepEqual(events.map((e) => e.event), ["run.start", "run.end"]);
+    assert.equal(events[1].blockedReason, "concurrency-cap");
+    assert.equal(events[1].exit, 3);
+    assert.equal(process.exitCode, 3);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 test("nextAuthor alternates and persists last-author", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
   const cfg = { agents: ["claude", "codex"] };

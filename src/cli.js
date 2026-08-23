@@ -1513,7 +1513,8 @@ export async function main(argv, deps = {}) {
       // Warn only — never block: the operator decides whether to resume, inspect
       // or stage another branch.
       const prior = priorStagedBranches({ repo, orchDir, closes, task });
-      if (prior.length) console.log(formatPriorStagedBranches(closes, prior));
+      // design §13: stdout under --json is one JSON object per line, nothing else.
+      if (prior.length && !jsonMode) console.log(formatPriorStagedBranches(closes, prior));
     } else if (mode === "task") {
       // §3a/§3b: a --file task is UNTRUSTED intake — it must be a JSON work order,
       // validated for shape, then wrapped in a neutralized fence the author treats
@@ -1609,7 +1610,7 @@ export async function main(argv, deps = {}) {
       if (mode === "task") {
         const sync = git.syncMainFromOrigin(repo, cfg.baseBranch);
         if (!sync.ok) throw new Error(`orch: cannot start from stale ${cfg.baseBranch}: ${sync.reason}`);
-        if (sync.updated) console.log(`orch: fast-forwarded local ${cfg.baseBranch} from origin/${cfg.baseBranch}`);
+        if (sync.updated && !jsonMode) console.log(`orch: fast-forwarded local ${cfg.baseBranch} from origin/${cfg.baseBranch}`);
       }
       liveBranches = new Set(inflight.listLive(orchDir).map((e) => e.branch));
       // PID-aware + inflight-branch-aware: clears dead cycles, spares live peers.
@@ -1672,7 +1673,16 @@ export async function main(argv, deps = {}) {
           { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers, workOrder: run.workOrder },
           cfg,
           { onExceeded: (live) => {
-            console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
+            // design §13: stdout under --json is one JSON object per line, nothing
+            // else, and `run.end` always carries `blockedReason` when exit == 3 —
+            // emit the pair here rather than a bare console.log so a skipped run
+            // still closes out the event stream instead of just vanishing from it.
+            if (jsonMode) {
+              emit({ event: "run.start", runId: run.sid, command, until, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
+              emit({ event: "run.end", runId: run.sid, outcome: "blocked", exit: 3, blockedReason: "concurrency-cap" });
+            } else {
+              console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
+            }
             // 3 = blocked by a policy/capacity limit, distinct from 2 (the cycle
             // ran and did not agree) — a caller can retry a 3, not a 2.
             raiseExitCode(3);

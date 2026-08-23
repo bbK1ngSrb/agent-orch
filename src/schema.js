@@ -32,7 +32,7 @@ export const FLAGS = {
   dry: { type: "boolean", help: "Plan without shelling out or changing git." },
   until: {
     type: "enum", values: ["once", "ready", "merged"], arg: "<mode>",
-    help: "once (default); ready waits on the PR; merged: not yet.",
+    help: "once (default); ready waits on PR; merged: readiness.",
   },
   check: { type: "boolean", help: "With upgrade, check latest version without installing." },
   link: { type: "boolean", help: "With init, link .orch/ORCH.md from agent docs." },

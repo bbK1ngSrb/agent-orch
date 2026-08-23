@@ -62,12 +62,6 @@ export async function runUntil(policy, record = {}, deps) {
     return { ...resolveFailure(failure, record, policy), cycle };
   }
 
-  if (policy.until === "merged") {
-    // design §10 (MERGING/VERIFYING) ships in P8 — P5 only carries a `--until
-    // merged` request through readiness, never through an actual merge.
-    return { state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, note: "merge phase ships in P8", cycle };
-  }
-
   const land = deps.resolveLanded(cycle);
   if (!land.pr?.number) {
     // The land landed locally but orch could not find/open its PR (e.g. no
@@ -88,6 +82,15 @@ export async function runUntil(policy, record = {}, deps) {
         const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "head-moved-repin-cap") };
         return { ...resolveFailure(failure, record, policy), cycle, land };
       }
+    }
+    if (policy.until === "merged") {
+      // design §10 (MERGING/VERIFYING) ships in P8 — P5 stops at readiness
+      // rather than attempting the actual merge.
+      return {
+        state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, note: "merge phase ships in P8",
+        warnings: readiness.warnings || [], headSha: readiness.headSha, headMovedRepins,
+        cycle, land,
+      };
     }
     return {
       state: "READY", outcome: "reached", exit: 0,

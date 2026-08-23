@@ -152,6 +152,26 @@ test("inspect: required-checks-unknown (403) still reports ready, with a warning
   assert.deepEqual(result.warnings, ["required-checks-unknown"]);
 });
 
+// design §9 rule 4's rollup-green clause is unconditional: a FAILURE entry in
+// statusCheckRollup must fail the PR closed even when the required-checks
+// read itself errored (403, or any other non-403/404 status) and reports
+// `known: false` — "can't confirm every required context is present" must
+// never be read as "skip checking what the rollup actually says".
+test("inspect: a FAILURE in the rollup fails closed even when required checks are unknown", () => {
+  const gh = (a) => {
+    if (a[0] === "pr" && a[1] === "view") return JSON.stringify({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+      mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null,
+      statusCheckRollup: [{ context: "test", state: "FAILURE" }],
+    });
+    throw new Error("gh: Forbidden (HTTP 403)");
+  };
+  const result = inspect(args, { gh, git: { git: () => "" }, repo: "/repo" });
+  assert.equal(result.ready, false);
+  assert.equal(result.class, "REMOTE_CI_RED");
+  assert.match(result.summary, /test/);
+});
+
 test("waitReady: returns immediately on a definite failure (no polling)", async () => {
   let slept = 0;
   const deps = { ...makeDeps({ mergeStateStatus: "BEHIND" }), sleep: async () => { slept += 1; } };
@@ -197,4 +217,24 @@ test("waitReady: times out to REMOTE_CI_TIMEOUT after ciWaitMinutes of pending c
   };
   const result = await waitReady({ ...args, cfg: { ...args.cfg, pollSeconds: 60, ciWaitMinutes: 1 } }, deps);
   assert.equal(result.class, "REMOTE_CI_TIMEOUT");
+});
+
+// design §9: "Read (after `git fetch origin <base> <integration>` so local
+// refs are fresh)" — without this, rule 2's ancestor/repin check
+// (`isAncestor`/`safeRevParse` in readiness.js) reads whatever origin/<ref>
+// last happened to point to, which can be arbitrarily stale in production.
+test("waitReady: fetches base+integration from origin before reading (design §9)", async () => {
+  const calls = [];
+  const deps = makeDeps({}, { requiredContexts: [] });
+  deps.git = { git: (a, r) => { calls.push([a, r]); return ""; } };
+  const result = await waitReady({ ...args, cfg: { ...args.cfg, pollSeconds: 1, ciWaitMinutes: 1 } }, deps);
+  assert.equal(result.ready, true);
+  assert.deepEqual(calls[0], [["fetch", "origin", "main", "orch/integration"], "/repo"]);
+});
+
+test("waitReady: a fetch failure doesn't abort the readiness read", async () => {
+  const deps = makeDeps({}, { requiredContexts: [] });
+  deps.git = { git: (a) => { if (a[0] === "fetch") throw new Error("network unreachable"); return ""; } };
+  const result = await waitReady({ ...args, cfg: { ...args.cfg, pollSeconds: 1, ciWaitMinutes: 1 } }, deps);
+  assert.equal(result.ready, true);
 });

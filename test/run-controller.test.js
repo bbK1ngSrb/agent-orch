@@ -76,6 +76,22 @@ test("runUntil: --until merged stops at readiness (exit 2) — merge phase ships
   const result = await runUntil({ ...POLICY, until: "merged" }, {}, deps);
   assert.equal(result.exit, 2);
   assert.equal(result.state, "STOPPED_AT_CAP");
+  assert.equal(result.note, "merge phase ships in P8");
+});
+
+// Regression: `--until merged` must actually reach readiness before stopping
+// short of the merge — not skip the wait entirely and always claim "merge
+// ships in P8" regardless of whether the PR is even mergeable yet.
+test("runUntil: --until merged still classifies a real readiness failure (waitReady isn't skipped)", async () => {
+  const deps = baseDeps({
+    gh: ghFake({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+      mergeable: "MERGEABLE", mergeStateStatus: "BEHIND", reviewDecision: null, statusCheckRollup: [],
+    }),
+  });
+  const result = await runUntil({ ...POLICY, until: "merged" }, {}, deps);
+  assert.equal(result.failureClass, "REMOTE_BEHIND");
+  assert.notEqual(result.note, "merge phase ships in P8");
 });
 
 test("runUntil: merge-deferred (demoted) cycle is treated the same as escalated", async () => {
@@ -117,7 +133,13 @@ test("runUntil: a head-moved re-pin past the cap gives up (STOPPED_AT_CAP)", asy
   assert.equal(result.exit, 2);
 });
 
-test("runUntil: a CI wait that times out consumes an attempt (attempt >= maxAttempts falls to ask-unavailable -> STOPPED_AT_CAP)", async () => {
+// run-controller.js has no attempt counter of its own — record.attempt is
+// bumped once per top-level invocation by cli.js regardless of outcome
+// (design §10.2's "each expiry consumes an attempt" holds by construction of
+// that caller, not by anything runUntil does). This test only covers what
+// runUntil DOES own: once chooseRemedy sees the cap already reached, a
+// REMOTE_CI_TIMEOUT is terminal (STOPPED_AT_CAP), not a free retry.
+test("runUntil: a CI wait that times out is terminal once the attempt cap is already reached -> STOPPED_AT_CAP", async () => {
   const deps = baseDeps({
     gh: ghFake({
       number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
