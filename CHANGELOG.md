@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.331 — 2026-08-23
+- CLI v2 P2 — Durable run record (.orch/run-records/<runId>.json) with lineage and resume-with-fresh-budget (closes [#518](https://github.com/bbk1ng/agent-orch/issues/518))
+
 ## v0.4.330 — 2026-08-23
 - Path traversal in sid-store: an unsanitised sid escapes the record store and silently deletes files outside it (closes [#538](https://github.com/bbk1ng/agent-orch/issues/538))
 
