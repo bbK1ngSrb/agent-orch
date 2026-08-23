@@ -3,7 +3,8 @@
 // no merge is ever attempted here (that ships in P8). This rule 4 (required
 // checks) predicate is deliberately independent of today's github.js
 // `prChecksGreen`: that helper backs `orch pr --merge`'s direct-merge path and
-// is left untouched by this slice (see the P5 commit message).
+// is left untouched by this slice — unifying the two is tracked in #545, not
+// done here (that gate is out of scope for an agent-reviewed slice).
 import { prView, requiredChecks } from "./github.js";
 
 // CheckRun (GitHub Actions et al — `status`+`conclusion`) vs StatusContext (the
@@ -37,9 +38,17 @@ function checksGreen(rollup, required) {
   const failing = list.filter((e) => !checkTerminalGreen(e) && !checkPending(e)).map(contextOf);
   if (failing.length) return { state: "red", failing };
   if (list.some(checkPending)) return { state: "pending" };
+  // design §9 rule 4: "an empty rollup is green only when the required set is
+  // known and empty" — an unknown required-checks read (403) must not be read
+  // as "no required checks exist"; that guard has to run BEFORE the `unknown`
+  // downgrade below, or an empty rollup with an unreadable required set
+  // fail-opens straight to ready instead of staying pending.
+  if (list.length === 0) {
+    if (!required.known) return { state: "pending" };
+    return { state: required.contexts.length === 0 ? "green" : "pending" };
+  }
   if (!required.known) return { state: "unknown" };
   const requiredSet = new Set(required.contexts);
-  if (list.length === 0) return { state: requiredSet.size === 0 ? "green" : "pending" };
   for (const ctx of requiredSet) {
     if (!list.some((e) => contextOf(e) === ctx)) return { state: "pending" };
   }

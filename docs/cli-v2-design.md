@@ -600,8 +600,12 @@ review impl-m7): `gh pr view <n> --json number,state,isDraft,headRefOid,baseRefN
    `UNSTABLE`/`HAS_HOOKS` are decided by 4;
 4. **checks:** this predicate is defined here, independently of today's
    `prChecksGreen` (`github.js:99-103` returns false for an empty rollup; the
-   rule below deliberately differs, and P5 updates its callers and tests —
-   review fidelity-mi14). Read the required checks once per run:
+   rule below deliberately differs). P5 does **not** update `prChecksGreen`'s
+   callers (`orch pr --merge`'s merge gate) to this predicate — that gate is
+   out of scope for a run-controller/readiness-inspector slice reviewed by an
+   agent; `orch pr --merge` and `--until ready|merged` knowingly read two
+   different green predicates until a dedicated follow-up unifies them
+   (tracked in #545). Read the required checks once per run:
    `gh api repos/{o}/{r}/rules/branches/<base>` returns an **array of rule
    objects**; filter `type == "required_status_checks"` and collect
    `parameters.required_status_checks[].context`; if the array is empty also

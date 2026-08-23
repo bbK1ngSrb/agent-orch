@@ -38,6 +38,18 @@ test("runUntil: landed cycle, green standing PR -> READY, exit 0", async () => {
   assert.equal(result.exit, 0);
 });
 
+// Regression: "approved" (`orch review` without --pr — engine.js's noMerge
+// path) is a success terminal same as "merged"/"pr", not a failure. Before
+// this fix, `landed` only recognized "merged"/"pr", so an approved review
+// cycle fell into resolveFailure with an empty failure.class and chooseRemedy
+// threw "unknown failure class \"undefined\"" instead of reading readiness.
+test("runUntil: landed cycle with status 'approved' (noMerge review) reads readiness -> READY", async () => {
+  const result = await runUntil(POLICY, {}, baseDeps({ runCycle: async () => ({ status: "approved" }) }));
+  assert.equal(result.state, "READY");
+  assert.equal(result.outcome, "reached");
+  assert.equal(result.exit, 0);
+});
+
 test("runUntil: landed cycle, BEHIND standing PR -> STOPPED_AT_CAP, exit 2, failureClass REMOTE_BEHIND (acceptance criterion)", async () => {
   const deps = baseDeps({
     gh: ghFake({

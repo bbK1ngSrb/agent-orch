@@ -55,7 +55,12 @@ function resolveFailure(failure, record, policy) {
 // for the standing/per-cycle PR readiness is read against.
 export async function runUntil(policy, record = {}, deps) {
   const cycle = await deps.runCycle();
-  const landed = cycle.status === "merged" || cycle.status === "pr";
+  // "approved" (`orch review` without --pr — engine.js's noMerge path: agreed
+  // + green, no merge attempted) is a success terminal exactly like "merged"/
+  // "pr" (engine.js:515) — omitting it here sent every `--until ready` review
+  // run into resolveFailure with an empty `failure.class`, which chooseRemedy
+  // then rejected as an unknown failure class instead of reading readiness.
+  const landed = cycle.status === "merged" || cycle.status === "pr" || cycle.status === "approved";
 
   if (!landed) {
     const failure = { class: cycle.class, fingerprint: cycle.fingerprint };

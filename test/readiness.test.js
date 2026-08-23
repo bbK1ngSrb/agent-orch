@@ -139,11 +139,33 @@ test("inspect: empty rollup is green only when the required set is known and emp
   assert.equal(knownNonEmpty.pending, true);
 });
 
-test("inspect: required-checks-unknown (403) still reports ready, with a warning", () => {
+// An empty rollup is green "only when the required set is known and empty"
+// (design §9 rule 4, and the test above) — a 403 on the required-checks read
+// means the required set is NOT known, so an empty rollup must stay pending
+// rather than fail open to ready.
+test("inspect: required-checks-unknown (403) with an empty rollup stays pending, not ready", () => {
   const gh = (a) => {
     if (a[0] === "pr" && a[1] === "view") return JSON.stringify({
       number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
       mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+    });
+    throw new Error("gh: Forbidden (HTTP 403)");
+  };
+  const result = inspect(args, { gh, git: { git: () => "" }, repo: "/repo" });
+  assert.equal(result.ready, false);
+  assert.equal(result.pending, true);
+});
+
+// With a non-empty, all-green rollup, an unknown required set can't be
+// blamed on "no checks exist" — that's the "unknown" downgrade the rule 4
+// comment describes: ready, but flagged so the caller knows the required-set
+// read failed rather than confirming the rollup covers everything required.
+test("inspect: required-checks-unknown (403) with a passing rollup still reports ready, with a warning", () => {
+  const gh = (a) => {
+    if (a[0] === "pr" && a[1] === "view") return JSON.stringify({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+      mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null,
+      statusCheckRollup: [{ context: "test", state: "SUCCESS" }],
     });
     throw new Error("gh: Forbidden (HTTP 403)");
   };
