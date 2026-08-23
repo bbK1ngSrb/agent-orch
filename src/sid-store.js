@@ -13,7 +13,16 @@ import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.js";
 
-export const recordFile = (dir, key) => join(dir, `${key}.json`);
+// Sids have a known narrow shape (`<pid>-<n>`); allowlist rather than denylist
+// separators, since a denylist has to get `\`, drive letters, and encoding
+// right, and an allowlist doesn't. Reject anything else — a malformed key is
+// a caller bug, not something to silently normalise.
+const SAFE_KEY = /^[A-Za-z0-9_-]+$/;
+
+export const recordFile = (dir, key) => {
+  if (!SAFE_KEY.test(key)) throw new Error(`sid-store: unsafe key ${JSON.stringify(key)}`);
+  return join(dir, `${key}.json`);
+};
 
 // Stamps `ts` unless the caller already carries one (deferred.record returns
 // its payload, ts included, so it must match what lands on disk).
@@ -62,7 +71,9 @@ export function scanDir(dir) {
   for (const n of names) {
     if (!n.endsWith(".json")) continue;
     const key = n.slice(0, -".json".length);
-    const record = readRecord(dir, key);
+    let record;
+    try { record = readRecord(dir, key); }
+    catch { continue; } // filename isn't a key we'd ever generate → not ours, skip
     if (record) out.push({ key, record });
   }
   return out;
