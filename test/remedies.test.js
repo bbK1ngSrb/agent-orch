@@ -28,15 +28,40 @@ test("§12 lock order: acquiring a lefthand lock while holding a righthand one t
   releaseLock(d, LOCK_NAMES.MERGE);
 });
 
-test("integration-repair.lock: a losing peer's acquire returns false immediately, not after a blocking wait", () => {
+test("integration-repair.lock: a losing peer's acquire returns false synchronously, not an acquireBlocking() promise", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-remedies-"));
   assert.equal(acquireLock(d, LOCK_NAMES.INTEGRATION_REPAIR), true); // winner
-  const start = Date.now();
-  const lostRace = acquireLock(d, LOCK_NAMES.INTEGRATION_REPAIR); // loser: must not block
-  const elapsed = Date.now() - start;
-  assert.equal(lostRace, false);
-  assert.ok(elapsed < 1000, `loser blocked for ${elapsed}ms — integration-repair.lock must be non-blocking, not acquireBlocking's 300s default`);
+  const lostRace = acquireLock(d, LOCK_NAMES.INTEGRATION_REPAIR); // loser: plain acquireLock, not acquireBlocking
+  assert.equal(lostRace, false); // a Promise (acquireBlocking's return) fails this equality, not just resolves falsy
   releaseLock(d, LOCK_NAMES.INTEGRATION_REPAIR);
+});
+
+test("§12 lock order: integration-repair.lock -> merge.lock is legal (the repair ff/push edge, 'not optional')", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-remedies-"));
+  assert.equal(acquireLock(d, LOCK_NAMES.INTEGRATION_REPAIR), true);
+  assert.equal(acquireLock(d, LOCK_NAMES.MERGE), true); // nested merge.lock while still holding integration-repair.lock
+  releaseLock(d, LOCK_NAMES.MERGE);
+  releaseLock(d, LOCK_NAMES.INTEGRATION_REPAIR);
+});
+
+test("§12 lock order: acquiring integration-repair.lock while holding merge.lock throws (reverse of the 'not optional' edge)", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-remedies-"));
+  assert.equal(acquireLock(d, LOCK_NAMES.MERGE), true);
+  assert.throws(
+    () => acquireLock(d, LOCK_NAMES.INTEGRATION_REPAIR),
+    /lock order violation/,
+    "merge.lock -> integration-repair.lock reverses §12's order and must be rejected",
+  );
+  releaseLock(d, LOCK_NAMES.MERGE);
+});
+
+test("§12 lock order: holding merge.lock in one orchDir does not block a lock acquire in an unrelated orchDir", () => {
+  const a = mkdtempSync(join(tmpdir(), "orch-remedies-a-"));
+  const b = mkdtempSync(join(tmpdir(), "orch-remedies-b-"));
+  assert.equal(acquireLock(a, LOCK_NAMES.MERGE), true); // held in orchDir a
+  assert.doesNotThrow(() => acquireLock(b, LOCK_NAMES.CYCLE)); // unrelated orchDir — independent lock namespace
+  releaseLock(b, LOCK_NAMES.CYCLE);
+  releaseLock(a, LOCK_NAMES.MERGE);
 });
 
 test("§12 lock order: a refused release clears the order-tracking entry too, not just a successful one", () => {

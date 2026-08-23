@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pidAlive } from "./pid.js";
 
 // design §12: the one total lock-acquisition order. A lock may be taken while
@@ -25,8 +25,10 @@ const held = new Map(); // lockPath -> lockName
 function assertOrder(lockName, lockPath) {
   const idx = LOCK_ORDER.indexOf(lockName);
   if (idx === -1) return; // not one of the ordered locks — nothing to enforce
+  const orchDir = dirname(lockPath);
   for (const [heldPath, heldName] of held) {
     if (heldPath === lockPath) continue;
+    if (dirname(heldPath) !== orchDir) continue; // different orchDir — independent lock namespace, §12's order is per-checkout
     const heldIdx = LOCK_ORDER.indexOf(heldName);
     if (heldIdx > idx) {
       throw new Error(
