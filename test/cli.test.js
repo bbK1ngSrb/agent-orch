@@ -1028,6 +1028,11 @@ test("orch task --until ready re-runs a non-landed free retry cycle", async () =
     assert.equal(last.event, "run.end");
     assert.equal(last.exit, 0);
     assert.equal(last.outcome, "reached");
+    assert.equal(last.usage.tokens, 80, "run.end usage includes both cycle runs");
+    const recordPath = join(repo, ".orch", "run-records", readdirSync(join(repo, ".orch", "run-records"))[0]);
+    const record = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.deepEqual(record.cycles.map((cycle) => cycle.status), ["merge-deferred", "merged"]);
+    assert.equal(checkpointDep.lookup(join(repo, ".orch"), record.runId), null, "retry checkpoints are cleared after the controller finishes");
     assert.equal(process.exitCode || 0, 0);
   } finally {
     process.exitCode = savedExitCode;

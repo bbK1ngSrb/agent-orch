@@ -106,6 +106,19 @@ test("runUntil: free retry honors backoff, persists its counter, then dispatches
   assert.equal(result.state, "READY");
 });
 
+test("runUntil: a landed REMOTE_UNKNOWN retry rereads the PR without rerunning the cycle", async () => {
+  let cycles = 0;
+  let reads = 0;
+  const result = await runUntil(POLICY, {}, baseDeps({
+    runCycle: async () => { cycles += 1; return { status: "merged" }; },
+    resolveLanded: () => { reads += 1; return { pr: null }; },
+  }));
+  assert.equal(cycles, 1);
+  assert.equal(reads, 4);
+  assert.equal(result.retries.reread, 3);
+  assert.equal(result.failureClass, "REMOTE_UNKNOWN");
+});
+
 test("runUntil: an exhausted free retry with no remedies reaches its terminal outcome", async () => {
   const failure = { status: "escalated", class: "LAND_OVERLAP", fingerprint: "same-failure" };
   let cycles = 0;
@@ -119,7 +132,7 @@ test("runUntil: an exhausted free retry with no remedies reaches its terminal ou
   assert.equal(result.attempt, 0);
 });
 
-test("runUntil: an unavailable remedy terminates cleanly after consuming its attempt", async () => {
+test("runUntil: an unavailable remedy terminates cleanly without consuming its attempt", async () => {
   const failure = { status: "escalated", class: "LAND_OVERLAP", fingerprint: "same-failure" };
   let cycles = 0;
   const result = await runUntil(POLICY, {}, {
@@ -129,8 +142,8 @@ test("runUntil: an unavailable remedy terminates cleanly after consuming its att
   assert.equal(result.outcome, "stopped-at-cap");
   assert.equal(result.exit, 2);
   assert.equal(result.retries.LAND_OVERLAP, 1);
-  assert.equal(result.attempt, 1);
-  assert.deepEqual(result.failures, [{ fingerprint: "same-failure", remedy: "rebase" }]);
+  assert.equal(result.attempt, 0);
+  assert.deepEqual(result.failures, []);
 });
 
 // REMOTE_AUTH's free retry (cap 1) is exhausted on the second occurrence in

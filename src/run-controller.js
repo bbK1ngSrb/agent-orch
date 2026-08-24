@@ -48,12 +48,13 @@ function resolveFailure(failure, record, policy, decision = chooseRemedy(failure
   return { ...terminal("STOPPED_AT_CAP", failure.class), failure };
 }
 
-function withRecord(result, record) {
+function withRecord(result, record, cycleResults) {
   return {
     ...result,
     attempt: record.attempt || 0,
     retries: { ...record.retries },
     failures: [...(record.failures || [])],
+    ...(cycleResults?.length > 1 ? { cycleResults: [...cycleResults] } : {}),
   };
 }
 
@@ -74,15 +75,15 @@ async function handleFailure(failure, record, policy, deps, context) {
   }
 
   if (decision.decision === "remedy") {
+    const executor = deps.remedies?.[decision.remedy] || deps.remedy;
+    if (typeof executor !== "function") {
+      return { done: true, record, result: resolveFailure(failure, record, policy, decision) };
+    }
     const nextRecord = {
       ...record,
       attempt: decision.consumesAttempt ? (record.attempt || 0) + 1 : record.attempt || 0,
       failures: [...(record.failures || []), { fingerprint: failure.fingerprint, remedy: decision.remedy }],
     };
-    const executor = deps.remedies?.[decision.remedy] || deps.remedy;
-    if (typeof executor !== "function") {
-      return { done: true, record: nextRecord, result: resolveFailure(failure, nextRecord, policy, decision) };
-    }
     const result = await executor({ name: decision.remedy, failure, record: nextRecord, cycle: context.cycle, policy });
     if (!result?.cycle) {
       return { done: true, record: result?.record || nextRecord, result: result?.result || resolveFailure(failure, nextRecord, policy, decision) };
@@ -106,6 +107,7 @@ export async function runUntil(policy, record = {}, deps) {
     failures: [...(record.failures || [])],
   };
   let cycle = await deps.runCycle();
+  const cycleResults = [cycle];
 
   for (let loop = 0; loop < MAX_REMEDY_LOOPS; loop += 1) {
     // "approved" (engine.js's noMerge path) is a success terminal exactly
@@ -115,9 +117,12 @@ export async function runUntil(policy, record = {}, deps) {
     if (!landed) {
       const failure = { class: cycle.class, fingerprint: cycle.fingerprint };
       const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle });
-      if (outcome.done) return withRecord({ ...outcome.result, cycle }, outcome.record);
+      if (outcome.done) return withRecord({ ...outcome.result, cycle }, outcome.record, cycleResults);
       currentRecord = outcome.record;
-      if (outcome.cycle) cycle = outcome.cycle;
+      if (outcome.cycle) {
+        cycle = outcome.cycle;
+        cycleResults.push(cycle);
+      }
       continue;
     }
 
@@ -125,10 +130,13 @@ export async function runUntil(policy, record = {}, deps) {
     if (!land.pr?.number) {
       // The land landed locally but orch could not find/open its PR.
       const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "no PR found for the landed branch") };
-      const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle });
-      if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record);
+      const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
+      if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
       currentRecord = outcome.record;
-      if (outcome.cycle) cycle = outcome.cycle;
+      if (outcome.cycle) {
+        cycle = outcome.cycle;
+        cycleResults.push(cycle);
+      }
       continue;
     }
 
@@ -144,9 +152,12 @@ export async function runUntil(policy, record = {}, deps) {
         if (headMovedRepins > MAX_HEAD_REPINS) {
           const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "head-moved-repin-cap") };
           const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
-          if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record);
+          if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
           currentRecord = outcome.record;
-          if (outcome.cycle) cycle = outcome.cycle;
+          if (outcome.cycle) {
+            cycle = outcome.cycle;
+            cycleResults.push(cycle);
+          }
           continue;
         }
       }
@@ -156,21 +167,24 @@ export async function runUntil(policy, record = {}, deps) {
           state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, note: "merge phase ships in P8",
           warnings: readiness.warnings || [], headSha: readiness.headSha, headMovedRepins,
           cycle, land,
-        }, currentRecord);
+        }, currentRecord, cycleResults);
       }
       return withRecord({
         state: "READY", outcome: "reached", exit: 0,
         warnings: readiness.warnings || [], headSha: readiness.headSha, headMovedRepins,
         cycle, land,
-      }, currentRecord);
+      }, currentRecord, cycleResults);
     }
 
     const failure = { class: readiness.class, fingerprint: computeFingerprint(readiness.class, readiness.summary || "") };
     const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
-    if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record);
+    if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
     currentRecord = outcome.record;
-    if (outcome.cycle) cycle = outcome.cycle;
+    if (outcome.cycle) {
+      cycle = outcome.cycle;
+      cycleResults.push(cycle);
+    }
   }
 
-  return withRecord({ ...terminal("STOPPED_AT_CAP", cycle.class), cycle }, currentRecord);
+  return withRecord({ ...terminal("STOPPED_AT_CAP", cycle.class), cycle }, currentRecord, cycleResults);
 }
