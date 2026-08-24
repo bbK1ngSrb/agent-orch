@@ -63,6 +63,17 @@ export function gitTry(args, cwd) {
   }
 }
 
+// A repair author may stage a file containing conflict markers, which makes
+// Git consider the index resolved even though the tree is not. Keep this
+// check deterministic and local to the worktree; callers use it before the
+// repaired rebase is allowed to advance.
+export function unresolvedConflictMarkers(path, paths = []) {
+  const args = ["grep", "-n", "-I", "-E", "^(<<<<<<<|>>>>>>>)"];
+  if (paths.length) args.push("--", ...paths);
+  const result = gitTry(args, path);
+  return result.ok ? result.out.trim() : "";
+}
+
 // Files changed on `branch` since its merge-base with the configured base branch.
 // -z + split on NUL so paths with newlines/control chars stay intact (git
 // C-quotes those without -z). No .trim() — POSIX allows leading/trailing spaces.
@@ -439,14 +450,24 @@ export function reconcileIntegrationToBase(integrationPath, base = "main") {
 // Tier-1 redrive of overlap-demoted peers (#350).
 // Runs in a temporary worktree so the caller's integration worktree stays put.
 // On conflict or a moved branch: drop the temp worktree and leave `branch` alone.
-export function rebaseBranchOnto(repo, orchDir, branch, onto, expectedSha = null) {
+// `keepWorktreeOnConflict` is reserved for the repair remedy, which needs the
+// conflicted tree to remain available to the author. The default is unchanged.
+// `keepWorktreeOnSuccess` is separate because TEST_RED can have no Git conflict
+// while still needing the rebased worktree for the author to repair the test.
+export function rebaseBranchOnto(repo, orchDir, branch, onto, expectedSha = null, {
+  keepWorktreeOnConflict = false,
+  keepWorktreeOnSuccess = false,
+} = {}) {
   if (!branch || !onto || branch === onto) {
     return { ok: false, reason: "rebaseBranchOnto: invalid branch/onto" };
   }
   if (expectedSha) {
     const current = gitTry(["rev-parse", "--verify", `refs/heads/${branch}`], repo);
     if (!current.ok || current.out.trim() !== expectedSha) {
-      return { ok: false, moved: true, reason: "branch moved before rebase" };
+      return {
+        ok: false, moved: true, ...(keepWorktreeOnConflict ? { precondition: true } : {}),
+        reason: "branch moved before rebase",
+      };
     }
   }
   const path = join(orchDir, "wt", `rebase-${String(branch).replace(/[^\w.-]+/g, "_")}`);
@@ -456,25 +477,104 @@ export function rebaseBranchOnto(repo, orchDir, branch, onto, expectedSha = null
     ? ["worktree", "add", "--detach", "--", path, expectedSha]
     : ["worktree", "add", "--", path, branch];
   const add = gitTry(addArgs, repo);
-  if (!add.ok) return { ok: false, reason: add.out.trim() || "worktree add failed" };
+  if (!add.ok) return {
+    ok: false,
+    ...(keepWorktreeOnConflict ? { precondition: true } : {}),
+    reason: add.out.trim() || "worktree add failed",
+  };
+  let keepWorktree = false;
   try {
     const rb = gitTry(["rebase", onto], path);
     if (!rb.ok) {
+      const conflicts = gitTry(["diff", "--name-only", "-z", "--diff-filter=U"], path);
+      const conflictPaths = conflicts.ok ? conflicts.out.split("\0").filter(Boolean) : [];
+      if (keepWorktreeOnConflict && conflictPaths.length) {
+        keepWorktree = true;
+        return {
+          ok: false,
+          conflict: true,
+          conflicts: conflictPaths,
+          path,
+          reason: rb.out.trim() || "rebase failed",
+        };
+      }
       gitTry(["rebase", "--abort"], path);
-      return { ok: false, reason: rb.out.trim() || "rebase failed" };
+      return {
+        ok: false,
+        ...(keepWorktreeOnConflict ? { executed: true } : {}),
+        reason: rb.out.trim() || "rebase failed",
+      };
+    }
+    const head = gitTry(["rev-parse", "HEAD"], path);
+    if (!head.ok) return {
+      ok: false,
+      ...(keepWorktreeOnConflict ? { executed: true } : {}),
+      reason: head.out.trim() || "rebased head unreadable",
+    };
+    const sha = head.out.trim();
+    if (expectedSha) {
+      const update = gitTry(["update-ref", `refs/heads/${branch}`, sha, expectedSha], repo);
+      if (!update.ok) return {
+        ok: false,
+        moved: true,
+        ...(keepWorktreeOnConflict ? { executed: true } : {}),
+        reason: update.out.trim() || "branch moved during rebase",
+      };
+    }
+    if (keepWorktreeOnSuccess) keepWorktree = true;
+    return { ok: true, sha, ...(keepWorktreeOnSuccess ? { path } : {}) };
+  } finally {
+    if (!keepWorktree) removeRebaseWorktree(repo, path);
+  }
+}
+
+function removeRebaseWorktree(repo, path) {
+  gitTry(["worktree", "remove", "--force", path], repo);
+  rmSync(path, { recursive: true, force: true });
+}
+
+// Finish a conflict preserved by rebaseBranchOnto(). The author adapter has
+// already staged and committed its repair, so `rebase --continue` records the
+// repaired commit and the same CAS protects the branch update as the plain
+// rebase path. A clean TEST_RED rebase has no rebase operation left to
+// continue, but still uses this helper to CAS the author's repair commit.
+// The temporary worktree is always cleaned up here.
+export function finishRebase(repo, branch, path, expectedSha = null, {
+  continueRebase = true,
+  conflictPaths = [],
+} = {}) {
+  try {
+    if (continueRebase) {
+      const markers = unresolvedConflictMarkers(path, conflictPaths);
+      if (markers) {
+        gitTry(["rebase", "--abort"], path);
+        return { ok: false, reason: "rebase repair left conflict markers" };
+      }
+      const rb = gitTry(["-c", "core.editor=true", "rebase", "--continue"], path);
+      if (!rb.ok) {
+        gitTry(["rebase", "--abort"], path);
+        return { ok: false, reason: rb.out.trim() || "rebase continue failed" };
+      }
     }
     const head = gitTry(["rev-parse", "HEAD"], path);
     if (!head.ok) return { ok: false, reason: head.out.trim() || "rebased head unreadable" };
     const sha = head.out.trim();
     if (expectedSha) {
       const update = gitTry(["update-ref", `refs/heads/${branch}`, sha, expectedSha], repo);
-      if (!update.ok) return { ok: false, moved: true, reason: update.out.trim() || "branch moved during rebase" };
+      if (!update.ok) return { ok: false, moved: true, reason: update.out.trim() || "branch moved during repaired rebase" };
     }
     return { ok: true, sha };
   } finally {
-    gitTry(["worktree", "remove", "--force", path], repo);
-    rmSync(path, { recursive: true, force: true });
+    removeRebaseWorktree(repo, path);
   }
+}
+
+// A failed author run happens after rebaseBranchOnto() has returned a preserved
+// conflicted worktree, so it needs an explicit abort-and-cleanup entry point
+// rather than another option on the original rebase call.
+export function abortRebase(repo, path) {
+  try { gitTry(["rebase", "--abort"], path); }
+  finally { removeRebaseWorktree(repo, path); }
 }
 
 // Merge `branch` into the worktree's checked-out main. On any failure, abort so

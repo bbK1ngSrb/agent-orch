@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitTry, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, reconcileIntegrationToOrigin, mergeInWorktree, rebaseBranchOnto, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch, worktreeRecords } from "../src/git.js";
+import { git, gitTry, branchExists, branchSyncStatus, createTaskBranch, attachExistingBranch, pruneWorktree, reclaimOrphanWorktrees, ensureIntegrationWorktree, syncWorktreeToIntegration, reconcileIntegrationToBase, reconcileIntegrationToOrigin, mergeInWorktree, rebaseBranchOnto, finishRebase, changedFiles, syncMainFromOrigin, bumpVersion, verifyOriginContains, fetchOriginMain, normalizePathForCompare, deleteRemoteBranch, worktreeRecords } from "../src/git.js";
 import { checkPaths } from "../src/intake/allowlist.js";
 
 function newRepo() {
@@ -126,6 +126,30 @@ test("rebaseBranchOnto refuses to replace a branch that moved past the reviewed 
   assert.equal(r.ok, false);
   assert.equal(r.moved, true);
   assert.equal(git(["rev-parse", "feature"], repo), movedSha);
+});
+
+test("finishRebase refuses staged conflict markers", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "feature"], repo);
+  commitFile(repo, "a.txt", "feature\n", "feature");
+  const reviewedSha = git(["rev-parse", "HEAD"], repo);
+  git(["checkout", "main"], repo);
+  commitFile(repo, "a.txt", "integration\n", "integration");
+  mkdirSync(join(repo, ".orch", "wt"), { recursive: true });
+
+  const rebased = rebaseBranchOnto(repo, join(repo, ".orch"), "feature", "main", reviewedSha, {
+    keepWorktreeOnConflict: true,
+  });
+  assert.equal(rebased.conflict, true);
+  writeFileSync(join(rebased.path, "a.txt"), "<<<<<<< HEAD\nintegration\n=======\nfeature\n>>>>>>> feature\n");
+  git(["add", "-A"], rebased.path);
+
+  const finished = finishRebase(repo, "feature", rebased.path, reviewedSha, {
+    conflictPaths: rebased.conflicts,
+  });
+  assert.equal(finished.ok, false);
+  assert.match(finished.reason, /conflict markers/);
+  assert.equal(git(["rev-parse", "feature"], repo), reviewedSha);
 });
 
 test("createTaskBranch refuses an existing branch", () => {
