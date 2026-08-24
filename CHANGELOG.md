@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.333 — 2026-08-24
+- hand-landed #552 — lock scheme (P6 split 1/4): merge.lock scoped to the git write, non-blocking integration-repair.lock, ownership check
+
 ## v0.4.332 — 2026-08-23
 - CLI v2 P3 — Structured failure classes, fingerprints, remedy chooser; fix round drift (closes [#519](https://github.com/bbk1ng/agent-orch/issues/519))
 
