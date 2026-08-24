@@ -90,6 +90,34 @@ test("zai reuses claude's argv builder", () => {
     claudeArgs("PROMPT", "/wd", { model: "glm-4.7" }));
 });
 
+test("zai pins foreground and background model defaults in the child env", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "orch-zai-models-"));
+  const target = join(dir, "fake-claude.js");
+  const bin = process.platform === "win32" ? join(dir, "fake-claude.cmd") : target;
+  writeFileSync(target, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
+  ANTHROPIC_SMALL_FAST_MODEL: process.env.ANTHROPIC_SMALL_FAST_MODEL,
+}) + "\\nAGREE\\n");
+`);
+  if (process.platform === "win32") writeFileSync(bin, '@"%dp0%\\fake-claude.js" %*\r\n');
+  else chmodSync(bin, 0o755);
+
+  const zai = get("zai");
+  const originalBin = zai.bin;
+  try {
+    zai.bin = bin;
+    const result = await zai.audit("pr/x/y", dir);
+    assert.deepEqual(JSON.parse(result.raw.split("\n")[0]), {
+      ANTHROPIC_MODEL: "glm-5.3",
+      ANTHROPIC_SMALL_FAST_MODEL: "glm-4.5-air",
+    });
+  } finally {
+    zai.bin = originalBin;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("zai is disabled without an API key and enables dynamically when one is set", () => {
   const originalKey = process.env.ZAI_API_KEY;
   try {
