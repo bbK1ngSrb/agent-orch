@@ -1769,6 +1769,7 @@ export async function main(argv, deps = {}) {
               runCycle: async () => result,
               resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
               gh: ghDeps.gh, git, repo,
+              sleep: deps.sleep,
             });
             outcome = controller.outcome;
             exit = controller.exit;
@@ -1776,19 +1777,21 @@ export async function main(argv, deps = {}) {
             if (controller.land) pr = { number: controller.land.pr.number, url: controller.land.pr.url, kind: controller.land.landing === "standing" ? "standing" : "per-cycle" };
             raiseExitCode(exit);
           }
+          const persistedAttempt = controller?.attempt ?? attempt;
           runRecord.update(orchDir, run.sid, {
             state,
             outcome,
             exit,
-            attempt,
+            attempt: persistedAttempt,
+            ...(controller?.retries ? { retries: controller.retries } : {}),
             branch: run.branch,
             pr,
             ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
             ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
-            ...(controller?.failure ? { failures: [...(priorRecord?.failures || []), { attempt, class: controller.failure.class, fingerprint: controller.failure.fingerprint, at: new Date().toISOString() }] } : {}),
+            ...(controller?.failure ? { failures: [...(priorRecord?.failures || []), { attempt: persistedAttempt, class: controller.failure.class, fingerprint: controller.failure.fingerprint, at: new Date().toISOString() }] } : {}),
             cycles: [
               ...(priorRecord?.cycles || []),
-              { sid: run.sid, attempt, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null },
+              { sid: run.sid, attempt: persistedAttempt, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null },
             ],
           });
           emit({

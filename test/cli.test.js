@@ -1016,7 +1016,7 @@ test("orch task --until ready --json exits 2 with failureClass REMOTE_UNKNOWN wh
     throw new Error(`unexpected gh call: ${args.join(" ")}`);
   };
   try {
-    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }), sleep: async () => {} });
     for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
     const last = JSON.parse(logs[logs.length - 1]);
     assert.equal(last.event, "run.end");
@@ -1030,10 +1030,10 @@ test("orch task --until ready --json exits 2 with failureClass REMOTE_UNKNOWN wh
 
 // readiness.js's `prView` (`gh pr view`) throws on any nonzero exit the same
 // way `findPrByHead`'s `gh pr list` does above — a revoked token or network
-// hiccup mid-poll must resolve to REMOTE_AUTH/exit 2 with a full --json
+// hiccup mid-poll must spend its free retry, then resolve to REMOTE_AUTH/exit 3 with a full --json
 // stream, not an uncaught throw that skips run-controller's own error
 // handling and truncates the stream after run.start.
-test("orch task --until ready --json exits 2 with failureClass REMOTE_AUTH when gh pr view throws 401", async () => {
+test("orch task --until ready --json exits 3 with failureClass REMOTE_AUTH when gh pr view throws 401", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo();
   gitDep.git(["branch", "orch/integration"], repo);
@@ -1046,13 +1046,17 @@ test("orch task --until ready --json exits 2 with failureClass REMOTE_AUTH when 
     throw new Error(`unexpected gh call: ${args.join(" ")}`);
   };
   try {
-    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }), sleep: async () => {} });
     for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
     const last = JSON.parse(logs[logs.length - 1]);
     assert.equal(last.event, "run.end");
-    assert.equal(last.exit, 2);
+    assert.equal(last.exit, 3);
     assert.equal(last.failureClass, "REMOTE_AUTH");
-    assert.equal(process.exitCode, 2);
+    assert.equal(process.exitCode, 3);
+    const recordPath = join(repo, ".orch", "run-records", readdirSync(join(repo, ".orch", "run-records"))[0]);
+    const record = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.equal(record.retries.REMOTE_AUTH, 1);
+    assert.equal(record.attempt, 0);
   } finally {
     process.exitCode = savedExitCode;
   }

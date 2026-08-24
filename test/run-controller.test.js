@@ -74,9 +74,62 @@ test("runUntil: landed cycle, BEHIND standing PR -> STOPPED_AT_CAP, exit 2, fail
 test("runUntil: gh pr view 401/403 mid-poll classifies REMOTE_AUTH instead of throwing", async () => {
   const deps = baseDeps({ gh: () => { throw new Error("gh: Bad credentials (HTTP 401)"); } });
   const result = await runUntil(POLICY, {}, deps);
-  assert.equal(result.exit, 2);
-  assert.equal(result.outcome, "stopped-at-cap");
+  assert.equal(result.exit, 3);
+  assert.equal(result.outcome, "blocked");
   assert.equal(result.failureClass, "REMOTE_AUTH");
+  assert.equal(result.retries.REMOTE_AUTH, 1);
+  assert.equal(result.attempt, 0);
+});
+
+test("runUntil: free retry honors backoff, persists its counter, then dispatches the remedy", async () => {
+  const failure = { status: "escalated", class: "LAND_SYNC", fingerprint: "same-failure" };
+  let cycles = 0;
+  const sleeps = [];
+  const dispatched = [];
+  const result = await runUntil(POLICY, {}, {
+    ...baseDeps({
+      runCycle: async () => (++cycles === 1 ? failure : { ...failure }),
+      sleep: async (ms) => sleeps.push(ms),
+      remedies: {
+        rebase: async ({ name, record }) => {
+          dispatched.push({ name, attempt: record.attempt });
+          return { result: { state: "READY", outcome: "reached", exit: 0 } };
+        },
+      },
+    }),
+  });
+  assert.equal(cycles, 2);
+  assert.deepEqual(sleeps, [30_000]);
+  assert.deepEqual(dispatched, [{ name: "rebase", attempt: 1 }]);
+  assert.equal(result.retries.LAND_SYNC, 1);
+  assert.equal(result.attempt, 1);
+  assert.equal(result.state, "READY");
+});
+
+test("runUntil: an exhausted free retry with no remedies reaches its terminal outcome", async () => {
+  const failure = { status: "escalated", class: "LAND_OVERLAP", fingerprint: "same-failure" };
+  let cycles = 0;
+  const result = await runUntil({ ...POLICY, remedies: [] }, {}, {
+    ...baseDeps({ runCycle: async () => (++cycles === 1 ? failure : { ...failure }) }),
+  });
+  assert.equal(cycles, 2);
+  assert.equal(result.outcome, "stopped-at-cap");
+  assert.equal(result.exit, 2);
+  assert.equal(result.retries.LAND_OVERLAP, 1);
+  assert.equal(result.attempt, 0);
+});
+
+test("runUntil: an unavailable remedy terminates cleanly after consuming its attempt", async () => {
+  const failure = { status: "escalated", class: "LAND_OVERLAP", fingerprint: "same-failure" };
+  let cycles = 0;
+  const result = await runUntil(POLICY, {}, {
+    ...baseDeps({ runCycle: async () => (++cycles === 1 ? failure : { ...failure }) }),
+  });
+  assert.equal(cycles, 2);
+  assert.equal(result.outcome, "stopped-at-cap");
+  assert.equal(result.exit, 2);
+  assert.equal(result.retries.LAND_OVERLAP, 1);
+  assert.equal(result.attempt, 1);
 });
 
 // REMOTE_AUTH's free retry (cap 1) is exhausted on the second occurrence in
