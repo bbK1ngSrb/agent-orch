@@ -2173,7 +2173,7 @@ export async function main(argv, deps = {}) {
     const cfg = load(repo, flags["config-file"]);
     const baseBranch = cfg.baseBranch || "main";
     const integrationBranch = cfg.integrationBranch || "orch/integration";
-    if (!(await acquireBlocking(orchDir, "merge.lock"))) {
+    if (!(await acquireBlocking(orchDir, LOCK_NAMES.MERGE))) {
       throw new Error("orch release: could not acquire merge.lock");
     }
     try {
@@ -2201,7 +2201,7 @@ export async function main(argv, deps = {}) {
       console.log(`orch release: chore(release): v${version} committed on ${integrationBranch} in ${integration} (${commit})`);
       return;
     } finally {
-      releaseLock(orchDir, "merge.lock");
+      releaseLock(orchDir, LOCK_NAMES.MERGE);
     }
   }
 
