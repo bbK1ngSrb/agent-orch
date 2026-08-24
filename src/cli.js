@@ -1731,7 +1731,8 @@ export async function main(argv, deps = {}) {
       }
       emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
-        const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes })));
+        const cycleDeps = dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes }));
+        const result = await runCycle(run, cycleDeps);
         results.push(result);
         // Cycle returned (any terminal status) → drop the resume + checkpoint records.
         // A quota throw skips this line, leaving both for the next run to resume (#24).
@@ -1766,7 +1767,9 @@ export async function main(argv, deps = {}) {
             // a real temp repo, only the gh CLI itself gets faked).
             const ghDeps = { gh: (deps.githubDeps || githubDeps)().gh };
             controller = await runUntil(runPolicy, record, {
-              runCycle: async () => result,
+              runCycle: async ({ fresh } = {}) => fresh
+                ? runCycle({ ...run, resume: true }, cycleDeps)
+                : result,
               resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
               gh: ghDeps.gh, git, repo,
               sleep: deps.sleep,
@@ -1788,7 +1791,12 @@ export async function main(argv, deps = {}) {
             pr,
             ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
             ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
-            ...(controller?.failure ? { failures: [...(priorRecord?.failures || []), { attempt: persistedAttempt, class: controller.failure.class, fingerprint: controller.failure.fingerprint, at: new Date().toISOString() }] } : {}),
+            ...(controller?.failures || controller?.failure ? {
+              failures: [
+                ...(controller?.failures || priorRecord?.failures || []),
+                ...(controller?.failure ? [{ attempt: persistedAttempt, class: controller.failure.class, fingerprint: controller.failure.fingerprint, at: new Date().toISOString() }] : []),
+              ],
+            } : {}),
             cycles: [
               ...(priorRecord?.cycles || []),
               { sid: run.sid, attempt: persistedAttempt, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null },

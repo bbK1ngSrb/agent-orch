@@ -49,7 +49,12 @@ function resolveFailure(failure, record, policy, decision = chooseRemedy(failure
 }
 
 function withRecord(result, record) {
-  return { ...result, attempt: record.attempt || 0, retries: { ...record.retries } };
+  return {
+    ...result,
+    attempt: record.attempt || 0,
+    retries: { ...record.retries },
+    failures: [...(record.failures || [])],
+  };
 }
 
 async function handleFailure(failure, record, policy, deps, context) {

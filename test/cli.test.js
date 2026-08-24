@@ -1000,6 +1000,40 @@ test("orch task --until ready --json exits 2 with failureClass REMOTE_BEHIND on 
   }
 });
 
+test("orch task --until ready re-runs a non-landed free retry cycle", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  let cycles = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async () => ++cycles === 1
+      ? { status: "merge-deferred", class: "LAND_SYNC", fingerprint: "same-failure", reason: "transient sync" }
+      : { status: "merged", reason: "test", sha: "abc" },
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], {
+      cycleDeps,
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      sleep: async () => {},
+    });
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(cycles, 2);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 0);
+    assert.equal(last.outcome, "reached");
+    assert.equal(process.exitCode || 0, 0);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 // findPrByHead's `gh pr list` throws on any nonzero exit (no GitHub remote,
 // bad auth, network hiccup) — that must resolve to REMOTE_UNKNOWN/exit 2
 // with a full --json stream, not an uncaught throw that skips run-controller's

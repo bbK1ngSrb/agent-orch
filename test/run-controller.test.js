@@ -130,6 +130,7 @@ test("runUntil: an unavailable remedy terminates cleanly after consuming its att
   assert.equal(result.exit, 2);
   assert.equal(result.retries.LAND_OVERLAP, 1);
   assert.equal(result.attempt, 1);
+  assert.deepEqual(result.failures, [{ fingerprint: "same-failure", remedy: "rebase" }]);
 });
 
 // REMOTE_AUTH's free retry (cap 1) is exhausted on the second occurrence in
