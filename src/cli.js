@@ -44,6 +44,7 @@ import { visWidth, paint, C, box, colorEnabled } from "./tui/theme.js";
 import { run as runTui } from "./tui/loop.js";
 import { maybeNotifyUpdate, runUpdateCheckChild } from "./update-check.js";
 import { runUpgrade } from "./upgrade.js";
+import { totalUsage } from "./usage.js";
 
 export { slugify };
 export { resolveAgentBin };
@@ -1731,16 +1732,11 @@ export async function main(argv, deps = {}) {
       }
       emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
-        const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes })));
+        const cycleDeps = dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes }));
+        const result = await runCycle(run, cycleDeps);
         results.push(result);
-        // Cycle returned (any terminal status) → drop the resume + checkpoint records.
-        // A quota throw skips this line, leaving both for the next run to resume (#24).
-        // Checkpoints clear for every mode: review/pr cycles write reviewed/tested
-        // checkpoints too, and a completed run left dangling would read as
-        // "died mid-flight" on the dashboard.
+        let finalResult = result;
         if (!dry) {
-          if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
-          checkpoint.clear(orchDir, run.sid);
           const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
           let outcome = outcomeForResult(result);
           let exit = exitForResult(result);
@@ -1766,9 +1762,12 @@ export async function main(argv, deps = {}) {
             // a real temp repo, only the gh CLI itself gets faked).
             const ghDeps = { gh: (deps.githubDeps || githubDeps)().gh };
             controller = await runUntil(runPolicy, record, {
-              runCycle: async () => result,
+              runCycle: async ({ fresh } = {}) => fresh
+                ? runCycle({ ...run, resume: true }, cycleDeps)
+                : result,
               resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
               gh: ghDeps.gh, git, repo,
+              sleep: deps.sleep,
             });
             outcome = controller.outcome;
             exit = controller.exit;
@@ -1776,23 +1775,46 @@ export async function main(argv, deps = {}) {
             if (controller.land) pr = { number: controller.land.pr.number, url: controller.land.pr.url, kind: controller.land.landing === "standing" ? "standing" : "per-cycle" };
             raiseExitCode(exit);
           }
+          const cycleResults = controller?.cycleResults || [result];
+          for (const retryResult of cycleResults.slice(1)) results.push(retryResult);
+          finalResult = cycleResults[cycleResults.length - 1];
+          if (finalResult.prUrl && !controller?.land) {
+            pr = { number: null, url: finalResult.prUrl, kind: finalResult.status === "merged" ? "standing" : "per-cycle" };
+          }
+          // Cycle returned (including all controller retries) → drop the resume
+          // and checkpoint records. A throw skips this line, leaving both for
+          // the next run to resume (#24).
+          if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
+          checkpoint.clear(orchDir, run.sid);
+          const persistedAttempt = controller?.attempt ?? attempt;
+          const cycleRunStats = cycleResults.flatMap((cycleResult) => cycleResult.runStats || []);
+          const usage = cycleRunStats.length ? totalUsage(cycleRunStats) : finalResult.usage || {};
           runRecord.update(orchDir, run.sid, {
             state,
             outcome,
             exit,
-            attempt,
+            attempt: persistedAttempt,
+            ...(controller?.retries ? { retries: controller.retries } : {}),
             branch: run.branch,
             pr,
             ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
             ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
-            ...(controller?.failure ? { failures: [...(priorRecord?.failures || []), { attempt, class: controller.failure.class, fingerprint: controller.failure.fingerprint, at: new Date().toISOString() }] } : {}),
+            ...(controller?.failures || controller?.failure ? {
+              failures: [
+                ...(controller?.failures || priorRecord?.failures || []),
+                ...(controller?.failure ? [{ attempt: persistedAttempt, class: controller.failure.class, fingerprint: controller.failure.fingerprint, at: new Date().toISOString() }] : []),
+              ],
+            } : {}),
             cycles: [
               ...(priorRecord?.cycles || []),
-              { sid: run.sid, attempt, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames, status: result.status, reason: result.reason || null },
+              ...cycleResults.map((cycleResult) => ({
+                sid: run.sid, attempt: persistedAttempt, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames,
+                status: cycleResult.status, reason: cycleResult.reason || null,
+              })),
             ],
           });
           emit({
-            event: "run.end", runId: run.sid, outcome, exit, usage: result.usage || {},
+            event: "run.end", runId: run.sid, outcome, exit, usage,
             ...(controller?.failure ? { failureClass: controller.failure.class } : {}),
             ...(controller?.blockedReason ? { blockedReason: controller.blockedReason } : {}),
             ...(controller?.warnings?.length ? { warnings: controller.warnings } : {}),
@@ -1805,10 +1827,10 @@ export async function main(argv, deps = {}) {
           // truncated after run.start.
           emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result), usage: result.usage || {}, dry: true });
         }
-        if (!jsonMode) console.log(summaryLine(result, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
-        if (result.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
-        if (result.prUrl) prUrls.push(result.prUrl);
-        if (result.status === "escalated" || result.status === "merge-deferred") {
+        if (!jsonMode) console.log(summaryLine(finalResult, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
+        if (finalResult.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
+        if (finalResult.prUrl) prUrls.push(finalResult.prUrl);
+        if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
           // Under `ready`/`merged` the exit code already came from the run
           // controller above (STOPPED_AT_CAP=2 or BLOCKED=3 per design §6) —
           // raising a flat 2 here too is harmless (raiseExitCode keeps the
@@ -1816,7 +1838,7 @@ export async function main(argv, deps = {}) {
           if (until === "once") raiseExitCode(2);
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
-          if (!dry) commentOnIssue(result, run.branch, run.closes, deps.githubDeps || githubDeps);
+          if (!dry) commentOnIssue(finalResult, run.branch, run.closes, deps.githubDeps || githubDeps);
         }
       } catch (err) {
         if (!dry) {

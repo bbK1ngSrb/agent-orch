@@ -3,12 +3,8 @@
 // with respect to `record` (never mutated — callers decide how to persist the
 // returned fields); all I/O goes through `deps`.
 //
-// P5 ships no remedy executor: rebase/rotate/reauthor/ask/wait/integration-
-// repair all land in P6/P7. `chooseRemedy` (failure.js, P3) is still called —
-// its terminal-state logic (BLOCKED vs STOPPED_AT_CAP vs ERROR) is exactly
-// what this slice needs — but any decision that ISN'T already terminal names
-// a remedy this slice cannot carry out, so it collapses to STOPPED_AT_CAP (2)
-// rather than hanging on a fix that doesn't exist yet.
+// Remedy executors are supplied by later slices. Until one is registered for a
+// selected remedy, the controller terminates cleanly at STOPPED_AT_CAP (2).
 import { chooseRemedy, fingerprint as computeFingerprint } from "./failure.js";
 import { waitReady } from "./readiness.js";
 
@@ -31,6 +27,11 @@ const BLOCKED_REASON = {
 };
 
 const MAX_HEAD_REPINS = 3;
+const MAX_REMEDY_LOOPS = 32;
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function terminal(state, failureClass) {
   return {
@@ -42,10 +43,55 @@ function terminal(state, failureClass) {
   };
 }
 
-function resolveFailure(failure, record, policy) {
-  const decision = chooseRemedy(failure, record, { ...policy, remedies: [] });
+function resolveFailure(failure, record, policy, decision = chooseRemedy(failure, record, policy)) {
   if (decision.decision === "terminal") return { ...terminal(decision.outcome, failure.class), failure };
   return { ...terminal("STOPPED_AT_CAP", failure.class), failure };
+}
+
+function withRecord(result, record, cycleResults) {
+  return {
+    ...result,
+    attempt: record.attempt || 0,
+    retries: { ...record.retries },
+    failures: [...(record.failures || [])],
+    ...(cycleResults?.length > 1 ? { cycleResults: [...cycleResults] } : {}),
+  };
+}
+
+async function handleFailure(failure, record, policy, deps, context) {
+  const decision = chooseRemedy(failure, record, policy);
+
+  if (decision.decision === "terminal") {
+    return { done: true, record, result: resolveFailure(failure, record, policy, decision) };
+  }
+
+  if (decision.decision === "free-retry") {
+    if (decision.backoffSeconds) await (deps.sleep || defaultSleep)(decision.backoffSeconds * 1000);
+    const key = decision.key || failure.class;
+    const retries = { ...record.retries, [key]: (record.retries[key] || 0) + 1 };
+    const nextRecord = { ...record, retries };
+    if (context.land) return { done: false, record: nextRecord };
+    return { done: false, record: nextRecord, cycle: await deps.runCycle({ fresh: true }) };
+  }
+
+  if (decision.decision === "remedy") {
+    const executor = deps.remedies?.[decision.remedy] || deps.remedy;
+    if (typeof executor !== "function") {
+      return { done: true, record, result: resolveFailure(failure, record, policy, decision) };
+    }
+    const nextRecord = {
+      ...record,
+      attempt: decision.consumesAttempt ? (record.attempt || 0) + 1 : record.attempt || 0,
+      failures: [...(record.failures || []), { fingerprint: failure.fingerprint, remedy: decision.remedy }],
+    };
+    const result = await executor({ name: decision.remedy, failure, record: nextRecord, cycle: context.cycle, policy });
+    if (!result?.cycle) {
+      return { done: true, record: result?.record || nextRecord, result: result?.result || resolveFailure(failure, nextRecord, policy, decision) };
+    }
+    return { done: false, record: result.record || nextRecord, cycle: result.cycle };
+  }
+
+  return { done: true, record, result: resolveFailure(failure, record, policy, decision) };
 }
 
 // design §6 + §9. `record` is read-only (attempt/retries/failures/policy for
@@ -54,64 +100,91 @@ function resolveFailure(failure, record, policy) {
 // a landed cycle result to `{ pr:{number,url}, expectedHead, landing, branch }`
 // for the standing/per-cycle PR readiness is read against.
 export async function runUntil(policy, record = {}, deps) {
-  const cycle = await deps.runCycle();
-  // "approved" (engine.js's noMerge path: agreed + green, no merge attempted
-  // — set only by `runPr()`'s audit-only cycle, github.js:337) is a success
-  // terminal exactly like "merged"/"pr" (engine.js:515) — omitting it here
-  // meant any `runUntil` caller whose cycle lands as "approved" fell into
-  // resolveFailure with an empty `failure.class`, and chooseRemedy rejected
-  // that as an unknown failure class instead of reading readiness. NOTE: as
-  // of this fix `orch review --until ready` cannot actually hit this branch
-  // — `orch review`'s cli.js dispatch never sets `noMerge`, so it lands as
-  // "merged"/"pr" like `orch task`, never "approved"; the only path that
-  // produces "approved" (`orch pr`) doesn't call `runUntil` yet (#546). This
-  // is a real internal-consistency fix, not a currently end-to-end-reachable
-  // one — kept because the inconsistency with engine.js's own success list
-  // is a landmine for whichever caller reaches it next.
-  const landed = cycle.status === "merged" || cycle.status === "pr" || cycle.status === "approved";
+  let currentRecord = {
+    ...record,
+    attempt: record.attempt || 0,
+    retries: { ...(record.retries || {}) },
+    failures: [...(record.failures || [])],
+  };
+  let cycle = await deps.runCycle();
+  const cycleResults = [cycle];
 
-  if (!landed) {
-    const failure = { class: cycle.class, fingerprint: cycle.fingerprint };
-    return { ...resolveFailure(failure, record, policy), cycle };
-  }
+  for (let loop = 0; loop < MAX_REMEDY_LOOPS; loop += 1) {
+    // "approved" (engine.js's noMerge path) is a success terminal exactly
+    // like "merged"/"pr".
+    const landed = cycle.status === "merged" || cycle.status === "pr" || cycle.status === "approved";
 
-  const land = deps.resolveLanded(cycle);
-  if (!land.pr?.number) {
-    // The land landed locally but orch could not find/open its PR (e.g. no
-    // remote, or the PR bridge failed) — nothing to inspect readiness on.
-    const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "no PR found for the landed branch") };
-    return { ...resolveFailure(failure, record, policy), cycle, land };
-  }
-  const readiness = await waitReady(
-    { pr: land.pr.number, expectedHead: land.expectedHead, landing: land.landing, cfg: policy },
-    deps,
-  );
-
-  if (readiness.ready) {
-    let headMovedRepins = record.headMovedRepins || 0;
-    if (readiness.headMoved) {
-      headMovedRepins += 1;
-      if (headMovedRepins > MAX_HEAD_REPINS) {
-        const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "head-moved-repin-cap") };
-        return { ...resolveFailure(failure, record, policy), cycle, land };
+    if (!landed) {
+      const failure = { class: cycle.class, fingerprint: cycle.fingerprint };
+      const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle });
+      if (outcome.done) return withRecord({ ...outcome.result, cycle }, outcome.record, cycleResults);
+      currentRecord = outcome.record;
+      if (outcome.cycle) {
+        cycle = outcome.cycle;
+        cycleResults.push(cycle);
       }
+      continue;
     }
-    if (policy.until === "merged") {
-      // design §10 (MERGING/VERIFYING) ships in P8 — P5 stops at readiness
-      // rather than attempting the actual merge.
-      return {
-        state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, note: "merge phase ships in P8",
+
+    const land = deps.resolveLanded(cycle);
+    if (!land.pr?.number) {
+      // The land landed locally but orch could not find/open its PR.
+      const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "no PR found for the landed branch") };
+      const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
+      if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
+      currentRecord = outcome.record;
+      if (outcome.cycle) {
+        cycle = outcome.cycle;
+        cycleResults.push(cycle);
+      }
+      continue;
+    }
+
+    const readiness = await waitReady(
+      { pr: land.pr.number, expectedHead: land.expectedHead, landing: land.landing, cfg: policy },
+      deps,
+    );
+
+    if (readiness.ready) {
+      let headMovedRepins = currentRecord.headMovedRepins || 0;
+      if (readiness.headMoved) {
+        headMovedRepins += 1;
+        if (headMovedRepins > MAX_HEAD_REPINS) {
+          const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "head-moved-repin-cap") };
+          const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
+          if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
+          currentRecord = outcome.record;
+          if (outcome.cycle) {
+            cycle = outcome.cycle;
+            cycleResults.push(cycle);
+          }
+          continue;
+        }
+      }
+      currentRecord = { ...currentRecord, headMovedRepins };
+      if (policy.until === "merged") {
+        return withRecord({
+          state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, note: "merge phase ships in P8",
+          warnings: readiness.warnings || [], headSha: readiness.headSha, headMovedRepins,
+          cycle, land,
+        }, currentRecord, cycleResults);
+      }
+      return withRecord({
+        state: "READY", outcome: "reached", exit: 0,
         warnings: readiness.warnings || [], headSha: readiness.headSha, headMovedRepins,
         cycle, land,
-      };
+      }, currentRecord, cycleResults);
     }
-    return {
-      state: "READY", outcome: "reached", exit: 0,
-      warnings: readiness.warnings || [], headSha: readiness.headSha, headMovedRepins,
-      cycle, land,
-    };
+
+    const failure = { class: readiness.class, fingerprint: computeFingerprint(readiness.class, readiness.summary || "") };
+    const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
+    if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
+    currentRecord = outcome.record;
+    if (outcome.cycle) {
+      cycle = outcome.cycle;
+      cycleResults.push(cycle);
+    }
   }
 
-  const failure = { class: readiness.class, fingerprint: computeFingerprint(readiness.class, readiness.summary || "") };
-  return { ...resolveFailure(failure, record, policy), cycle, land };
+  return withRecord({ ...terminal("STOPPED_AT_CAP", cycle.class), cycle }, currentRecord, cycleResults);
 }
