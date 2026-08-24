@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.334 — 2026-08-24
+- #557 z.ai model defaults pinned (glm-5.3 / glm-4.5-air); #558 orch release bumps on the integration worktree
+
 ## v0.4.333 — 2026-08-24
 - hand-landed #552 — lock scheme (P6 split 1/4): merge.lock scoped to the git write, non-blocking integration-repair.lock, ownership check
 
