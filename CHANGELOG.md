@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.336 — 2026-08-24
+- CLI v2 P6 split 2/4 — rebase + repair (§8a): rebase onto the landing base, implement repair mode (closes [#553](https://github.com/bbk1ng/agent-orch/issues/553))
+
 ## v0.4.335 — 2026-08-24
 - run-controller never acts on a chooseRemedy decision — free-retry counter is never incremented, so no remedy is reachable (closes [#564](https://github.com/bbk1ng/agent-orch/issues/564))
 
