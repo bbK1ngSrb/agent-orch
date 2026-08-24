@@ -2171,7 +2171,10 @@ export async function main(argv, deps = {}) {
     if (!entry) throw usageError('usage: orch release "<changelog entry>"');
     if (dryRun) { console.log(`orch (dry): would bump version + CHANGELOG with "${entry}"`); return; }
     const cfg = load(repo, flags["config-file"]);
-    const integration = git.ensureIntegrationWorktree(repo, orchDir, cfg.integrationBranch, cfg.baseBranch);
+    const integrationBranch = cfg.integrationBranch || "orch/integration";
+    const integration = git.ensureIntegrationWorktree(repo, orchDir, integrationBranch, cfg.baseBranch);
+    const originSync = git.reconcileIntegrationToOrigin(integration, integrationBranch);
+    if (!originSync.ok) throw new Error(`orch release: ${originSync.reason}`);
     const dirty = git.gitTry(["status", "--porcelain"], integration);
     if (!dirty.ok) throw new Error(`orch release: git status failed: ${dirty.out.trim() || "unknown error"}`);
     const dirtyLines = dirty.out.split("\n").map((l) => l.trimEnd()).filter(Boolean);
@@ -2183,7 +2186,8 @@ export async function main(argv, deps = {}) {
     }
     const version = git.bumpVersion(integration, entry, { recovery: "written-files" });
     if (!version) throw new Error("orch release: version bump failed (is package.json present and valid?)");
-    console.log(`orch release: chore(release): v${version}`);
+    const commit = git.git(["rev-parse", "HEAD"], integration).trim();
+    console.log(`orch release: chore(release): v${version} committed on ${integrationBranch} in ${integration} (${commit})`);
     return;
   }
 

@@ -4167,7 +4167,9 @@ test("orch release on a clean fixture bumps integration, not the primary checkou
   const repo = releaseFixture();
   const before = gitDep.git(["rev-list", "--count", "HEAD"], repo).trim();
   const logs = await runMainInRepo(repo, ["release", "hand-landed guardrail fix (closes #403)"]);
-  assert.match(logs.join("\n"), /chore\(release\): v0\.4\.2/);
+  const output = logs.join("\n");
+  assert.match(output, /chore\(release\): v0\.4\.2 committed on orch\/integration in /);
+  assert.ok(output.includes(join(repo, ".orch", "integration")));
 
   const pkg = JSON.parse(gitDep.git(["show", "orch/integration:package.json"], repo));
   assert.equal(pkg.version, "0.4.2");
@@ -4181,6 +4183,24 @@ test("orch release on a clean fixture bumps integration, not the primary checkou
   assert.equal(subject, "chore(release): v0.4.2");
   // No tag — tagging is CI's job.
   assert.equal(gitDep.git(["tag"], repo).trim(), "");
+});
+
+test("orch release reconciles origin before bumping the integration worktree", async () => {
+  const repo = releaseFixture();
+  const { peer } = addOriginWithPeer(repo);
+  const integration = gitDep.ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  gitDep.git(["push", "-u", "origin", "orch/integration"], integration);
+  gitDep.git(["fetch", "origin"], peer);
+  gitDep.git(["switch", "-c", "orch/integration", "--track", "origin/orch/integration"], peer);
+  writeFileSync(join(peer, "hand-landed.txt"), "pushed directly to origin\n");
+  gitDep.git(["add", "."], peer);
+  gitDep.git(["commit", "-m", "hand-landed integration change"], peer);
+  gitDep.git(["push", "origin", "orch/integration"], peer);
+
+  const logs = await runMainInRepo(repo, ["release", "recover remote hand-merge"]);
+  assert.match(logs.join("\n"), /committed on orch\/integration in /);
+  assert.equal(gitDep.git(["show", "orch/integration:hand-landed.txt"], repo), "pushed directly to origin");
+  assert.equal(JSON.parse(gitDep.git(["show", "orch/integration:package.json"], repo)).version, "0.4.2");
 });
 
 test("orch release on a dirty fixture exits non-zero and leaves the dirty file byte-for-byte untouched", async () => {
