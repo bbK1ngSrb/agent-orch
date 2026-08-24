@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.335 — 2026-08-24
+- run-controller never acts on a chooseRemedy decision — free-retry counter is never incremented, so no remedy is reachable (closes [#564](https://github.com/bbk1ng/agent-orch/issues/564))
+
 ## v0.4.334 — 2026-08-24
 - #557 z.ai model defaults pinned (glm-5.3 / glm-4.5-air); #558 orch release bumps on the integration worktree
 
