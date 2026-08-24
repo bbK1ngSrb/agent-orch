@@ -43,6 +43,25 @@ test("a dead owner's lock is reclaimed", () => {
   assert.equal(existsSync(join(d, "lock")), false);
 });
 
+test("releaseLock is a no-op when the lock is owned by another pid (§12 ownership check)", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
+  writeFileSync(join(d, "lock"), String(process.pid + 1)); // a pid that is not ours
+  assert.equal(releaseLock(d), false);
+  assert.equal(existsSync(join(d, "lock")), true); // still there — we never held it
+});
+
+test("releaseLock is a no-op when the lock file is missing", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
+  assert.equal(releaseLock(d), false);
+});
+
+test("releaseLock removes and returns true when we are the recorded owner", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
+  assert.equal(acquireLock(d), true);
+  assert.equal(releaseLock(d), true);
+  assert.equal(existsSync(join(d, "lock")), false);
+});
+
 test("isPaused reflects the pause file", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-pause-"));
   assert.equal(isPaused(d), false);
@@ -52,8 +71,9 @@ test("isPaused reflects the pause file", () => {
 
 test("a named lock is independent of the default lock", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-lock-"));
-  assert.equal(acquireLock(d, "merge.lock"), true);
-  assert.equal(acquireLock(d, "lock"), true); // different file, not blocked
+  // §12 order is lock -> ... -> merge.lock, so acquire in that order.
+  assert.equal(acquireLock(d, "lock"), true);
+  assert.equal(acquireLock(d, "merge.lock"), true); // different file, not blocked
   assert.equal(acquireLock(d, "merge.lock"), false); // same file, held
   releaseLock(d, "merge.lock");
   releaseLock(d, "lock");

@@ -11,6 +11,7 @@
 import * as deferredDefault from "./deferred.js";
 import { totalUsage } from "./usage.js";
 import { classify, fingerprint, TRIGGERS } from "./failure.js";
+import { LOCK_NAMES } from "./lock.js";
 
 // design §6: trigger id -> failure class, for the demote()/landIntoIntegration
 // callers below. Kept here (not failure.js) because "lock"/"sync"/"overlap"/
@@ -101,7 +102,7 @@ export async function finalize(ctx, deps) {
     };
   }
 
-  if (!(await lock.acquireBlocking(orchDir, "merge.lock"))) {
+  if (!(await lock.acquireBlocking(orchDir, LOCK_NAMES.MERGE))) {
     return demote(ctx, deps, { trigger: "lock" }); // never acquired → don't touch the worktree
   }
   try {
@@ -188,7 +189,7 @@ export async function finalize(ctx, deps) {
 
     return landed;
   } finally {
-    lock.releaseLock(orchDir, "merge.lock");
+    lock.releaseLock(orchDir, LOCK_NAMES.MERGE);
   }
 }
 
