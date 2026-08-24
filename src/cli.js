@@ -2171,24 +2171,38 @@ export async function main(argv, deps = {}) {
     if (!entry) throw usageError('usage: orch release "<changelog entry>"');
     if (dryRun) { console.log(`orch (dry): would bump version + CHANGELOG with "${entry}"`); return; }
     const cfg = load(repo, flags["config-file"]);
+    const baseBranch = cfg.baseBranch || "main";
     const integrationBranch = cfg.integrationBranch || "orch/integration";
-    const integration = git.ensureIntegrationWorktree(repo, orchDir, integrationBranch, cfg.baseBranch);
-    const originSync = git.reconcileIntegrationToOrigin(integration, integrationBranch);
-    if (!originSync.ok) throw new Error(`orch release: ${originSync.reason}`);
-    const dirty = git.gitTry(["status", "--porcelain"], integration);
-    if (!dirty.ok) throw new Error(`orch release: git status failed: ${dirty.out.trim() || "unknown error"}`);
-    const dirtyLines = dirty.out.split("\n").map((l) => l.trimEnd()).filter(Boolean);
-    if (dirtyLines.length) {
-      const files = dirtyLines.map((l) => l.slice(3).trim() || l).join("\n");
-      throw new Error(
-        `orch release: working tree is dirty — commit or stash first.\n${files}`,
-      );
+    if (!(await acquireBlocking(orchDir, "merge.lock"))) {
+      throw new Error("orch release: could not acquire merge.lock");
     }
-    const version = git.bumpVersion(integration, entry, { recovery: "written-files" });
-    if (!version) throw new Error("orch release: version bump failed (is package.json present and valid?)");
-    const commit = git.git(["rev-parse", "HEAD"], integration).trim();
-    console.log(`orch release: chore(release): v${version} committed on ${integrationBranch} in ${integration} (${commit})`);
-    return;
+    try {
+      const integration = integrationBranch === baseBranch
+        ? repo
+        : git.ensureIntegrationWorktree(repo, orchDir, integrationBranch, baseBranch);
+      const currentBranch = git.git(["rev-parse", "--abbrev-ref", "HEAD"], integration).trim();
+      if (currentBranch !== integrationBranch) {
+        throw new Error(`orch release: checkout must be on ${integrationBranch}, currently on ${currentBranch}`);
+      }
+      const dirty = git.gitTry(["status", "--porcelain"], integration);
+      if (!dirty.ok) throw new Error(`orch release: git status failed: ${dirty.out.trim() || "unknown error"}`);
+      const dirtyLines = dirty.out.split("\n").map((l) => l.trimEnd()).filter(Boolean).filter((l) => l.slice(3).trim() !== ".orch/merge.lock");
+      if (dirtyLines.length) {
+        const files = dirtyLines.map((l) => l.slice(3).trim() || l).join("\n");
+        throw new Error(
+          `orch release: working tree is dirty — commit or stash first.\n${files}`,
+        );
+      }
+      const originSync = git.reconcileIntegrationToOrigin(integration, integrationBranch);
+      if (!originSync.ok) throw new Error(`orch release: ${originSync.reason}`);
+      const version = git.bumpVersion(integration, entry, { recovery: "written-files" });
+      if (!version) throw new Error("orch release: version bump failed (is package.json present and valid?)");
+      const commit = git.git(["rev-parse", "HEAD"], integration).trim();
+      console.log(`orch release: chore(release): v${version} committed on ${integrationBranch} in ${integration} (${commit})`);
+      return;
+    } finally {
+      releaseLock(orchDir, "merge.lock");
+    }
   }
 
   // Fall-through. No command at all is a legitimate "show me the tool" request

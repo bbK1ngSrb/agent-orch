@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -4201,6 +4201,64 @@ test("orch release reconciles origin before bumping the integration worktree", a
   assert.match(logs.join("\n"), /committed on orch\/integration in /);
   assert.equal(gitDep.git(["show", "orch/integration:hand-landed.txt"], repo), "pushed directly to origin");
   assert.equal(JSON.parse(gitDep.git(["show", "orch/integration:package.json"], repo)).version, "0.4.2");
+});
+
+test("orch release reports a dirty integration worktree before origin reconciliation", async () => {
+  const repo = releaseFixture();
+  const { peer } = addOriginWithPeer(repo);
+  const integration = gitDep.ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  gitDep.git(["push", "-u", "origin", "orch/integration"], integration);
+  gitDep.git(["fetch", "origin"], peer);
+  gitDep.git(["switch", "-c", "orch/integration", "--track", "origin/orch/integration"], peer);
+  writeFileSync(join(peer, "wip.txt"), "remote hand-merge\n");
+  gitDep.git(["add", "."], peer);
+  gitDep.git(["commit", "-m", "remote hand-merge"], peer);
+  gitDep.git(["push", "origin", "orch/integration"], peer);
+  writeFileSync(join(integration, "wip.txt"), "local uncommitted work\n");
+
+  await assert.rejects(
+    () => runMainInRepo(repo, ["release", "should not land"]),
+    /working tree is dirty[\s\S]*wip\.txt/,
+  );
+  assert.equal(readFileSync(join(integration, "wip.txt"), "utf8"), "local uncommitted work\n");
+});
+
+test("orch release serializes with finalize's merge lock", async () => {
+  const repo = releaseFixture();
+  const orchDir = join(repo, ".orch");
+  mkdirSync(orchDir, { recursive: true });
+  const lockPath = join(orchDir, "merge.lock");
+  writeFileSync(lockPath, String(process.pid));
+
+  try {
+    let completed = false;
+    const pending = runMainInRepo(repo, ["release", "wait for integration lock"]).then((logs) => {
+      completed = true;
+      return logs;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(completed, false);
+    rmSync(lockPath, { force: true });
+    const logs = await pending;
+    assert.match(logs.join("\n"), /chore\(release\): v0\.4\.2/);
+  } finally {
+    rmSync(lockPath, { force: true });
+  }
+});
+
+test("orch release works when integrationBranch is the base branch", async () => {
+  const repo = releaseFixture();
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "baseBranch: main\nintegrationBranch: main\n");
+  gitDep.git(["add", ".orch/orch.yml"], repo);
+  gitDep.git(["commit", "-m", "configure base integration branch"], repo);
+
+  const logs = await runMainInRepo(repo, ["release", "base branch recovery"]);
+
+  assert.match(logs.join("\n"), /chore\(release\): v0\.4\.2 committed on main in /);
+  assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "0.4.2");
+  assert.equal(gitDep.git(["rev-parse", "--abbrev-ref", "HEAD"], repo), "main");
+  assert.equal(gitDep.git(["worktree", "list"], repo).includes(join(repo, ".orch", "integration")), false);
 });
 
 test("orch release on a dirty fixture exits non-zero and leaves the dirty file byte-for-byte untouched", async () => {

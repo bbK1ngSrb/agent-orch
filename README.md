@@ -405,8 +405,8 @@ escalates with the staged branch and conflict detail so a human can hand-merge
 into `orch/integration` in `.orch/integration`. After that hand-merge is pushed
 to `origin/orch/integration`, a repo running `release.autoBump: true` closes the
 recovery from any checkout with `orch release "<entry>"`; it first reconciles
-the dedicated worktree so the version bump and CHANGELOG line still land on the
-remote tip (finalize never ran). Under the default `release.autoBump: false`
+the dedicated worktree so the version bump and CHANGELOG line start from the
+remote tip (finalize never ran). Release does not push that commit. Under the default `release.autoBump: false`
 there is no bookkeeping to recover — skip it. The next
 cycle normally fast-forwards its local integration branch automatically. A
 genuine divergence instead demotes with `sync`. Either way the reason is more

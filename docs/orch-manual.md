@@ -1005,7 +1005,7 @@ and conflict detail so a human can hand-merge into `orch/integration` in
 After that hand-merge is pushed to `origin/orch/integration`, a repo running
 `release.autoBump: true` runs `orch release "<entry>"` from any checkout; the
 command first reconciles `.orch/integration` so the version/CHANGELOG
-bookkeeping lands on the remote tip (the recovery never entered `finalize()`),
+bookkeeping starts from the remote tip, then commits locally on the integration branch (the recovery never entered `finalize()`),
 under the default `autoBump: false` there is none to land, so skip it (§2.15).
 The next cycle normally fast-forwards its local integration branch
 automatically. A genuine divergence instead demotes with `sync`.
