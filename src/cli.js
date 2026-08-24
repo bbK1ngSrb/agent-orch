@@ -15,7 +15,7 @@ import * as gate from "./gate.js";
 import * as scope from "./scope.js";
 import { globToRegExp } from "./scope.js";
 import * as notify from "./notify.js";
-import { acquireLock, releaseLock, acquireBlocking, isPaused } from "./lock.js";
+import { acquireLock, releaseLock, acquireBlocking, isPaused, LOCK_NAMES } from "./lock.js";
 import { slugify } from "./slug.js";
 import { serve } from "./mcp.js";
 import { PARSE_OPTIONS, COMMAND_FLAGS, COMMANDS, renderHelp, usageError, validate as validateFlags, validatePositionals } from "./schema.js";
@@ -2102,7 +2102,7 @@ export async function main(argv, deps = {}) {
     preflightFn(cfg, orchDir);
     requireGhAuth((deps.githubDeps || githubDeps)().gh);
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
-    if (!acquireLock(orchDir)) throw new Error(".orch/lock held — another cycle is running");
+    if (!acquireLock(orchDir, LOCK_NAMES.CYCLE)) throw new Error(".orch/lock held — another cycle is running");
     resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, undefined, { base: cfg.baseBranch })); // clear orphans from a crashed prior cycle
     try {
       const result = await runPr(
@@ -2113,7 +2113,7 @@ export async function main(argv, deps = {}) {
       if (result.mergeHold) console.log(`orch pr #${n}: NOT merged — ${result.mergeHold}`);
       if (result.status !== "approved") process.exitCode = 2;
     } finally {
-      releaseLock(orchDir);
+      releaseLock(orchDir, LOCK_NAMES.CYCLE);
     }
     return;
   }
