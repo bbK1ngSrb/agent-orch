@@ -4163,21 +4163,21 @@ function releaseFixture() {
   return repo;
 }
 
-test("orch release on a clean fixture bumps version, writes CHANGELOG, and makes one chore(release) commit", async () => {
+test("orch release on a clean fixture bumps integration, not the primary checkout", async () => {
   const repo = releaseFixture();
   const before = gitDep.git(["rev-list", "--count", "HEAD"], repo).trim();
   const logs = await runMainInRepo(repo, ["release", "hand-landed guardrail fix (closes #403)"]);
   assert.match(logs.join("\n"), /chore\(release\): v0\.4\.2/);
 
-  const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+  const pkg = JSON.parse(gitDep.git(["show", "orch/integration:package.json"], repo));
   assert.equal(pkg.version, "0.4.2");
-  const changelog = readFileSync(join(repo, "CHANGELOG.md"), "utf8");
+  const changelog = gitDep.git(["show", "orch/integration:CHANGELOG.md"], repo);
   assert.match(changelog, /hand-landed guardrail fix \(closes #403\)/);
   assert.match(changelog, /^# Changelog\n\n## v0\.4\.2 — \d{4}-\d{2}-\d{2}/);
 
-  const after = gitDep.git(["rev-list", "--count", "HEAD"], repo).trim();
-  assert.equal(Number(after), Number(before) + 1, "exactly one new commit");
-  const subject = gitDep.git(["log", "-1", "--format=%s"], repo).trim();
+  assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "0.4.1");
+  assert.equal(gitDep.git(["rev-list", "--count", "HEAD"], repo).trim(), before, "main remains unchanged");
+  const subject = gitDep.git(["log", "-1", "--format=%s", "orch/integration"], repo).trim();
   assert.equal(subject, "chore(release): v0.4.2");
   // No tag — tagging is CI's job.
   assert.equal(gitDep.git(["tag"], repo).trim(), "");
@@ -4185,7 +4185,8 @@ test("orch release on a clean fixture bumps version, writes CHANGELOG, and makes
 
 test("orch release on a dirty fixture exits non-zero and leaves the dirty file byte-for-byte untouched", async () => {
   const repo = releaseFixture();
-  const dirtyPath = join(repo, "wip.txt");
+  const integration = gitDep.ensureIntegrationWorktree(repo, join(repo, ".orch"));
+  const dirtyPath = join(integration, "wip.txt");
   const dirtyBytes = "human WIP — must not be clobbered by release recovery\n";
   writeFileSync(dirtyPath, dirtyBytes);
 
@@ -4483,7 +4484,7 @@ test("orch release --dry leaves package.json and CHANGELOG untouched", async () 
   const before = readFileSync(join(repo, "package.json"), "utf8");
   const logs = await runMainInRepo(repo, ["release", "would-be entry"], {}); // sanity: real path bumps
   assert.match(logs.join("\n"), /chore\(release\)/);
-  const bumped = readFileSync(join(repo, "package.json"), "utf8");
+  const bumped = gitDep.git(["show", "orch/integration:package.json"], repo);
   assert.notEqual(bumped, before);
 
   const dryRepo = releaseFixture();

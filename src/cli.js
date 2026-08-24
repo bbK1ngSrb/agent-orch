@@ -2162,14 +2162,17 @@ export async function main(argv, deps = {}) {
   // Human-side counterpart of finalize()'s post-merge bump: when a cycle
   // escalates (e.g. guardrail-touch) and a human hand-merges onto
   // orch/integration, finalize never runs, so the version/CHANGELOG stay
-  // frozen. `orch release` does that bookkeeping alone. No tag — tagging is
-  // CI's job (#409). Recovery on failure restores only the files the bump
-  // wrote, never a whole-tree reset (see bumpVersion recovery: "written-files").
+  // frozen. `orch release` does that bookkeeping alone in the dedicated
+  // integration worktree. No tag — tagging is CI's job (#409). Recovery on
+  // failure restores only the files the bump wrote, never a whole-tree reset
+  // (see bumpVersion recovery: "written-files").
   if (command === "release") {
     const entry = rest.join(" ").trim();
     if (!entry) throw usageError('usage: orch release "<changelog entry>"');
     if (dryRun) { console.log(`orch (dry): would bump version + CHANGELOG with "${entry}"`); return; }
-    const dirty = git.gitTry(["status", "--porcelain"], repo);
+    const cfg = load(repo, flags["config-file"]);
+    const integration = git.ensureIntegrationWorktree(repo, orchDir, cfg.integrationBranch, cfg.baseBranch);
+    const dirty = git.gitTry(["status", "--porcelain"], integration);
     if (!dirty.ok) throw new Error(`orch release: git status failed: ${dirty.out.trim() || "unknown error"}`);
     const dirtyLines = dirty.out.split("\n").map((l) => l.trimEnd()).filter(Boolean);
     if (dirtyLines.length) {
@@ -2178,7 +2181,7 @@ export async function main(argv, deps = {}) {
         `orch release: working tree is dirty — commit or stash first.\n${files}`,
       );
     }
-    const version = git.bumpVersion(repo, entry, { recovery: "written-files" });
+    const version = git.bumpVersion(integration, entry, { recovery: "written-files" });
     if (!version) throw new Error("orch release: version bump failed (is package.json present and valid?)");
     console.log(`orch release: chore(release): v${version}`);
     return;
