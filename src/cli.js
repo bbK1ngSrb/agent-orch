@@ -9,6 +9,7 @@ import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh, findPrByHead } from "./github.js";
 import { runUntil } from "./run-controller.js";
+import { createRebaseRemedy } from "./remedies.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -1765,6 +1766,13 @@ export async function main(argv, deps = {}) {
               runCycle: async ({ fresh } = {}) => fresh
                 ? runCycle({ ...run, resume: true }, cycleDeps)
                 : result,
+              remedies: {
+                rebase: createRebaseRemedy({
+                  run,
+                  deps: cycleDeps,
+                  runCycle: () => runCycle({ ...run, resume: true }, cycleDeps),
+                }),
+              },
               resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
               gh: ghDeps.gh, git, repo,
               sleep: deps.sleep,
