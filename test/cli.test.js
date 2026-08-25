@@ -1000,6 +1000,52 @@ test("orch task --until ready --json exits 2 with failureClass REMOTE_BEHIND on 
   }
 });
 
+// P6 split 4/4 acceptance (docs/cli-v2-design.md §10A, closes #551): a standing
+// PR reported BEHIND is no longer a terminal failure — `integration-repair` is
+// registered in cli.js's `remedies` map, so the run repairs the branch and
+// reaches READY. Before registration the lookup in run-controller.js missed,
+// the `typeof executor !== "function"` guard fired, and this exited 2.
+test("orch task --until ready --json exits 0 after one integration repair of a BEHIND standing PR", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo();
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  gitDep.git(["push", "-u", "origin", "orch/integration"], repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  // The fixture models only what the criterion is about: GitHub reports BEHIND
+  // until `update-branch` runs, then CLEAN. The head stays pinned — readiness
+  // rule 2's head-move handling is a separate concern with its own tests.
+  let repaired = false;
+  const ghCalls = [];
+  const gh = (args) => {
+    ghCalls.push(args.join(" "));
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false, headRefOid: head }]);
+    if (args[0] === "pr" && args[1] === "view") {
+      return JSON.stringify({
+        number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+        mergeable: "MERGEABLE", mergeStateStatus: repaired ? "CLEAN" : "BEHIND",
+        reviewDecision: null, statusCheckRollup: [],
+      });
+    }
+    if (args[0] === "api" && args.some((a) => a.endsWith("/update-branch"))) { repaired = true; return "{}"; }
+    if (args[0] === "api") return "[]"; // required checks: known, empty
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "some task", "--no-tidy", "--until", "ready", "--json"], { githubDeps: () => ({ gh, git: gitDep.git }) });
+    const last = JSON.parse(logs[logs.length - 1]);
+    assert.equal(last.event, "run.end");
+    assert.equal(last.exit, 0);
+    assert.equal(last.outcome, "reached");
+    assert.equal(process.exitCode || 0, 0);
+    assert.equal(ghCalls.filter((c) => c.includes("update-branch")).length, 1, "exactly one repair");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 test("orch task --until ready re-runs a non-landed free retry cycle", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo();

@@ -10,6 +10,7 @@ import { runCycle } from "./engine.js";
 import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh, findPrByHead } from "./github.js";
 import { runUntil } from "./run-controller.js";
 import { createRebaseRemedy } from "./remedies.js";
+import { createIntegrationRepairRemedy } from "./integration-repair.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
 import * as gate from "./gate.js";
@@ -1771,6 +1772,17 @@ export async function main(argv, deps = {}) {
                   run,
                   deps: cycleDeps,
                   runCycle: () => runCycle({ ...run, resume: true }, cycleDeps),
+                }),
+                // #551: without this key the lookup in run-controller.js
+                // misses and every REMOTE_BEHIND/CONFLICTING/CI_RED run ends
+                // as a terminal failure instead of repairing (design §10A).
+                "integration-repair": createIntegrationRepairRemedy({
+                  run,
+                  // `sleep` so the lock-contention backoff is injectable the
+                  // same way the controller's own backoffs are.
+                  deps: { ...cycleDeps, sleep: deps.sleep },
+                  gh: ghDeps.gh,
+                  resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
                 }),
               },
               resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
