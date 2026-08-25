@@ -674,19 +674,33 @@ test("integration repair: a landing that loses the push race rolls back and refu
   const integration = git.ensureIntegrationWorktree(repo, join(repo, ".orch"), "orch/integration", "main");
   commitFile(integration, "local-only.txt", "landed locally, not pushed yet\n", "local land");
   const localTip = git.git(["rev-parse", "HEAD"], integration);
-  const before = originSha(remote, "orch/integration");
+  // A real peer, not a hand-written rejection string: it lands its own commit on
+  // origin/orch/integration in the window between this repair's fetch and its
+  // push, so git itself produces the non-fast-forward wording `PUSH_RACE_RE` has
+  // to recognise. A faked `out` would pass even if that wording never matched.
+  const peer = cloneRemote(remote);
+  git.git(["switch", "orch/integration"], peer);
   const gitDep = {
     ...git,
-    gitTry: (args, wd) => (args[0] === "push"
-      ? { ok: false, out: "! [rejected] orch/integration -> orch/integration (fetch first)" }
-      : git.gitTry(args, wd)),
+    gitTry: (args, wd) => {
+      if (args[0] === "push" && wd === repo) {
+        commitFile(peer, "peer.txt", "peer landed first\n", "peer land");
+        git.git(["push", "origin", "orch/integration"], peer);
+      }
+      return git.gitTry(args, wd);
+    },
   };
 
   const out = await runRepair(repo, { gitDep });
 
   assert.match(out.result.reason, /push rejected/);
+  assert.match(out.result.reason, /non-fast-forward|fetch first/, "the race must be git's own rejection");
   assert.equal(out.record.attempt, 0, "an agent-free repair that landed nothing must not burn an attempt");
-  assert.equal(originSha(remote, "orch/integration"), before);
+  assert.equal(
+    originSha(remote, "orch/integration"),
+    git.git(["rev-parse", "HEAD"], peer),
+    "origin must still be exactly what the peer landed — the losing repair changed nothing",
+  );
   assert.equal(git.git(["rev-parse", "HEAD"], integration), localTip, "the lost race must leave local exactly as it was");
 });
 
@@ -712,18 +726,44 @@ test("integration repair: a push rejected for auth, not for a race, keeps the at
   assert.equal(originSha(remote, "orch/integration"), before);
 });
 
-test("integration repair: an integration worktree that has diverged from the updated origin blocks the push", async () => {
-  // `reconcileIntegrationToOrigin` is fast-forward only. Once the server-side
-  // update has moved origin, a persistent worktree carrying its own unpushed
-  // commits is a genuine divergence — the repair stops there rather than
-  // pushing a tip that would orphan them. (The merge-conflict arm of
-  // `landRepairedTip` sits behind this guard on the REMOTE_BEHIND path: only
-  // #569's scratch-built resolver tip can reach it.)
+test("integration repair: unpushed local commits merge into the moved origin, re-gate and land", async () => {
+  // The real REMOTE_BEHIND shape, and the one an ff-only reconcile in front of
+  // the merge could never repair: the server-side update has moved origin, and
+  // the persistent worktree carries a commit that was landed locally but never
+  // pushed. Local and origin have therefore diverged by construction, so the
+  // merge below is a REAL merge — not a fast-forward — and it has to happen:
+  // origin has already moved irreversibly, nothing else in the run merges those
+  // local commits, and refusing here strands them for good.
   const { repo, remote } = repairFixture();
   const integration = git.ensureIntegrationWorktree(repo, join(repo, ".orch"), "orch/integration", "main");
   commitFile(integration, "local-only.txt", "landed locally, not pushed yet\n", "local land");
+  const localOnly = git.git(["rev-parse", "HEAD"], integration);
+  const calls = [];
+  const gate = { detect: () => "true", run: (_cmd, cwd) => { calls.push(cwd); return { pass: true, log: "" }; } };
+
+  const out = await runRepair(repo, { gate, gh: peerUpdateBranch(remote, "orch/integration") });
+
+  assert.equal(out.cycle?.status, "merged", out.result?.reason);
+  assert.equal(calls.length, 2, "the merged tree is not the gated tip, so it gets its own gate run");
+  assert.equal(calls[1], integration, "the re-gate runs on the tree that is about to be pushed");
+  const originTip = originSha(remote, "orch/integration");
+  assert.ok(
+    git.gitTry(["merge-base", "--is-ancestor", localOnly, originTip], repo).ok,
+    "the unpushed local commit must reach origin, not be stranded",
+  );
+  assert.equal(git.git(["rev-parse", "HEAD"], integration), originTip, "local must end up at exactly what was pushed");
+});
+
+test("integration repair: a merge that conflicts with the updated origin rolls back and pushes nothing", async () => {
+  // The other half of dropping the ff-only guard: the merge-conflict arm of
+  // `landRepairedTip` is now reachable on the REMOTE_BEHIND path. A local
+  // commit touching the same file the server-side update rewrote conflicts, and
+  // the worktree must come back exactly as it was — a half-merged integration
+  // tree is what `finalize` would trip over next.
+  const { repo, remote } = repairFixture();
+  const integration = git.ensureIntegrationWorktree(repo, join(repo, ".orch"), "orch/integration", "main");
+  commitFile(integration, "shared.txt", "third value\n", "local land on the contested file");
   const localTip = git.git(["rev-parse", "HEAD"], integration);
-  const update = peerUpdateBranch(remote, "orch/integration");
   const pushes = [];
   const gitDep = {
     ...git,
@@ -733,28 +773,13 @@ test("integration repair: an integration worktree that has diverged from the upd
     },
   };
 
-  const out = await runRepair(repo, { gitDep, gh: update });
+  const out = await runRepair(repo, { gitDep, gh: peerUpdateBranch(remote, "orch/integration") });
 
   assert.equal(out.cycle, undefined);
-  assert.match(out.result.reason, /diverged from origin/);
-  assert.deepEqual(pushes, [], "the repair must push nothing it cannot fast-forward");
-  assert.equal(git.git(["rev-parse", "HEAD"], integration), localTip, "the unpushed commit must still be there");
-});
-
-test("integration repair: a reconcile that fails for any other reason blocks the push too", async () => {
-  const { repo } = repairFixture();
-  const gitDep = { ...git, reconcileIntegrationToOrigin: () => ({ ok: false, reason: "worktree busy" }) };
-  const pushes = [];
-  gitDep.gitTry = (args, wd) => {
-    if (args[0] === "push") pushes.push(args);
-    return git.gitTry(args, wd);
-  };
-
-  const out = await runRepair(repo, { gitDep });
-
-  assert.equal(out.cycle, undefined);
-  assert.match(out.result.reason, /worktree busy/);
-  assert.deepEqual(pushes, [], "nothing may be pushed when local cannot be reconciled");
+  assert.match(out.result.reason, /could not merge the repaired tip into local orch\/integration/);
+  assert.deepEqual(pushes, [], "a conflicted merge must never be pushed");
+  assert.equal(git.git(["rev-parse", "HEAD"], integration), localTip, "the aborted merge must leave local untouched");
+  assert.equal(git.git(["status", "--porcelain"], integration), "", "no conflict markers may be left behind");
 });
 
 test("integration repair: a merge.lock timeout refunds the attempt and pushes nothing", async () => {

@@ -121,15 +121,21 @@ async function landRepairedTip(ctx, deps, { sha }) {
     let rollback = null;
     if (branch === ctx.integrationBranch) {
       const integration = git.ensureIntegrationWorktree(repo, orchDir, branch, base);
-      // Bring local up to origin before merging: ff-only, so a genuinely
-      // diverged local branch stops the repair instead of being rewritten.
-      const reconciled = git.reconcileIntegrationToOrigin(integration, branch);
-      if (!reconciled?.ok) {
-        return { ok: false, reason: `could not reconcile local ${branch}: ${reconciled?.reason || "unknown error"}` };
-      }
-      // Plain merge, not `--ff-only`: fast-forwarding is exactly the case that
-      // fails when local carries its own commits, which is the case this
-      // ordering exists to keep.
+      // The merge below is the WHOLE reconciliation, deliberately: it covers
+      // local-behind (fast-forward), local-equal (no-op), local-ahead (already
+      // up to date) and local-diverged (a real merge commit) in one step. There
+      // used to be an ff-only `reconcileIntegrationToOrigin` in front of it,
+      // and on this path it was unrecoverable: `updateBranch` has ALREADY moved
+      // origin by the time we get here, so a persistent worktree carrying its
+      // own unpushed commits is diverged by construction — the exact state the
+      // merge-first ordering exists to handle — and refusing stranded those
+      // commits for good (nothing else in the run merges them, and `finalize`'s
+      // landing hits the same ff-only wall). Merging rewrites and discards
+      // nothing, the re-gate below covers the tree no gate has seen, and the
+      // plain push still has to fast-forward origin — so the guard bought
+      // safety only in the sense that doing nothing is safe.
+      // Plain merge, not `--ff-only`, for the same reason: fast-forwarding is
+      // exactly the case that fails when local carries its own commits.
       const preMergeSha = git.gitTry(["rev-parse", "HEAD"], integration).out.trim();
       const merged = git.gitTry(["merge", "--no-edit", sha], integration);
       if (!merged.ok) {
