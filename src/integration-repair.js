@@ -25,6 +25,12 @@ import { redact } from "./redact.js";
 
 const DEFAULT_RESOLVERS = [{ agent: "claude", model: null, effort: null }];
 
+// git's own wording for "someone else moved the ref under you", across the
+// versions/locales that keep the English message: the only push failure a
+// retry can clear. Matched against `gitTry`'s `.out`, which carries stderr
+// (git.js:62) — that is where git writes the rejection.
+const PUSH_RACE_RE = /non-fast-forward|fetch first|stale info|remote contains work/i;
+
 function errorText(error) {
   return String(error?.message || error || "unknown error").trim();
 }
@@ -114,14 +120,23 @@ function addScratch(git, repo, orchDir, ref, branchName) {
 // Fast-forward only, the same discipline `reconcileIntegrationToOrigin` uses: a
 // local branch carrying commits the repaired tip does not have is a real
 // divergence, and moving the ref would orphan them.
+// The divergence half of `syncLocalBranch`, split out so the push can ask the
+// same question BEFORE it moves origin. Returns a reason, or null when the ref
+// can be fast-forwarded. Always null on the integration branch: there the local
+// worktree is merged into the pushed tip first, so it cannot be left behind.
+function localDivergence(git, repo, ctx, sha) {
+  if (ctx.branch === ctx.integrationBranch) return null;
+  const local = git.gitTry(["rev-parse", "-q", "--verify", `refs/heads/${ctx.branch}`], repo);
+  return local.ok && !git.gitTry(["merge-base", "--is-ancestor", local.out.trim(), sha], repo).ok
+    ? `local ${ctx.branch} has diverged from the repaired tip`
+    : null;
+}
+
 function syncLocalBranch(git, repo, ctx, sha) {
   if (ctx.branch === ctx.integrationBranch) return { ok: true };
-  const ref = `refs/heads/${ctx.branch}`;
-  const local = git.gitTry(["rev-parse", "-q", "--verify", ref], repo);
-  if (local.ok && !git.gitTry(["merge-base", "--is-ancestor", local.out.trim(), sha], repo).ok) {
-    return { ok: false, reason: `local ${ctx.branch} has diverged from the repaired tip` };
-  }
-  const updated = git.gitTry(["update-ref", ref, sha], repo);
+  const diverged = localDivergence(git, repo, ctx, sha);
+  if (diverged) return { ok: false, reason: diverged };
+  const updated = git.gitTry(["update-ref", `refs/heads/${ctx.branch}`, sha], repo);
   return updated.ok ? { ok: true } : { ok: false, reason: `could not update local ${ctx.branch}: ${updated.out.trim()}` };
 }
 
@@ -235,13 +250,31 @@ async function landRepairedTip(ctx, deps, { sha }) {
         }
       }
     }
+    // Ask about local divergence BEFORE origin moves. A per-cycle branch has no
+    // worktree left, so a local ref carrying commits the repaired tip lacks is
+    // the one case nothing merges in: pushing first would leave those commits
+    // reachable only from a local ref that can never fast-forward again, and the
+    // post-push `syncLocalBranch` below could then only report it. On the
+    // integration branch this is a deliberate no-op — the local-merge-first
+    // ordering above already folded local's own commits into `pushSha`.
+    const diverged = localDivergence(git, repo, ctx, pushSha);
+    if (diverged) {
+      rollback?.();
+      return { ok: false, reason: diverged };
+    }
     // A plain (non-force) push IS the "integration moved during repair"
     // check, and the server does it atomically: git rejects the ref update
     // unless `pushSha` fast-forwards whatever origin holds right now.
     const pushed = git.gitTry(["push", "origin", `${pushSha}:refs/heads/${branch}`], repo);
     if (!pushed.ok) {
       rollback?.();
-      return { ok: false, raced: true, reason: `push rejected: ${pushed.out.trim()}` };
+      // Only a non-fast-forward rejection is the race this path means by
+      // `raced`; auth, branch protection and pre-receive hooks all fail the
+      // same push and would repeat identically. Handing those a free attempt
+      // back (repairBehind) spends the controller's remedy loops re-running a
+      // repair that cannot succeed, and hides the real error behind the cap.
+      const raced = PUSH_RACE_RE.test(pushed.out);
+      return { ok: false, ...(raced ? { raced: true } : {}), reason: `push rejected: ${pushed.out.trim()}` };
     }
     // Origin already carries the repair — a failure here is reported, not
     // rolled back.
@@ -274,6 +307,15 @@ async function repairBehind(ctx, deps) {
     // deriving anything from it.
     const repaired = git.gitTry(["rev-parse", `refs/remotes/origin/${branch}`], repo);
     if (!repaired.ok) return { ok: false, reason: `could not read the updated origin/${branch}` };
+    // `updateBranch` already moved ORIGIN, so from here on the local ref is
+    // stale no matter how this repair ends. Sync it now rather than only on the
+    // way out: `resolveLanded` reads `refs/heads/<branch>` for readiness's
+    // `expectedHead`, so a red gate below (or any later failure) would otherwise
+    // leave the next readiness read at REMOTE_UNKNOWN — a class with no repair
+    // path, so the branch could not be repaired again. Origin has already moved
+    // irreversibly, so a diverged local here is only reportable, not preventable.
+    const synced = syncLocalBranch(git, repo, ctx, repaired.out.trim());
+    if (!synced.ok) return synced;
     scratch = addScratch(git, repo, orchDir, `origin/${branch}`, scratchBranch);
     if (!scratch) return { ok: false, reason: "could not create the repair worktree" };
     const testCmd = cfg.test === "auto" ? gate.detect(scratch) : cfg.test;
@@ -569,6 +611,17 @@ export async function repairIntegration(ctx, deps) {
 // (or make the loop budget per-remedy) if that shows up in practice.
 const LOCK_RETRY_MS = 60_000;
 
+// ...and a cap on how many times it does that. Handing the attempt back also
+// drops the convergence entry, so nothing else bounds contention: the run would
+// re-dispatch this remedy with `attempt` pinned at 0 until run-controller.js's
+// MAX_REMEDY_LOOPS (32) ran out, ~32 minutes later, and report a bare
+// STOPPED_AT_CAP that names no peer. Counted under its own key, not the
+// `repair-lock` counter failure.js spends on the free re-polls BEFORE this
+// remedy is ever dispatched — sharing that one would be exhausted on arrival
+// and terminate on the first contention.
+const LOCK_RETRY_CAP = 3;
+const LOCK_RETRY_KEY = "repair-lock-wait";
+
 function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -661,9 +714,21 @@ export async function integrationRepairRemedy({ failure, record, cycle, name, po
   // repair has landed. Returning a terminal result instead ended the whole run
   // on what is only contention (file header + design §12).
   if (outcome.locked) {
+    const waited = (record.retries?.[LOCK_RETRY_KEY] || 0) + 1;
+    // Still a precondition failure — the attempt is refunded either way; what
+    // the cap changes is that the run ends here, naming the peer, instead of
+    // spinning until the controller's loop budget is gone.
+    if (waited > LOCK_RETRY_CAP) return terminal(failure, { ...outcome, precondition: true }, record);
     await (deps?.sleep || defaultSleep)(LOCK_RETRY_MS);
     const refunded = withoutLastFailure(record, failure, name);
-    return { cycle, record: { ...refunded, attempt: Math.max(0, (record.attempt || 0) - 1) } };
+    return {
+      cycle,
+      record: {
+        ...refunded,
+        retries: { ...(record.retries || {}), [LOCK_RETRY_KEY]: waited },
+        attempt: Math.max(0, (record.attempt || 0) - 1),
+      },
+    };
   }
   // A resolver that threw spent an agent stage, so unlike contention it KEEPS
   // the attempt — `maxAttempts` is what bounds the failover, not the pool size.

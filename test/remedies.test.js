@@ -441,12 +441,12 @@ function resolvingAgent(text = "resolved by the agent\n", file = "shared.txt") {
   };
 }
 
-function runRepair(repo, { cfg = repairCfg(), agents = {}, gh = () => "", branch = "orch/integration", landing = "standing", failureClass = "REMOTE_CONFLICTING", prNumber = 9, gitDep = git, sleep = async () => {}, gate = { detect: () => "true", run: () => ({ pass: true, log: "" }) } } = {}) {
+function runRepair(repo, { cfg = repairCfg(), agents = {}, gh = () => "", branch = "orch/integration", landing = "standing", failureClass = "REMOTE_CONFLICTING", prNumber = 9, gitDep = git, sleep = async () => {}, record = { attempt: 1, failures: [] }, gate = { detect: () => "true", run: () => ({ pass: true, log: "" }) } } = {}) {
   return integrationRepairRemedy({
     name: "integration-repair",
     policy: { maxAttempts: 3 },
     failure: { class: failureClass, fingerprint: "fp" },
-    record: { attempt: 1, failures: [] },
+    record,
     cycle: { status: "merged" },
     run: { repo, orchDir: join(repo, ".orch"), sid: "sidtest", cfg },
     deps: {
@@ -1478,4 +1478,121 @@ test("integration repair: a REMOTE_BEHIND landing re-gates and pushes the local-
   assert.equal(calls[1].cwd, integration);
   // Hand-computed from `repairCfg`'s `stageTimeout: 7` — 7 * 60_000 (#56/#58).
   assert.equal(calls[1].timeoutMs, 420_000);
+});
+
+test("integration repair: a push rejected for auth, not for a race, keeps the attempt", async () => {
+  // `raced` buys the caller a free attempt back because a race clears on the
+  // next poll. Auth (or branch protection, or a pre-receive hook) does not: the
+  // same push fails identically forever, so refunding there would spend the
+  // controller's remedy loops re-running a repair that cannot land.
+  const { repo, remote } = conflictFixture();
+  const before = originSha(remote, "orch/integration");
+  const gitDep = {
+    ...git,
+    gitTry: (args, wd) => (args[0] === "push"
+      ? { ok: false, out: "remote: Permission to o/r.git denied to nobody.\nfatal: unable to access ...: 403" }
+      : git.gitTry(args, wd)),
+  };
+
+  const out = await runRepair(repo, { failureClass: "REMOTE_BEHIND", gh: () => "{}", gitDep });
+
+  assert.match(out.result.reason, /push rejected/);
+  assert.match(out.result.reason, /403/, "the real error must survive into the reason");
+  assert.equal(out.record.attempt, 1, "a push that can never succeed must not be refunded as a race");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+test("integration repair: a diverged per-cycle local stops the repair BEFORE origin is pushed", async () => {
+  // The divergence was reported after the push, so origin had already taken the
+  // repaired tip: the local-only commits then hung off a ref that could never
+  // fast-forward again. Ask first, push second.
+  const { repo, remote } = conflictFixture();
+  git.git(["switch", "-c", "feature", "orch/integration"], repo);
+  git.git(["push", "-u", "origin", "feature"], repo);
+  commitFile(repo, "local-only.txt", "not pushed\n", "local-only work");
+  git.git(["switch", "main"], repo);
+  const before = originSha(remote, "feature");
+  const pushes = [];
+  const gitDep = {
+    ...git,
+    gitTry: (args, wd) => {
+      if (args[0] === "push") pushes.push(args);
+      return git.gitTry(args, wd);
+    },
+  };
+
+  const out = await runRepair(repo, {
+    branch: "feature",
+    landing: "pr",
+    gitDep,
+    agents: { resolver: resolvingAgent(), reviewer: { async audit() { return { decision: "AGREE" }; } } },
+  });
+
+  assert.match(out.result.reason, /diverged from the repaired tip/);
+  assert.deepEqual(pushes, [], "nothing may be pushed once the local ref is known to have diverged");
+  assert.equal(originSha(remote, "feature"), before);
+});
+
+test("integration repair: a red gate after update-branch still advances the local ref", async () => {
+  // `updateBranch` moves ORIGIN before anything is gated, so the local ref is
+  // stale from that moment on. Left there, `resolveLanded`'s `expectedHead`
+  // points at the pre-update sha and the next readiness read is REMOTE_UNKNOWN
+  // — a class with no repair path, so the branch can never be repaired again.
+  const { repo, remote } = conflictFixture();
+  git.git(["switch", "-c", "feature", "orch/integration"], repo);
+  git.git(["push", "-u", "origin", "feature"], repo);
+  git.git(["switch", "main"], repo);
+  const stale = git.git(["rev-parse", "feature"], repo);
+  const peer = cloneRemote(remote);
+  git.git(["switch", "feature"], peer);
+  git.git(["merge", "--no-edit", "-X", "theirs", "origin/main"], peer);
+  const gh = (args) => {
+    if (args[0] === "api") { git.git(["push", "origin", "feature"], peer); return "{}"; }
+    return "";
+  };
+
+  const out = await runRepair(repo, {
+    branch: "feature",
+    landing: "pr",
+    failureClass: "REMOTE_BEHIND",
+    gh,
+    gate: { detect: () => "true", run: () => ({ pass: false, log: "red" }) },
+  });
+
+  assert.match(out.result.reason, /gate red/);
+  assert.notEqual(git.git(["rev-parse", "feature"], repo), stale);
+  assert.equal(
+    git.git(["rev-parse", "feature"], repo),
+    originSha(remote, "feature"),
+    "the local ref must follow the server-side update even when the gate then fails",
+  );
+});
+
+test("integration repair: lock contention stops at the retry cap instead of spinning the controller", async () => {
+  const { repo } = conflictFixture();
+  const orchDir = join(repo, ".orch");
+  mkdirSync(orchDir, { recursive: true });
+  writeFileSync(join(orchDir, LOCK_NAMES.INTEGRATION_REPAIR), String(process.pid));
+  const slept = [];
+
+  // Round 3 of 3: still handed back, and the wait is counted.
+  const third = await runRepair(repo, {
+    record: { attempt: 1, failures: [], retries: { "repair-lock-wait": 2 } },
+    sleep: async (ms) => slept.push(ms),
+  });
+  assert.equal(third.cycle?.status, "merged");
+  assert.equal(third.result, undefined);
+  assert.equal(third.record.retries["repair-lock-wait"], 3);
+  assert.equal(third.record.attempt, 0);
+
+  // Round 4: the cap is spent. Terminal, naming the peer — not another refund
+  // that leaves run-controller.js to burn its 32 loops on contention alone.
+  const fourth = await runRepair(repo, {
+    record: { attempt: 1, failures: [], retries: { "repair-lock-wait": 3 } },
+    sleep: async (ms) => slept.push(ms),
+  });
+  assert.equal(fourth.cycle, undefined);
+  assert.equal(fourth.result.state, "STOPPED_AT_CAP");
+  assert.match(fourth.result.reason, /a peer is already repairing/);
+  assert.deepEqual(slept, [60_000], "the exhausted round must not back off again");
 });
