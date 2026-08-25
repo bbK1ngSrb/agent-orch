@@ -14,6 +14,7 @@ import { inspect } from "../src/readiness.js";
 import { createRebaseRemedy } from "../src/remedies.js";
 import { integrationRepairRemedy, createIntegrationRepairRemedy } from "../src/integration-repair.js";
 import * as git from "../src/git.js";
+import * as runRecord from "../src/run-record.js";
 
 const READY_POLICY = { until: "ready", pollSeconds: 1, ciWaitMinutes: 1, maxAttempts: 3 };
 const HEAD = "a".repeat(40);
@@ -739,7 +740,18 @@ test("integration repair: unpushed local commits merge into the moved origin, re
   commitFile(integration, "local-only.txt", "landed locally, not pushed yet\n", "local land");
   const localOnly = git.git(["rev-parse", "HEAD"], integration);
   const calls = [];
-  const gate = { detect: () => "true", run: (_cmd, cwd) => { calls.push(cwd); return { pass: true, log: "" }; } };
+  // The scratch gate runs after the server-side update and before the push, so
+  // it is where origin still holds exactly what update-branch left: the tip the
+  // gate ran on, which the pushed merge has to contain AND not be.
+  let updatedTip = null;
+  const gate = {
+    detect: () => "true",
+    run: (_cmd, cwd) => {
+      if (!updatedTip) updatedTip = originSha(remote, "orch/integration");
+      calls.push(cwd);
+      return { pass: true, log: "" };
+    },
+  };
 
   const out = await runRepair(repo, { gate, gh: peerUpdateBranch(remote, "orch/integration") });
 
@@ -747,6 +759,11 @@ test("integration repair: unpushed local commits merge into the moved origin, re
   assert.equal(calls.length, 2, "the merged tree is not the gated tip, so it gets its own gate run");
   assert.equal(calls[1], integration, "the re-gate runs on the tree that is about to be pushed");
   const originTip = originSha(remote, "orch/integration");
+  assert.ok(
+    git.gitTry(["merge-base", "--is-ancestor", updatedTip, originTip], repo).ok
+      && updatedTip !== originTip,
+    "the pushed tip must be a real merge of the updated origin, not that tip itself",
+  );
   assert.ok(
     git.gitTry(["merge-base", "--is-ancestor", localOnly, originTip], repo).ok,
     "the unpushed local commit must reach origin, not be stranded",
@@ -988,10 +1005,24 @@ test("integration repair: an exhausted contention cap leaves no convergence entr
 
   assert.equal(out.result.state, "STOPPED_AT_CAP");
   assert.deepEqual(out.record.failures, [], "the entry for a repair that never ran must not survive the cap");
-  // The resumed run, re-reading a PR that is still BEHIND. `repair-lock` is
-  // pinned at its cap so the free re-polls are out of the way and the choice
-  // under test is the remedy one.
-  const resumed = { ...out.record, retries: { "repair-lock": 3 }, policy: { maxAttempts: out.record.attempt + 1 } };
+  // The resumed run, re-reading a PR that is still BEHIND — through the real
+  // durable record rather than a hand-built object, so what `chooseRemedy` sees
+  // is what actually survives a write/read round trip and `resumeTerminal`'s
+  // own field clearing. `repair-lock` is pinned so the free re-polls are out of
+  // the way and the choice under test is the remedy one.
+  runRecord.create(orchDir, { runId: "sidtest", command: "task", policy: { maxAttempts: 1 } });
+  runRecord.update(orchDir, "sidtest", {
+    ...out.record,
+    outcome: out.result.outcome,
+    exit: out.result.exit,
+    retries: { ...out.record.retries, "repair-lock": 3 },
+  });
+  // The same budget grant cli.js:2066 makes on `orch continue`.
+  const prior = runRecord.lookup(orchDir, "sidtest");
+  runRecord.resumeTerminal(orchDir, "sidtest", { maxAttempts: prior.attempt + (prior.policy?.maxAttempts ?? 1) });
+  const resumed = { ...runRecord.lookup(orchDir, "sidtest"), retries: { "repair-lock": 3 } };
+  assert.equal(resumed.outcome, null, "the resumed run must no longer be terminal");
+  assert.deepEqual(resumed.failures, [], "the dropped convergence entry must stay dropped across the resume");
   assert.equal(chooseRemedy(failure, resumed, {}).remedy, "integration-repair", "a still-behind PR must be able to retry the only remedy it has");
   // The regression itself, hand-computed from failure.js: with the entry
   // retained the streak is 2, `integration-repair` is filtered out of the row
