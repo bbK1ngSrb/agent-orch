@@ -1,6 +1,7 @@
 // Integration repair (design docs/cli-v2-design.md §10A): repairs the branch
-// behind a standing/per-cycle PR that readiness reported as BEHIND,
-// CONFLICTING or CI-red — whether or not this run caused it.
+// behind a standing/per-cycle PR that readiness reported as BEHIND — whether or
+// not this run caused it. (CONFLICTING and CI-red are the same remedy's other
+// two classes; see the slice note below.)
 //
 // Lock discipline (design §12): the run takes the non-blocking
 // `integration-repair.lock` before ANY repair, and only takes `merge.lock`
@@ -288,23 +289,30 @@ const LOCK_RETRY_MS = 60_000;
 // controller.js's MAX_REMEDY_LOOPS (32) ran out ~32 minutes later, and reported
 // a bare STOPPED_AT_CAP that named no peer.
 //
-// Sized against ONE peer repair rather than fixed: the peer holds the lock
-// across every stage below, each capped at `stageTimeout` (#56/#58) —
-//   1. the gate run on the updated tip, in `repairBehind`,
-//   2. the gate re-run on the merged tree, in `landRepairedTip`.
-// The second exists only when the local merge was a real merge rather than a
+// Sized against ONE peer repair rather than fixed. The peer holds the lock
+// across, in order:
+//   1. the gate run on the updated tip, in `repairBehind`      — `stageTimeout`
+//   2. the `merge.lock` acquire, in `landRepairedTip`          — see below
+//   3. the gate re-run on the merged tree, in `landRepairedTip` — `stageTimeout`
+// Step 3 exists only when the local merge was a real merge rather than a
 // fast-forward; the cap is deliberately sized for that worst path, since a
 // shorter one would make the loser of a concurrent repair give up mid-peer-
 // repair — and §10A makes this remedy `ready`'s only path to its goal.
-// Two, not the four an earlier round counted: this slice has no resolver stage
-// and no reviewer audit under the lock. #569 puts them back and must raise this
-// with them. The peer's `merge.lock` wait and its non-agent git work (fetch,
-// update-branch, reconcile, merge) are left unmodelled: they carry no
-// `stageTimeout`, and `MIN_LOCK_RETRIES` covers them for the small-
-// `stageTimeout` cases. `stageTimeout: 0` means no watchdog at all and an
-// unbounded peer hold; ten minutes is the arbitrary compromise there, since
-// waiting forever is not one.
+// Two `stageTimeout` windows, not the four an earlier round counted: this slice
+// has no resolver stage and no reviewer audit under the lock. #569 puts them
+// back and must raise `LOCKED_STAGES` with them.
+// The peer's plain git work (fetch, update-branch, reconcile, merge, push) is
+// left unmodelled: it carries no watchdog and no bound worth guessing at, and
+// `MIN_LOCK_RETRIES` is the floor that covers it when `stageTimeout` is small.
+// `stageTimeout: 0` means no watchdog at all and an unbounded peer hold; that
+// floor is the arbitrary compromise there, since waiting forever is not one.
 const MIN_LOCK_RETRIES = 10;
+// `merge.lock` is taken INSIDE the held `integration-repair.lock`, and its wait
+// carries no `stageTimeout` — it is bounded by `acquireBlocking`'s own default
+// (src/lock.js:117, 5 minutes). Counted separately because a peer can spend it
+// on top of both gate runs, and at small `stageTimeout` values the two windows
+// alone already eat the whole cap.
+const MERGE_LOCK_WAIT_MS = 300_000;
 // Every stage the peer can run while holding `integration-repair.lock` — one
 // per `stageTimeoutMs(cfg)` call site under that lock. Bump this with any new
 // one.
@@ -315,7 +323,7 @@ const LOCKED_STAGES = 2;
 const LOCK_RETRY_KEY = "repair-lock-wait";
 
 function lockRetryCap(cfg) {
-  return Math.max(MIN_LOCK_RETRIES, Math.ceil((LOCKED_STAGES * stageTimeoutMs(cfg)) / LOCK_RETRY_MS));
+  return Math.max(MIN_LOCK_RETRIES, Math.ceil((LOCKED_STAGES * stageTimeoutMs(cfg) + MERGE_LOCK_WAIT_MS) / LOCK_RETRY_MS));
 }
 
 function defaultSleep(ms) {

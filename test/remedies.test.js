@@ -430,14 +430,14 @@ function repairCfg(overrides = {}) {
   };
 }
 
-function runRepair(repo, { cfg = repairCfg(), gh = () => "{}", branch = "orch/integration", landing = "standing", failureClass = "REMOTE_BEHIND", prNumber = 9, gitDep = git, sleep = async () => {}, record = { attempt: 1, failures: [] }, gate = { detect: () => "true", run: () => ({ pass: true, log: "" }) } } = {}) {
+function runRepair(repo, { cfg = repairCfg(), gh = () => "{}", branch = "orch/integration", landing = "standing", failureClass = "REMOTE_BEHIND", prNumber = 9, gitDep = git, sleep = async () => {}, lock = null, record = { attempt: 1, failures: [] }, gate = { detect: () => "true", run: () => ({ pass: true, log: "" }) } } = {}) {
   return integrationRepairRemedy({
     name: "integration-repair",
     failure: { class: failureClass, fingerprint: "fp" },
     record,
     cycle: { status: "merged" },
     run: { repo, orchDir: join(repo, ".orch"), sid: "sidtest", cfg },
-    deps: { git: gitDep, gate, sleep },
+    deps: { git: gitDep, gate, sleep, ...(lock ? { lock } : {}) },
     resolveLanded: () => ({ pr: { number: prNumber }, landing, branch }),
     gh,
   });
@@ -613,10 +613,12 @@ test("integration repair: a fast-forward landing pushes the gated tree itself, s
   assert.notEqual(originSha(remote, "orch/integration"), before, "the repair still landed");
 });
 
-test("integration repair: a non-fast-forward landing re-gates the merged tree and pushes the local-ahead branch", async () => {
-  // A commit that landed locally and has not been pushed makes the merge real,
-  // so the pushed tree is a combination neither the scratch gate nor CI has
-  // seen. `finalize` re-gates at exactly this point (src/finalize.js:233) and so
+test("integration repair: a landing whose pushed tree is not the gated tree re-gates it first", async () => {
+  // The re-gate keys on `pushSha !== sha` — "the tree about to reach origin is
+  // not the tree the gate ran on" — not on the merge's shape. A commit that
+  // landed locally and has not been pushed produces exactly that: the merge
+  // itself reports already-up-to-date, and the pushed tree is local's, which
+  // neither the scratch gate nor CI has seen. `finalize` re-gates at exactly this point (src/finalize.js:233) and so
   // does this. It is also the positive half of the ordering: `repairBehind` used
   // to stop at the local reconcile and never push, stranding that commit.
   const { repo, remote } = repairFixture();
@@ -755,6 +757,34 @@ test("integration repair: a reconcile that fails for any other reason blocks the
   assert.deepEqual(pushes, [], "nothing may be pushed when local cannot be reconciled");
 });
 
+test("integration repair: a merge.lock timeout refunds the attempt and pushes nothing", async () => {
+  // `landRepairedTip` takes `merge.lock` before it touches anything shared, so a
+  // timeout there means the repair spent a gate run and nothing else. Handing
+  // the attempt back is the whole point of the `precondition` arm of its
+  // contract: #569's caller, which HAS spent an agent stage by this point, is
+  // what has to tell "nothing happened, retry is free" from "this repair is
+  // over".
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const pushes = [];
+  const gitDep = {
+    ...git,
+    gitTry: (args, wd) => {
+      if (args[0] === "push") pushes.push(args);
+      return git.gitTry(args, wd);
+    },
+  };
+  const lock = { acquireLock, releaseLock, acquireBlocking: async () => false };
+
+  const out = await runRepair(repo, { gitDep, lock });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /merge\.lock timed out/);
+  assert.equal(out.record.attempt, 0, "a repair stopped before it touched anything must not burn an attempt");
+  assert.deepEqual(pushes, []);
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
 // --- integration-repair.lock contention -----------------------------------
 
 test("integration repair: a peer holding integration-repair.lock refunds the attempt and hands the cycle back to re-poll", async () => {
@@ -866,12 +896,14 @@ test("integration repair: the lock-contention cap outlasts every stage a peer ru
 
   // `repairCfg`'s `stageTimeout: 7` — every window carries the same watchdog.
   assert.deepEqual(windows, [420_000, 420_000]);
-  // Hand-computed cap (see the test below): 14 rounds of LOCK_RETRY_MS. A third
-  // locked stage — #569's resolver and audit are next — makes this fail rather
-  // than silently shortening the wait.
-  const capMs = 14 * 60_000;
+  // Hand-computed cap (see the test below): 19 rounds of LOCK_RETRY_MS. The
+  // peer can also sit in `acquireBlocking(merge.lock)` for its 5-minute default
+  // (src/lock.js:117) between these two windows, so that is added, not assumed
+  // to fit in the slack. A third gate window — #569's resolver and audit are
+  // next — makes this fail rather than silently shortening the wait.
+  const capMs = 19 * 60_000;
   assert.ok(
-    capMs >= windows.reduce((sum, ms) => sum + ms, 0),
+    capMs >= windows.reduce((sum, ms) => sum + ms, 0) + 300_000,
     "a contender must be able to wait out every stage the lock holder can run",
   );
 });
@@ -885,9 +917,10 @@ test("integration repair: lock contention stops at the retry cap instead of spin
 
   // Hand-computed from the requirement, not read off the code: the peer can
   // hold the lock for the gate run on the updated tip and the re-gate on the
-  // merged tree, each capped at `repairCfg()`'s `stageTimeout: 7` minutes — 14
-  // minutes, one round per LOCK_RETRY_MS (60s), so 14 rounds.
-  const cap = 14;
+  // merged tree, each capped at `repairCfg()`'s `stageTimeout: 7` minutes, plus
+  // the 5-minute `merge.lock` wait between them (src/lock.js:117) — 19 minutes,
+  // one round per LOCK_RETRY_MS (60s), so 19 rounds.
+  const cap = 19;
 
   // The last round under the cap: still handed back, and the wait is counted.
   const last = await runRepair(repo, {
@@ -924,7 +957,7 @@ test("integration repair: an exhausted contention cap leaves no convergence entr
   writeFileSync(join(orchDir, LOCK_NAMES.INTEGRATION_REPAIR), String(process.pid));
   const failure = { class: "REMOTE_BEHIND", fingerprint: "fp" };
   // What run-controller.js appends before dispatching.
-  const record = { attempt: 1, failures: [{ ...failure, remedy: "integration-repair" }], retries: { "repair-lock-wait": 14 } };
+  const record = { attempt: 1, failures: [{ ...failure, remedy: "integration-repair" }], retries: { "repair-lock-wait": 19 } };
 
   const out = await runRepair(repo, { record });
 
