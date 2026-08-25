@@ -1568,6 +1568,40 @@ test("integration repair: a red gate after update-branch still advances the loca
   );
 });
 
+test("integration repair: the lock-contention cap outlasts every stage a peer runs under the lock", async () => {
+  // The regression the cap keeps having: a new `stageTimeoutMs(cfg)` call lands
+  // inside `integration-repair.lock` and nobody resizes the wait, so contenders
+  // give up mid-peer-repair. Count the windows a REAL worst-case repair spends
+  // under the lock instead of re-deriving the arithmetic the cap already uses.
+  const { repo } = conflictFixture();
+  // A local-only commit on the integration branch forces a real merge in
+  // `landRepairedTip`, which is the only shape that reaches the fourth window.
+  const integration = git.ensureIntegrationWorktree(repo, join(repo, ".orch"), "orch/integration", "main");
+  commitFile(integration, "local-only.txt", "landed locally, not pushed yet\n", "local land");
+
+  const windows = [];
+  const gate = {
+    detect: () => "true",
+    run: (_cmd, _cwd, timeoutMs) => { windows.push(timeoutMs); return { pass: true, log: "" }; },
+  };
+  const resolver = resolvingAgent();
+  const reviewer = { async audit(_b, _wd, opts) { windows.push(opts?.stageTimeoutMs); return { decision: "AGREE" }; } };
+
+  const out = await runRepair(repo, { gate, agents: { resolver, reviewer } });
+  assert.equal(out.cycle?.status, "merged", out.result?.reason);
+
+  windows.push(...resolver.seen.map((call) => call.stageTimeoutMs));
+  // `repairCfg`'s `stageTimeout: 7` — every window carries the same watchdog.
+  assert.deepEqual(windows.sort(), [420_000, 420_000, 420_000, 420_000]);
+  // Hand-computed cap (see the test below): 28 rounds of LOCK_RETRY_MS. A fifth
+  // locked stage makes this fail rather than silently shortening the wait.
+  const capMs = 28 * 60_000;
+  assert.ok(
+    capMs >= windows.reduce((sum, ms) => sum + ms, 0),
+    "a contender must be able to wait out every stage the lock holder can run",
+  );
+});
+
 test("integration repair: lock contention stops at the retry cap instead of spinning the controller", async () => {
   const { repo } = conflictFixture();
   const orchDir = join(repo, ".orch");
@@ -1576,10 +1610,11 @@ test("integration repair: lock contention stops at the retry cap instead of spin
   const slept = [];
 
   // Hand-computed from the requirement, not read off the code: the peer can
-  // hold the lock for a resolver stage + a reviewer stage + a gate run, each
-  // capped at `repairCfg()`'s `stageTimeout: 7` minutes — 21 minutes, one
-  // round per LOCK_RETRY_MS (60s), so 21 rounds.
-  const cap = 21;
+  // hold the lock for a resolver stage, the gate run on the resolution, a
+  // reviewer stage and the re-gate on the merged tree, each capped at
+  // `repairCfg()`'s `stageTimeout: 7` minutes — 28 minutes, one round per
+  // LOCK_RETRY_MS (60s), so 28 rounds.
+  const cap = 28;
 
   // The last round under the cap: still handed back, and the wait is counted.
   const last = await runRepair(repo, {

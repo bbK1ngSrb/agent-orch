@@ -615,20 +615,32 @@ const LOCK_RETRY_MS = 60_000;
 // a bare STOPPED_AT_CAP that named no peer.
 //
 // Sized against ONE peer repair rather than fixed: the peer holds the lock
-// across up to two agent stages (resolver + reviewer) plus a gate run, each
-// capped at `stageTimeout` (#56/#58). A shorter cap would make the loser of a
+// across every stage below, each capped at `stageTimeout` (#56/#58) —
+//   1. the resolver stage,
+//   2. the gate run on the resolution,
+//   3. the reviewer audit,
+//   4. the gate re-run on the merged tree in `landRepairedTip`.
+// The fourth exists only on the integration branch and only when the local
+// merge was a real merge rather than a fast-forward; the cap is deliberately
+// sized for that worst path, since a shorter one would make the loser of a
 // concurrent conflict repair give up mid-peer-repair — and §10A makes this
 // remedy `ready`'s only path to its goal, so that loser could never get there.
+// The peer's `merge.lock` wait and its non-agent git work (fetch, write-tree,
+// security scan, reconcile) are left unmodelled: they carry no `stageTimeout`,
+// and `MIN_LOCK_RETRIES` covers them for the small-`stageTimeout` cases.
 // `stageTimeout: 0` means no watchdog at all and an unbounded peer hold; ten
 // minutes is the arbitrary compromise there, since waiting forever is not one.
 const MIN_LOCK_RETRIES = 10;
+// Every stage the peer can run while holding `integration-repair.lock`. Bump
+// this with any new `stageTimeoutMs(cfg)` call made under that lock.
+const LOCKED_STAGES = 4;
 // Counted under its own key, not the `repair-lock` counter failure.js spends on
 // the free re-polls BEFORE this remedy is ever dispatched — sharing that one
 // would arrive already exhausted and terminate on the first contention.
 const LOCK_RETRY_KEY = "repair-lock-wait";
 
 function lockRetryCap(cfg) {
-  return Math.max(MIN_LOCK_RETRIES, Math.ceil((3 * stageTimeoutMs(cfg)) / LOCK_RETRY_MS));
+  return Math.max(MIN_LOCK_RETRIES, Math.ceil((LOCKED_STAGES * stageTimeoutMs(cfg)) / LOCK_RETRY_MS));
 }
 
 function defaultSleep(ms) {
