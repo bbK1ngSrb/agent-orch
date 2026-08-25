@@ -604,23 +604,32 @@ export async function repairIntegration(ctx, deps) {
 // the instant we lose the lock just burns the controller's remedy loops on a PR
 // that is still broken (readiness itself returns immediately on a red rollup and
 // adds no wall clock).
-// ponytail: fixed backoff, not exponential — the loop cap already bounds it. The
-// ceiling that buys is ~MAX_REMEDY_LOOPS * 60s of contention tolerance, shared
-// with every other remedy in the same run; a peer whose resolver runs the full
-// `stageTimeout` can outlast it and leave this run at STOPPED_AT_CAP. Raise this
-// (or make the loop budget per-remedy) if that shows up in practice.
+// ponytail: fixed backoff, not exponential — `lockRetryCap` bounds the total
+// wait, so the shape of the individual sleep buys nothing.
 const LOCK_RETRY_MS = 60_000;
 
 // ...and a cap on how many times it does that. Handing the attempt back also
-// drops the convergence entry, so nothing else bounds contention: the run would
-// re-dispatch this remedy with `attempt` pinned at 0 until run-controller.js's
-// MAX_REMEDY_LOOPS (32) ran out, ~32 minutes later, and report a bare
-// STOPPED_AT_CAP that names no peer. Counted under its own key, not the
-// `repair-lock` counter failure.js spends on the free re-polls BEFORE this
-// remedy is ever dispatched — sharing that one would be exhausted on arrival
-// and terminate on the first contention.
-const LOCK_RETRY_CAP = 3;
+// drops the convergence entry, so without a cap nothing bounds contention: the
+// run re-dispatched this remedy with `attempt` pinned at 0 until run-
+// controller.js's MAX_REMEDY_LOOPS (32) ran out ~32 minutes later, and reported
+// a bare STOPPED_AT_CAP that named no peer.
+//
+// Sized against ONE peer repair rather than fixed: the peer holds the lock
+// across up to two agent stages (resolver + reviewer) plus a gate run, each
+// capped at `stageTimeout` (#56/#58). A shorter cap would make the loser of a
+// concurrent conflict repair give up mid-peer-repair — and §10A makes this
+// remedy `ready`'s only path to its goal, so that loser could never get there.
+// `stageTimeout: 0` means no watchdog at all and an unbounded peer hold; ten
+// minutes is the arbitrary compromise there, since waiting forever is not one.
+const MIN_LOCK_RETRIES = 10;
+// Counted under its own key, not the `repair-lock` counter failure.js spends on
+// the free re-polls BEFORE this remedy is ever dispatched — sharing that one
+// would arrive already exhausted and terminate on the first contention.
 const LOCK_RETRY_KEY = "repair-lock-wait";
+
+function lockRetryCap(cfg) {
+  return Math.max(MIN_LOCK_RETRIES, Math.ceil((3 * stageTimeoutMs(cfg)) / LOCK_RETRY_MS));
+}
 
 function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -718,7 +727,7 @@ export async function integrationRepairRemedy({ failure, record, cycle, name, po
     // Still a precondition failure — the attempt is refunded either way; what
     // the cap changes is that the run ends here, naming the peer, instead of
     // spinning until the controller's loop budget is gone.
-    if (waited > LOCK_RETRY_CAP) return terminal(failure, { ...outcome, precondition: true }, record);
+    if (waited > lockRetryCap(cfg)) return terminal(failure, { ...outcome, precondition: true }, record);
     await (deps?.sleep || defaultSleep)(LOCK_RETRY_MS);
     const refunded = withoutLastFailure(record, failure, name);
     return {

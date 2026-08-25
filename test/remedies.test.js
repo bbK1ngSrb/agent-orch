@@ -1575,20 +1575,26 @@ test("integration repair: lock contention stops at the retry cap instead of spin
   writeFileSync(join(orchDir, LOCK_NAMES.INTEGRATION_REPAIR), String(process.pid));
   const slept = [];
 
-  // Round 3 of 3: still handed back, and the wait is counted.
-  const third = await runRepair(repo, {
-    record: { attempt: 1, failures: [], retries: { "repair-lock-wait": 2 } },
+  // Hand-computed from the requirement, not read off the code: the peer can
+  // hold the lock for a resolver stage + a reviewer stage + a gate run, each
+  // capped at `repairCfg()`'s `stageTimeout: 7` minutes — 21 minutes, one
+  // round per LOCK_RETRY_MS (60s), so 21 rounds.
+  const cap = 21;
+
+  // The last round under the cap: still handed back, and the wait is counted.
+  const last = await runRepair(repo, {
+    record: { attempt: 1, failures: [], retries: { "repair-lock-wait": cap - 1 } },
     sleep: async (ms) => slept.push(ms),
   });
-  assert.equal(third.cycle?.status, "merged");
-  assert.equal(third.result, undefined);
-  assert.equal(third.record.retries["repair-lock-wait"], 3);
-  assert.equal(third.record.attempt, 0);
+  assert.equal(last.cycle?.status, "merged");
+  assert.equal(last.result, undefined);
+  assert.equal(last.record.retries["repair-lock-wait"], cap);
+  assert.equal(last.record.attempt, 0);
 
-  // Round 4: the cap is spent. Terminal, naming the peer — not another refund
-  // that leaves run-controller.js to burn its 32 loops on contention alone.
+  // One past it: terminal, naming the peer — not another refund that leaves
+  // run-controller.js to burn its 32 loops on contention alone.
   const fourth = await runRepair(repo, {
-    record: { attempt: 1, failures: [], retries: { "repair-lock-wait": 3 } },
+    record: { attempt: 1, failures: [], retries: { "repair-lock-wait": cap } },
     sleep: async (ms) => slept.push(ms),
   });
   assert.equal(fourth.cycle, undefined);
