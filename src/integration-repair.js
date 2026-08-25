@@ -350,12 +350,18 @@ function withoutLastFailure(record, failure, name) {
     : record;
 }
 
-function terminal(failure, outcome, record) {
+function terminal(failure, outcome, record, name) {
   // A precondition failure (peer holds the lock, merge.lock timed out, no PR
   // number) started no agent and changed nothing — it must not burn an
-  // attempt, same rule as remedies.js's `executed: false` path.
+  // attempt, same rule as remedies.js's `executed: false` path. The convergence
+  // entry goes back for exactly the same reason: this run repaired nothing, so
+  // leaving it makes `chooseRemedy` see a two-long equal-fingerprint streak on
+  // the resumed run, filter this remedy out (failure.js:203) and resolve
+  // terminal — and §10A gives REMOTE_BEHIND no other remedy, so the PR could
+  // never be repaired at all. `resumeTerminal` clears `retries`, not
+  // `failures`, so here is the only place to drop it.
   const settled = outcome.precondition
-    ? { ...record, attempt: Math.max(0, (record.attempt || 0) - 1) }
+    ? { ...withoutLastFailure(record, failure, name), attempt: Math.max(0, (record.attempt || 0) - 1) }
     : record;
   return {
     result: {
@@ -379,13 +385,13 @@ export async function integrationRepairRemedy({ failure, record, cycle, name, ru
   try {
     land = resolveLanded?.(cycle);
   } catch (error) {
-    return terminal(failure, { precondition: true, reason: `could not read the landed PR: ${errorText(error)}` }, record);
+    return terminal(failure, { precondition: true, reason: `could not read the landed PR: ${errorText(error)}` }, record, name);
   }
   // Repair the branch the FAILING PR actually points at — a per-cycle PR
   // (`landing: "pr"`) is the cycle's own branch, not the integration branch.
   const branch = land?.branch || integrationBranch;
   if (!run?.repo || !run?.orchDir || !branch) {
-    return terminal(failure, { precondition: true, reason: "branch context is missing" }, record);
+    return terminal(failure, { precondition: true, reason: "branch context is missing" }, record, name);
   }
   const ctx = {
     repo: run.repo,
@@ -417,20 +423,12 @@ export async function integrationRepairRemedy({ failure, record, cycle, name, ru
   // on what is only contention (file header + design §12).
   if (outcome.locked) {
     const waited = (record.retries?.[LOCK_RETRY_KEY] || 0) + 1;
-    // Still a precondition failure — the attempt is refunded either way; what
-    // the cap changes is that the run ends here, naming the peer, instead of
-    // spinning until the controller's loop budget is gone.
-    //
-    // The convergence entry goes back too, and for the same reason the attempt
-    // does: this run repaired nothing. Retained, it makes `resumeTerminal`'s
-    // fresh attempt budget useless — `orch continue` re-reads a PR that is
-    // still BEHIND, `chooseRemedy` sees a two-long equal-fingerprint streak
-    // ending in `integration-repair`, filters that remedy out (failure.js:203)
-    // and resolves terminal. Since §10A makes it the only remedy for the class,
-    // the PR could then never be repaired at all. `resumeTerminal` clears
-    // `retries` but not `failures`, so this is the only place to drop it.
+    // Still a precondition failure — the attempt and the convergence entry are
+    // refunded either way (see `terminal`); what the cap changes is that the
+    // run ends here, naming the peer, instead of spinning until the
+    // controller's loop budget is gone.
     if (waited > lockRetryCap(cfg)) {
-      return terminal(failure, { ...outcome, precondition: true }, withoutLastFailure(record, failure, name));
+      return terminal(failure, { ...outcome, precondition: true }, record, name);
     }
     await (deps?.sleep || defaultSleep)(LOCK_RETRY_MS);
     const refunded = withoutLastFailure(record, failure, name);
@@ -443,5 +441,20 @@ export async function integrationRepairRemedy({ failure, record, cycle, name, ru
       },
     };
   }
-  return terminal(failure, outcome, record);
+  // A lost push race on a path that spent nothing is the same no-op as losing
+  // the lock: origin is untouched, the local worktree was rolled back, and the
+  // next readiness poll sees the peer's landing. `repairBehind` marks it
+  // `precondition` for exactly that reason — terminalizing it here ended the
+  // whole run on contention that a re-poll clears. Bounded by run-controller
+  // .js's MAX_REMEDY_LOOPS, and each round pays a real gate run, so it needs no
+  // counter of its own. (`raced` WITHOUT `precondition` is #569's resolver
+  // path, which has already paid for a stage and keeps its attempt; it has no
+  // arm here until it exists.)
+  if (outcome.raced && outcome.precondition) {
+    return {
+      cycle,
+      record: { ...withoutLastFailure(record, failure, name), attempt: Math.max(0, (record.attempt || 0) - 1) },
+    };
+  }
+  return terminal(failure, outcome, record, name);
 }

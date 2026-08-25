@@ -667,10 +667,13 @@ test("integration repair: a red re-gate rolls the integration worktree back and 
   assert.equal(git.git(["rev-parse", "HEAD"], integration), localTip, "the failed merge must be rolled back");
 });
 
-test("integration repair: a landing that loses the push race rolls back and refunds the attempt", async () => {
+test("integration repair: a landing that loses the push race is re-polled, not terminal", async () => {
   // Nothing but a gate run is spent on the REMOTE_BEHIND path — no agent — so
-  // losing the race to a peer costs this repair no attempt. (#569's resolver
-  // path keeps its attempt: it has already paid for a stage.)
+  // losing the race to a peer costs this repair no attempt AND no convergence
+  // entry: the peer's landing is on origin, so the next readiness poll may well
+  // read the PR clean. Ending the run here instead threw away a repair that had
+  // already succeeded, just not by our push. (#569's resolver path keeps its
+  // attempt: it has already paid for a stage.)
   const { repo, remote } = repairFixture();
   const integration = git.ensureIntegrationWorktree(repo, join(repo, ".orch"), "orch/integration", "main");
   commitFile(integration, "local-only.txt", "landed locally, not pushed yet\n", "local land");
@@ -692,11 +695,15 @@ test("integration repair: a landing that loses the push race rolls back and refu
     },
   };
 
-  const out = await runRepair(repo, { gitDep });
+  // What run-controller.js appends before dispatching — the entry design §7's
+  // convergence check reads.
+  const entry = { class: "REMOTE_BEHIND", fingerprint: "fp", remedy: "integration-repair" };
+  const out = await runRepair(repo, { gitDep, record: { attempt: 1, failures: [entry] } });
 
-  assert.match(out.result.reason, /push rejected/);
-  assert.match(out.result.reason, /non-fast-forward|fetch first/, "the race must be git's own rejection");
+  assert.equal(out.result, undefined, "a race that changed nothing must not end the run");
+  assert.equal(out.cycle?.status, "merged", "the same cycle goes back so the controller re-polls readiness");
   assert.equal(out.record.attempt, 0, "an agent-free repair that landed nothing must not burn an attempt");
+  assert.deepEqual(out.record.failures, [], "a repair that never landed must leave no convergence entry");
   assert.equal(
     originSha(remote, "orch/integration"),
     git.git(["rev-parse", "HEAD"], peer),
@@ -719,11 +726,16 @@ test("integration repair: a push rejected for auth, not for a race, keeps the at
       : git.gitTry(args, wd)),
   };
 
-  const out = await runRepair(repo, { gitDep });
+  const entry = { class: "REMOTE_BEHIND", fingerprint: "fp", remedy: "integration-repair" };
+  const out = await runRepair(repo, { gitDep, record: { attempt: 1, failures: [entry] } });
 
   assert.match(out.result.reason, /push rejected/);
   assert.match(out.result.reason, /403/, "the real error must survive into the reason");
   assert.equal(out.record.attempt, 1, "a push that can never succeed must not be refunded as a race");
+  // The negative control for dropping the convergence entry: only a no-op
+  // precondition gives it back. A repair that really failed keeps it, so the
+  // streak still converges instead of retrying forever.
+  assert.deepEqual(out.record.failures, [entry], "a genuine failure must keep its convergence entry");
   assert.equal(originSha(remote, "orch/integration"), before);
 });
 
@@ -818,11 +830,19 @@ test("integration repair: a merge.lock timeout refunds the attempt and pushes no
   };
   const lock = { acquireLock, releaseLock, acquireBlocking: async () => false };
 
-  const out = await runRepair(repo, { gitDep, lock });
+  const entry = { class: "REMOTE_BEHIND", fingerprint: "fp", remedy: "integration-repair" };
+  const out = await runRepair(repo, { gitDep, lock, record: { attempt: 1, failures: [entry] } });
 
   assert.equal(out.cycle, undefined);
   assert.match(out.result.reason, /merge\.lock timed out/);
   assert.equal(out.record.attempt, 0, "a repair stopped before it touched anything must not burn an attempt");
+  // The attempt alone is not enough. `resumeTerminal` clears `retries` but not
+  // `failures`, so a retained entry makes `orch continue` see a two-long
+  // equal-fingerprint streak, filter out `integration-repair` (failure.js:203)
+  // and resolve terminal — and §10A gives REMOTE_BEHIND no other remedy, so the
+  // still-behind PR could never be repaired.
+  assert.deepEqual(out.record.failures, [], "a repair that changed nothing must not leave a convergence entry");
+  assert.equal(chooseRemedy({ class: "REMOTE_BEHIND", fingerprint: "fp" }, { ...out.record, retries: { "repair-lock": 3 } }, {}).remedy, "integration-repair");
   assert.deepEqual(pushes, []);
   assert.equal(originSha(remote, "orch/integration"), before);
 });
