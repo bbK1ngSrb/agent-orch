@@ -847,6 +847,80 @@ test("integration repair: a merge.lock timeout refunds the attempt and pushes no
   assert.equal(originSha(remote, "orch/integration"), before);
 });
 
+test("integration repair: the race loser re-polls and the run reaches READY on the winner's landing", async () => {
+  // End to end through the REAL remedy and the REAL controller, the same shape
+  // as the lock-loser test below. The unit test above proves the return shape;
+  // this proves what that shape BUYS — the controller goes back to readiness
+  // and reads the branch the winner repaired, instead of the run ending at
+  // STOPPED_AT_CAP on a repair that had already been done for it.
+  const { repo, remote } = repairFixture();
+  const orchDir = join(repo, ".orch");
+  const cfg = repairCfg();
+  const run = { repo, orchDir, sid: "sidtest", cfg };
+  const land = { pr: { number: 9, url: "u" }, expectedHead: HEAD, landing: "standing", branch: "orch/integration" };
+  const update = peerUpdateBranch(remote, "orch/integration");
+  let repaired = false;
+  let raced = false;
+  let polls = 0;
+  const gh = (args) => {
+    if (args[0] === "api" && args.some((a) => String(a).endsWith("/update-branch"))) {
+      repaired = true;
+      return update(args);
+    }
+    if (args[0] === "api") return "[]";
+    polls += 1;
+    return JSON.stringify({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD,
+      baseRefName: "main", mergeable: "MERGEABLE",
+      // BEHIND until the branch has been updated; the peer that WON the push
+      // race is what makes it CLEAN, not our own landing.
+      mergeStateStatus: repaired && raced ? "CLEAN" : "BEHIND",
+      reviewDecision: null, statusCheckRollup: [],
+    });
+  };
+  // A real peer landing in the window between this repair's fetch and its push,
+  // once — so git itself writes the non-fast-forward rejection, and the retry
+  // this fix enables is not raced again.
+  const gitDep = {
+    ...git,
+    gitTry: (args, wd) => {
+      if (args[0] === "push" && wd === repo && !raced) {
+        raced = true;
+        const peer = cloneRemote(remote);
+        git.git(["switch", "orch/integration"], peer);
+        commitFile(peer, "peer.txt", "peer landed first\n", "peer land");
+        git.git(["push", "origin", "orch/integration"], peer);
+      }
+      return git.gitTry(args, wd);
+    },
+  };
+  const deps = { git: gitDep, gate: { detect: () => "true", run: () => ({ pass: true, log: "" }) }, sleep: async () => {} };
+
+  const out = await runUntil(
+    { ...READY_POLICY, integrationBranch: "orch/integration" },
+    {},
+    {
+      runCycle: async () => ({ status: "merged" }),
+      resolveLanded: () => land,
+      gh,
+      git: gitDep,
+      repo,
+      remedies: { "integration-repair": createIntegrationRepairRemedy({ run, deps, gh, resolveLanded: () => land }) },
+      sleep: async () => {},
+    },
+  );
+
+  assert.equal(out.state, "READY", JSON.stringify(out));
+  assert.ok(raced, "the push must actually have lost a race — otherwise this tests the happy path");
+  assert.equal(out.attempt, 0, "the repair landed nothing, so the run keeps its whole attempt budget");
+  assert.deepEqual(out.failures, [], "a repair that landed nothing must leave no convergence entry");
+  // `repair-lock` (failure.js) grants 3 free re-polls before the remedy is
+  // dispatched at all (polls 1-4); poll 5 is the one this fix buys, and it is
+  // the one that reads CLEAN.
+  assert.ok(polls >= 5, `a lost race must add a readiness poll, not end the run (saw ${polls})`);
+  assert.equal(out.cycleResults, undefined, "the handed-back cycle is the same cycle, not a new result");
+});
+
 // --- integration-repair.lock contention -----------------------------------
 
 test("integration repair: a peer holding integration-repair.lock refunds the attempt and hands the cycle back to re-poll", async () => {

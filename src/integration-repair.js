@@ -447,7 +447,10 @@ export async function integrationRepairRemedy({ failure, record, cycle, name, ru
   // `precondition` for exactly that reason — terminalizing it here ended the
   // whole run on contention that a re-poll clears. Bounded by run-controller
   // .js's MAX_REMEDY_LOOPS, and each round pays a real gate run, so it needs no
-  // counter of its own. (`raced` WITHOUT `precondition` is #569's resolver
+  // counter of its own. Only the integration branch has a rollback (the local
+  // merge is integration-only), but only it can lose this race: a per-cycle
+  // branch is `pr/<author>/<slug>-<sid>` (cli.js:1087), sid-scoped to one run,
+  // so no peer run pushes to it. (`raced` WITHOUT `precondition` is #569's resolver
   // path, which has already paid for a stage and keeps its attempt; it has no
   // arm here until it exists.)
   if (outcome.raced && outcome.precondition) {
