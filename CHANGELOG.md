@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.339 — 2026-08-26
+- fix(security): secret-read requires read-shaped context, not a path mention (#560)
+
 ## v0.4.338 — 2026-08-26
 - unresolvedConflictMarkers() fails open: a git grep error is reported as 'no conflict markers' (closes [#568](https://github.com/bbk1ng/agent-orch/issues/568))
 
