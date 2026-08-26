@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.338 — 2026-08-26
+- unresolvedConflictMarkers() fails open: a git grep error is reported as 'no conflict markers' (closes [#568](https://github.com/bbk1ng/agent-orch/issues/568))
+
 ## v0.4.337 — 2026-08-26
 - CLI v2 P6 split 4a/4 — integration repair: land a verified tip (§10A) (closes [#555](https://github.com/bbk1ng/agent-orch/issues/555))
 

@@ -59,7 +59,11 @@ export function gitTry(args, cwd) {
     const out = execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
     return { ok: true, out: (out || "").toString() };
   } catch (e) {
-    return { ok: false, out: (e.stderr || e.stdout || e.message || "").toString() };
+    // `code` is the child's exit status so callers can tell "ran, said no"
+    // (git's exit 1) from "never ran" (anything else). A signal kill leaves
+    // e.status null, which stays null and counts as an error, not a success.
+    const code = typeof e.status === "number" ? e.status : null;
+    return { ok: false, out: (e.stderr || e.stdout || e.message || "").toString(), code };
   }
 }
 
@@ -67,11 +71,18 @@ export function gitTry(args, cwd) {
 // Git consider the index resolved even though the tree is not. Keep this
 // check deterministic and local to the worktree; callers use it before the
 // repaired rebase is allowed to advance.
+//
+// git grep exits 0 when it matched, 1 when it searched and found nothing, and
+// something else when the search never ran (worktree gone, pathspec outside the
+// repository, unopenable repo). Reporting that last case as "no markers" would
+// be a fail-open, so it comes back as { error } and the caller stops.
 export function unresolvedConflictMarkers(path, paths = []) {
   const args = ["grep", "-n", "-I", "-E", "^(<<<<<<<|>>>>>>>)"];
   if (paths.length) args.push("--", ...paths);
   const result = gitTry(args, path);
-  return result.ok ? result.out.trim() : "";
+  if (result.ok) return { markers: result.out.trim() };
+  if (result.code === 1) return { markers: "" };
+  return { markers: "", error: result.out.trim() || `git grep exited ${result.code}` };
 }
 
 // Files changed on `branch` since its merge-base with the configured base branch.
@@ -545,8 +556,12 @@ export function finishRebase(repo, branch, path, expectedSha = null, {
 } = {}) {
   try {
     if (continueRebase) {
-      const markers = unresolvedConflictMarkers(path, conflictPaths);
-      if (markers) {
+      const scan = unresolvedConflictMarkers(path, conflictPaths);
+      if (scan.error) {
+        gitTry(["rebase", "--abort"], path);
+        return { ok: false, reason: `marker scan unavailable: ${scan.error}` };
+      }
+      if (scan.markers) {
         gitTry(["rebase", "--abort"], path);
         return { ok: false, reason: "rebase repair left conflict markers" };
       }
