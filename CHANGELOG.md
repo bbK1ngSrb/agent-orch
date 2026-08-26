@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.337 — 2026-08-26
+- CLI v2 P6 split 4a/4 — integration repair: land a verified tip (§10A) (closes [#555](https://github.com/bbk1ng/agent-orch/issues/555))
+
 ## v0.4.336 — 2026-08-24
 - CLI v2 P6 split 2/4 — rebase + repair (§8a): rebase onto the landing base, implement repair mode (closes [#553](https://github.com/bbk1ng/agent-orch/issues/553))
 
