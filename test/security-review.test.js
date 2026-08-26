@@ -211,6 +211,93 @@ test("reading from a credentials directory → DISAGREE (secret-read)", () => {
   assert.ok(r.findings.some((f) => f.rule === "secret-read"));
 });
 
+// #560: the rule needs read-shaped context, not just the path characters. These
+// three lines are the real ones that blocked cycles #552/#557/#558 by hand-merge.
+test("mentioning a secret path without reading it → AGREE", () => {
+  const cases = [
+    ["error string", `  if (!acquireLock(orchDir, LOCK_NAMES.CYCLE)) throw new Error(".orch/lock held — another cycle is running");`],
+    ["equality test", `    .filter((l) => l.slice(3).trim() !== ".orch/merge.lock")`],
+    ["shell comment", `# in .orch/resume/, so the retry reattaches the branch and continues from the`],
+  ];
+  for (const [label, line] of cases) {
+    const r = scanDiff(`+++ b/src/x.js\n+${line}`);
+    assert.deepEqual(r.findings, [], label);
+    assert.equal(r.decision, "AGREE", label);
+  }
+});
+
+test("read-shaped lines still trip secret-read", () => {
+  const cases = [
+    ["readFileSync", `const s = readFileSync(".orch/secrets", "utf8");`],
+    ["fs.readFile", `fs.readFile("/home/u/.ssh/id_rsa", cb)`],
+    ["shell cat", `cat ~/.ssh/id_rsa`],
+    ["shell source", `source .env`],
+    ["shell dot", `. ./.env`],
+    ["shell redirect", `read -r key < .ssh/id_rsa`],
+  ];
+  for (const [label, line] of cases) {
+    const r = scanDiff(`+++ b/src/x.sh\n+${line}`);
+    assert.equal(r.decision, "DISAGREE", label);
+    assert.ok(r.findings.some((f) => f.rule === "secret-read"), label);
+  }
+});
+
+// The read verb is often separated from the path by another call's arguments, so
+// the run back to it has to survive closing brackets. Anything cleared here is a
+// real read the floor stopped catching — a fail-OPEN regression, which is worse
+// than the noise #560 was filed about.
+test("a read whose earlier argument closes brackets still trips secret-read", () => {
+  const cases = [
+    ["nested resolve()", `const s = readFileSync(resolve(dir), ".orch/secrets");`],
+    ["nested path.join()", `const s = readFileSync(path.join(d,"x"), ".env");`],
+    ["awaited readFile", `const s = await readFile(join(a,b), ".orch/secrets");`],
+    ["interpolated template", "const s = readFileSync(`${dir}/.ssh/id_rsa`);"],
+    ["array argv", `execFileSync("cat", ["/home/u/.ssh/id_rsa"])`],
+    ["optional call", `const s = readFileSync?.(".orch/secrets");`],
+    ["optional member and call", `const s = fsModule?.readFileSync?.(".orch/secrets");`],
+    ["|| default path", `const s = readFileSync(envPath || ".orch/secrets");`],
+    ["negated ternary path", `const s = readFileSync(!custom ? ".orch/secrets" : custom);`],
+    ["ternary else branch", `const s = readFileSync(custom ? custom : ".orch/secrets");`],
+    ["windows path", String.raw`const s = readFileSync("C:\Users\u\.ssh\id_rsa");`],
+    ["escaped quotes in a shell string", String.raw`execSync("cat \".ssh/id_rsa\"");`],
+  ];
+  for (const [label, line] of cases) {
+    const r = scanDiff(`+++ b/src/x.js\n+${line}`);
+    assert.ok(r.findings.some((f) => f.rule === "secret-read"), label);
+  }
+});
+
+test("assigning a secret path to a variable is a mention, not a read", () => {
+  const d = `+++ b/src/x.js\n+  const source = ".orch/lock";`;
+  assert.deepEqual(scanDiff(d).findings, []);
+});
+
+// `=` is the single character the argument class keeps out, so it is the one
+// carrying the read-vs-mention distinction — assert it still holds with the
+// operator characters in the class.
+test("a secret path in an object literal without a read verb is a mention", () => {
+  const d = `+++ b/src/x.js\n+  const paths = { lock: ".orch/lock" };`;
+  assert.deepEqual(scanDiff(d).findings, []);
+});
+
+// The path may be built by interpolation — that is still an argument to the read.
+test("interpolated path inside a read call still trips secret-read", () => {
+  const d = "+++ b/src/x.js\n+  const k = readFileSync(`${dir}/.orch/last-author`);";
+  assert.ok(scanDiff(d).findings.some((f) => f.rule === "secret-read"));
+});
+
+// A harmless mention first must not mask a real read later on the same line.
+test("mention plus a real read on one line still trips secret-read", () => {
+  const d = `+++ b/src/x.js\n+  if (p !== ".orch/lock") return readFileSync("credentials/token");`;
+  assert.ok(scanDiff(d).findings.some((f) => f.rule === "secret-read"));
+});
+
+// env-read is untouched by #560: it keeps matching the text alone.
+test("env-read still fires without read-shaped context", () => {
+  const d = `+++ b/test/cli.test.js\n+      ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,`;
+  assert.ok(scanDiff(d).findings.some((f) => f.rule === "env-read"));
+});
+
 test("template-literal env access does NOT trip secret-read (env-read only)", () => {
   const d = "+++ b/src/x.js\n+  log(`env=${process.env.NODE_ENV}`);";
   const r = scanDiff(d);
@@ -639,7 +726,7 @@ test("scanDiff+format: real secret-read leads fixture noise for the same rule", 
     "+  const k = readFileSync(\".orch/last-author\");",
     "+++ b/test/security-review.test.js",
     "+  // See .orch/orch.yml in a docs-only example",
-    "+  const probe = \"read .orch/x\";",
+    "+  const probe = readFileSync(\".orch/x\");",
   ].join("\n");
   const r = scanDiff(d);
   assert.equal(r.decision, "DISAGREE");

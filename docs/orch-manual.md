@@ -77,7 +77,17 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    `${` — a `//` line inside a template literal still evaluates its
    interpolations, so `// note: ${readFileSync(".orch/x")}` fires — and only that one rule:
    `env-read`, `network`, `guardrail-touch`, and the subprocess check all still
-   fire on comment lines. This runs on every cycle that reaches AGREE + green, including the
+   fire on comment lines. Beyond that carve-out, `secret-read` — and only
+   `secret-read` — asks a further question of every line it matches: does the
+   line *read* the path, or merely name it? The path must appear as an argument
+   to something that opens it (`readFile`/`readFileSync`, `open`/`openSync`,
+   `createReadStream`, `require`, `import`, or a shell `cat`, `source`, `.`, or
+   `<` redirect), so `readFileSync(".orch/secrets")` fires while an error string
+   or an equality test carrying the same characters does not. The check is
+   line-based: a path stored in a variable on one line and read on the next is
+   not caught, which was equally true of the plain substring match that came
+   before it — the floor guards against an accidental read, which is written on
+   one line, not against deliberate evasion. This runs on every cycle that reaches AGREE + green, including the
    `orch pr`/PR-bridge audit-only path (§2.7) where nothing else merges.
 5. **Merge** — *only if* every reviewer said `AGREE`, tests passed, **and**
    the security scan found nothing — the branch is merged. How and where it
