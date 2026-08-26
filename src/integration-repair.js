@@ -136,6 +136,30 @@ async function landRepairedTip(ctx, deps, { sha }) {
       // safety only in the sense that doing nothing is safe.
       // Plain merge, not `--ff-only`, for the same reason: fast-forwarding is
       // exactly the case that fails when local carries its own commits.
+      // The persistent worktree is shared with `finalize` and outlives every
+      // cycle, so an interrupted landing can leave modified or untracked files
+      // in it. Those survive the merge, so the re-gate below would run against
+      // a tree `git push` never publishes — destroying the one property the
+      // re-gate exists to provide, that the gated tree IS the pushed tree.
+      // Clean rather than refuse: the dirt is not self-clearing, so a refusal
+      // would refuse again on every retry and §10A gives REMOTE_BEHIND no other
+      // remedy. Same `reset --hard` + `clean -fd` pair as `rollback()` below,
+      // and safe for the same reason: this is orch's own worktree, held under
+      // `merge.lock`. `HEAD`, not origin's tip — the worktree legitimately
+      // carries commits that were landed locally and not yet pushed, and this
+      // discards working-tree dirt, not history. `-fd`, not `-fdx`: ignored
+      // files (node_modules) are what lets the re-gate run at all, and they
+      // never reach the pushed tree anyway.
+      if (git.gitTry(["status", "--porcelain"], integration).out.trim()) {
+        git.gitTry(["reset", "--hard", "HEAD"], integration);
+        git.gitTry(["clean", "-fd"], integration);
+        // A worktree that resisted the clean will resist it again, so this is a
+        // plain refusal, not a `precondition` one: refunding the attempt would
+        // spend the controller's remedy loops re-running a repair that cannot
+        // succeed.
+        const stillDirty = git.gitTry(["status", "--porcelain"], integration).out.trim();
+        if (stillDirty) return { ok: false, reason: `could not clean the ${branch} worktree before merging: ${stillDirty}` };
+      }
       const preMergeSha = git.gitTry(["rev-parse", "HEAD"], integration).out.trim();
       const merged = git.gitTry(["merge", "--no-edit", sha], integration);
       if (!merged.ok) {

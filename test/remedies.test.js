@@ -783,6 +783,42 @@ test("integration repair: unpushed local commits merge into the moved origin, re
   assert.equal(git.git(["rev-parse", "HEAD"], integration), originTip, "local must end up at exactly what was pushed");
 });
 
+test("integration repair: a dirty integration worktree is cleaned, so the re-gate sees the tree that reaches origin", async () => {
+  // The re-gate only proves anything if the tree it runs on is the tree `git
+  // push` publishes. Untracked/modified files in the persistent worktree break
+  // exactly that: they survive the merge and the gate sees them, while the push
+  // carries only the commit tree. Plant one, force a real (non-fast-forward)
+  // landing, and assert the gate never saw it.
+  const { repo, remote } = repairFixture();
+  const integration = git.ensureIntegrationWorktree(repo, join(repo, ".orch"), "orch/integration", "main");
+  commitFile(integration, "local-only.txt", "landed locally, not pushed yet\n", "local land");
+  writeFileSync(join(integration, "dirty-leak.txt"), "left behind by an interrupted landing\n");
+  const seen = [];
+  const gate = {
+    detect: () => "true",
+    run: (_cmd, cwd) => {
+      seen.push({ cwd, dirty: existsSync(join(cwd, "dirty-leak.txt")) });
+      return { pass: true, log: "" };
+    },
+  };
+
+  const out = await runRepair(repo, { gate, gh: peerUpdateBranch(remote, "orch/integration") });
+
+  assert.equal(out.cycle?.status, "merged", out.result?.reason);
+  assert.equal(seen.length, 2, "a real merge still gets its own gate run");
+  assert.equal(seen[1].cwd, integration, "the re-gate runs on the persistent worktree");
+  assert.equal(seen[1].dirty, false, "the re-gate must not see a file the push cannot carry");
+  const originTip = originSha(remote, "orch/integration");
+  assert.equal(
+    git.gitTry(["cat-file", "-e", `${originTip}:dirty-leak.txt`], repo).ok,
+    false,
+    "the pushed tree must be the tree the re-gate ran on",
+  );
+  // The clean discards working-tree dirt, not history: a commit that only
+  // exists locally still has to reach origin.
+  assert.ok(git.gitTry(["cat-file", "-e", `${originTip}:local-only.txt`], repo).ok);
+});
+
 test("integration repair: a merge that conflicts with the updated origin rolls back and pushes nothing", async () => {
   // The other half of dropping the ff-only guard: the merge-conflict arm of
   // `landRepairedTip` is now reachable on the REMOTE_BEHIND path. A local
