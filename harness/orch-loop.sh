@@ -33,11 +33,13 @@ MAX_WAITS="${MAX_WAITS:-0}"
 log() { echo "[$(date '+%F %T')] $1" >&2; }
 
 # True if text looks like a Claude usage/rate-limit message.
-# Retry only when orch failed AND the probe still reports a limit. Splitting on
-# the probe rather than the exit code keeps an ordinary exit-2 escalation
-# stopping the wrapper, as it always did.
+# Retry only for the orch statuses that can represent quota deaths, and only
+# when the probe still reports a limit. Other nonzero statuses are terminal.
 is_quota_exit() {
-    [ "$1" -ne 0 ] && is_limit "$2"
+    case "$1" in
+        1|2) is_limit "$2" ;;
+        *)   return 1 ;;
+    esac
 }
 
 is_limit() {
@@ -119,10 +121,9 @@ main() {
 
         case "$rc" in
             0)  log "orch finished (rc=$rc)"; exit 0 ;;   # done: approved / merged
-            *)  # Any nonzero result may be a quota death: orch now classifies one
-                # as AGENT_QUOTA and escalates (exit 2) where the author seat used
-                # to throw (exit 1). Exit code alone cannot tell that apart from an
-                # ordinary escalation, so the limit probe decides.
+            *)  # Exit 1 is the historical author failure; exit 2 is the
+                # AGENT_QUOTA escalation. The limit probe distinguishes those
+                # quota deaths from ordinary failures within those statuses.
                 out=$($PROBE_CMD 2>&1)
                 if is_quota_exit "$rc" "$out"; then
                     log "orch exit $rc was a usage limit — will wait & resume"
@@ -140,6 +141,8 @@ selftest() {
     is_limit "build completed successfully" && { echo "FAIL false-positive"; exit 1; }
     is_quota_exit 1 "Claude usage limit reached" || { echo "FAIL retry exit 1"; exit 1; }
     is_quota_exit 2 "Claude usage limit reached" || { echo "FAIL retry exit 2"; exit 1; }
+    is_quota_exit 3 "Claude usage limit reached" && { echo "FAIL retry exit 3"; exit 1; }
+    is_quota_exit 4 "Claude usage limit reached" && { echo "FAIL retry exit 4"; exit 1; }
     is_quota_exit 0 "Claude usage limit reached" && { echo "FAIL retry on success"; exit 1; }
     # An ordinary escalation (exit 2, no limit in the probe) must STOP the wrapper.
     is_quota_exit 2 "build completed successfully" && { echo "FAIL retry non-limit"; exit 1; }
