@@ -152,6 +152,61 @@ test("finishRebase refuses staged conflict markers", () => {
   assert.equal(git(["rev-parse", "feature"], repo), reviewedSha);
 });
 
+// Regression guard: the fail-closed fix must not turn a clean tree (git grep
+// exit 1, "searched, found nothing") into an error. Passes conflictPaths so the
+// pathspec form is the one exercised.
+test("finishRebase completes a resolved repair", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "feature"], repo);
+  commitFile(repo, "a.txt", "feature\n", "feature");
+  const reviewedSha = git(["rev-parse", "HEAD"], repo);
+  git(["checkout", "main"], repo);
+  commitFile(repo, "a.txt", "integration\n", "integration");
+  mkdirSync(join(repo, ".orch", "wt"), { recursive: true });
+
+  const rebased = rebaseBranchOnto(repo, join(repo, ".orch"), "feature", "main", reviewedSha, {
+    keepWorktreeOnConflict: true,
+  });
+  assert.equal(rebased.conflict, true);
+  writeFileSync(join(rebased.path, "a.txt"), "resolved\n");
+  git(["add", "-A"], rebased.path);
+
+  const finished = finishRebase(repo, "feature", rebased.path, reviewedSha, {
+    conflictPaths: rebased.conflicts,
+  });
+  assert.equal(finished.ok, true);
+  assert.equal(git(["rev-parse", "feature"], repo), finished.sha);
+  assert.notEqual(finished.sha, reviewedSha);
+});
+
+// A pathspec outside the repository makes git grep exit 128 — the search never
+// ran. That used to be reported as "no markers" and let the rebase continue.
+test("finishRebase fails closed when the marker scan cannot run", () => {
+  const repo = newRepo();
+  git(["checkout", "-b", "feature"], repo);
+  commitFile(repo, "a.txt", "feature\n", "feature");
+  const reviewedSha = git(["rev-parse", "HEAD"], repo);
+  git(["checkout", "main"], repo);
+  commitFile(repo, "a.txt", "integration\n", "integration");
+  mkdirSync(join(repo, ".orch", "wt"), { recursive: true });
+
+  const rebased = rebaseBranchOnto(repo, join(repo, ".orch"), "feature", "main", reviewedSha, {
+    keepWorktreeOnConflict: true,
+  });
+  assert.equal(rebased.conflict, true);
+  writeFileSync(join(rebased.path, "a.txt"), "resolved\n");
+  git(["add", "-A"], rebased.path);
+
+  const outside = join(mkdtempSync(join(tmpdir(), "orch-outside-")), "a.txt");
+  writeFileSync(outside, "x\n");
+  const finished = finishRebase(repo, "feature", rebased.path, reviewedSha, {
+    conflictPaths: [outside],
+  });
+  assert.equal(finished.ok, false);
+  assert.match(finished.reason, /marker scan unavailable/);
+  assert.equal(git(["rev-parse", "feature"], repo), reviewedSha);
+});
+
 test("createTaskBranch refuses an existing branch", () => {
   const repo = newRepo();
   git(["branch", "pr/claude/dup"], repo);
