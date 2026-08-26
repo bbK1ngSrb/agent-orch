@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.340 — 2026-08-26
+- feat(quota): detect and classify a provider quota death on both seats (#554)
+
 ## v0.4.339 — 2026-08-26
 - fix(security): secret-read requires read-shaped context, not a path mention (#560)
 

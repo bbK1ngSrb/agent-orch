@@ -1096,15 +1096,110 @@ test("audit ignores AGREE printed by a crashed agent (F4 fail-safe)", async () =
   assert.equal(v.decision, "DISAGREE");
 });
 
-test("audit rethrows on usage limit instead of masking as DISAGREE", async () => {
-  // A quota hit must propagate so the harness can wait for reset and resume —
-  // logging a DISAGREE here would silently corrupt the audit verdict.
+test("audit flags a usage limit as an agentError verdict carrying quota", async () => {
+  // A quota hit used to be rethrown from inside the reviewer fan-out, which
+  // carried no seat attribution. It is now a verdict the engine can classify
+  // AGENT_QUOTA and attribute to the reviewer that died.
   const adapter = makeCliAdapter({
     name: "limited",
     bin: process.execPath,
     buildArgs: () => nodeScript("console.log('Claude usage limit reached. resets at 3pm'); process.exit(1)"),
   });
-  await assert.rejects(() => adapter.audit("pr/x/y", tmpdir()), /usage limit/);
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.decision, "DISAGREE");
+  assert.equal(v.agentError, true);
+  assert.equal(v.quota, true);
+});
+
+test("audit flags quota even when the dying agent also printed a verdict word", async () => {
+  // The anchored-DISAGREE early return runs BEFORE quota detection would
+  // naturally sit; a partial review that then hits the limit must not be kept
+  // as an editorial DISAGREE, or the burned seat is never named.
+  const adapter = makeCliAdapter({
+    name: "limited-mid-review",
+    bin: process.execPath,
+    buildArgs: () => nodeScript(
+      "console.log('DISAGREE: half a finding'); console.log('Claude usage limit reached'); process.exit(1)"),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.agentError, true, "quota outranks the partial editorial verdict");
+  assert.equal(v.quota, true);
+});
+
+test("audit leaves quota unset on an ordinary crash", async () => {
+  const adapter = makeCliAdapter({
+    name: "boom",
+    bin: process.execPath,
+    buildArgs: () => nodeScript("console.log('segfault in the widget'); process.exit(1)"),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.agentError, true);
+  assert.equal(v.quota, undefined);
+});
+
+test("a custom limitPattern recognises a CLI's own quota wording", async () => {
+  // Only the adapter knows its own CLI's phrasing; the global LIMIT_RE is just
+  // the default for the CLIs that use Claude-style wording.
+  const adapter = makeCliAdapter({
+    name: "odd-cli",
+    bin: process.execPath,
+    limitPattern: /out of credits/i,
+    buildArgs: () => nodeScript("console.log('you are out of credits'); process.exit(1)"),
+  });
+  const v = await adapter.audit("pr/x/y", tmpdir());
+  assert.equal(v.quota, true);
+
+  const stock = makeCliAdapter({
+    name: "stock-cli",
+    bin: process.execPath,
+    buildArgs: () => nodeScript("console.log('you are out of credits'); process.exit(1)"),
+  });
+  assert.equal((await stock.audit("pr/x/y", tmpdir())).quota, undefined,
+    "wording the default pattern does not know stays an ordinary agent error");
+});
+
+test("failed author flags quota from the CLI's own output, committing nothing", async () => {
+  // The exact shape of a quota death before the agent touched a file: no
+  // wip(author) commit, branch still level with base — but the error must still
+  // carry `quota` so the engine classifies AGENT_QUOTA, not an empty diff.
+  const wd = mkdtempSync(join(tmpdir(), "orch-author-quota-"));
+  const g = (...a) => execFileSync("git", a, { cwd: wd, encoding: "utf8" });
+  g("init", "-q", "-b", "main");
+  g("config", "user.email", "t@t");
+  g("config", "user.name", "t");
+  g("commit", "--allow-empty", "-q", "-m", "base");
+  g("checkout", "-q", "-b", "work");
+  const adapter = makeCliAdapter({
+    name: "limited-author",
+    bin: process.execPath,
+    buildArgs: () => nodeScript("console.log('Claude usage limit reached. resets at 3pm'); process.exit(1)"),
+  });
+
+  const error = await adapter.author("do work", wd, { baseBranch: "main" }).then(
+    () => { throw new Error("author should have failed"); },
+    (e) => e,
+  );
+  assert.equal(error.quota, true);
+  assert.equal(g("rev-list", "--count", "main..HEAD").trim(), "0", "nothing was committed");
+});
+
+test("failed author leaves quota unset on an ordinary crash", async () => {
+  const wd = mkdtempSync(join(tmpdir(), "orch-author-crash-"));
+  const g = (...a) => execFileSync("git", a, { cwd: wd, encoding: "utf8" });
+  g("init", "-q", "-b", "main");
+  g("config", "user.email", "t@t");
+  g("config", "user.name", "t");
+  g("commit", "--allow-empty", "-q", "-m", "base");
+  const adapter = makeCliAdapter({
+    name: "crashy-author",
+    bin: process.execPath,
+    buildArgs: () => nodeScript("console.log('bad model id'); process.exit(1)"),
+  });
+  const error = await adapter.author("do work", wd, { baseBranch: "main" }).then(
+    () => { throw new Error("author should have failed"); },
+    (e) => e,
+  );
+  assert.equal(error.quota, undefined);
 });
 
 test("audit does not abort when a SUCCESSFUL run merely mentions limits (#85)", async () => {
@@ -1119,6 +1214,7 @@ test("audit does not abort when a SUCCESSFUL run merely mentions limits (#85)", 
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
+  assert.equal(v.quota, undefined, "quota is gated on a FAILED run, same as #85's fix");
 });
 
 test("isUsageLimit matches limit messages but not generic failures", () => {
@@ -1127,6 +1223,13 @@ test("isUsageLimit matches limit messages but not generic failures", () => {
   assert.ok(isUsageLimit("model overloaded"));
   assert.ok(!isUsageLimit("compile error: undefined symbol"));
   assert.ok(!isUsageLimit(""));
+  // An explicit pattern replaces the default rather than adding to it.
+  assert.ok(isUsageLimit("out of credits", /out of credits/i));
+  assert.ok(!isUsageLimit("Claude usage limit reached", /out of credits/i));
+  // A /g pattern carries lastIndex between tests — must not flip-flop.
+  const sticky = /usage limit/gi;
+  assert.ok(isUsageLimit("usage limit reached", sticky));
+  assert.ok(isUsageLimit("usage limit reached", sticky));
 });
 
 test("codex buildArgs uses exec --cd with headless write permission", () => {
