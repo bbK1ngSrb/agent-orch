@@ -160,6 +160,32 @@ export async function runCycle(opts, deps) {
   let authoredOid = null;
 
   let preserveWorktree = false;
+  // An author crash used to propagate out of runCycle as a raw throw: cli.js
+  // turned it into `state: "ERROR", exit: 1` with no class and no fingerprint,
+  // so the run controller never saw a failure it could reason about. Return it
+  // as a classified escalation instead — AGENT_QUOTA when the adapter's limit
+  // matcher fired, AGENT_ERROR otherwise.
+  const authorFailure = (error, round) => {
+    // Same worktree-preservation contract as the catch below: a preserved
+    // worktree is the human-recovery affordance for a failed WIP capture, so
+    // the `finally` must not prune it just because we now return instead of throw.
+    if (error?.preserveWorktree) {
+      preserveWorktree = true;
+      notify.phase("author", error.message || String(error), "fail");
+    }
+    const quota = error?.quota === true;
+    // Short and CONSTANT: `reason` is hashed by fingerprint() and rendered into
+    // a public issue comment. Raw agent output varies per run, so folding it in
+    // here would make identical failures fingerprint differently and design §7's
+    // convergence rule could never fire. The diagnostics go in the body.
+    const reason = `agent error: author ${author.name} ${quota ? "hit its usage limit" : "exited nonzero"}`;
+    const raw = String(error?.message || error || "author failed");
+    return recordTerminal(escalate(
+      notify, orchDir, branch, round, reason, raw,
+      classify(TRIGGERS.AUTHOR_AGENT_ERROR, { quota }),
+      { failedRole: "author", failedAgents: [{ agent: author.name, quota, reason }] },
+    ));
+  };
   try {
     // F1: author step + scope gate only in task mode. Review never writes.
     if (mode === "task") {
@@ -171,7 +197,12 @@ export async function runCycle(opts, deps) {
         notify.phase("author", `${author.name} authoring`);
         // §3b: for untrusted intake (work order), the author runs against a
         // fenced prompt; free-text tasks pass through unchanged.
-        const authored = await author.author(opts.authorPrompt || task, worktree, authorOpts);
+        let authored;
+        try {
+          authored = await author.author(opts.authorPrompt || task, worktree, authorOpts);
+        } catch (error) {
+          return authorFailure(error, 1);
+        }
         recordUsage("author", author.name, authored, authorOpts.model);
         if (partialAuthor && partialAuthorTip()) {
           throw new Error("author retry left the partial WIP unchanged — refusing to review or merge incomplete work");
@@ -261,7 +292,12 @@ export async function runCycle(opts, deps) {
       checkpoint?.record(orchDir, sid, {
         branch, round, stage: "revising", reason: resumeCheckpoint.reason, ...checkpointMeta,
       });
-      const revised = await author.author(buildRevisionPrompt(resumeCheckpoint.reason), worktree, authorOpts);
+      let revised;
+      try {
+        revised = await author.author(buildRevisionPrompt(resumeCheckpoint.reason), worktree, authorOpts);
+      } catch (error) {
+        return authorFailure(error, round);
+      }
       recordUsage("author", author.name, revised, authorOpts.model);
       if (partialAuthor && partialAuthorTip()) {
         throw new Error("author retry left the partial WIP unchanged — refusing to review or merge incomplete work");
@@ -333,9 +369,25 @@ export async function runCycle(opts, deps) {
         // immediately — the reason carries the #31 stderr tail (bad model id, etc).
         const agentErrors = disagree.filter((v) => v.agentError);
         if (agentErrors.length) {
-          const reason = `agent error: ${agentErrors.map((v) => `${v.reviewer} ${v.reason}`).join("; ")}`;
+          // EVERY failed seat is named with its OWN reason, not just the quota
+          // one: a mixed failure that reported only the exhausted reviewer would
+          // leave the other broken seat live to fail again next round.
+          const seats = agentErrors.map((v) => ({
+            agent: v.reviewer,
+            quota: v.quota === true,
+            // A quota seat gets a constant reason — the #31 stderr tail carries
+            // the provider's reset time, which varies per run and would stop
+            // identical quota deaths from fingerprinting identically. Non-quota
+            // seats keep the existing trimmed detail: that tail is the only clue
+            // to a bad model id or missing flag.
+            reason: v.quota === true ? `${v.reviewer} hit its usage limit` : `${v.reviewer} ${v.reason}`,
+          }));
+          const quota = seats.some((s) => s.quota);
+          const reason = `agent error: ${seats.map((s) => s.reason).join("; ")}`;
+          const body = agentErrors.map((v) => `${v.reviewer}: ${v.raw || v.reason}`).join("\n\n");
           return recordTerminal(escalate(notify, orchDir, branch, round, reason,
-            undefined, classify(TRIGGERS.REVIEWER_AGENT_ERROR)));
+            body, classify(TRIGGERS.REVIEWER_AGENT_ERROR, { quota }),
+            { failedRole: "reviewer", failedAgents: seats }));
         }
       }
 
@@ -461,7 +513,12 @@ export async function runCycle(opts, deps) {
       round += 1;
       notify.phase("revise", `${author.name} revising (round ${round})`);
       checkpoint?.record(orchDir, sid, { branch, round, stage: "revising", reason: verdict.reason, ...checkpointMeta });
-      const revised = await author.author(buildRevisionPrompt(verdict.reason), worktree, authorOpts);
+      let revised;
+      try {
+        revised = await author.author(buildRevisionPrompt(verdict.reason), worktree, authorOpts);
+      } catch (error) {
+        return authorFailure(error, round);
+      }
       recordUsage("author", author.name, revised, authorOpts.model);
     }
   } catch (error) {
@@ -479,10 +536,12 @@ export async function runCycle(opts, deps) {
 // `body` is what the escalation note shows — defaults to `reason` for the many
 // callers that have only a one-liner, but the security gate passes a richer
 // educational detail so the human-facing note reads as more than a jammed string.
-function escalate(notify, orchDir, branch, round, reason, body = reason, cls) {
+// `extra` carries seat attribution (failedRole/failedAgents) for the agent-error
+// classes — which agent died, and why, per seat.
+function escalate(notify, orchDir, branch, round, reason, body = reason, cls, extra = {}) {
   if (!cls) throw new Error("engine.escalate: every call site must pass a failure class");
   notify.escalate(orchDir, branch, `# Escalation — ${branch}\n\n${body}\n`);
-  return { status: "escalated", reason, rounds: round, class: cls, fingerprint: fingerprint(cls, reason) };
+  return { status: "escalated", reason, rounds: round, class: cls, fingerprint: fingerprint(cls, reason), ...extra };
 }
 
 // The base a cycle is actually cut from and diffed against: integrationBranch

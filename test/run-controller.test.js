@@ -169,6 +169,25 @@ test("runUntil: cycle escalated locally (no landing) -> classified failure, no r
   assert.equal(result.failureClass, "REVIEW_STALEMATE");
 });
 
+// The known starting state #570 builds on: detection and classification land
+// here, the `rotate` executor does not. chooseRemedy already picks `rotate` for
+// AGENT_QUOTA, so the only thing standing between this and a re-seated agent is
+// a registered executor — until then the run must stop cleanly, not error.
+test("runUntil: AGENT_QUOTA selects `rotate`, finds no executor, and stops at STOPPED_AT_CAP", async () => {
+  let cycles = 0;
+  const deps = baseDeps({
+    runCycle: async () => {
+      cycles += 1;
+      return { status: "escalated", class: "AGENT_QUOTA", fingerprint: "fpq", reason: "agent error: author claude hit its usage limit" };
+    },
+  });
+  const result = await runUntil(POLICY, {}, deps);
+  assert.equal(result.exit, 2, "not exit 1: the quota death is a classified result, not an uncaught throw");
+  assert.equal(result.outcome, "stopped-at-cap");
+  assert.equal(result.failureClass, "AGENT_QUOTA");
+  assert.equal(cycles, 1, "no free retry for AGENT_QUOTA — re-running the exhausted seat would just fail again");
+});
+
 test("runUntil: cycle escalated on a BLOCKED-terminal class (protected path) -> exit 3 with blockedReason", async () => {
   const deps = baseDeps({
     runCycle: async () => ({ status: "escalated", class: "POLICY_PROTECTED_PATH", fingerprint: "fp2", reason: "protected paths touched" }),

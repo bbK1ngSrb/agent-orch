@@ -79,12 +79,16 @@ for (const signal of ["SIGINT", "SIGTERM", ...(IS_WINDOWS ? [] : ["SIGHUP"])]) {
   });
 }
 
-// True if CLI output looks like a Claude usage/rate-limit message. Keep this in
-// sync with the regex in harness/orch-loop.sh (is_limit) — that wrapper waits
-// out the limit and resumes, so the error must propagate, not get masked.
+// True if CLI output looks like a usage/rate-limit message. Keep this in sync
+// with the regex in harness/orch-loop.sh (is_limit). `pattern` lets an adapter
+// name its own CLI's wording (makeCliAdapter's `limitPattern`); the default
+// covers the Claude-style phrasing every current adapter emits.
 const LIMIT_RE = /usage limit|rate.?limit|limit (will )?reset|resets? at|\b429\b|overloaded/i;
-export function isUsageLimit(text) {
-  return LIMIT_RE.test(text || "");
+export function isUsageLimit(text, pattern = LIMIT_RE) {
+  // A /g or /y regex carries lastIndex between tests — reset so a caller's
+  // pattern can't return false on alternate calls.
+  if (pattern.global || pattern.sticky) pattern.lastIndex = 0;
+  return pattern.test(text || "");
 }
 
 function progressIntervalMs() {
@@ -339,18 +343,6 @@ function runAgent(bin, args, cwd, label, runOpts = {}) {
   });
 }
 
-// Returns { out, ok }. On nonzero exit / crash, still captures whatever the
-// agent printed so audit() can fail safely instead of throwing — EXCEPT a usage
-// limit, which we rethrow so the run aborts (rather than logging a bogus
-// DISAGREE) and the harness can wait for reset and resume. Only FAILED runs
-// are limit candidates: a successful transcript that merely *discusses* rate
-// limits (e.g. a review of adapter code) must not abort the cycle (#85).
-async function runCapture(bin, args, cwd, label, runOpts = {}) {
-  const result = await runAgent(bin, args, cwd, label, runOpts);
-  if (!result.ok && isUsageLimit(result.out)) throw new Error(`usage limit hit: ${result.out.trim().slice(0, 200)}`);
-  return result;
-}
-
 function num(value) {
   const n = Number(String(value || "").replace(/[,\s]/g, ""));
   return Number.isFinite(n) ? n : 0;
@@ -513,7 +505,10 @@ function captureAuthorWork(name, wd, { partial = false, baseBranch = "main", rea
   }
 }
 
-export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: true, effort: true }, env: adapterEnv }) {
+// `limitPattern`: the regex that recognises THIS CLI's quota wording. Only the
+// adapter sees raw agent output, so quota detection belongs here; the engine
+// reads the resulting flag rather than re-parsing text it never owned.
+export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: true, effort: true }, env: adapterEnv, limitPattern = LIMIT_RE }) {
   const capabilitySupport = normalizeCapabilities(capabilities);
   // Spawns read adapter.bin (not the closed-over param) so preflight can rewrite
   // it to an absolute path when the CLI is found off-PATH in a known install dir.
@@ -521,6 +516,7 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
     name,
     bin, // the actual executable (may differ from name, e.g. local models run via `ccr`)
     capabilities: capabilitySupport,
+    limitPattern,
     async author(task, wd, opts = {}) {
       // Author failure stays a hard error, but partial filesystem work is
       // captured below before it propagates.
@@ -533,8 +529,16 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       });
       if (!result.ok) {
         const failure = result.out || `Command failed: ${adapter.bin}`;
+        // `quota` rides every throw path below: the engine classifies on the
+        // flag (AGENT_QUOTA vs AGENT_ERROR), and a WIP-capture failure is still
+        // a quota death.
+        const quota = isUsageLimit(failure, adapter.limitPattern);
         const reason = /timed out/i.test(failure) ? "timeout"
-          : isUsageLimit(failure) ? "usage limit" : "agent failure";
+          : quota ? "usage limit" : "agent failure";
+        const fail = (error) => {
+          if (quota) error.quota = true;
+          throw error;
+        };
         try {
           captureAuthorWork(name, wd, { partial: true, baseBranch: opts.baseBranch, reason });
         } catch (captureError) {
@@ -544,13 +548,13 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
           catch (markerError) {
             const error = new Error(`${message}; preservation marker failed: ${markerError.message || markerError}`);
             error.preserveWorktree = true;
-            throw error;
+            fail(error);
           }
           const error = new Error(message, { cause: captureError });
           error.preserveWorktree = true;
-          throw error;
+          fail(error);
         }
-        throw new Error(failure);
+        fail(new Error(failure));
       }
       const out = result.out;
       const usage = parseRunUsage(out, modelFromArgs(args, opts));
@@ -574,7 +578,7 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
         allowLargeScope: opts.allowLargeScope ? "GRANTED by the operator" : "NOT GRANTED",
       });
       const args = buildArgs(prompt, wd, opts);
-      const { out, raw, ok } = await runCapture(adapter.bin, args, wd, `${name} auditing`, {
+      const { out, raw, ok } = await runAgent(adapter.bin, args, wd, `${name} auditing`, {
         stageTimeoutMs: opts.stageTimeoutMs,
         stage: "review",
         round: opts.round,
@@ -602,13 +606,19 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       // vocabulary) rather than answering it, and treating that as an editorial
       // DISAGREE burns every revise round on stderr noise instead of taking the
       // #33 agentError escalation. Only a verdict that leads its own line counts.
-      if (!ok && parsed.anchored && parsed.decision === "DISAGREE" && parsed.reason !== "unparseable verdict") return { ...parsed, raw: captured, usage };
+      // Detected BEFORE the anchored-DISAGREE return below: quota output that
+      // happens to contain a verdict word would otherwise leave as an editorial
+      // DISAGREE and the exhausted seat would never be named. Only FAILED runs
+      // are limit candidates — a successful transcript that merely *discusses*
+      // rate limits (e.g. a review of adapter code) must not abort the cycle (#85).
+      const quota = !ok && isUsageLimit(captured, adapter.limitPattern);
+      if (!ok && !quota && parsed.anchored && parsed.decision === "DISAGREE" && parsed.reason !== "unparseable verdict") return { ...parsed, raw: captured, usage };
       // Nonzero with no usable verdict (#33): flag it `agentError` so the engine
       // escalates instead of asking the author to revise a non-code failure.
       // Surface WHY it died (#31): a bad model id / missing flag lives in `out` —
       // fold a trimmed tail into the reason so the escalation names the cause.
       // Local files only.
-      if (!ok) return { decision: "DISAGREE", reason: `agent exited nonzero${detail(captured)}`, raw: captured, agentError: true, usage };
+      if (!ok) return { decision: "DISAGREE", reason: `agent exited nonzero${detail(captured)}`, raw: captured, agentError: true, ...(quota ? { quota: true } : {}), usage };
       return { ...parsed, raw: captured, usage };
     },
   };

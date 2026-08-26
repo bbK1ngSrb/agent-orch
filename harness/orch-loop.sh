@@ -2,16 +2,19 @@
 #
 # orch-loop.sh — run orch, but wait out Claude usage limits and auto-resume.
 #
-# orch shells out to the `claude` CLI and has NO quota handling: a usage-limit
-# hit mid-audit is masked as a DISAGREE, and mid-author it throws (exit 1).
-# This wrapper gates each run on quota with a cheap pre-flight probe — when the
-# 5h limit is up, it sleeps until reset (parsed from the CLI message, else a
-# fixed poll) and retries, so a single invocation survives the limit window.
+# orch classifies a usage limit on either seat as AGENT_QUOTA and escalates
+# (exit 2); the author seat used to throw instead (exit 1). Either way a single
+# orch run still STOPS when the limit is hit, so this wrapper gates each run on
+# quota with a cheap pre-flight probe — when the 5h limit is up, it sleeps until
+# reset (parsed from the CLI message, else a fixed poll) and retries, so a
+# single invocation survives the limit window.
 #
-# Resume: on retry, `orch task` reattaches the quota-aborted branch (its sid is
-# recorded in .orch/resume/) and continues from the author's committed work
-# instead of re-authoring from scratch (issue #24). If the limit hit before any
-# commit — or after a hard kill that left no branch — it cleanly restarts.
+# Resume: a run KILLED by the limit (no orch result at all) still leaves its sid
+# in .orch/resume/, so the retry reattaches the branch and continues from the
+# author's committed work instead of re-authoring (issue #24). A run that orch
+# now ESCALATES as AGENT_QUOTA is a completed result, so it clears its resume
+# record like every other escalation and the retry starts a fresh cycle; any
+# wip(author) commit is still on the branch for a human or a later `orch continue`.
 #
 # Usage:   orch-loop.sh [orch args ...]        e.g.  orch-loop.sh task
 #          orch-loop.sh --selftest             run internal assertions, exit
@@ -20,11 +23,6 @@
 #          POLL       re-probe interval, seconds  (default: 900 = 15m)
 #          MAX_WAITS  give up after N limit waits  (default: 0 = unlimited)
 #
-# ponytail: probe-gate + exit-code disambiguation only. It does NOT fix orch's
-# mid-audit DISAGREE-masking (that's an orch code change). If you need audits to
-# also pause on quota, make src/adapters/cli-adapter.js:runCapture detect the
-# limit string and rethrow instead of returning ok:false.
-
 set -uo pipefail
 
 ORCH_CMD="${ORCH_CMD:-orch}"
@@ -35,6 +33,13 @@ MAX_WAITS="${MAX_WAITS:-0}"
 log() { echo "[$(date '+%F %T')] $1" >&2; }
 
 # True if text looks like a Claude usage/rate-limit message.
+# Retry only when orch failed AND the probe still reports a limit. Splitting on
+# the probe rather than the exit code keeps an ordinary exit-2 escalation
+# stopping the wrapper, as it always did.
+is_quota_exit() {
+    [ "$1" -ne 0 ] && is_limit "$2"
+}
+
 is_limit() {
     grep -qiE 'usage limit|rate.?limit|limit (will )?reset|resets? at|429|overloaded' <<<"$1"
 }
@@ -113,15 +118,17 @@ main() {
         $ORCH_CMD "$@"; rc=$?
 
         case "$rc" in
-            0|2)  log "orch finished (rc=$rc)"; exit "$rc" ;;   # done: approved / verdict
-            *)    # hard error — quota during author looks like this. Re-probe to tell
-                  # a limit apart from a genuine bug.
-                  out=$($PROBE_CMD 2>&1)
-                  if is_limit "$out"; then
-                      log "orch exit $rc was a usage limit — will wait & resume"
-                      continue
-                  fi
-                  log "orch exit $rc is a real error (not quota) — stopping"; exit "$rc" ;;
+            0)  log "orch finished (rc=$rc)"; exit 0 ;;   # done: approved / merged
+            *)  # Any nonzero result may be a quota death: orch now classifies one
+                # as AGENT_QUOTA and escalates (exit 2) where the author seat used
+                # to throw (exit 1). Exit code alone cannot tell that apart from an
+                # ordinary escalation, so the limit probe decides.
+                out=$($PROBE_CMD 2>&1)
+                if is_quota_exit "$rc" "$out"; then
+                    log "orch exit $rc was a usage limit — will wait & resume"
+                    continue
+                fi
+                log "orch exit $rc is a real error (not quota) — stopping"; exit "$rc" ;;
         esac
     done
 }
@@ -131,6 +138,11 @@ selftest() {
     is_limit "Claude usage limit reached. Your limit will reset at 3pm (UTC)." || { echo "FAIL detect text"; exit 1; }
     is_limit "Error 429: rate limit exceeded" || { echo "FAIL detect 429"; exit 1; }
     is_limit "build completed successfully" && { echo "FAIL false-positive"; exit 1; }
+    is_quota_exit 1 "Claude usage limit reached" || { echo "FAIL retry exit 1"; exit 1; }
+    is_quota_exit 2 "Claude usage limit reached" || { echo "FAIL retry exit 2"; exit 1; }
+    is_quota_exit 0 "Claude usage limit reached" && { echo "FAIL retry on success"; exit 1; }
+    # An ordinary escalation (exit 2, no limit in the probe) must STOP the wrapper.
+    is_quota_exit 2 "build completed successfully" && { echo "FAIL retry non-limit"; exit 1; }
     # epoch parse: 1h in the future -> ~3630s (+30 grace)
     local future; future=$(( $(date +%s) + 3600 ))
     f=$(sleep_secs "limit reset $future"); [ "$f" -gt 3600 ] && [ "$f" -lt 3700 ] || { echo "FAIL epoch parse ($f)"; exit 1; }

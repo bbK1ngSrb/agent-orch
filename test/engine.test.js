@@ -2,6 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCycle } from "../src/engine.js";
 import { SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "../src/security-review.js";
+import { makeCliAdapter } from "../src/adapters/cli-adapter.js";
+import { tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 
 function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gatePass = true, mergeOk = true, testCmd = "echo", changed = ["src/a.js"] }) {
   const calls = { authors: 0, audits: 0, revises: 0, auditsBy: {}, auditOpts: [], prompts: [], phases: [], rounds: [], rawRounds: [], reviewLog: [] };
@@ -45,7 +50,7 @@ function makeDeps({ verdicts, reviewerVerdicts = null, authorUsage = null, gateP
       phase(label, detail, status) { calls.phases.push({ label, detail, status }); },
       writeRound(_orchDir, _branch, round, content) { calls.rounds.push({ round, content }); return "p"; },
       writeRoundRaw(_orchDir, _branch, round, content) { calls.rawRounds.push({ round, content }); return "rp"; },
-      buildDecisionBrief: () => "brief", escalate() { return "d"; },
+      buildDecisionBrief: () => "brief", escalate(_dir, _branch, body) { calls.escalated = body; return "d"; },
       recordRun(_dir, entry) { calls.recorded = entry; },
       cleanupReviews(_dir, branch) { calls.cleaned = branch; },
     },
@@ -357,7 +362,13 @@ test("author() throwing (agy's #272 refusal) propagates out of runCycle instead 
   deps.adapters.get = (n) => (n === "auth"
     ? { name: "auth", async author() { throw new Error("agy cannot be used: ... scratch workspace ..."); }, async audit() { return { decision: "AGREE", reason: "", raw: "" }; } }
     : { name: n, async audit() { return { decision: "AGREE", reason: "", raw: "" }; } });
-  await assert.rejects(() => runCycle({ ...opts, sid: "s1" }, deps), /agy cannot be used/);
+  const r = await runCycle({ ...opts, sid: "s1" }, deps);
+  // No longer a raw throw (which cli.js turned into a classless ERROR/exit 1),
+  // but a classified escalation the run controller can dispatch on. The
+  // diagnostic still reaches the human, via the escalation note.
+  assert.equal(r.status, "escalated");
+  assert.equal(r.class, "AGENT_ERROR");
+  assert.match(deps._calls.escalated, /agy cannot be used/);
   assert.equal(records.length, 1, "a fresh cycle records its started checkpoint before authoring");
   assert.equal(records[0].sid, "s1");
   assert.equal(records[0].branch, opts.branch);
@@ -366,7 +377,7 @@ test("author() throwing (agy's #272 refusal) propagates out of runCycle instead 
   assert.equal(records[0].task, opts.task);
   assert.equal(records[0].authorPrompt, opts.task);
   assert.equal("oid" in records[0], false, "no commit exists when authoring starts");
-  assert.equal(deps._calls.recorded, undefined, "an author failure must not append a terminal run row");
+  assert.equal(deps._calls.recorded.verdict, "escalated", "the failure is a cycle result, so it is recorded like one");
   assert.equal(deps._calls.finalized, undefined, "a crashed author must never reach finalize/merge");
 });
 
@@ -380,7 +391,9 @@ test("a failed WIP capture is reported and the sole-copy worktree is not pruned"
     throw error;
   };
 
-  await assert.rejects(() => runCycle(opts, deps), /WIP capture failed/);
+  const r = await runCycle(opts, deps);
+  assert.equal(r.status, "escalated");
+  assert.match(deps._calls.escalated, /WIP capture failed/);
   assert.equal(prunes, 0, "engine must not destroy the only copy after capture failure");
   assert.deepEqual(deps._calls.phases.at(-1), {
     label: "author",
@@ -1391,3 +1404,132 @@ for (const [name, over] of [
     assert.ok(!calls.some((c) => c[0] === "phase" && c[1] === "worktree" && /base /.test(c[2])));
   });
 }
+
+// ── Quota deaths: detection at the adapter, classification here ──────────────
+// These use the REAL cli adapter (a node one-liner standing in for the agent
+// CLI) so the adapter→engine seam is exercised end to end: does genuine quota
+// wording actually set the flag the engine classifies on?
+
+function quotaDeps(authorScript, reviewerScripts = {}) {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  const made = new Map();
+  const adapterFor = (name, script) => {
+    if (!made.has(name)) {
+      made.set(name, makeCliAdapter({
+        name, bin: process.execPath, buildArgs: () => ["-e", script],
+      }));
+    }
+    return made.get(name);
+  };
+  deps.adapters = {
+    get(name) {
+      if (name === "auth" && authorScript) return adapterFor(name, authorScript);
+      if (reviewerScripts[name]) return adapterFor(name, reviewerScripts[name]);
+      return deps._baseAdapters.get(name);
+    },
+  };
+  deps._baseAdapters = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] }).adapters;
+  return deps;
+}
+
+// A worktree the real adapter can run `git add -A` / `rev-list` in.
+function emptyRepo(prefix) {
+  const wd = mkdtempSync(join(tmpdir(), prefix));
+  const g = (...a) => execFileSync("git", a, { cwd: wd, encoding: "utf8" });
+  g("init", "-q", "-b", "main");
+  g("config", "user.email", "t@t");
+  g("config", "user.name", "t");
+  g("commit", "--allow-empty", "-q", "-m", "base");
+  g("checkout", "-q", "-b", "work");
+  return { wd, g };
+}
+
+const QUOTA_OUT = "console.log('Claude usage limit reached. resets at 3pm'); process.exit(1)";
+
+test("an author quota death classifies AGENT_QUOTA, not DIFF_EMPTY and not a throw", async () => {
+  // The author dies before touching a file, so the branch is level with base —
+  // the same shape as an empty diff. Classification must come from the quota
+  // flag, not from what the (nonexistent) diff looks like.
+  const { wd, g } = emptyRepo("orch-engine-quota-");
+  const deps = quotaDeps(QUOTA_OUT);
+
+  const r = await runCycle({ ...opts, worktree: wd }, deps);
+
+  assert.equal(g("rev-list", "--count", "main..HEAD").trim(), "0", "author committed nothing");
+  assert.equal(r.status, "escalated");
+  assert.equal(r.class, "AGENT_QUOTA");
+  assert.notEqual(r.class, "DIFF_EMPTY");
+  assert.equal(r.failedRole, "author");
+  assert.deepEqual(r.failedAgents.map((s) => s.agent), ["auth"]);
+  assert.equal(r.failedAgents[0].quota, true);
+});
+
+test("an ordinary author crash still classifies AGENT_ERROR and keeps its diagnostics", async () => {
+  const { wd } = emptyRepo("orch-engine-authorboom-");
+  const deps = quotaDeps("console.log('bad model id: opus-4.8'); process.exit(1)");
+
+  const r = await runCycle({ ...opts, worktree: wd }, deps);
+
+  assert.equal(r.class, "AGENT_ERROR");
+  assert.equal(r.failedAgents[0].quota, false);
+  // The escalation note keeps WHY it died; only the fingerprinted `reason` is short.
+  assert.match(deps._calls.escalated, /opus-4\.8/);
+});
+
+test("the same author quota death twice fingerprints identically", async () => {
+  // `reason` is hashed AND rendered into a public issue comment: folding raw
+  // agent output in would defeat design §7's convergence rule, because the
+  // provider's reset time varies run to run.
+  const runOnce = async (resetTime) => {
+    const { wd } = emptyRepo("orch-engine-fingerprint-");
+    return runCycle({ ...opts, worktree: wd },
+      quotaDeps(`console.log('Claude usage limit reached. resets at ${resetTime}'); process.exit(1)`));
+  };
+  const a = await runOnce("3pm");
+  const b = await runOnce("9pm");
+  assert.equal(a.class, "AGENT_QUOTA");
+  assert.equal(a.fingerprint, b.fingerprint);
+});
+
+test("a reviewer quota death classifies AGENT_QUOTA, not AGENT_ERROR", async () => {
+  const { wd } = emptyRepo("orch-engine-revquota-");
+  const deps = quotaDeps(null, { rev: QUOTA_OUT });
+
+  const r = await runCycle({ ...opts, worktree: wd }, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.equal(r.class, "AGENT_QUOTA");
+  assert.equal(r.failedRole, "reviewer");
+  assert.deepEqual(r.failedAgents, [{ agent: "rev", quota: true, reason: "rev hit its usage limit" }]);
+});
+
+test("the same reviewer quota death twice fingerprints identically", async () => {
+  const runOnce = async (resetTime) => {
+    const { wd } = emptyRepo("orch-engine-revfp-");
+    return runCycle({ ...opts, worktree: wd },
+      quotaDeps(null, { rev: `console.log('Claude usage limit reached. resets at ${resetTime}'); process.exit(1)` }));
+  };
+  const a = await runOnce("3pm");
+  const b = await runOnce("9pm");
+  assert.equal(a.class, "AGENT_QUOTA");
+  assert.equal(a.fingerprint, b.fingerprint);
+});
+
+test("a mixed reviewer failure names BOTH failed seats with their own reasons", async () => {
+  // Reporting only the quota seat would leave the other broken seat live to
+  // fail again on the next attempt. This slice reports; #570 decides what to
+  // exclude.
+  const { wd } = emptyRepo("orch-engine-mixed-");
+  const deps = quotaDeps(null, {
+    rev: QUOTA_OUT,
+    rev2: "console.log('bad model id: opus-4.8'); process.exit(1)",
+  });
+
+  const r = await runCycle({ ...opts, worktree: wd, reviewerNames: ["rev", "rev2"] }, deps);
+
+  assert.equal(r.class, "AGENT_QUOTA", "one exhausted seat makes the whole failure a quota failure");
+  assert.deepEqual(r.failedAgents.map((s) => [s.agent, s.quota]), [["rev", true], ["rev2", false]]);
+  assert.match(r.reason, /rev hit its usage limit/);
+  assert.match(r.reason, /rev2 agent exited nonzero/);
+  assert.match(r.reason, /opus-4\.8/, "the non-quota seat keeps its diagnostic tail");
+});

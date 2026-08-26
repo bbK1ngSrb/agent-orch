@@ -73,7 +73,7 @@ export const FAILURE_CLASSES = [
 
 // trigger -> class. `quota` distinguishes the one trigger family (agent-error)
 // that maps to two different classes depending on whether the adapter's limit
-// matcher fired (limitPattern wiring itself is P6 — callers pass nothing today).
+// matcher fired (engine.js passes it from the adapter's `quota` flag).
 export function classify(trigger, { quota = false } = {}) {
   if (AGENT_ERROR_TRIGGERS.has(trigger)) return quota ? "AGENT_QUOTA" : "AGENT_ERROR";
   const cls = TRIGGER_CLASS[trigger];
