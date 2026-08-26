@@ -496,6 +496,26 @@ async function repairConflictOrRed(ctx, deps) {
         // seat an attempt when the pool has one.
         return { ok: false, retrySeat: resolvers.length > 1, reason: `resolver failed: ${errorText(error)}` };
       }
+      // Unlike the conflict branch, a clean merge leaves no MERGE_HEAD to react
+      // to, so there is no equivalent commit fallback here — and none is
+      // needed. Any resolver that actually changed something committed it
+      // itself (`captureAuthorWork`, or the fixture's own `git commit` above).
+      // A resolver that reports success without moving HEAD off `resolverBase`
+      // — the default pool, a fully compliant adapter, an agent that simply
+      // makes no edit — has repaired nothing: `resolverPaths` would come back
+      // empty below, which skips the marker floor, the security scan AND the
+      // audit (`reviewPaths.length` gates it), so the untouched merge tip would
+      // sail through to `landRepairedTip` and get reported merged. Refuse
+      // before any of that runs. This also catches a resolver that edited the
+      // working tree without committing: `candidateSha` below is `rev-parse
+      // HEAD`, not the working tree, so an uncommitted edit would leave the
+      // gate/audit stages testing content that never reaches origin — gate 1's
+      // own failure mode, inside the slice that exists to close it.
+      const afterResolve = git.gitTry(["rev-parse", "HEAD"], scratch);
+      if (!afterResolve.ok) return { ok: false, reason: `could not re-read the resolved tip: ${afterResolve.out.trim()}` };
+      if (afterResolve.out.trim() === resolverBase) {
+        return { ok: false, retrySeat: resolvers.length > 1, reason: "resolver committed nothing — the red check was never repaired" };
+      }
       const agentDiff = diffOut(git, scratch, [...SECURITY_RAW_ARGS, resolverBase]);
       if (!agentDiff.ok) return { ok: false, reason: agentDiff.reason };
       resolverPaths = parseRawPaths(agentDiff.out);
