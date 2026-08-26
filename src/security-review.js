@@ -54,10 +54,15 @@ function isCommentOnlyLine(line) {
 // alternatives are the read verbs plus the shell forms that are a single
 // character (`. file`, `< file`), which only count at the start of a command.
 // Everything between the verb and the path must be ARGUMENT-SHAPED — quotes,
-// parens, separators, path characters, an interpolation — so `readFileSync(x,
+// brackets, separators, path characters, an interpolation — so `readFileSync(x,
 // ".orch/y")` counts while `const source = ".orch/lock"` does not: the `=` is not
 // an argument character, so the assignment is a mention, not a read.
-const READ_CONTEXT_RE = /(?:\b(?:readFile|readFileSync|open|openSync|createReadStream|require|import|cat|source)\b|(?:^\+?|[;&|(])\s*\.\s|<)[\s("'`,~./\w${}+-]*$/;
+// The class must carry the CLOSING brackets too, not just the opening ones:
+// `readFileSync(resolve(dir), ".orch/secrets")` is ordinary Node, and without
+// `)` the run back to the verb breaks at the inner call's close paren and a real
+// read is cleared. Widening this class can only ever flag more lines, never
+// fewer, so the fail-closed direction is preserved.
+const READ_CONTEXT_RE = /(?:\b(?:readFile|readFileSync|open|openSync|createReadStream|require|import|cat|source)\b|(?:^\+?|[;&|(])\s*\.\s|<)[\s()[\]"'`,~./\w${}+-]*$/;
 
 // ponytail: line-based, like every rule in this file — a path assigned to a
 // variable on one line and read on the next is not caught. The substring match

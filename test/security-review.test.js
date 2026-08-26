@@ -242,6 +242,24 @@ test("read-shaped lines still trip secret-read", () => {
   }
 });
 
+// The read verb is often separated from the path by another call's arguments, so
+// the run back to it has to survive closing brackets. Anything cleared here is a
+// real read the floor stopped catching — a fail-OPEN regression, which is worse
+// than the noise #560 was filed about.
+test("a read whose earlier argument closes brackets still trips secret-read", () => {
+  const cases = [
+    ["nested resolve()", `const s = readFileSync(resolve(dir), ".orch/secrets");`],
+    ["nested path.join()", `const s = readFileSync(path.join(d,"x"), ".env");`],
+    ["awaited readFile", `const s = await readFile(join(a,b), ".orch/secrets");`],
+    ["interpolated template", "const s = readFileSync(`${dir}/.ssh/id_rsa`);"],
+    ["array argv", `execFileSync("cat", ["/home/u/.ssh/id_rsa"])`],
+  ];
+  for (const [label, line] of cases) {
+    const r = scanDiff(`+++ b/src/x.js\n+${line}`);
+    assert.ok(r.findings.some((f) => f.rule === "secret-read"), label);
+  }
+});
+
 test("assigning a secret path to a variable is a mention, not a read", () => {
   const d = `+++ b/src/x.js\n+  const source = ".orch/lock";`;
   assert.deepEqual(scanDiff(d).findings, []);
