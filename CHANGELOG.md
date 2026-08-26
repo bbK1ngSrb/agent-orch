@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.341 — 2026-08-26
+- orch-loop.sh retries a terminal BLOCKED (exit 3) as if it were a quota death (closes [#575](https://github.com/bbk1ng/agent-orch/issues/575))
+
 ## v0.4.340 — 2026-08-26
 - feat(quota): detect and classify a provider quota death on both seats (#554)
 
