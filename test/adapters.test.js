@@ -1214,6 +1214,7 @@ test("audit does not abort when a SUCCESSFUL run merely mentions limits (#85)", 
   });
   const v = await adapter.audit("pr/x/y", tmpdir());
   assert.equal(v.decision, "AGREE");
+  assert.equal(v.quota, undefined, "quota is gated on a FAILED run, same as #85's fix");
 });
 
 test("isUsageLimit matches limit messages but not generic failures", () => {

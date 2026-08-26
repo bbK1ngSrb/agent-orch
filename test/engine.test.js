@@ -1474,6 +1474,9 @@ test("an ordinary author crash still classifies AGENT_ERROR and keeps its diagno
   assert.equal(r.failedAgents[0].quota, false);
   // The escalation note keeps WHY it died; only the fingerprinted `reason` is short.
   assert.match(deps._calls.escalated, /opus-4\.8/);
+  // And the operator still sees it on the console: the throw that used to carry
+  // the raw text to stderr no longer propagates.
+  assert.match(deps._calls.phases.filter((p) => p.status === "fail").at(-1).detail, /opus-4\.8/);
 });
 
 test("the same author quota death twice fingerprints identically", async () => {

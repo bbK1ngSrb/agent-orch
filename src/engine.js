@@ -169,10 +169,12 @@ export async function runCycle(opts, deps) {
     // Same worktree-preservation contract as the catch below: a preserved
     // worktree is the human-recovery affordance for a failed WIP capture, so
     // the `finally` must not prune it just because we now return instead of throw.
-    if (error?.preserveWorktree) {
-      preserveWorktree = true;
-      notify.phase("author", error.message || String(error), "fail");
-    }
+    if (error?.preserveWorktree) preserveWorktree = true;
+    // Unconditional, unlike the catch below: the throw used to carry the raw
+    // failure text to the operator's stderr on its way out. It no longer
+    // propagates, so without this the console shows only the short constant
+    // reason and the diagnostic lives solely in the escalation note file.
+    notify.phase("author", error.message || String(error), "fail");
     const quota = error?.quota === true;
     // Short and CONSTANT: `reason` is hashed by fingerprint() and rendered into
     // a public issue comment. Raw agent output varies per run, so folding it in
