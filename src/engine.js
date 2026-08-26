@@ -173,15 +173,22 @@ export async function runCycle(opts, deps) {
     // Unconditional, unlike the catch below: the throw used to carry the raw
     // failure text to the operator's stderr on its way out. It no longer
     // propagates, so without this the console shows only the short constant
-    // reason and the diagnostic lives solely in the escalation note file.
-    notify.phase("author", error.message || String(error), "fail");
+    // reason and the diagnostic lives solely in the escalation note file. One
+    // line, like every other stage result — the fuller tail still reaches the
+    // console just below, when escalate() echoes the note body to stderr.
+    notify.phase("author", oneLineStageResult(error.message || String(error)), "fail");
     const quota = error?.quota === true;
     // Short and CONSTANT: `reason` is hashed by fingerprint() and rendered into
     // a public issue comment. Raw agent output varies per run, so folding it in
     // here would make identical failures fingerprint differently and design §7's
     // convergence rule could never fire. The diagnostics go in the body.
     const reason = `agent error: author ${author.name} ${quota ? "hit its usage limit" : "exited nonzero"}`;
-    const raw = String(error?.message || error || "author failed");
+    // Bounded, for the same reason the reviewer body is: the adapter throws the
+    // WHOLE capture (up to MAX_AGENT_OUTPUT_CHARS), and escalate() echoes the
+    // body to stderr. Unlike a reviewer failure, nothing else persists an
+    // author's output — there is no round raw file yet — so this keeps the
+    // generous 12k tail rather than the adapter's 300-char verdict tail.
+    const raw = rawOutputTail(error?.message || error || "author failed");
     return recordTerminal(escalate(
       notify, orchDir, branch, round, reason, raw,
       classify(TRIGGERS.AUTHOR_AGENT_ERROR, { quota }),
@@ -386,7 +393,12 @@ export async function runCycle(opts, deps) {
           }));
           const quota = seats.some((s) => s.quota);
           const reason = `agent error: ${seats.map((s) => s.reason).join("; ")}`;
-          const body = agentErrors.map((v) => `${v.reviewer}: ${v.raw || v.reason}`).join("\n\n");
+          // The seat's own reason, NOT its raw capture: escalate() echoes this
+          // body to stderr, and a raw capture runs to MAX_AGENT_OUTPUT_CHARS
+          // (1 MiB) — it would bury the operator's console. The adapter already
+          // folded a bounded tail into `reason`, and the full capture is on disk
+          // in this round's raw file (writeRoundRaw above), so nothing is lost.
+          const body = agentErrors.map((v) => `${v.reviewer}: ${v.reason}`).join("\n\n");
           return recordTerminal(escalate(notify, orchDir, branch, round, reason,
             body, classify(TRIGGERS.REVIEWER_AGENT_ERROR, { quota }),
             { failedRole: "reviewer", failedAgents: seats }));
@@ -526,7 +538,9 @@ export async function runCycle(opts, deps) {
   } catch (error) {
     if (error?.preserveWorktree) {
       preserveWorktree = true;
-      notify.phase("author", error.message || String(error), "fail");
+      // Bounded like authorFailure's line above: an adapter failure message is
+      // the whole capture, and a stage line is one line.
+      notify.phase("author", oneLineStageResult(error.message || String(error)), "fail");
     }
     throw error;
   } finally {

@@ -1509,13 +1509,16 @@ test("a reviewer quota death classifies AGENT_QUOTA, not AGENT_ERROR", async () 
 test("the same reviewer quota death twice fingerprints identically", async () => {
   const runOnce = async (resetTime) => {
     const { wd } = emptyRepo("orch-engine-revfp-");
-    return runCycle({ ...opts, worktree: wd },
-      quotaDeps(null, { rev: `console.log('Claude usage limit reached. resets at ${resetTime}'); process.exit(1)` }));
+    const deps = quotaDeps(null, { rev: `console.log('Claude usage limit reached. resets at ${resetTime}'); process.exit(1)` });
+    return { result: await runCycle({ ...opts, worktree: wd }, deps), deps };
   };
   const a = await runOnce("3pm");
   const b = await runOnce("9pm");
-  assert.equal(a.class, "AGENT_QUOTA");
-  assert.equal(a.fingerprint, b.fingerprint);
+  assert.equal(a.result.class, "AGENT_QUOTA");
+  assert.equal(a.result.fingerprint, b.result.fingerprint);
+  // The constant reason is what stabilises the fingerprint; the varying reset
+  // time is not lost, it moves to the (bounded) note body.
+  assert.match(b.deps._calls.escalated, /resets at 9pm/);
 });
 
 test("a mixed reviewer failure names BOTH failed seats with their own reasons", async () => {
@@ -1535,4 +1538,44 @@ test("a mixed reviewer failure names BOTH failed seats with their own reasons", 
   assert.match(r.reason, /rev hit its usage limit/);
   assert.match(r.reason, /rev2 agent exited nonzero/);
   assert.match(r.reason, /opus-4\.8/, "the non-quota seat keeps its diagnostic tail");
+});
+
+test("a reviewer crash keeps the escalation note bounded, not the raw capture", async () => {
+  // escalate() echoes the note body to stderr, and a raw capture runs to the
+  // adapter's 1 MiB ceiling — dumping it would bury the operator's console.
+  // The adapter already folded a bounded tail into `reason`, and the untrimmed
+  // capture is on disk in the round's raw file.
+  const deps = makeDeps({
+    verdicts: [{
+      decision: "DISAGREE",
+      reason: "agent exited nonzero: boom",
+      raw: `${"X".repeat(50_000)}\nboom`,
+      agentError: true,
+    }],
+  });
+
+  const r = await runCycle(opts, deps);
+
+  assert.equal(r.status, "escalated");
+  assert.ok(!deps._calls.escalated.includes("X".repeat(1000)), "the raw capture must not land in the note");
+  assert.match(deps._calls.escalated, /rev: agent exited nonzero: boom/);
+});
+
+test("an author crash keeps the escalation note and the console line bounded", async () => {
+  // Unlike a reviewer crash there is no round raw file yet, so the note is the
+  // only surviving copy of the output — hence a 12k tail, not the 300-char
+  // verdict tail. The console still gets a one-line stage result.
+  const { wd } = emptyRepo("orch-engine-authorflood-");
+  const deps = quotaDeps(
+    "console.log('N'.repeat(40000)); console.log('last line: bad model id'); process.exit(1)",
+  );
+
+  const r = await runCycle({ ...opts, worktree: wd }, deps);
+
+  assert.equal(r.class, "AGENT_ERROR");
+  assert.ok(deps._calls.escalated.length < 13_000,
+    `note stays near the 12000-char tail bound, got ${deps._calls.escalated.length}`);
+  assert.match(deps._calls.escalated, /last line: bad model id/, "the tail carrying the cause survives");
+  const line = deps._calls.phases.filter((p) => p.status === "fail").at(-1).detail;
+  assert.ok(line.length <= 200, `console stage line stays one line, got ${line.length}`);
 });
