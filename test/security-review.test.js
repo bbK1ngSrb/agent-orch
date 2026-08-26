@@ -242,6 +242,17 @@ test("read-shaped lines still trip secret-read", () => {
   }
 });
 
+test("assigning a secret path to a variable is a mention, not a read", () => {
+  const d = `+++ b/src/x.js\n+  const source = ".orch/lock";`;
+  assert.deepEqual(scanDiff(d).findings, []);
+});
+
+// The path may be built by interpolation — that is still an argument to the read.
+test("interpolated path inside a read call still trips secret-read", () => {
+  const d = "+++ b/src/x.js\n+  const k = readFileSync(`${dir}/.orch/last-author`);";
+  assert.ok(scanDiff(d).findings.some((f) => f.rule === "secret-read"));
+});
+
 // A harmless mention first must not mask a real read later on the same line.
 test("mention plus a real read on one line still trips secret-read", () => {
   const d = `+++ b/src/x.js\n+  if (p !== ".orch/lock") return readFileSync("credentials/token");`;

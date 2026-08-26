@@ -51,10 +51,13 @@ function isCommentOnlyLine(line) {
 // on the path alone blocked 44 of 365 runs on lines that did nothing. A
 // `secret-read` finding therefore also requires READ-SHAPED CONTEXT: something
 // that actually opens the path, appearing before it on the same line. The
-// unanchored alternatives are the read verbs; the anchored ones are the shell
-// forms that are a single character (`. file`, `< file`) and would false-positive
-// anywhere else on the line.
-const READ_CONTEXT_RE = /\b(?:readFile|readFileSync|open|openSync|createReadStream|require|import|cat|source)\b|(?:^\+?|[;&|(])\s*\.\s+[~./"'`\w-]*$|<\s*[~./"'`\w-]*$/;
+// alternatives are the read verbs plus the shell forms that are a single
+// character (`. file`, `< file`), which only count at the start of a command.
+// Everything between the verb and the path must be ARGUMENT-SHAPED — quotes,
+// parens, separators, path characters, an interpolation — so `readFileSync(x,
+// ".orch/y")` counts while `const source = ".orch/lock"` does not: the `=` is not
+// an argument character, so the assignment is a mention, not a read.
+const READ_CONTEXT_RE = /(?:\b(?:readFile|readFileSync|open|openSync|createReadStream|require|import|cat|source)\b|(?:^\+?|[;&|(])\s*\.\s|<)[\s("'`,~./\w${}+-]*$/;
 
 // ponytail: line-based, like every rule in this file — a path assigned to a
 // variable on one line and read on the next is not caught. The substring match

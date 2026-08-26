@@ -228,7 +228,12 @@ line comments (not `#` ones in Python or YAML), only whole-line ones
 `${` in them (inside a template literal a `//` line still evaluates its
 interpolations, so `// note: ${readFileSync(".orch/x")}` fires), and only that rule —
 `env-read`, `network`, `guardrail-touch`, and the subprocess check still scan
-comment lines. On top of those built-in exemptions, `security.ignore` in `orch.yml`
+comment lines. `secret-read` also asks whether a matched line *reads* the path
+or only names it: the path must be an argument to something that opens it
+(`readFile`, `open`, `createReadStream`, `require`, `import`, or a shell `cat`,
+`source`, `.`, `<`), so `readFileSync(".orch/secrets")` fires and an error
+string carrying the same characters does not. That check is line-based, so a
+path read one line after it is assigned is not caught. On top of those built-in exemptions, `security.ignore` in `orch.yml`
 lets you exempt paths yourself — commented out in `orch.example.yml`, because
 exempting a path skips *every* security rule for it and belongs only on
 generated build artifacts, never on authored code.
