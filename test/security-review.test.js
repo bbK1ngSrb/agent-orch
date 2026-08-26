@@ -253,6 +253,13 @@ test("a read whose earlier argument closes brackets still trips secret-read", ()
     ["awaited readFile", `const s = await readFile(join(a,b), ".orch/secrets");`],
     ["interpolated template", "const s = readFileSync(`${dir}/.ssh/id_rsa`);"],
     ["array argv", `execFileSync("cat", ["/home/u/.ssh/id_rsa"])`],
+    ["optional call", `const s = readFileSync?.(".orch/secrets");`],
+    ["optional member and call", `const s = fsModule?.readFileSync?.(".orch/secrets");`],
+    ["|| default path", `const s = readFileSync(envPath || ".orch/secrets");`],
+    ["negated ternary path", `const s = readFileSync(!custom ? ".orch/secrets" : custom);`],
+    ["ternary else branch", `const s = readFileSync(custom ? custom : ".orch/secrets");`],
+    ["windows path", String.raw`const s = readFileSync("C:\Users\u\.ssh\id_rsa");`],
+    ["escaped quotes in a shell string", String.raw`execSync("cat \".ssh/id_rsa\"");`],
   ];
   for (const [label, line] of cases) {
     const r = scanDiff(`+++ b/src/x.js\n+${line}`);
@@ -262,6 +269,14 @@ test("a read whose earlier argument closes brackets still trips secret-read", ()
 
 test("assigning a secret path to a variable is a mention, not a read", () => {
   const d = `+++ b/src/x.js\n+  const source = ".orch/lock";`;
+  assert.deepEqual(scanDiff(d).findings, []);
+});
+
+// `=` is the single character the argument class keeps out, so it is the one
+// carrying the read-vs-mention distinction — assert it still holds with the
+// operator characters in the class.
+test("a secret path in an object literal without a read verb is a mention", () => {
+  const d = `+++ b/src/x.js\n+  const paths = { lock: ".orch/lock" };`;
   assert.deepEqual(scanDiff(d).findings, []);
 });
 

@@ -57,12 +57,26 @@ function isCommentOnlyLine(line) {
 // brackets, separators, path characters, an interpolation — so `readFileSync(x,
 // ".orch/y")` counts while `const source = ".orch/lock"` does not: the `=` is not
 // an argument character, so the assignment is a mention, not a read.
-// The class must carry the CLOSING brackets too, not just the opening ones:
-// `readFileSync(resolve(dir), ".orch/secrets")` is ordinary Node, and without
-// `)` the run back to the verb breaks at the inner call's close paren and a real
-// read is cleared. Widening this class can only ever flag more lines, never
-// fewer, so the fail-closed direction is preserved.
-const READ_CONTEXT_RE = /(?:\b(?:readFile|readFileSync|open|openSync|createReadStream|require|import|cat|source)\b|(?:^\+?|[;&|(])\s*\.\s|<)[\s()[\]"'`,~./\w${}+-]*$/;
+// The class therefore carries everything an argument expression is written with
+// EXCEPT `=`: the closing brackets as well as the opening ones, the operators that
+// combine or guard an argument — `? : ! | & *` — and the backslash of a Windows
+// path or an escaped quote. Each character omitted is a real read the floor stops
+// catching, because the run back to the verb breaks there:
+// `readFileSync(resolve(dir), ".orch/x")`, `readFileSync?.(".orch/x")`,
+// `readFileSync(p || ".orch/x")`, `readFileSync(c ? c : ".orch/x")` and
+// `readFileSync("C:\\u\\.ssh\\id_rsa")` are all ordinary Node. `=` is the one
+// character kept out, and it is what still separates a read from a mention.
+// Widening this class can only ever flag more lines, never fewer, so the
+// fail-closed direction is preserved — the price is that a message which happens
+// to run an argument character up to the path, `Error("cannot open: .orch/x")`,
+// now counts as read-shaped. Comparing the old and new predicates over every line
+// of `src/`, `test/` and `docs/` reports only the read fixtures this change adds
+// plus escaped-quote fixtures already in the test file — no other line.
+// The ceiling: `=`, `;` and the comparison operators stay out, so a read whose
+// argument contains an arrow function or a comparison — `readFileSync(list.find(f
+// => f.ok), ".orch/x")` — is still cleared, and no widening fixes that without the
+// parser named below.
+const READ_CONTEXT_RE = /(?:\b(?:readFile|readFileSync|open|openSync|createReadStream|require|import|cat|source)\b|(?:^\+?|[;&|(])\s*\.\s|<)[\s()[\]"'`,~.?!|&:*\\/\w${}+-]*$/;
 
 // ponytail: line-based, like every rule in this file — a path assigned to a
 // variable on one line and read on the next is not caught. The substring match
