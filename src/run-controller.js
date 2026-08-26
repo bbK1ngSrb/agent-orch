@@ -108,6 +108,15 @@ export async function runUntil(policy, record = {}, deps) {
   };
   let cycle = await deps.runCycle();
   const cycleResults = [cycle];
+  // A remedy that changed nothing (integration-repair losing its lock to a
+  // peer) hands the SAME cycle back so the loop re-polls readiness. Recording
+  // it again would write one phantom cycle result per contention round into the
+  // run record; only a genuinely fresh cycle is a new result.
+  const pushCycle = (next) => {
+    if (next === cycle) return;
+    cycle = next;
+    cycleResults.push(next);
+  };
 
   for (let loop = 0; loop < MAX_REMEDY_LOOPS; loop += 1) {
     // "approved" (engine.js's noMerge path) is a success terminal exactly
@@ -119,10 +128,7 @@ export async function runUntil(policy, record = {}, deps) {
       const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle });
       if (outcome.done) return withRecord({ ...outcome.result, cycle }, outcome.record, cycleResults);
       currentRecord = outcome.record;
-      if (outcome.cycle) {
-        cycle = outcome.cycle;
-        cycleResults.push(cycle);
-      }
+      if (outcome.cycle) pushCycle(outcome.cycle);
       continue;
     }
 
@@ -133,10 +139,7 @@ export async function runUntil(policy, record = {}, deps) {
       const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
       if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
       currentRecord = outcome.record;
-      if (outcome.cycle) {
-        cycle = outcome.cycle;
-        cycleResults.push(cycle);
-      }
+      if (outcome.cycle) pushCycle(outcome.cycle);
       continue;
     }
 
@@ -154,10 +157,7 @@ export async function runUntil(policy, record = {}, deps) {
           const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
           if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
           currentRecord = outcome.record;
-          if (outcome.cycle) {
-            cycle = outcome.cycle;
-            cycleResults.push(cycle);
-          }
+          if (outcome.cycle) pushCycle(outcome.cycle);
           continue;
         }
       }
@@ -180,10 +180,7 @@ export async function runUntil(policy, record = {}, deps) {
     const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
     if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
     currentRecord = outcome.record;
-    if (outcome.cycle) {
-      cycle = outcome.cycle;
-      cycleResults.push(cycle);
-    }
+    if (outcome.cycle) pushCycle(outcome.cycle);
   }
 
   return withRecord({ ...terminal("STOPPED_AT_CAP", cycle.class), cycle }, currentRecord, cycleResults);
