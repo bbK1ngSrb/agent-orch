@@ -619,6 +619,52 @@ test("integration repair: a REMOTE_CI_RED resolution that leaves conflict marker
   assert.equal(originSha(remote, "orch/integration"), before);
 });
 
+// The marker floor greps the WORKING TREE (git.js:79's `git grep` with no
+// revision argument reads files on disk); the pushed `candidateSha` is
+// whatever got committed. A resolver that edits the conflicted file on disk
+// without ever running `git add` (every other fixture in this file stages and
+// commits itself, so this is the one path that reaches the harness's own
+// "commit if MERGE_HEAD is still open" fallback) used to leave the INDEX at
+// whatever `git add -A` staged BEFORE the resolver ran — raw conflict markers,
+// since that add only exists to let `write-tree` pin `resolverBase`. Without
+// re-staging before that fallback commit, the floor greps the resolver's
+// clean disk edit while `candidateSha` pins the stale, still-conflicted tree
+// underneath it — the floor passes, and the markers are what land.
+test("integration repair: a resolver that edits the conflict on disk without staging still lands its actual edit, not the stale pre-resolution index", async () => {
+  const { repo, remote } = repairFixture();
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        // No `git add`, no `git commit` — the way a real CLI agent leaves the
+        // worktree (see `captureAuthorWork`'s own comment: "cannot be trusted
+        // to commit"), simulated directly rather than through that adapter.
+        writeFileSync(join(wd, "shared.txt"), "resolved on disk only\n");
+      },
+    },
+    reviewer: {
+      async audit(branch, wd) {
+        calls.push("audit");
+        return { decision: "AGREE", reason: "reconstructs both sides" };
+      },
+    },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle?.status, "merged", out.result?.reason);
+  assert.deepEqual(calls, ["author", "audit"]);
+  assert.equal(git.git(["show", "orch/integration:shared.txt"], repo), "resolved on disk only");
+  assert.equal(originSha(remote, "orch/integration"), git.git(["rev-parse", "orch/integration"], repo));
+});
+
 // §10A acceptance criterion 4: self-review is refused. A single-agent pool
 // (the DEFAULT_RESOLVERS fallback: just "claude") can resolve the conflict,
 // but nothing differs from it to audit the result, so the repair fails closed

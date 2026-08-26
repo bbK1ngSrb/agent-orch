@@ -461,6 +461,16 @@ async function repairConflictOrRed(ctx, deps) {
       if (!agentDiff.ok) return { ok: false, reason: agentDiff.reason };
       resolverPaths = [...new Set([...conflicts, ...parseRawPaths(agentDiff.out)])];
       if (git.gitTry(["rev-parse", "-q", "--verify", "MERGE_HEAD"], scratch).ok) {
+        // Re-stage before this commit, not just before the pre-resolver
+        // `write-tree` above: a resolver that edits files without running
+        // `git add` (real CLI agents normally rely on `captureAuthorWork` for
+        // that, a file this one never calls into) would otherwise leave the
+        // index exactly as `git add -A` staged it BEFORE the resolver ran —
+        // markers and all — and `commit --no-edit` commits the INDEX, not the
+        // working tree. The marker floor below greps the working tree, so
+        // without this the floor validates the resolver's fix while
+        // `candidateSha` pins the stale, unresolved content underneath it.
+        git.gitTry(["add", "-A"], scratch);
         git.gitTry(["commit", "--no-edit"], scratch);
       }
     } else if (cls === "REMOTE_CI_RED") {
