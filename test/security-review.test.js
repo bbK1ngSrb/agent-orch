@@ -211,6 +211,49 @@ test("reading from a credentials directory → DISAGREE (secret-read)", () => {
   assert.ok(r.findings.some((f) => f.rule === "secret-read"));
 });
 
+// #560: the rule needs read-shaped context, not just the path characters. These
+// three lines are the real ones that blocked cycles #552/#557/#558 by hand-merge.
+test("mentioning a secret path without reading it → AGREE", () => {
+  const cases = [
+    ["error string", `  if (!acquireLock(orchDir, LOCK_NAMES.CYCLE)) throw new Error(".orch/lock held — another cycle is running");`],
+    ["equality test", `    .filter((l) => l.slice(3).trim() !== ".orch/merge.lock")`],
+    ["shell comment", `# in .orch/resume/, so the retry reattaches the branch and continues from the`],
+  ];
+  for (const [label, line] of cases) {
+    const r = scanDiff(`+++ b/src/x.js\n+${line}`);
+    assert.deepEqual(r.findings, [], label);
+    assert.equal(r.decision, "AGREE", label);
+  }
+});
+
+test("read-shaped lines still trip secret-read", () => {
+  const cases = [
+    ["readFileSync", `const s = readFileSync(".orch/secrets", "utf8");`],
+    ["fs.readFile", `fs.readFile("/home/u/.ssh/id_rsa", cb)`],
+    ["shell cat", `cat ~/.ssh/id_rsa`],
+    ["shell source", `source .env`],
+    ["shell dot", `. ./.env`],
+    ["shell redirect", `read -r key < .ssh/id_rsa`],
+  ];
+  for (const [label, line] of cases) {
+    const r = scanDiff(`+++ b/src/x.sh\n+${line}`);
+    assert.equal(r.decision, "DISAGREE", label);
+    assert.ok(r.findings.some((f) => f.rule === "secret-read"), label);
+  }
+});
+
+// A harmless mention first must not mask a real read later on the same line.
+test("mention plus a real read on one line still trips secret-read", () => {
+  const d = `+++ b/src/x.js\n+  if (p !== ".orch/lock") return readFileSync("credentials/token");`;
+  assert.ok(scanDiff(d).findings.some((f) => f.rule === "secret-read"));
+});
+
+// env-read is untouched by #560: it keeps matching the text alone.
+test("env-read still fires without read-shaped context", () => {
+  const d = `+++ b/test/cli.test.js\n+      ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,`;
+  assert.ok(scanDiff(d).findings.some((f) => f.rule === "env-read"));
+});
+
 test("template-literal env access does NOT trip secret-read (env-read only)", () => {
   const d = "+++ b/src/x.js\n+  log(`env=${process.env.NODE_ENV}`);";
   const r = scanDiff(d);
@@ -639,7 +682,7 @@ test("scanDiff+format: real secret-read leads fixture noise for the same rule", 
     "+  const k = readFileSync(\".orch/last-author\");",
     "+++ b/test/security-review.test.js",
     "+  // See .orch/orch.yml in a docs-only example",
-    "+  const probe = \"read .orch/x\";",
+    "+  const probe = readFileSync(\".orch/x\");",
   ].join("\n");
   const r = scanDiff(d);
   assert.equal(r.decision, "DISAGREE");

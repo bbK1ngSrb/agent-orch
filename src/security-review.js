@@ -8,9 +8,11 @@ import { DEFAULT_PROTECTED } from "./intake/allowlist.js";
 // deterministic floor cannot be talked out of a DISAGREE.
 export const SECURITY_RULES = [
   { rule: "env-read", re: /process\.env|import\.meta\.env|os\.environ|\$\{?GITHUB_TOKEN/ },
-  // The dotenv alternative requires an opening quote so `process.env` — already
-  // covered by env-read — does not also fire here; only quoted file paths match.
-  { rule: "secret-read", re: /\.orch\/|id_rsa|\.ssh\/|secrets?\.|\.pem\b|PRIVATE KEY|["'`](?:[^"'`]*[/\\])?\.env\b|credentials?\//i },
+  // The quoted dotenv alternative keeps `process.env` — already covered by
+  // env-read — from firing here; the unquoted one (`source .env`) uses a
+  // lookbehind for the same reason: a `.env` glued to an identifier is a property
+  // access, not a file. Both are gated on read-shaped context below.
+  { rule: "secret-read", re: /\.orch\/|id_rsa|\.ssh\/|secrets?\.|\.pem\b|PRIVATE KEY|["'`](?:[^"'`]*[/\\])?\.env\b|(?<![\w.$])\.env\b|credentials?\//i },
   { rule: "network", re: /\bfetch\s*\(|node:net\b|node:dns\b|node:https?\b|require\(\s*["']https?["']\s*\)|XMLHttpRequest|\.connect\s*\(/ },
   { rule: "guardrail-touch", re: /branchProtection|CODEOWNERS|orch-pr\.yml|workflows\// },
 ];
@@ -42,6 +44,31 @@ function isDocsPath(file) {
 function isCommentOnlyLine(line) {
   const content = String(line).replace(/^\+/, "").trim();
   return content.startsWith("//") && !content.includes("${");
+}
+
+// #560: naming a sensitive path is not reading one. An error string, an equality
+// test or a shell comment carries the same characters as a real read, and matching
+// on the path alone blocked 44 of 365 runs on lines that did nothing. A
+// `secret-read` finding therefore also requires READ-SHAPED CONTEXT: something
+// that actually opens the path, appearing before it on the same line. The
+// unanchored alternatives are the read verbs; the anchored ones are the shell
+// forms that are a single character (`. file`, `< file`) and would false-positive
+// anywhere else on the line.
+const READ_CONTEXT_RE = /\b(?:readFile|readFileSync|open|openSync|createReadStream|require|import|cat|source)\b|(?:^\+?|[;&|(])\s*\.\s+[~./"'`\w-]*$|<\s*[~./"'`\w-]*$/;
+
+// ponytail: line-based, like every rule in this file — a path assigned to a
+// variable on one line and read on the next is not caught. The substring match
+// this refines never saw across lines either, so that is not new; the threat model
+// is an agent *accidentally* writing a read, and a read is written on one line. A
+// parser with dataflow is the upgrade path if deliberate evasion ever matters.
+function isReadShaped(line, re) {
+  const all = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+  // Every occurrence, not just the first: a line may mention a path harmlessly
+  // and read a different one further along.
+  for (const m of String(line).matchAll(all)) {
+    if (READ_CONTEXT_RE.test(String(line).slice(0, m.index))) return true;
+  }
+  return false;
 }
 
 // Git C-quotes paths containing non-ASCII or control characters in diff headers
@@ -249,7 +276,7 @@ export function scanDiff(diffText, { ignore = [], rawPaths = [] } = {}) {
   const regexVars = regexLiteralVars(entries.map((e) => e.raw));
   for (const { file, raw } of entries) {
     for (const { rule, re } of SECURITY_RULES) {
-      if (rule === "secret-read" && isCommentOnlyLine(raw)) continue;
+      if (rule === "secret-read" && (isCommentOnlyLine(raw) || !isReadShaped(raw, re))) continue;
       if (re.test(raw)) findings.push({ rule, line: raw.slice(1).trim(), file });
     }
     if (isSubprocessCall(raw, regexVars)) {
