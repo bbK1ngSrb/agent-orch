@@ -1411,7 +1411,16 @@ for (const [name, over] of [
 // wording actually set the flag the engine classifies on?
 
 function quotaDeps(authorScript, reviewerScripts = {}) {
-  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  // Conditional, not a flat []: when the real (dying) author adapter is in the
+  // seat the branch genuinely has no diff, so the empty list is what the scope
+  // gate would really see — that is what makes "not DIFF_EMPTY" a load-bearing
+  // assertion instead of a stub that could never produce it. The reviewer tests
+  // leave the author stubbed, and that stub needs a non-empty diff to get past
+  // the scope gate to the audit stage at all.
+  const deps = makeDeps({
+    verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }],
+    changed: authorScript ? [] : ["src/a.js"],
+  });
   const made = new Map();
   const adapterFor = (name, script) => {
     if (!made.has(name)) {
