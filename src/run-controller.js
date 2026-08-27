@@ -54,6 +54,7 @@ function withRecord(result, record, cycleResults) {
     attempt: record.attempt || 0,
     retries: { ...record.retries },
     failures: [...(record.failures || [])],
+    ...(record.excludedAgents ? { excludedAgents: [...record.excludedAgents] } : {}),
     ...(cycleResults?.length > 1 ? { cycleResults: [...cycleResults] } : {}),
   };
 }

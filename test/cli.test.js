@@ -13,6 +13,9 @@ import * as adapters from "../src/adapters/index.js";
 import * as gitDep from "../src/git.js";
 import * as notify from "../src/notify.js";
 import * as checkpointDep from "../src/checkpoint.js";
+import * as runRecordDep from "../src/run-record.js";
+import * as resume from "../src/resume.js";
+import { makeCliAdapter } from "../src/adapters/cli-adapter.js";
 import { IS_WINDOWS } from "../src/platform.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
@@ -1046,6 +1049,51 @@ test("orch task --until ready --json exits 0 after one integration repair of a B
   }
 });
 
+test("orch task wires the rebase remedy with the active run context", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-rebase-wiring-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  const integrationHead = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: integrationHead, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  let gateRuns = 0;
+  const authorCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author(_prompt, worktree) {
+          const file = authorCalls.length === 0 ? "feature.txt" : "repair.txt";
+          authorCalls.push(name);
+          writeFileSync(join(worktree, file), `${file}\n`);
+          gitDep.git(["add", file], worktree);
+          gitDep.git(["commit", "-m", `author ${file}`], worktree);
+          return { usage: {} };
+        },
+        async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+    gate: {
+      detect: () => "true",
+      run: () => ({ pass: ++gateRuns > 1, log: "" }),
+    },
+  };
+  try {
+    await runMainInRepo(repo, ["task", "rebase wiring", "--until", "ready", "--no-tidy"], {
+      cycleDeps,
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      sleep: async () => {},
+    });
+    assert.equal(gateRuns, 2, "the rebase remedy must run a fresh gated cycle");
+    assert.equal(authorCalls.length, 2, "the wired remedy must reach its repair author");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 test("orch task --until ready re-runs a non-landed free retry cycle", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo();
@@ -1411,6 +1459,202 @@ test("nextAuthor ignores a pin not in the agents pool (#27)", () => {
   const cfg = { agents: ["claude", "codex"] };
   const r = nextAuthor(cfg, d, "ghost"); // unknown agent → fall back to rotation
   assert.equal(r.authorName, "claude");
+});
+
+test("nextAuthor does not re-seat a pinned excluded author", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-exclude-"));
+  const r = nextAuthor({ agents: ["claude", "codex", "copilot"] }, d, "claude", true, {
+    exclude: ["claude"], persist: false,
+  });
+  assert.equal(r.authorName, "codex");
+  assert.deepEqual(r.reviewerNames, ["copilot"]);
+});
+
+test("nextAuthor rotates the author away from a forced reviewer collision", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-reviewer-collision-"));
+  const r = nextAuthor({ agents: ["claude", "codex"], reviewers: ["claude"] }, d, null, true, {
+    blockedAuthors: ["claude"], persist: false,
+  });
+  assert.equal(r.authorName, "codex");
+  assert.deepEqual(r.reviewerNames, ["claude"]);
+});
+
+test("a one-agent pool keeps task and review role selection usable", async () => {
+  const taskRepo = initGitRepo("orch-one-agent-task-");
+  writeFileSync(join(taskRepo, "orch.yml"), "agents: [claude]\n");
+  const taskLogs = await runMainInRepo(taskRepo, ["task", "one agent task", "--no-tidy"]);
+  assert.match(taskLogs.join("\n"), /pr\/claude\/.*: merged/);
+
+  const reviewRepo = initGitRepo("orch-one-agent-review-");
+  const branch = "pr/claude/one-agent-review";
+  gitDep.git(["branch", branch], reviewRepo);
+  writeFileSync(join(reviewRepo, "orch.yml"), "agents: [claude]\n");
+  const reviewLogs = await runMainInRepo(reviewRepo, ["review", branch], { finishRun: async () => {} });
+  assert.match(reviewLogs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("task --reviewer rotates away from the requested reviewer end to end", async () => {
+  const repo = initGitRepo("orch-reviewer-task-e2e-");
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\n");
+  const auditCalls = [];
+  const cycleDeps = fakeCycleDeps();
+  cycleDeps.adapters = {
+    get: (name) => ({
+      name,
+      async author() {},
+      async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "" }; },
+    }),
+  };
+  const logs = await runMainInRepo(repo, ["task", "reviewer collision", "--reviewer", "claude", "--no-tidy"], { cycleDeps });
+  assert.deepEqual(auditCalls, ["claude"]);
+  assert.match(logs.join("\n"), /pr\/codex\/.*: merged/);
+});
+
+test("review --reviewer uses the requested reviewer end to end", async () => {
+  const repo = initGitRepo("orch-reviewer-review-e2e-");
+  const branch = "pr/codex/reviewer-regression";
+  gitDep.git(["branch", branch], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\n");
+  const auditCalls = [];
+  const cycleDeps = fakeCycleDeps();
+  cycleDeps.adapters = {
+    get: (name) => ({
+      name,
+      async author() {},
+      async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "" }; },
+    }),
+  };
+  const logs = await runMainInRepo(repo, ["review", branch, "--reviewer", "claude"], { cycleDeps, finishRun: async () => {} });
+  assert.deepEqual(auditCalls, ["claude"]);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("orch continue re-seats an excluded author from the inflight record", async () => {
+  const repo = initGitRepo("orch-continue-rotate-");
+  const orchDir = join(repo, ".orch");
+  const sid = "rotate1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex, copilot]\n");
+  inflight.register(orchDir, sid, {
+    branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo),
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
+    excludedAgents: [{ name: "claude", reason: "quota", at: "2026-08-27T00:00:00.000Z" }],
+    rotationStage: "started",
+  });
+
+  const authorCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+  };
+  // The fake author needs the actual worktree path; capture it from the call.
+  cycleDeps.adapters.get = (name) => ({
+    name,
+    async author(_prompt, worktree) {
+      authorCalls.push(name);
+      if (name === "codex") {
+        writeFileSync(join(worktree, "replacement.txt"), "replacement\n");
+        gitDep.git(["add", "replacement.txt"], worktree);
+        gitDep.git(["commit", "-m", "replacement author work"], worktree);
+      }
+      return { usage: {} };
+    },
+    async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+  });
+  await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+  assert.deepEqual(authorCalls, ["codex"]);
+  assert.equal(inflight.lookup(orchDir, sid), null);
+});
+
+test("orch continue preserves a reviewer rotation if killed before its checkpoint", async () => {
+  const repo = initGitRepo("orch-continue-reviewer-rotate-");
+  const orchDir = join(repo, ".orch");
+  const sid = "reviewrotate";
+  const branch = `pr/claude/reviewer-rotate-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex, copilot]\n");
+  inflight.register(orchDir, sid, {
+    branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo),
+    author: { agent: "claude" }, reviewers: [{ agent: "copilot" }],
+    excludedAgents: [{ name: "codex", reason: "quota", at: "2026-08-27T00:00:00.000Z" }],
+    rotationStage: "authored",
+  });
+
+  let authorCalls = 0;
+  let auditCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { authorCalls += 1; throw new Error("reviewer rotation must not re-author"); },
+        async audit() { auditCalls += 1; return { decision: "AGREE", reason: "ok", raw: "" }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  assert.equal(authorCalls, 0);
+  assert.equal(auditCalls, 1);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("a rotated author keeps the partial-WIP guard active", { skip: IS_WINDOWS && "POSIX fixture scripts are not executable on Windows" }, async () => {
+  const repo = initGitRepo("orch-rotate-partial-wip-");
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex, copilot]\nroundCap: 3\n");
+  const quotaCli = join(repo, "quota-cli.sh");
+  const noopCli = join(repo, "noop-cli.sh");
+  const reviewCli = join(repo, "review-cli.sh");
+  writeFileSync(quotaCli, "#!/bin/sh\nprintf 'provider usage limit reached\\n'\nprintf 'partial\\n' > partial.txt\nexit 1\n");
+  writeFileSync(noopCli, "#!/bin/sh\nexit 0\n");
+  writeFileSync(reviewCli, "#!/bin/sh\nprintf 'AGREE\\n'\n");
+  for (const script of [quotaCli, noopCli, reviewCli]) chmodSync(script, 0o755);
+
+  const calls = [];
+  const rotationEvents = [];
+  const rotationState = {
+    inflight: { setRoles: (...args) => { rotationEvents.push(["inflight", args[2].excludedAgents]); return inflight.setRoles(...args); } },
+    runRecord: { update: (...args) => { rotationEvents.push(["run-record", args[2].excludedAgents]); return runRecordDep.update(...args); } },
+    resume: {
+      clear: (...args) => { rotationEvents.push(["resume-clear"]); return resume.clear(...args); },
+      record: (...args) => { rotationEvents.push(["resume-record"]); return resume.record(...args); },
+    },
+    checkpoint: { clear: (...args) => { rotationEvents.push(["checkpoint-clear"]); return checkpointDep.clear(...args); } },
+  };
+  const cli = (name, bin) => {
+    const adapter = makeCliAdapter({ name, bin, buildArgs: () => [] });
+    const original = adapter.author;
+    adapter.author = async (...args) => { calls.push(name); return original(...args); };
+    return adapter;
+  };
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get(name) {
+        if (name === "claude") return cli(name, quotaCli);
+        if (name === "copilot") return cli(name, noopCli);
+        return cli(name, reviewCli);
+      },
+    },
+  };
+  await assert.rejects(
+    runMainInRepo(repo, ["task", "partial quota task", "--until", "ready", "--no-tidy"], { cycleDeps, rotationState }),
+    /partial WIP unchanged/,
+  );
+  assert.deepEqual(calls, ["claude", "copilot"]);
+  assert.deepEqual(rotationEvents.map(([kind]) => kind), ["inflight", "run-record", "resume-clear", "resume-record", "checkpoint-clear"]);
+  assert.deepEqual(rotationEvents[0][1].map((entry) => entry.name), ["claude"]);
+  assert.deepEqual(rotationEvents[1][1].map((entry) => entry.name), ["claude"]);
+  assert.equal(gitDep.git(["log", "-1", "--format=%s", "HEAD"], repo), "init");
 });
 
 test("preflight throws a clear error when .orch/ is read-only", { skip: IS_WINDOWS && "chmod doesn't restrict directory writes on Windows" }, () => {
@@ -3015,8 +3259,6 @@ test("resolveTaskBranch: dry never reads or writes the store (#24)", () => {
 
 import { pinnedResumeAuthor } from "../src/cli.js";
 import { branchExists, createTaskBranch, git as rawGit } from "../src/git.js";
-import * as resume from "../src/resume.js";
-
 function pinStubs({ records = [], exists = true, changed = ["a"] }) {
   return {
     git: { branchExists: () => exists, changedFiles: () => changed },
@@ -3212,6 +3454,48 @@ test("orch continue <sid> resumes from checkpoint, past review, without re-autho
   assert.equal(ck, null); // completed run clears its checkpoint
 });
 
+test("orch continue does not infer rotation from a branch/author mismatch", async () => {
+  const repo = initGitRepo("orch-continue-no-rotation-inference-");
+  const sid = "n0r0tate";
+  const branch = "review/opaque-branch-name";
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid, {
+    branch, oid: gitDep.git(["rev-parse", branch], repo), round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "codex", model: null, effort: null },
+    reviewers: [{ agent: "claude", model: null, effort: null }],
+  });
+
+  let audits = 0;
+  let authorCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { authorCalls++; throw new Error("must not re-author"); },
+        async audit() { audits++; return { decision: "AGREE", reason: "still good", raw: "" }; },
+      }),
+    },
+    finalize: async () => { throw new Error("simulated crash after cached review"); },
+  };
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid], { cycleDeps }),
+    /simulated crash after cached review/,
+  );
+  assert.equal(authorCalls, 0, "a branch-name mismatch is not a rotation");
+  assert.equal(audits, 0, "a cached AGREE checkpoint must not trigger a re-audit");
+  const leftBehind = checkpointDep.lookup(orchDir, sid);
+  assert.ok(leftBehind, "the cached checkpoint must remain live after the crash");
+  assert.equal(leftBehind.stage, "tested");
+});
+
 // `continue`'s dry-run guard uses the same `dry ? dryDeps() : ...` switch as
 // task/issue/review, but nothing exercised it directly for this command — a
 // mutating command needs its own regression, not a inference from a sibling
@@ -3273,6 +3557,195 @@ test("orch continue <sid> re-runs an interrupted author whose tip is a WIP commi
   assert.equal(gitDep.git(["log", "-1", "--format=%s", branch], repo),
     "wip(author): partial work before timeout",
     "a no-op retry keeps the recoverable WIP tip for another attempt");
+});
+
+test("orch continue retries a task checkpoint whose author died before committing", async () => {
+  const repo = initGitRepo("orch-continue-empty-author-");
+  const sid = "empty1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["branch", branch], repo);
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "started", task: "fix the timeout bug",
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
+  });
+  inflight.register(orchDir, sid, {
+    branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo),
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
+  });
+
+  let authorCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { authorCalls++; return { usage: {} }; },
+        async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  assert.equal(authorCalls, 1, "a task checkpoint must re-enter the author stage");
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.equal(checkpointDep.lookup(orchDir, sid), null);
+});
+
+test("orch task preserves an explicitly paired author/reviewer self-seat", async () => {
+  const repo = initGitRepo("orch-fixed-self-task-");
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\n");
+  const auditCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { return { usage: {} }; },
+        async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, [
+    "task", "same fixed roles", "--author", "claude", "--reviewer", "claude", "--no-tidy",
+  ], { cycleDeps });
+
+  assert.deepEqual(auditCalls, ["claude"]);
+  assert.match(logs.join("\n"), /pr\/claude\/.*: merged/);
+});
+
+test("orch task keeps the valid seat from a colliding plural fixed-role fan-out", async () => {
+  for (const [reviewer, author] of [["claude", "codex"], ["codex", "claude"]]) {
+    const repo = initGitRepo(`orch-plural-role-collision-${reviewer}-`);
+    const calls = [];
+    const cycleDeps = {
+      ...fakeCycleDeps(),
+      adapters: {
+        get: (name) => ({
+          name,
+          async author() { calls.push(["author", name]); return { usage: {} }; },
+          async audit() { calls.push(["reviewer", name]); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+        }),
+      },
+    };
+    const logs = await runMainInRepo(repo, [
+      "task", "plural fixed roles", "--authors", "claude,codex", "--reviewers", reviewer, "--no-tidy",
+    ], { cycleDeps });
+
+    assert.deepEqual(calls, [["author", author], ["reviewer", reviewer]], reviewer);
+    assert.match(logs.join("\n"), new RegExp(`pr/${author}/.*: merged`));
+  }
+});
+
+test("orch review permits an explicitly requested reviewer who authored the branch", async () => {
+  const repo = initGitRepo("orch-fixed-self-review-");
+  const branch = "pr/claude/review-self";
+  gitDep.git(["branch", branch], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\n");
+  const auditCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("review must not author"); },
+        async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["review", branch, "--reviewer", "claude"], {
+    cycleDeps, finishRun: async () => {},
+  });
+
+  assert.deepEqual(auditCalls, ["claude"]);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("orch review permits a configured reviewer who authored the branch", async () => {
+  const repo = initGitRepo("orch-configured-self-review-");
+  const branch = "pr/codex/review-self";
+  gitDep.git(["branch", branch], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\nauthors: [claude]\nreviewers: [codex]\n");
+  const auditCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("review must not author"); },
+        async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["review", branch], { cycleDeps, finishRun: async () => {} });
+
+  assert.deepEqual(auditCalls, ["codex"]);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("orch continue permits an explicitly requested branch author as reviewer", async () => {
+  const repo = initGitRepo("orch-continue-reviewer-self-");
+  const sid = "continue-self";
+  const branch = `pr/claude/reviewer-self-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\n");
+  checkpointDep.record(join(repo, ".orch"), sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+  });
+
+  const auditCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("continue must not re-author"); },
+        async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["continue", sid, "--reviewer", "claude"], {
+    cycleDeps,
+    finishRun: async () => {},
+  });
+
+  assert.deepEqual(auditCalls, ["claude"]);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("orch continue permits a configured reviewer who authored the branch", async () => {
+  const repo = initGitRepo("orch-continue-configured-self-");
+  const sid = "continue-configured-self";
+  const branch = `pr/codex/reviewer-self-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\nauthors: [claude]\nreviewers: [codex]\n");
+  checkpointDep.record(join(repo, ".orch"), sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "codex" }, reviewers: [{ agent: "codex" }],
+  });
+
+  const auditCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("continue must not re-author"); },
+        async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  assert.deepEqual(auditCalls, ["codex"]);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
 test("orch continue <sid> clears a stale checkpoint when the branch was merged and deleted", async () => {
@@ -3383,6 +3856,54 @@ test("orch continue <sid> reuses the persisted author/reviewer model+effort by d
   assert.equal(auditOpts.length, 1);
   assert.equal(auditOpts[0].model, "gpt-5.1"); // persisted reviewer model, not a re-resolved default
   assert.equal(auditOpts[0].allowLargeScope, false); // legacy persisted sanction is not reused
+});
+
+test("orch continue ignores an exclusion unrelated to the cached reviewer", async () => {
+  const repo = initGitRepo("orch-continue-unrelated-exclusion-");
+  const sid = "unrel4ted";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  const originalReviewers = [{ agent: "codex", model: "gpt-5.1", effort: null }];
+  checkpointDep.record(orchDir, sid, {
+    branch, oid: gitDep.git(["rev-parse", branch], repo), round: 1,
+    stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude", model: null, effort: null },
+    reviewers: originalReviewers,
+    excludedAgents: [{ name: "unrelated-agent", reason: "quota" }],
+  });
+
+  let auditCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit() {
+          auditCalls += 1;
+          return { decision: "AGREE", reason: "still good", raw: "", usage: {} };
+        },
+      }),
+    },
+    // Leave the checkpoint behind after engine.js records the round so both
+    // the cached-verdict and persisted-reviewer behavior are observable.
+    finalize: async () => { throw new Error("simulated crash after checkpoint write"); },
+  };
+  writeFileSync(join(orchDir, "orch.yml"), "agents: [claude, codex, copilot]\n");
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid], { cycleDeps }),
+    /simulated crash/,
+  );
+
+  assert.equal(auditCalls, 0); // the cached AGREE verdict remains valid
+  assert.deepEqual(checkpointDep.lookup(orchDir, sid).reviewers, originalReviewers);
 });
 
 // Codex review: preflight used to validate the FULL current orch.yml (its
@@ -3554,6 +4075,7 @@ test("orch continue <sid> --reviewer override does not leak into the checkpoint 
     branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
     author: { agent: "claude", model: null, effort: null },
     reviewers: originalReviewers,
+    excludedAgents: [{ name: "unrelated-agent", reason: "quota" }],
   });
 
   const cycleDeps = {
@@ -3624,6 +4146,36 @@ test("orch continue <sid> reclaims an orphaned worktree left by a killed prior a
   assert.equal(existsSync(`${worktree}.orch-preserve`), false, "successful resume clears the preservation marker");
 });
 
+test("orch continue <sid> refuses an unregistered worktree directory and leaves it intact", async () => {
+  const repo = initGitRepo("orch-continue-unregistered-");
+  const sid = "unreg1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+  const worktree = join(repo, ".orch", "wt", branch.replace(/\//g, "_"));
+  mkdirSync(worktree, { recursive: true });
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid]),
+    (error) => {
+      assert.match(error.message, /worktree directory exists/);
+      assert.match(error.message, /Git's worktree registry does not know about it/);
+      assert.ok(error.message.includes(worktree));
+      assert.match(error.message, /Committed work .* safe/);
+      assert.match(error.message, /inspect and clear the directory by hand/);
+      assert.match(error.message, /orch continue/);
+      return true;
+    },
+  );
+  assert.equal(existsSync(worktree), true);
+  assert.doesNotMatch(gitDep.git(["worktree", "list"], repo), /some-fix-unreg1/);
+});
+
 test("orch continue <sid> resumes dirty work from a preserved capture failure", async () => {
   const repo = initGitRepo("orch-continue-preserved-dirty-");
   const sid = "capture1";
@@ -3691,7 +4243,10 @@ test("orch continue <sid> refuses to resume an inflight-only branch with no comm
   // branch carries no committed diff vs. main. A dead pid, not process.pid —
   // this must simulate the process actually having died, or the still-live
   // guard (added after #125's stalemate) would refuse it for the wrong reason.
-  inflight.register(join(repo, ".orch"), sid, { branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+  inflight.register(join(repo, ".orch"), sid, {
+    branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo),
+    excludedAgents: [{ name: "unrelated-agent", reason: "quota" }],
+  });
 
   await assert.rejects(
     runMainInRepo(repo, ["continue", sid]),

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.344 — 2026-08-27
+- A cycle killed after an agent usage limit records no run outcome, leaving resumable work with nothing pointing at it (closes [#537](https://github.com/bbk1ng/agent-orch/issues/537))
+
+## v0.4.343 — 2026-08-27
+- orch continue loops forever on "worktree already exists" when a killed run leaves a directory git no longer has registered (closes [#540](https://github.com/bbk1ng/agent-orch/issues/540))
+
+## v0.4.342 — 2026-08-27
+- CLI v2 P6 split 3b/4 — rotate the exhausted seat (§8b) (closes [#570](https://github.com/bbk1ng/agent-orch/issues/570))
+
 ## v0.4.341 — 2026-08-26
 - orch-loop.sh retries a terminal BLOCKED (exit 3) as if it were a quota death (closes [#575](https://github.com/bbk1ng/agent-orch/issues/575))
 
