@@ -27,7 +27,6 @@ import { scanDiff, parseRawPaths, SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "
 import * as lockDefault from "./lock.js";
 import { LOCK_NAMES } from "./lock.js";
 import { updateBranch } from "./github.js";
-import { redact } from "./redact.js";
 
 const DEFAULT_RESOLVERS = [{ agent: "claude", model: null, effort: null }];
 
@@ -123,17 +122,6 @@ function resolverPrompt({ branch, base, cls, failure, conflicts }) {
       ? "Act as a neutral third party; reconstruct both parents' intent. Preserve behavior from both sides unless truly incompatible."
       : "Fix only the named failing check(s); do not widen scope.",
     "Resolve everything, stage the result, and commit it. Do not edit unrelated files.",
-  ].filter((line) => line !== null).join("\n");
-}
-
-function proposalComment({ mode, cls, paths, resolver }) {
-  return [
-    "agent-orch: conflict resolution needs human approval.",
-    "",
-    `Mode: ${mode}`,
-    `Class: ${cls}`,
-    paths.length ? `Files: ${paths.join(", ")}` : null,
-    `Resolver: ${resolver}`,
   ].filter((line) => line !== null).join("\n");
 }
 
@@ -378,8 +366,8 @@ async function repairBehind(ctx, deps) {
 // run has told us nothing, and nothing is not permission to push to a branch
 // other cycles depend on.
 async function repairConflictOrRed(ctx, deps) {
-  const { orchDir, repo, branch, base, cfg, class: cls, failure, prNumber, scratchBranch } = ctx;
-  const { git, gate, gh, adapters } = deps;
+  const { orchDir, repo, branch, base, cfg, class: cls, failure, scratchBranch } = ctx;
+  const { git, gate, adapters } = deps;
   const mode = modeOf(cfg);
   const timeoutMs = stageTimeoutMs(cfg);
 
@@ -416,12 +404,12 @@ async function repairConflictOrRed(ctx, deps) {
       const conflicts = conflictedPathsIn(git, scratch);
       if (!conflicts.length) return { ok: false, reason: (merge.out || "merge failed").trim() };
       // The same opt-in gate `resolveIntegrationConflict` already enforces: a
-      // repo configured `conflictResolution: "manual"` (the default) never gets
-      // an agent auto-resolving a merge conflict here either. Checked BEFORE
-      // the resolver is constructed, so no agent process starts at all.
-      if (mode === "manual") {
+      // repo configured with a non-auto mode never gets an agent auto-resolving
+      // a merge conflict here either. Checked BEFORE the resolver is
+      // constructed, so no agent process starts at all.
+      if (mode !== "auto") {
         git.gitTry(["merge", "--abort"], scratch);
-        return { ok: false, reason: "conflictResolution is manual" };
+        return { ok: false, reason: mode === "manual" ? "conflictResolution is manual" : "conflictResolution is not auto" };
       }
       resolverRan = true;
       // Pin the CONFLICTED state as a tree so the resolver's own edits can be
@@ -474,10 +462,12 @@ async function repairConflictOrRed(ctx, deps) {
       }
     } else if (cls === "REMOTE_CI_RED") {
       // Merge was clean but the checks were red — repair the named check. Same
-      // opt-in gate as the conflict branch above: `manual` can never push this
-      // resolution, so starting the resolver only burns an agent stage (and
-      // `stageTimeout` of wall clock) to reach a verdict already known.
-      if (mode === "manual") return { ok: false, reason: "conflictResolution is manual" };
+      // opt-in gate as the conflict branch above: a non-auto mode can never
+      // push this resolution, so starting the resolver only burns an agent
+      // stage (and `stageTimeout` of wall clock) to reach a verdict already known.
+      if (mode !== "auto") {
+        return { ok: false, reason: mode === "manual" ? "conflictResolution is manual" : "conflictResolution is not auto" };
+      }
       // Pin the merge result first: a clean merge produces no
       // `--diff-filter=U` list, so without a pre/post diff the exclusion below
       // would also drop paths the resolver itself edited whenever base's
@@ -628,7 +618,13 @@ async function repairConflictOrRed(ctx, deps) {
     // re-imposes on the allowlist exactly what the ordering above removed.
     // Only the path floor is waived — the CONTENT rules (secret-read,
     // subprocess, network, ...) still apply to those files.
-    const findings = scanned.findings.filter((f) => !(f.rule === "guardrail-touch" && allowed.has(f.file)));
+    // `scanDiff` marks the path-floor finding with its synthetic line; content
+    // findings carry the matched added line instead.
+    const findings = scanned.findings.filter((f) => !(
+      f.rule === "guardrail-touch" &&
+      f.line === "guardrail path changed" &&
+      allowed.has(f.file)
+    ));
     if (findings.length) {
       return { ok: false, terminalClass: "SECURITY_FINDING", reason: "security scan rejected the resolution", security: { ...scanned, findings } };
     }
@@ -669,45 +665,6 @@ async function repairConflictOrRed(ctx, deps) {
       // between an audit-stage commit and a push of content nothing scanned.
       const movedByAudit = unmoved("audit");
       if (movedByAudit) return { ok: false, reason: movedByAudit };
-    }
-
-    // `conflictResolution: "propose"` means draft a resolution and post it for
-    // a human — never push it (docs/orch-manual.md §5.1). Gated on
-    // `resolverRan`: a purely mechanical merge involves no agent, so blocking
-    // it here would make integration repair a permanent no-op on every
-    // default-config repo. Terminal, not a retry — one resolver+gate+audit
-    // round per failure, not three before anyone reads the diff.
-    if (resolverRan && mode !== "auto") {
-      let published = null;
-      if (prNumber && gh) {
-        try {
-          gh(["pr", "comment", String(prNumber), "--body", redact(proposalComment({ mode, cls, paths: resolverPaths, resolver: resolver.agent }))]);
-          published = true;
-        } catch (error) {
-          published = errorText(error);
-        }
-      }
-      // Nothing short of a posted comment may be reported as REVIEW_REQUIRED:
-      // the `finally` below drops the scratch worktree and deletes its branch,
-      // so an unposted resolution is gone and a human has been asked to review
-      // something that never existed anywhere. Both non-posting outcomes refuse
-      // — the publication threw, or there was no PR to post to in the first
-      // place — and they are named apart because the operator fixes them
-      // differently. (The resolution is unrecoverable either way; preserving it
-      // would mean not cleaning up, a bigger change than this warrants.)
-      if (published !== true) {
-        return {
-          ok: false,
-          reason: published
-            ? `could not post the proposed resolution to PR #${prNumber}: ${published}`
-            : "no PR to post the proposed resolution to",
-        };
-      }
-      return {
-        ok: false,
-        terminalClass: "REMOTE_REVIEW_REQUIRED",
-        reason: "conflict resolution proposed for human approval (conflictResolution is not auto)",
-      };
     }
 
     const landed = await landRepairedTip(ctx, deps, { sha: candidateSha });

@@ -529,9 +529,9 @@ test("integration repair: conflictResolution manual refuses a red check on a cle
 
 // §10A acceptance criterion 1: auto resolve, happy path. A two-agent rotation
 // pool so the reviewer differs from the resolver (criterion 4 covers the
-// single-agent self-review refusal separately), the resolver actually
-// resolves the conflict, the reviewer AGREEs, and the repair lands.
-test("integration repair: REMOTE_CONFLICTING resolves under conflictResolution auto and lands", async () => {
+// single-agent self-review refusal separately), the resolver keeps an ordinary
+// non-allowlisted path as "ours", the reviewer AGREEs, and the repair lands.
+test("integration repair: REMOTE_CONFLICTING audits an ordinary ours resolution and lands", async () => {
   const { repo, remote } = repairFixture();
   const cfg = repairCfg({
     main: {
@@ -544,7 +544,7 @@ test("integration repair: REMOTE_CONFLICTING resolves under conflictResolution a
     resolver: {
       async author(prompt, wd) {
         calls.push("author");
-        writeFileSync(join(wd, "shared.txt"), "resolved together\n");
+        writeFileSync(join(wd, "shared.txt"), "integration side\n");
         git.git(["add", "-A"], wd);
         git.git(["commit", "-m", "resolve conflict"], wd);
       },
@@ -561,7 +561,7 @@ test("integration repair: REMOTE_CONFLICTING resolves under conflictResolution a
 
   assert.equal(out.cycle?.status, "merged", out.result?.reason);
   assert.deepEqual(calls, ["author", "audit"]);
-  assert.equal(git.git(["show", "orch/integration:shared.txt"], repo), "resolved together");
+  assert.equal(git.git(["show", "orch/integration:shared.txt"], repo), "integration side");
   assert.equal(originSha(remote, "orch/integration"), git.git(["rev-parse", "orch/integration"], repo));
   const baseTip = originSha(remote, "main");
   const integrationTip = originSha(remote, "orch/integration");
@@ -1041,6 +1041,38 @@ test("integration repair: an allowlisted package.json \"ours\" resolution is not
   assert.notEqual(originSha(remote, "orch/integration"), before);
 });
 
+test("integration repair: content-derived guardrail findings are not waived on allowlisted paths", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "resolved together\n");
+        writeFileSync(join(wd, "package.json"), '{"version":"9.9.9","name":"CODEOWNERS"}\n');
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "unsafe metadata resolution"], wd);
+      },
+    },
+    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.equal(out.result.failureClass, "SECURITY_FINDING");
+  assert.equal(out.result.exit, 3);
+  assert.deepEqual(calls, ["author"], "content-derived guardrail findings must block before review");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
 test("integration repair: a non-allowlisted \"ours\" resolution is refused before any audit", async () => {
   const repo = newRepo();
   const remote = addOrigin(repo);
@@ -1080,11 +1112,7 @@ test("integration repair: a non-allowlisted \"ours\" resolution is refused befor
   assert.equal(originSha(remote, "orch/integration"), before);
 });
 
-// `conflictResolution: "propose"` (docs/orch-manual.md §5.1): draft a
-// resolution, post it for a human, never push it. The audited resolution
-// still has to pass the marker floor, the security scan and the reviewer AGREE
-// before it is even proposed.
-test("integration repair: conflictResolution propose posts the resolution and never lands it", async () => {
+test("integration repair: conflictResolution propose is not an integration-repair mode", async () => {
   const { repo, remote } = repairFixture();
   const before = originSha(remote, "orch/integration");
   const cfg = repairCfg({
@@ -1095,28 +1123,16 @@ test("integration repair: conflictResolution propose posts the resolution and ne
   });
   const calls = [];
   const ghCalls = [];
-  const adapters = fakeAdapters({
-    resolver: {
-      async author(prompt, wd) {
-        calls.push("author");
-        writeFileSync(join(wd, "shared.txt"), "resolved together\n");
-        git.git(["add", "-A"], wd);
-        git.git(["commit", "-m", "resolve conflict"], wd);
-      },
-    },
-    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
-  });
+  const adapters = fakeAdapters({});
   const gh = (args) => { ghCalls.push(args); return "{}"; };
 
   const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters, gh });
 
   assert.equal(out.cycle, undefined);
-  assert.equal(out.result.failureClass, "REMOTE_REVIEW_REQUIRED");
-  assert.deepEqual(calls, ["author", "audit"]);
-  const proposal = ghCalls.find((a) => a[0] === "pr" && a[1] === "comment");
-  assert.ok(proposal, "the proposal must be posted to the PR");
-  assert.doesNotMatch(proposal.at(-1), /Resolution:/, "the proposal must not advertise an ephemeral SHA");
-  assert.equal(originSha(remote, "orch/integration"), before, "propose mode must never push");
+  assert.match(out.result.reason, /conflictResolution is not auto/);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(ghCalls, []);
+  assert.equal(originSha(remote, "orch/integration"), before);
 });
 
 test("integration repair: a per-cycle PR repairs its own branch, not the integration branch", async () => {
