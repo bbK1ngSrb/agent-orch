@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.344 — 2026-08-27
+- A cycle killed after an agent usage limit records no run outcome, leaving resumable work with nothing pointing at it (closes [#537](https://github.com/bbk1ng/agent-orch/issues/537))
+
 ## v0.4.343 — 2026-08-27
 - orch continue loops forever on "worktree already exists" when a killed run leaves a directory git no longer has registered (closes [#540](https://github.com/bbk1ng/agent-orch/issues/540))
 
