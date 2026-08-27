@@ -13,8 +13,29 @@ const dir = (orchDir) => join(orchDir, "inflight");
 // too, for the same reason as `closes`: a run that dies before its first review
 // round has no checkpoint yet, so `orch continue` needs this fallback to know
 // which agents/models it should resume with instead of guessing from rotation.
-export function register(orchDir, sid, { branch, pid, baseSha, closes = null, author = null, reviewers = null, workOrder = null }) {
-  writeRecord(dir(orchDir), sid, { sid, branch, pid, baseSha, closes, author, reviewers, workOrder, paths: [] });
+// `excludedAgents` is carried for the same reason: a replacement cycle can die
+// before its first checkpoint is written.
+// `rotationStage` tells `continue` whether that replacement must re-enter the
+// author stage or can resume directly at review.
+export function register(orchDir, sid, { branch, pid, baseSha, closes = null, author = null, reviewers = null, workOrder = null, excludedAgents = [], rotationStage = null }) {
+  writeRecord(dir(orchDir), sid, { sid, branch, pid, baseSha, closes, author, reviewers, workOrder, excludedAgents, rotationStage, paths: [] });
+}
+
+// Persist replacement roles before a rotated cycle starts. Missing or
+// concurrently removed records remain a best-effort no-op, like setPaths().
+export function setRoles(orchDir, sid, { author, reviewers, excludedAgents, rotationStage } = {}) {
+  const d = dir(orchDir);
+  try {
+    const e = readRecord(d, sid);
+    if (!e) return;
+    if (author !== undefined) e.author = author;
+    if (reviewers !== undefined) e.reviewers = reviewers;
+    if (excludedAgents !== undefined) e.excludedAgents = excludedAgents;
+    if (rotationStage !== undefined) e.rotationStage = rotationStage;
+    writeFileAtomic(recordFile(d, sid), JSON.stringify(e));
+  } catch {
+    // A concurrent cleanup or transient write failure must not abort a cycle.
+  }
 }
 
 export function setPaths(orchDir, sid, paths, baseSha) {

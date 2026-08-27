@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runUntil } from "../src/run-controller.js";
+import { rotateRemedy } from "../src/remedies.js";
+import { nextAuthor } from "../src/cli.js";
+import { tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
 
 const HEAD = "a".repeat(40);
 const POLICY = { until: "ready", pollSeconds: 1, ciWaitMinutes: 1, maxAttempts: 3 };
@@ -186,6 +191,29 @@ test("runUntil: AGENT_QUOTA selects `rotate`, finds no executor, and stops at ST
   assert.equal(result.outcome, "stopped-at-cap");
   assert.equal(result.failureClass, "AGENT_QUOTA");
   assert.equal(cycles, 1, "no free retry for AGENT_QUOTA — re-running the exhausted seat would just fail again");
+});
+
+test("runUntil: rotate carries the excluded seat into the fresh cycle", async () => {
+  let picked;
+  const run = {
+    author: { agent: "a" }, reviewers: [{ agent: "b" }],
+    cfg: { agents: ["a", "b", "c"] }, orchDir: mkdtempSync(join(tmpdir(), "orch-controller-rotate-")),
+  };
+  const result = await runUntil(POLICY, {}, baseDeps({
+    runCycle: async () => ({
+      status: "escalated", class: "AGENT_QUOTA", fingerprint: "quota-fp",
+      failedRole: "author", failedAgents: [{ agent: "a", quota: true }],
+    }),
+    remedies: {
+      rotate: (context) => rotateRemedy({
+        ...context, run, selectRoles: nextAuthor,
+        runCycle: async (cycle) => { picked = cycle; return { status: "approved", prUrl: LAND.pr.url }; },
+      }),
+    },
+  }));
+  assert.equal(result.state, "READY");
+  assert.equal(picked.author.agent, "c");
+  assert.deepEqual(result.excludedAgents.map((entry) => entry.name), ["a"]);
 });
 
 test("runUntil: cycle escalated on a BLOCKED-terminal class (protected path) -> exit 3 with blockedReason", async () => {
