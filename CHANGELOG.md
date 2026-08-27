@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.347 — 2026-08-27
+- CHANGELOG entries are derived from issue titles, so a fix is described as the defect it fixed (closes [#582](https://github.com/bbk1ng/agent-orch/issues/582))
+
 ## v0.4.346 — 2026-08-27
 - fix(schema): `orch pr` now rejects `--until ready|merged` instead of accepting and ignoring them; `--until once` stays valid because a PR audit is a single pass (closes [#546](https://github.com/bbk1ng/agent-orch/issues/546))
 
