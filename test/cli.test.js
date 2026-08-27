@@ -4146,6 +4146,36 @@ test("orch continue <sid> reclaims an orphaned worktree left by a killed prior a
   assert.equal(existsSync(`${worktree}.orch-preserve`), false, "successful resume clears the preservation marker");
 });
 
+test("orch continue <sid> refuses an unregistered worktree directory and leaves it intact", async () => {
+  const repo = initGitRepo("orch-continue-unregistered-");
+  const sid = "unreg1";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+  const worktree = join(repo, ".orch", "wt", branch.replace(/\//g, "_"));
+  mkdirSync(worktree, { recursive: true });
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid]),
+    (error) => {
+      assert.match(error.message, /worktree directory exists/);
+      assert.match(error.message, /Git's worktree registry does not know about it/);
+      assert.ok(error.message.includes(worktree));
+      assert.match(error.message, /Committed work .* safe/);
+      assert.match(error.message, /inspect and clear the directory by hand/);
+      assert.match(error.message, /orch continue/);
+      return true;
+    },
+  );
+  assert.equal(existsSync(worktree), true);
+  assert.doesNotMatch(gitDep.git(["worktree", "list"], repo), /some-fix-unreg1/);
+});
+
 test("orch continue <sid> resumes dirty work from a preserved capture failure", async () => {
   const repo = initGitRepo("orch-continue-preserved-dirty-");
   const sid = "capture1";
