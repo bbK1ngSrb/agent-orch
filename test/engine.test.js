@@ -642,7 +642,8 @@ test("started and authored checkpoints cover the pre-author and post-author cras
   const deps = makeDeps({ verdicts: [() => { throw new Error("reviewer quota exhausted"); }] });
   const records = [];
   deps.checkpoint = { lookup: () => null, record: (_dir, sid, data) => records.push({ sid, ...data }), clear() {} };
-  await assert.rejects(runCycle({ ...opts, sid: "s1" }, deps), /quota exhausted/);
+  const excludedAgents = [{ name: "rev", reason: "quota" }];
+  await assert.rejects(runCycle({ ...opts, sid: "s1", excludedAgents }, deps), /quota exhausted/);
   assert.equal(records.length, 2, "started and authored checkpoints were written before the crash");
   assert.equal(records[0].stage, "started");
   assert.equal("oid" in records[0], false);
@@ -650,6 +651,8 @@ test("started and authored checkpoints cover the pre-author and post-author cras
   assert.equal(records[1].sid, "s1");
   assert.equal(records[1].branch, opts.branch, "checkpoint names the branch `continue` resolves");
   assert.equal(records[1].round, 1);
+  assert.deepEqual(records[0].excludedAgents, excludedAgents);
+  assert.deepEqual(records[1].excludedAgents, excludedAgents);
   assert.ok(records[1].oid, "authored checkpoint pins the branch head like the other stages (#422)");
 });
 

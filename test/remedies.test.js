@@ -11,7 +11,9 @@ import { acquireLock, releaseLock, LOCK_NAMES } from "../src/lock.js";
 import { chooseRemedy } from "../src/failure.js";
 import { runUntil } from "../src/run-controller.js";
 import { inspect } from "../src/readiness.js";
-import { createRebaseRemedy } from "../src/remedies.js";
+import { createRebaseRemedy, rotateRemedy } from "../src/remedies.js";
+import { runCycle as executeCycle } from "../src/engine.js";
+import { nextAuthor } from "../src/cli.js";
 import { integrationRepairRemedy, createIntegrationRepairRemedy } from "../src/integration-repair.js";
 import * as git from "../src/git.js";
 import * as runRecord from "../src/run-record.js";
@@ -109,6 +111,121 @@ test("rebase is the first dispatched remedy for all four landing/test classes", 
     );
     assert.equal(decision.remedy, "rebase", cls);
   }
+});
+
+test("rotate re-seats a quota-failed author and preserves a diverse reviewer", async () => {
+  let picked;
+  let authorCalls = 0;
+  const run = {
+    author: { agent: "a" },
+    reviewers: [{ agent: "b" }],
+    cfg: { agents: ["a", "b", "c"] },
+    orchDir: mkdtempSync(join(tmpdir(), "orch-rotate-author-")),
+  };
+  const result = await rotateRemedy({
+    failure: { class: "AGENT_QUOTA" },
+    cycle: { failedRole: "author", failedAgents: [{ agent: "a", quota: true }] },
+    record: { attempt: 1, excludedAgents: [] },
+    run,
+    selectRoles: nextAuthor,
+    runCycle: async (cycle) => { picked = cycle; authorCalls += 1; return { status: "merged" }; },
+  });
+  assert.equal(picked.author.agent, "c");
+  assert.deepEqual(picked.reviewers.map((reviewer) => reviewer.agent), ["b"]);
+  assert.deepEqual(result.record.excludedAgents.map((entry) => entry.name), ["a"]);
+  assert.equal(result.record.excludedAgents[0].reason, "quota");
+  assert.equal(authorCalls, 1);
+});
+
+test("rotate excludes every failed reviewer seat and replaces the list", async () => {
+  let picked;
+  const result = await rotateRemedy({
+    failure: { class: "AGENT_ERROR" },
+    cycle: { failedRole: "reviewer", failedAgents: [{ agent: "b" }, { agent: "c" }] },
+    record: { attempt: 1, excludedAgents: [] },
+    run: {
+      author: { agent: "a" }, reviewers: [{ agent: "b" }, { agent: "c" }],
+      cfg: { agents: ["a", "b", "c", "d", "e"] },
+      orchDir: mkdtempSync(join(tmpdir(), "orch-rotate-reviewers-")),
+    },
+    selectRoles: nextAuthor,
+    runCycle: async (cycle) => { picked = cycle; return { status: "merged" }; },
+  });
+  assert.deepEqual(result.record.excludedAgents.map((entry) => entry.name), ["b", "c"]);
+  assert.deepEqual(picked.reviewers.map((reviewer) => reviewer.agent), ["d", "e"]);
+  assert.notEqual(picked.author.agent, picked.reviewers[0].agent);
+});
+
+test("stalemate rotation replaces, rather than appends, the reviewer", async () => {
+  let picked;
+  await rotateRemedy({
+    failure: { class: "REVIEW_STALEMATE" },
+    cycle: { failedRole: "reviewer" },
+    record: { attempt: 1, excludedAgents: [] },
+    run: {
+      author: { agent: "a" }, reviewers: [{ agent: "b" }],
+      cfg: { agents: ["a", "b", "c"] },
+      orchDir: mkdtempSync(join(tmpdir(), "orch-rotate-stalemate-")),
+    },
+    selectRoles: nextAuthor,
+    runCycle: async (cycle) => { picked = cycle; return { status: "merged" }; },
+  });
+  assert.deepEqual(picked.reviewers.map((reviewer) => reviewer.agent), ["c"]);
+  assert.equal(picked.reviewers.some((reviewer) => reviewer.agent === "b"), false);
+});
+
+test("rotation starts the replacement cycle at round 1", async () => {
+  const rounds = [];
+  const run = {
+    mode: "task", task: "rotate me", branch: "pr/a/rotate-me", author: { agent: "a" }, authorName: "a",
+    reviewers: [{ agent: "b" }], reviewerName: "b", reviewerNames: ["b"],
+    cfg: {
+      agents: ["a", "b", "c"], roundCap: 3, baseBranch: "main", test: "auto",
+      scope: { maxLines: 0, ignore: [] }, docs: { paths: ["*.md"] },
+    }, orchDir: "/orch", repo: "/repo", worktree: "/wt",
+  };
+  const deps = {
+    adapters: { get: (name) => ({
+      name,
+      async author() { throw new Error("replacement must not re-author"); },
+      async audit(_branch, _worktree, options) {
+        rounds.push({ name, round: options.round });
+        return { decision: "AGREE", reason: "ok", raw: "" };
+      },
+    }) },
+    git: {
+      attachExistingBranch() {}, pruneWorktree() {}, changedFiles: () => ["src/a.js"],
+      git: (args) => args[0] === "rev-parse" ? "head" : "diff summary",
+    },
+    gate: { detect: () => "true", run: () => ({ pass: true }) },
+    scope: { count: () => 0 },
+    notify: { phase() {}, writeRound() {}, buildDecisionBrief: () => "", escalate() {}, recordRun() {} },
+    finalize: async () => ({ status: "merged", reason: "ok" }),
+  };
+  const result = await rotateRemedy({
+    failure: { class: "REVIEW_STALEMATE", fingerprint: "stalemate" },
+    cycle: { failedRole: "reviewer" }, record: { attempt: 1, excludedAgents: [] }, run,
+    selectRoles: nextAuthor,
+    runCycle: (cycle) => executeCycle({ ...run, ...cycle, resume: true }, deps),
+  });
+  assert.equal(result.cycle.rounds, 1);
+  assert.deepEqual(rounds, [{ name: "c", round: 1 }]);
+});
+
+test("two-agent author rotation reports the blocked reviewer seat", async () => {
+  const result = await rotateRemedy({
+    failure: { class: "AGENT_QUOTA" },
+    cycle: { failedRole: "author", failedAgents: [{ agent: "a", quota: true }] },
+    record: { attempt: 1, excludedAgents: [] },
+    run: {
+      author: { agent: "a" }, reviewers: [{ agent: "b" }], cfg: { agents: ["a", "b"] },
+      orchDir: mkdtempSync(join(tmpdir(), "orch-rotate-two-agent-")),
+    },
+    selectRoles: nextAuthor,
+    runCycle: async () => assert.fail("a two-agent pool has no diverse replacement"),
+  });
+  assert.match(result.result.reason, /blocked by reviewer b/);
+  assert.match(result.result.reason, /excluded a/);
 });
 
 test("rebase remedy uses the real integration branch and returns a fresh cycle", async () => {

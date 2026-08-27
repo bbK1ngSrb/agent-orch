@@ -67,6 +67,7 @@ export async function runCycle(opts, deps) {
     closes: opts.closes || null,
     author: persistAuthor,
     reviewers: persistReviewers,
+    excludedAgents: opts.excludedAgents || [],
     task,
     authorPrompt: opts.authorPrompt || task,
     workOrder: opts.workOrder || null,
