@@ -27,6 +27,7 @@ import { scanDiff, parseRawPaths, SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "
 import * as lockDefault from "./lock.js";
 import { LOCK_NAMES } from "./lock.js";
 import { updateBranch } from "./github.js";
+import { redact } from "./redact.js";
 
 const DEFAULT_RESOLVERS = [{ agent: "claude", model: null, effort: null }];
 
@@ -122,6 +123,21 @@ function resolverPrompt({ branch, base, cls, failure, conflicts }) {
       ? "Act as a neutral third party; reconstruct both parents' intent. Preserve behavior from both sides unless truly incompatible."
       : "Fix only the named failing check(s); do not widen scope.",
     "Resolve everything, stage the result, and commit it. Do not edit unrelated files.",
+  ].filter((line) => line !== null).join("\n");
+}
+
+function proposalComment({ mode, cls, sha, branch, paths, resolver }) {
+  return [
+    "agent-orch: conflict resolution needs human approval.",
+    "",
+    `Mode: ${mode}`,
+    `Class: ${cls}`,
+    `Resolution: ${sha}`,
+    `Resolution branch: ${branch}`,
+    `Review with: git show ${sha} or git diff ${branch}^..${sha}`,
+    paths.length ? `Files: ${paths.join(", ")}` : null,
+    `Resolver: ${resolver}`,
+    "Evidence: the local scratch branch is preserved so this resolution remains available after the repair returns.",
   ].filter((line) => line !== null).join("\n");
 }
 
@@ -366,8 +382,8 @@ async function repairBehind(ctx, deps) {
 // run has told us nothing, and nothing is not permission to push to a branch
 // other cycles depend on.
 async function repairConflictOrRed(ctx, deps) {
-  const { orchDir, repo, branch, base, cfg, class: cls, failure, scratchBranch } = ctx;
-  const { git, gate, adapters } = deps;
+  const { orchDir, repo, branch, base, cfg, class: cls, failure, prNumber, scratchBranch } = ctx;
+  const { git, gate, gh, adapters } = deps;
   const mode = modeOf(cfg);
   const timeoutMs = stageTimeoutMs(cfg);
 
@@ -382,6 +398,7 @@ async function repairConflictOrRed(ctx, deps) {
   }
   const scratch = addScratch(git, repo, orchDir, `origin/${branch}`, scratchBranch);
   if (!scratch) return { ok: false, reason: "could not create the repair worktree" };
+  let preserveScratch = false;
 
   try {
     const preSha = git.gitTry(["rev-parse", "HEAD"], scratch).out.trim();
@@ -407,9 +424,9 @@ async function repairConflictOrRed(ctx, deps) {
       // repo configured with a non-auto mode never gets an agent auto-resolving
       // a merge conflict here either. Checked BEFORE the resolver is
       // constructed, so no agent process starts at all.
-      if (mode !== "auto") {
+      if (mode === "manual") {
         git.gitTry(["merge", "--abort"], scratch);
-        return { ok: false, reason: mode === "manual" ? "conflictResolution is manual" : "conflictResolution is not auto" };
+        return { ok: false, reason: "conflictResolution is manual" };
       }
       resolverRan = true;
       // Pin the CONFLICTED state as a tree so the resolver's own edits can be
@@ -465,9 +482,7 @@ async function repairConflictOrRed(ctx, deps) {
       // opt-in gate as the conflict branch above: a non-auto mode can never
       // push this resolution, so starting the resolver only burns an agent
       // stage (and `stageTimeout` of wall clock) to reach a verdict already known.
-      if (mode !== "auto") {
-        return { ok: false, reason: mode === "manual" ? "conflictResolution is manual" : "conflictResolution is not auto" };
-      }
+      if (mode === "manual") return { ok: false, reason: "conflictResolution is manual" };
       // Pin the merge result first: a clean merge produces no
       // `--diff-filter=U` list, so without a pre/post diff the exclusion below
       // would also drop paths the resolver itself edited whenever base's
@@ -667,6 +682,28 @@ async function repairConflictOrRed(ctx, deps) {
       if (movedByAudit) return { ok: false, reason: movedByAudit };
     }
 
+    // `conflictResolution: "propose"` publishes the agent's candidate for a
+    // human without pushing it. Keep the named scratch branch so the SHA in the
+    // comment still has reviewable content after this returns.
+    if (resolverRan && mode === "propose") {
+      preserveScratch = true;
+      const evidence = `resolution remains on local branch ${scratchBranch} at ${candidateSha}`;
+      if (!prNumber) return { ok: false, reason: `no PR to post the proposed resolution to; ${evidence}` };
+      if (typeof gh !== "function") return { ok: false, reason: `could not post the proposed resolution to PR #${prNumber}: gh is unavailable; ${evidence}` };
+      try {
+        gh(["pr", "comment", String(prNumber), "--body", redact(proposalComment({
+          mode, cls, sha: candidateSha, branch: scratchBranch, paths: resolverPaths, resolver: resolver.agent,
+        }))]);
+      } catch (error) {
+        return { ok: false, reason: `could not post the proposed resolution to PR #${prNumber}: ${errorText(error)}; ${evidence}` };
+      }
+      return {
+        ok: false,
+        terminalClass: "REMOTE_REVIEW_REQUIRED",
+        reason: `conflict resolution proposed for human approval (${evidence})`,
+      };
+    }
+
     const landed = await landRepairedTip(ctx, deps, { sha: candidateSha });
     // Attempt accounting, and the one place this path deliberately differs from
     // `repairBehind`. A landing that changed nothing (contended `merge.lock`,
@@ -680,7 +717,8 @@ async function repairConflictOrRed(ctx, deps) {
     const { precondition, ...paid } = landed;
     return paid;
   } finally {
-    dropScratch(git, repo, scratch, scratchBranch);
+    if (preserveScratch) git.pruneWorktree(repo, scratch);
+    else dropScratch(git, repo, scratch, scratchBranch);
   }
 }
 
