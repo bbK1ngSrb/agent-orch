@@ -206,6 +206,7 @@ test("--until ready|merged is available on task/issue/review; continue/pr aren't
   for (const command of ["task", "issue", "review"]) {
     assert.doesNotThrow(() => validate(command, { until: "once" }), `${command} once`);
   }
+  assert.doesNotThrow(() => validate("pr", { until: "once" }), "pr once");
   for (const mode of ["ready", "merged"]) {
     for (const command of ["task", "issue", "review"]) {
       assert.doesNotThrow(() => validate(command, { until: mode }), `${command} ${mode}`);
@@ -217,7 +218,7 @@ test("--until ready|merged is available on task/issue/review; continue/pr aren't
     );
     assert.throws(
       () => validate("pr", { until: mode }),
-      (e) => e.exit === 64 && /^--until is not valid with 'orch pr'/.test(e.message),
+      (e) => e.exit === 64 && /is not yet available with 'orch pr'/.test(e.message),
       `pr ${mode}`,
     );
   }
