@@ -176,6 +176,16 @@ test("docs document the dashboard --check-history flag", () => {
   assert.match(readme, /view-only|view only/i);
 });
 
+test("the manual scopes --until modes to wired commands (#525)", () => {
+  const bullet = manual.match(/^- \*\*`--until <mode>`\*\*[\s\S]*?(?=\n- \*\*)/m);
+  assert.ok(bullet, "manual does not document the --until flag");
+  assert.match(bullet[0], /`once` is the default/);
+  assert.match(bullet[0], /`task`, `issue`, and `review` also support `ready`/);
+  assert.match(bullet[0], /`continue` and `pr` currently accept only `--until once`/);
+  assert.match(bullet[0], /`ready` and `merged` are refused with exit `64`/);
+  assert.doesNotMatch(bullet[0], /only `--until once` .* exists today/);
+});
+
 test("docs document the dashboard's cached state reads", () => {
   // perf(dashboard) (#438): snapshot() caches checkpoints/runs.jsonl/log tails
   // keyed on file stat (mtime+size+inode), and latestLog serves the tail from

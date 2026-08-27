@@ -130,6 +130,9 @@ export const COMMANDS = {
   // called with allowReviewerOnly, so a passed --author was silently ignored
   // while runPr assigned the reviewer as authorName. Accepting the flag was
   // the exact "nobody read your flag" lie this schema exists to remove.
+  // `--until once` remains valid for the existing one-shot PR audit. The
+  // ready/merged controller is not wired into runPr yet (#525), so validate()
+  // rejects those modes instead of silently treating them as once.
   pr: {
     mutates: true, flags: ["config-file", "dry", "merge", "until", "allow-large-scope", "reviewer", "reviewers"],
     rows: [["pr <number>", "Review a GitHub PR; add --merge to merge if approved."]],
