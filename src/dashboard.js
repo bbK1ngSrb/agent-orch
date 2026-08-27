@@ -5,10 +5,9 @@
 // already write.
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
-import * as inflight from "./inflight.js";
 import { branchExists } from "./git.js";
 import { kpi, reviewsDir } from "./notify.js";
-import { readRecordFile } from "./sid-store.js";
+import { pidAlive } from "./pid.js";
 import { C, table, formatTimestamp, pct, usd, stageText, verdictText } from "./tui/theme.js";
 
 const STAGE_LABELS = { started: "authoring", reviewed: "review", tested: "test" };
@@ -25,11 +24,28 @@ function fileStat(p) {
 
 function statKey(stat) { return `${stat.mtimeMs}:${stat.size}:${stat.ino}`; }
 
+// Dashboard state reads must not reclaim stale records or self-heal corrupt
+// ones: reporting an orphan is strictly observational.
+function readDashboardRecord(p) {
+  try { return JSON.parse(readFileSync(p, "utf8")); } catch { return null; }
+}
+
+function liveInflight(orchDir) {
+  const d = join(orchDir, "inflight");
+  let names;
+  try { names = readdirSync(d); }
+  catch (e) { if (e.code === "ENOENT") return []; throw e; }
+  return names
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => readDashboardRecord(join(d, f)))
+    .filter((e) => e && Number.isInteger(e.pid) && pidAlive(e.pid));
+}
+
 // Live cycles, newest inflight registration first, each annotated with its
 // most recent checkpoint stage (or "authoring" if none was recorded yet —
 // checkpoint.record only fires after the first review/test round).
 export function liveCycles(orchDir) {
-  return inflight.listLive(orchDir)
+  return liveInflight(orchDir)
     .map((e) => {
       const ck = readCheckpoint(join(orchDir, "checkpoints", `${e.sid}.json`));
       return {
@@ -55,9 +71,7 @@ function readCheckpoint(p) {
   const cached = CHECKPOINT_CACHE.get(p);
   if (cached?.key === key) return cached.value;
 
-  // Shared sid-store read: a corrupt partial write self-heals (is deleted)
-  // and reads as no checkpoint, exactly like checkpoint.lookup.
-  const value = readRecordFile(p);
+  const value = readDashboardRecord(p);
   CHECKPOINT_CACHE.set(p, { key, value });
   return value;
 }
@@ -85,6 +99,7 @@ function readCheckpoints(orchDir) {
       stage: STAGE_LABELS[ck.stage] || ck.stage || "unknown",
       round: ck.round ?? null,
       lastUpdate: ck.ts || null,
+      resume: `orch continue ${f.slice(0, -".json".length)}`,
     });
   }
   for (const p of CHECKPOINT_CACHE.keys()) {
@@ -101,7 +116,8 @@ function readCheckpoints(orchDir) {
 // keep the old behavior of listing every ownerless checkpoint.
 export function interruptedCycles(orchDir, live = liveCycles(orchDir), repo = null) {
   const liveSids = new Set(live.map((c) => c.sid));
-  const orphaned = readCheckpoints(orchDir).filter((c) => !liveSids.has(c.sid));
+  const terminalSids = new Set(readJsonl(join(orchDir, "runs.jsonl")).map((e) => e.sid).filter(Boolean));
+  const orphaned = readCheckpoints(orchDir).filter((c) => !liveSids.has(c.sid) && !terminalSids.has(c.sid));
   if (!repo || !existsSync(repo) || !existsSync(join(repo, ".git"))) return orphaned;
   return orphaned.filter((c) => branchExists(repo, c.branch));
 }
@@ -241,7 +257,7 @@ export function render(orchDir, opts = {}) {
     for (const c of interrupted) {
       const round = c.round != null ? ` round ${c.round}` : "";
       const when = c.lastUpdate ? `  last update ${formatTimestamp(c.lastUpdate)}` : "";
-      lines.push(`  ${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}${when}`);
+      lines.push(`  ${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}${when}  resume: ${c.resume}`);
     }
   }
   lines.push("");

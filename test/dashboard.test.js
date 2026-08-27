@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +84,32 @@ test("interruptedCycles reports checkpoints without a live owner", () => {
   assert.equal(interrupted[0].branch, "pr/codex/crashed");
   assert.equal(interrupted[0].stage, "review");
   assert.equal(interrupted[0].round, 2);
+  assert.equal(interrupted[0].resume, "orch continue sid-dead");
+});
+
+test("interruptedCycles excludes checkpoints with a terminal run record", () => {
+  const d = freshDir();
+  checkpoint.record(d, "sid-finished", { branch: "pr/codex/finished", round: 2, stage: "reviewed" });
+  notify.recordRun(d, { ts: "1", branch: "pr/codex/finished", sid: "sid-finished", verdict: "escalated", rounds: 2 });
+
+  assert.deepEqual(dashboard.interruptedCycles(d), []);
+});
+
+test("dashboard reporting does not delete stale inflight or checkpoint state", () => {
+  const d = freshDir();
+  checkpoint.record(d, "sid-orphan", { branch: "pr/codex/orphan", round: 1, stage: "reviewed" });
+  inflight.register(d, "sid-dead-owner", { branch: "pr/codex/dead", pid: 999999, baseSha: "abc" });
+  const checkpointPath = join(d, "checkpoints", "sid-orphan.json");
+  const inflightPath = join(d, "inflight", "sid-dead-owner.json");
+  const beforeCheckpoint = readFileSync(checkpointPath, "utf8");
+  const beforeInflight = readFileSync(inflightPath, "utf8");
+
+  const snap = dashboard.snapshot(d);
+
+  assert.equal(snap.interrupted[0].sid, "sid-orphan");
+  assert.equal(readFileSync(checkpointPath, "utf8"), beforeCheckpoint);
+  assert.equal(readFileSync(inflightPath, "utf8"), beforeInflight);
+  assert.ok(existsSync(inflightPath));
 });
 
 test("interruptedCycles keeps every ownerless checkpoint when no repo is given", () => {
@@ -292,6 +318,7 @@ test("render surfaces checkpoint-only interrupted cycles", () => {
   assert.match(text, /pr\/codex\/crashed/);
   assert.match(text, /\[● review round 1\]/);
   assert.match(text, /sid=sid-crash/);
+  assert.match(text, /resume: orch continue sid-crash/);
 });
 
 test("snapshot includes sid for live, interrupted, and history entries", () => {
