@@ -133,16 +133,23 @@ export function createTaskBranch(repo, path, branch, base, markerContent = "") {
 // review mode: branch MUST exist (human/other tool made it). Never create it.
 export function attachExistingBranch(repo, path, branch) {
   if (!branchExists(repo, branch)) throw new Error(`branch does not exist: ${branch}`);
+  let expected = path;
+  try { expected = realpathSync(path); } catch { /* worktree does not exist yet */ }
   const listed = gitTry(["worktree", "list", "--porcelain"], repo);
   if (listed.ok) {
-    let expected = path;
-    try { expected = realpathSync(path); } catch { /* worktree does not exist yet */ }
     const attached = [...worktreeRecords(listed.out)]
       .find((record) => normalizePathForCompare(record.path) === normalizePathForCompare(expected));
     if (attached) {
       if (attached.branch === branch) return;
       throw new Error(`worktree path already attached to ${attached.branch || "a detached HEAD"}: ${path}`);
     }
+  }
+  if (existsSync(path)) {
+    throw new Error(
+      `worktree directory exists but Git's worktree registry does not know about it: ${expected}. ` +
+      `Committed work on ${branch} is safe in the repository, not this directory; ` +
+      `inspect and clear the directory by hand before running orch continue.`,
+    );
   }
   git(["worktree", "add", "--", path, branch], repo);
 }
@@ -276,7 +283,21 @@ export function syncMainFromOrigin(repo, base = "main") {
 export function pruneWorktree(repo, path) {
   let canon = path;
   try { canon = realpathSync(path); } catch { /* already gone */ }
-  gitTry(["worktree", "remove", "--force", path], repo);
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch (e) {
+    console.error(`orch: could not remove worktree directory ${path}; Git registration kept: ${e.message}`);
+    return;
+  }
+  if (existsSync(path)) {
+    console.error(`orch: could not remove worktree directory ${path}; Git registration kept`);
+    return;
+  }
+  const removed = gitTry(["worktree", "remove", "--force", path], repo);
+  if (!removed.ok) {
+    console.error(`orch: could not clear Git worktree registration for ${path}: ${removed.out.trim() || "unknown error"}`);
+    return;
+  }
   gitTry(["worktree", "prune"], repo);
   rmSync(taskMarker(canon), { force: true });
   rmSync(preserveMarker(canon), { force: true });

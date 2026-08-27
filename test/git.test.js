@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
@@ -219,6 +219,29 @@ test("attachExistingBranch refuses a missing branch (F5: no silent create)", () 
   assert.throws(() => attachExistingBranch(repo, join(repo, ".orch/wt/n"), "pr/claude/nope"), /does not exist/);
 });
 
+test("attachExistingBranch refuses an unregistered directory without deleting it", () => {
+  const repo = newRepo();
+  const branch = "feature/human";
+  git(["branch", branch], repo);
+  const wt = join(repo, ".orch", "wt", "feature_human");
+  mkdirSync(wt, { recursive: true });
+
+  assert.throws(
+    () => attachExistingBranch(repo, wt, branch),
+    (error) => {
+      assert.match(error.message, /worktree directory exists/);
+      assert.match(error.message, /Git's worktree registry does not know about it/);
+      assert.match(error.message, new RegExp(wt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.match(error.message, /Committed work .* safe/);
+      assert.match(error.message, /inspect and clear the directory by hand/);
+      assert.match(error.message, /orch continue/);
+      return true;
+    },
+  );
+  assert.equal(existsSync(wt), true);
+  assert.doesNotMatch(git(["worktree", "list"], repo), /feature_human/);
+});
+
 test("branchSyncStatus reports a branch at main as synced", () => {
   const repo = newRepo();
   git(["branch", "development"], repo);
@@ -323,6 +346,24 @@ test("createTaskBranch leaves no marker behind after a normal prune", () => {
   createTaskBranch(repo, wt, "pr/claude/z", "main");
   pruneWorktree(repo, wt);
   assert.equal(existsSync(`${wt}.orch-task`), false);
+});
+
+test("a registered worktree missing its directory remains reclaimable", () => {
+  const repo = newRepo();
+  const orchDir = join(repo, ".orch");
+  const wt = join(orchDir, "wt", "pr_claude_interrupted");
+  createTaskBranch(repo, wt, "pr/claude/interrupted", "main");
+
+  // Simulate an interruption after pruneWorktree removes the directory but
+  // before it clears Git's worktree registry.
+  rmSync(wt, { recursive: true, force: true });
+  assert.match(git(["worktree", "list"], repo), /pr_claude_interrupted/);
+
+  const r = reclaimOrphanWorktrees(repo, orchDir);
+
+  assert.equal(r.recovered, true);
+  assert.equal(branchExists(repo, "pr/claude/interrupted"), false);
+  assert.doesNotMatch(git(["worktree", "list"], repo), /pr_claude_interrupted/);
 });
 
 test("reclaimOrphanWorktrees leaves the main worktree and other branches alone", () => {
