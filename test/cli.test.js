@@ -3559,6 +3559,28 @@ test("orch review permits an explicitly requested reviewer who authored the bran
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
+test("orch review permits a configured reviewer who authored the branch", async () => {
+  const repo = initGitRepo("orch-configured-self-review-");
+  const branch = "pr/codex/review-self";
+  gitDep.git(["branch", branch], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\nauthors: [claude]\nreviewers: [codex]\n");
+  const auditCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("review must not author"); },
+        async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["review", branch], { cycleDeps, finishRun: async () => {} });
+
+  assert.deepEqual(auditCalls, ["codex"]);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
 test("orch continue permits an explicitly requested branch author as reviewer", async () => {
   const repo = initGitRepo("orch-continue-reviewer-self-");
   const sid = "continue-self";
@@ -3589,6 +3611,37 @@ test("orch continue permits an explicitly requested branch author as reviewer", 
   });
 
   assert.deepEqual(auditCalls, ["claude"]);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("orch continue permits a configured reviewer who authored the branch", async () => {
+  const repo = initGitRepo("orch-continue-configured-self-");
+  const sid = "continue-configured-self";
+  const branch = `pr/codex/reviewer-self-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\nauthors: [claude]\nreviewers: [codex]\n");
+  checkpointDep.record(join(repo, ".orch"), sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "codex" }, reviewers: [{ agent: "codex" }],
+  });
+
+  const auditCalls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("continue must not re-author"); },
+        async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+  const logs = await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+
+  assert.deepEqual(auditCalls, ["codex"]);
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 

@@ -489,6 +489,10 @@ function configuredReviewers(cfg) {
   return null;
 }
 
+function configuredSelfReviewer(cfg, authorName) {
+  return Boolean(configuredReviewers(cfg)?.some((spec) => spec.agent === authorName));
+}
+
 function singleAgentPool(cfg) {
   return Array.isArray(cfg.agents) && cfg.agents.length === 1;
 }
@@ -1826,7 +1830,8 @@ export async function main(argv, deps = {}) {
       const branchAuthor = branch.split("/")[1];
       const configured = configuredReviewers(cfg);
       const reviewers = reviewersForAuthor(branchAuthor, configured || roleSpecsFromAgents(cfg.agents), {
-        allowSelf: singleAgentPool(cfg) || fixedSelfReview(cfg) || flags.reviewer != null || flags.reviewers != null,
+        allowSelf: singleAgentPool(cfg) || fixedSelfReview(cfg) || flags.reviewer != null || flags.reviewers != null
+          || configuredSelfReviewer(cfg, branchAuthor),
       });
       if (!reviewers.length) throw noEligibleRole("reviewer", { agents: cfg.agents || [] });
       const authorName = branchAuthor && cfg.agents.includes(branchAuthor) ? branchAuthor : cfg.agents[0];
@@ -2221,11 +2226,14 @@ export async function main(argv, deps = {}) {
     catch { throw new Error(`orch: cannot determine a registered author from branch ${branch}`); }
     const reviewerOverride = flags.reviewers != null || flags.reviewer != null;
     const persistedReviewers = inf?.reviewers?.length ? inf.reviewers : ck?.reviewers?.length ? ck.reviewers : null;
+    const configuredSelfReview = configuredSelfReviewer(cfg, authorName);
     const eligiblePersistedReviewers = (persistedReviewers || [])
-      .filter((reviewer) => reviewer?.agent && (reviewer.agent !== authorName || singleAgentPool(cfg)) && !excludedNames.has(reviewer.agent));
+      .filter((reviewer) => reviewer?.agent
+        && (reviewer.agent !== authorName || singleAgentPool(cfg) || configuredSelfReview)
+        && !excludedNames.has(reviewer.agent));
     const configured = configuredReviewers(cfg);
     const fallbackReviewers = reviewersForAuthor(authorName, configured || selectedRoles.reviewers || roleSpecsFromAgents(cfg.agents), {
-      allowSelf: singleAgentPool(cfg) || reviewerOverride,
+      allowSelf: singleAgentPool(cfg) || reviewerOverride || configuredSelfReview,
     })
       .filter((reviewer) => !excludedNames.has(reviewer.agent));
     const reviewers = !reviewerOverride && eligiblePersistedReviewers.length
