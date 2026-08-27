@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.349 — 2026-08-27
+- fix(repair): preserve proposed resolutions (closes [#578](https://github.com/bbk1ng/agent-orch/issues/578))
+
 ## v0.4.348 — 2026-08-27
 - CLI v2: unify orch pr --merge's prChecksGreen with readiness.js's §9 rule 4 checks predicate (closes [#545](https://github.com/bbk1ng/agent-orch/issues/545))
 
