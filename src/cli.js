@@ -1806,16 +1806,21 @@ export async function main(argv, deps = {}) {
         blockedAuthors: forcedReviewers?.length === 1 ? forcedReviewers : [],
         agents: cfg.agents || [],
       });
-      runs = authors.map((authorSpec) => {
-        const authorName = authorSpec.agent;
-        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
+      const reviewersForRun = (authorName) => {
         let reviewerList = reviewersForAuthor(authorName, reviewers, { allowSelf: singleAgentPool(cfg) || fixedSelfReview(cfg) })
           .filter((reviewer) => !exclusions.some((value) => exclusionName(value) === reviewer.agent));
         // Cheap mode intentionally uses its single configured seat for both
         // stages; the no-self-review rule still applies to pool rotation.
         if (!reviewerList.length && cfg.cheap?.role === authorName)
           reviewerList = [{ agent: authorName, model: null, effort: null }];
-        if (!reviewerList.length) throw noEligibleRole("reviewer", { exclude: exclusions, agents: cfg.agents || [] });
+        return reviewerList;
+      };
+      const eligibleAuthors = authors.filter((authorSpec) => reviewersForRun(authorSpec.agent).length);
+      if (!eligibleAuthors.length) throw noEligibleRole("reviewer", { exclude: exclusions, agents: cfg.agents || [] });
+      runs = eligibleAuthors.map((authorSpec) => {
+        const authorName = authorSpec.agent;
+        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
+        const reviewerList = reviewersForRun(authorName);
         return {
           mode, task, authorPrompt, workOrder, allowLargeScope: Boolean(flags["allow-large-scope"]),
           closes, branch, sid, resume, authorName, author: authorSpec,

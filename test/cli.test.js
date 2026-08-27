@@ -1569,7 +1569,7 @@ test("orch continue re-seats an excluded author from the inflight record", async
   assert.equal(inflight.lookup(orchDir, sid), null);
 });
 
-test("a rotated author keeps the partial-WIP guard active", async () => {
+test("a rotated author keeps the partial-WIP guard active", { skip: IS_WINDOWS && "POSIX fixture scripts are not executable on Windows" }, async () => {
   const repo = initGitRepo("orch-rotate-partial-wip-");
   writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex, copilot]\nroundCap: 3\n");
   const quotaCli = join(repo, "quota-cli.sh");
@@ -3533,6 +3533,29 @@ test("orch task preserves an explicitly paired author/reviewer self-seat", async
 
   assert.deepEqual(auditCalls, ["claude"]);
   assert.match(logs.join("\n"), /pr\/claude\/.*: merged/);
+});
+
+test("orch task keeps the valid seat from a colliding plural fixed-role fan-out", async () => {
+  for (const [reviewer, author] of [["claude", "codex"], ["codex", "claude"]]) {
+    const repo = initGitRepo(`orch-plural-role-collision-${reviewer}-`);
+    const calls = [];
+    const cycleDeps = {
+      ...fakeCycleDeps(),
+      adapters: {
+        get: (name) => ({
+          name,
+          async author() { calls.push(["author", name]); return { usage: {} }; },
+          async audit() { calls.push(["reviewer", name]); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+        }),
+      },
+    };
+    const logs = await runMainInRepo(repo, [
+      "task", "plural fixed roles", "--authors", "claude,codex", "--reviewers", reviewer, "--no-tidy",
+    ], { cycleDeps });
+
+    assert.deepEqual(calls, [["author", author], ["reviewer", reviewer]], reviewer);
+    assert.match(logs.join("\n"), new RegExp(`pr/${author}/.*: merged`));
+  }
 });
 
 test("orch review permits an explicitly requested reviewer who authored the branch", async () => {
