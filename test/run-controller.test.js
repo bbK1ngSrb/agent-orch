@@ -65,6 +65,28 @@ test("runUntil: landed cycle, BEHIND standing PR -> STOPPED_AT_CAP, exit 2, fail
   assert.equal(result.failureClass, "REMOTE_BEHIND");
 });
 
+test("runUntil: readiness details reach the integration-repair remedy", async () => {
+  const seen = [];
+  const deps = baseDeps({
+    gh: ghFake({
+      number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+      mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null,
+      statusCheckRollup: [{ context: "lint", status: "COMPLETED", conclusion: "FAILURE" }],
+    }),
+    remedies: {
+      "integration-repair": async ({ failure }) => {
+        seen.push(failure);
+        return { result: { state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2 } };
+      },
+    },
+  });
+
+  const result = await runUntil(POLICY, { retries: { "repair-lock": 3 } }, deps);
+
+  assert.equal(result.exit, 2);
+  assert.equal(seen[0].summary, "failing checks: lint");
+});
+
 // Regression: `gh pr view` failing mid-poll (revoked token, network hiccup)
 // used to escape `waitReady` uncaught and propagate straight out of
 // `runUntil`, so a caller landed a real cycle and then crashed on the read

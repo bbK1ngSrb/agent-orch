@@ -126,13 +126,12 @@ function resolverPrompt({ branch, base, cls, failure, conflicts }) {
   ].filter((line) => line !== null).join("\n");
 }
 
-function proposalComment({ mode, cls, sha, paths, resolver }) {
+function proposalComment({ mode, cls, paths, resolver }) {
   return [
     "agent-orch: conflict resolution needs human approval.",
     "",
     `Mode: ${mode}`,
     `Class: ${cls}`,
-    `Resolution: ${sha}`,
     paths.length ? `Files: ${paths.join(", ")}` : null,
     `Resolver: ${resolver}`,
   ].filter((line) => line !== null).join("\n");
@@ -682,7 +681,7 @@ async function repairConflictOrRed(ctx, deps) {
       let published = null;
       if (prNumber && gh) {
         try {
-          gh(["pr", "comment", String(prNumber), "--body", redact(proposalComment({ mode, cls, sha: candidateSha, paths: resolverPaths, resolver: resolver.agent }))]);
+          gh(["pr", "comment", String(prNumber), "--body", redact(proposalComment({ mode, cls, paths: resolverPaths, resolver: resolver.agent }))]);
           published = true;
         } catch (error) {
           published = errorText(error);

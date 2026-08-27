@@ -176,7 +176,11 @@ export async function runUntil(policy, record = {}, deps) {
       }, currentRecord, cycleResults);
     }
 
-    const failure = { class: readiness.class, fingerprint: computeFingerprint(readiness.class, readiness.summary || "") };
+    const failure = {
+      class: readiness.class,
+      fingerprint: computeFingerprint(readiness.class, readiness.summary || ""),
+      summary: readiness.summary,
+    };
     const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
     if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
     currentRecord = outcome.record;
