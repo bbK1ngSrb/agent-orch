@@ -116,8 +116,20 @@ function readCheckpoints(orchDir) {
 // keep the old behavior of listing every ownerless checkpoint.
 export function interruptedCycles(orchDir, live = liveCycles(orchDir), repo = null) {
   const liveSids = new Set(live.map((c) => c.sid));
-  const terminalSids = new Set(readJsonl(join(orchDir, "runs.jsonl")).map((e) => e.sid).filter(Boolean));
-  const orphaned = readCheckpoints(orchDir).filter((c) => !liveSids.has(c.sid) && !terminalSids.has(c.sid));
+  const terminalTs = new Map();
+  for (const e of readJsonl(join(orchDir, "runs.jsonl"))) {
+    if (!e?.sid) continue;
+    if (typeof e.ts !== "string" || !e.ts) {
+      terminalTs.set(e.sid, null);
+      continue;
+    }
+    const previous = terminalTs.get(e.sid);
+    if (previous !== null && (!previous || e.ts > previous)) terminalTs.set(e.sid, e.ts);
+  }
+  const orphaned = readCheckpoints(orchDir).filter((c) => {
+    const terminal = terminalTs.get(c.sid);
+    return !liveSids.has(c.sid) && (!terminal || !c.lastUpdate || c.lastUpdate >= terminal);
+  });
   if (!repo || !existsSync(repo) || !existsSync(join(repo, ".git"))) return orphaned;
   return orphaned.filter((c) => branchExists(repo, c.branch));
 }

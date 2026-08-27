@@ -89,24 +89,60 @@ test("interruptedCycles reports checkpoints without a live owner", () => {
 
 test("interruptedCycles excludes checkpoints with a terminal run record", () => {
   const d = freshDir();
-  checkpoint.record(d, "sid-finished", { branch: "pr/codex/finished", round: 2, stage: "reviewed" });
-  notify.recordRun(d, { ts: "1", branch: "pr/codex/finished", sid: "sid-finished", verdict: "escalated", rounds: 2 });
+  checkpoint.record(d, "sid-finished", {
+    ts: "2026-08-27T10:00:00.000Z", branch: "pr/codex/finished", round: 2, stage: "reviewed",
+  });
+  notify.recordRun(d, {
+    ts: "2026-08-27T10:01:00.000Z", branch: "pr/codex/finished", sid: "sid-finished", verdict: "escalated", rounds: 2,
+  });
 
   assert.deepEqual(dashboard.interruptedCycles(d), []);
 });
 
-test("dashboard reporting does not delete stale inflight or checkpoint state", () => {
+test("interruptedCycles keeps a checkpoint newer than all same-SID run records", () => {
   const d = freshDir();
-  checkpoint.record(d, "sid-orphan", { branch: "pr/codex/orphan", round: 1, stage: "reviewed" });
+  notify.recordRun(d, {
+    ts: "2026-08-27T10:00:00.000Z", branch: "pr/codex/retry", sid: "sid-retry", verdict: "escalated", rounds: 1,
+  });
+  notify.recordRun(d, {
+    ts: "2026-08-27T10:05:00.000Z", branch: "pr/codex/retry", sid: "sid-retry", verdict: "escalated", rounds: 1,
+  });
+  checkpoint.record(d, "sid-retry", {
+    ts: "2026-08-27T10:06:00.000Z", branch: "pr/codex/retry", round: 1, stage: "started",
+  });
+
+  assert.equal(dashboard.interruptedCycles(d)[0].sid, "sid-retry");
+});
+
+test("interruptedCycles fails open for missing or tied timestamps", () => {
+  const d = freshDir();
+  const tied = "2026-08-27T10:00:00.000Z";
+  checkpoint.record(d, "sid-tied", { ts: tied, branch: "pr/codex/tied", round: 1, stage: "reviewed" });
+  notify.recordRun(d, { ts: tied, branch: "pr/codex/tied", sid: "sid-tied", verdict: "escalated", rounds: 1 });
+  checkpoint.record(d, "sid-missing-checkpoint", { ts: null, branch: "pr/codex/missing-checkpoint", round: 1, stage: "reviewed" });
+  notify.recordRun(d, { ts: tied, branch: "pr/codex/missing-checkpoint", sid: "sid-missing-checkpoint", verdict: "escalated", rounds: 1 });
+  checkpoint.record(d, "sid-missing-run", { ts: tied, branch: "pr/codex/missing-run", round: 1, stage: "reviewed" });
+  notify.recordRun(d, { branch: "pr/codex/missing-run", sid: "sid-missing-run", verdict: "escalated", rounds: 1 });
+
+  assert.deepEqual(
+    dashboard.interruptedCycles(d).map((c) => c.sid).sort(),
+    ["sid-missing-checkpoint", "sid-missing-run", "sid-tied"],
+  );
+});
+
+test("dashboard reporting does not delete stale inflight or corrupt checkpoint state", () => {
+  const d = freshDir();
   inflight.register(d, "sid-dead-owner", { branch: "pr/codex/dead", pid: 999999, baseSha: "abc" });
   const checkpointPath = join(d, "checkpoints", "sid-orphan.json");
+  checkpoint.record(d, "sid-orphan", { branch: "pr/codex/orphan", round: 1, stage: "reviewed" });
+  writeFileSync(checkpointPath, "{not valid json");
   const inflightPath = join(d, "inflight", "sid-dead-owner.json");
-  const beforeCheckpoint = readFileSync(checkpointPath, "utf8");
+  const beforeCheckpoint = "{not valid json";
   const beforeInflight = readFileSync(inflightPath, "utf8");
 
   const snap = dashboard.snapshot(d);
 
-  assert.equal(snap.interrupted[0].sid, "sid-orphan");
+  assert.deepEqual(snap.interrupted, []);
   assert.equal(readFileSync(checkpointPath, "utf8"), beforeCheckpoint);
   assert.equal(readFileSync(inflightPath, "utf8"), beforeInflight);
   assert.ok(existsSync(inflightPath));
