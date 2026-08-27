@@ -539,26 +539,61 @@ function peerUpdateBranch(remote, branch) {
 }
 
 function repairCfg(overrides = {}) {
+  const { main: mainOverrides, ...rest } = overrides;
   return {
     baseBranch: "main",
     integrationBranch: "orch/integration",
     test: "auto",
     stageTimeout: 7,
-    ...overrides,
+    main: { autoResolveConflictPaths: ["package.json"], ...(mainOverrides || {}) },
+    ...rest,
   };
 }
 
-function runRepair(repo, { cfg = repairCfg(), gh = () => "{}", branch = "orch/integration", landing = "standing", failureClass = "REMOTE_BEHIND", prNumber = 9, gitDep = git, sleep = async () => {}, lock = null, record = { attempt: 1, failures: [] }, gate = { detect: () => "true", run: () => ({ pass: true, log: "" }) } } = {}) {
+function runRepair(repo, { cfg = repairCfg(), gh = () => "{}", branch = "orch/integration", landing = "standing", failureClass = "REMOTE_BEHIND", failureSummary, prNumber = 9, gitDep = git, sleep = async () => {}, lock = null, record = { attempt: 1, failures: [] }, gate = { detect: () => "true", run: () => ({ pass: true, log: "" }) }, adapters = null } = {}) {
   return integrationRepairRemedy({
     name: "integration-repair",
-    failure: { class: failureClass, fingerprint: "fp" },
+    failure: { class: failureClass, fingerprint: "fp", ...(failureSummary !== undefined ? { summary: failureSummary } : {}) },
     record,
     cycle: { status: "merged" },
     run: { repo, orchDir: join(repo, ".orch"), sid: "sidtest", cfg },
-    deps: { git: gitDep, gate, sleep, ...(lock ? { lock } : {}) },
+    deps: { git: gitDep, gate, sleep, ...(lock ? { lock } : {}), ...(adapters ? { adapters } : {}) },
     resolveLanded: () => ({ pr: { number: prNumber }, landing, branch }),
     gh,
   });
+}
+
+// A clean-merge counterpart to `repairFixture()`: base and integration touch
+// disjoint files, so `git merge` never conflicts. REMOTE_CI_RED's "checks were
+// red on an otherwise clean merge" branch (`repairConflictOrRed`) is only
+// reachable through a fixture shaped this way — `repairFixture()`'s shared.txt
+// add/add always conflicts, which exercises the OTHER branch regardless of
+// `cls`.
+function cleanRepairFixture() {
+  const repo = newRepo();
+  const remote = addOrigin(repo);
+  git.git(["switch", "-c", "orch/integration"], repo);
+  commitFile(repo, "integration-only.txt", "integration\n", "integration change");
+  git.git(["push", "-u", "origin", "orch/integration"], repo);
+  git.git(["switch", "main"], repo);
+  commitFile(repo, "base-only.txt", "base\n", "base change");
+  git.git(["push", "origin", "main"], repo);
+  git.gitTry(["update-ref", "-d", "refs/remotes/origin/orch/integration"], repo);
+  return { repo, remote };
+}
+
+// A resolver stub in the shape `repairConflictOrRed` expects from
+// `adapters.get(agent).author`/`.audit`: it stages and commits its own work
+// (the way the real CLI adapter's `captureAuthorWork` does), so the harness's
+// "commit if MERGE_HEAD is still open" fallback never has to run.
+function fakeAdapters(byAgent) {
+  return {
+    get(name) {
+      const entry = byAgent[name];
+      if (!entry) throw new Error(`no agent may start for ${name}`);
+      return entry;
+    },
+  };
 }
 
 const originSha = (remote, branch) => git.git(["rev-parse", branch], remote);
@@ -580,20 +615,641 @@ test("integration repair: REMOTE_BEHIND updates the PR branch, gates the new tip
   );
 });
 
-test("integration repair: REMOTE_CONFLICTING and REMOTE_CI_RED report that they are not implemented yet", async () => {
-  // #569 carries the resolver. Until then this is still strictly better than
-  // the pre-#551 state, where no executor was registered at all: the class is
-  // named, and `repairBehind` is not handed a failure it cannot repair.
+// §10A acceptance criterion 2: "manual means manual" — the default, and the
+// only mode a repo gets without an explicit opt-in. Checked BEFORE a resolver
+// is constructed, so `fakeAdapters({})` (every `.get()` throws) proves no
+// agent process starts at all.
+test("integration repair: conflictResolution manual refuses a merge conflict before starting any agent", async () => {
   const { repo, remote } = repairFixture();
   const before = originSha(remote, "orch/integration");
 
   for (const cls of ["REMOTE_CONFLICTING", "REMOTE_CI_RED"]) {
-    const out = await runRepair(repo, { failureClass: cls, gh: () => { throw new Error("no gh call may be made"); } });
+    const out = await runRepair(repo, { failureClass: cls, adapters: fakeAdapters({}) });
     assert.equal(out.cycle, undefined);
-    assert.match(out.result.reason, /not implemented in this slice/);
-    assert.equal(out.result.failureClass, cls);
+    assert.match(out.result.reason, /conflictResolution is manual/);
     assert.equal(originSha(remote, "orch/integration"), before);
   }
+});
+
+// The other manual-gated branch: a clean merge with red checks (REMOTE_CI_RED
+// only), reached exclusively through `cleanRepairFixture()` since
+// `repairFixture()`'s add/add conflict always takes the other branch above.
+test("integration repair: conflictResolution manual refuses a red check on a clean merge before starting any agent", async () => {
+  const { repo, remote } = cleanRepairFixture();
+  const before = originSha(remote, "orch/integration");
+
+  const out = await runRepair(repo, { failureClass: "REMOTE_CI_RED", adapters: fakeAdapters({}) });
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /conflictResolution is manual/);
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+// §10A acceptance criterion 1: auto resolve, happy path. A two-agent rotation
+// pool so the reviewer differs from the resolver (criterion 4 covers the
+// single-agent self-review refusal separately), the resolver keeps an ordinary
+// non-allowlisted path as "ours", the reviewer AGREEs, and the repair lands.
+test("integration repair: REMOTE_CONFLICTING audits an ordinary ours resolution and lands", async () => {
+  const { repo, remote } = repairFixture();
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "integration side\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "resolve conflict"], wd);
+      },
+    },
+    reviewer: {
+      async audit(branch, wd) {
+        calls.push("audit");
+        return { decision: "AGREE", reason: "reconstructs both sides" };
+      },
+    },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle?.status, "merged", out.result?.reason);
+  assert.deepEqual(calls, ["author", "audit"]);
+  assert.equal(git.git(["show", "orch/integration:shared.txt"], repo), "integration side");
+  assert.equal(originSha(remote, "orch/integration"), git.git(["rev-parse", "orch/integration"], repo));
+  const baseTip = originSha(remote, "main");
+  const integrationTip = originSha(remote, "orch/integration");
+  assert.ok(
+    git.gitTry(["merge-base", "--is-ancestor", baseTip, integrationTip], remote).ok,
+    "the landed integration tip must contain the base tip",
+  );
+});
+
+test("integration repair: an abort-then-commit resolver cannot land a tip without base ancestry", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        git.git(["merge", "--abort"], wd);
+        writeFileSync(join(wd, "shared.txt"), "resolution without base\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "abort merge then commit"], wd);
+      },
+    },
+    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /does not contain origin\/main in its ancestry/);
+  assert.deepEqual(calls, ["author"], "ancestry must be checked before gate or audit");
+  assert.equal(originSha(remote, "orch/integration"), before, "a candidate without base ancestry must not be pushed");
+});
+
+// §10A acceptance criterion 3: markers never land. `git add -A` + `git commit`
+// (what a resolver's `author()` does) succeeds mid-merge even with raw
+// `<<<<<<<` markers still in the file, which is why this floor exists.
+test("integration repair: a resolution that leaves conflict markers is refused, nothing lands", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "<<<<<<< ours\nmine\n=======\ntheirs\n>>>>>>> theirs\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "left markers behind"], wd);
+      },
+    },
+    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /left conflict markers/);
+  assert.deepEqual(calls, ["author"], "the marker floor must refuse before the reviewer is ever asked");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+// Same floor, on the clean REMOTE_CI_RED path where no merge conflict ever
+// existed — the harness has nothing else that would ever look at this file.
+test("integration repair: a REMOTE_CI_RED resolution that leaves conflict markers is refused on a clean merge too", async () => {
+  const { repo, remote } = cleanRepairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({ main: { conflictResolution: "auto" } });
+  const adapters = fakeAdapters({
+    claude: {
+      async author(prompt, wd) {
+        writeFileSync(join(wd, "notes.txt"), "<<<<<<< ours\nmine\n=======\ntheirs\n>>>>>>> theirs\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "red-check repair leaves markers"], wd);
+      },
+    },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CI_RED", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /left conflict markers/);
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+// The marker floor greps the WORKING TREE (git.js:79's `git grep` with no
+// revision argument reads files on disk); the pushed `candidateSha` is
+// whatever got committed. A resolver that edits the conflicted file on disk
+// without ever running `git add` (every other fixture in this file stages and
+// commits itself, so this is the one path that reaches the harness's own
+// "commit if MERGE_HEAD is still open" fallback) used to leave the INDEX at
+// whatever `git add -A` staged BEFORE the resolver ran — raw conflict markers,
+// since that add only exists to let `write-tree` pin `resolverBase`. Without
+// re-staging before that fallback commit, the floor greps the resolver's
+// clean disk edit while `candidateSha` pins the stale, still-conflicted tree
+// underneath it — the floor passes, and the markers are what land.
+test("integration repair: a resolver that edits the conflict on disk without staging still lands its actual edit, not the stale pre-resolution index", async () => {
+  const { repo, remote } = repairFixture();
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        // No `git add`, no `git commit` — the way a real CLI agent leaves the
+        // worktree (see `captureAuthorWork`'s own comment: "cannot be trusted
+        // to commit"), simulated directly rather than through that adapter.
+        writeFileSync(join(wd, "shared.txt"), "resolved on disk only\n");
+      },
+    },
+    reviewer: {
+      async audit(branch, wd) {
+        calls.push("audit");
+        return { decision: "AGREE", reason: "reconstructs both sides" };
+      },
+    },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle?.status, "merged", out.result?.reason);
+  assert.deepEqual(calls, ["author", "audit"]);
+  assert.equal(git.git(["show", "orch/integration:shared.txt"], repo), "resolved on disk only");
+  assert.equal(originSha(remote, "orch/integration"), git.git(["rev-parse", "orch/integration"], repo));
+});
+
+// §10A acceptance criterion 4: self-review is refused. A single-agent pool
+// (the DEFAULT_RESOLVERS fallback: just "claude") can resolve the conflict,
+// but nothing differs from it to audit the result, so the repair fails closed
+// instead of letting the resolver bless its own work.
+test("integration repair: a single-agent pool cannot audit its own resolution and the repair fails closed", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({ main: { conflictResolution: "auto" } });
+  const calls = [];
+  const adapters = fakeAdapters({
+    claude: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "resolved solo\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "resolve conflict solo"], wd);
+      },
+      async audit() { calls.push("self-audit"); return { decision: "AGREE" }; },
+    },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /no conflict reviewer configured/);
+  assert.deepEqual(calls, ["author"], "the resolver ran, but its own audit method must never be called");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+// The clean REMOTE_CI_RED path has no MERGE_HEAD, so it has no equivalent of
+// the conflict branch's post-resolver commit fallback — and does not need
+// one, PROVIDED it refuses instead of reporting success when the resolver
+// leaves HEAD exactly where it found it. A resolver that reports success
+// without moving HEAD (the default pool, a fully compliant adapter, an agent
+// that judges there is nothing to change) must not reach `landRepairedTip`:
+// `resolverPaths` would come back empty, which skips the marker floor, the
+// security scan AND the audit, and the untouched merge tip would be reported
+// merged without ever having repaired the red check.
+test("integration repair: a REMOTE_CI_RED resolver that commits nothing is refused, not reported merged", async () => {
+  const { repo, remote } = cleanRepairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({ main: { conflictResolution: "auto" } });
+  const calls = [];
+  const adapters = fakeAdapters({
+    claude: {
+      async author(prompt) {
+        calls.push("author");
+        assert.match(prompt, /Details: failing checks: lint/);
+        // Reports success without touching the worktree at all.
+      },
+    },
+  });
+
+  const out = await runRepair(repo, {
+    cfg,
+    failureClass: "REMOTE_CI_RED",
+    failureSummary: "failing checks: lint",
+    adapters,
+  });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /resolver committed nothing/);
+  assert.deepEqual(calls, ["author"]);
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+test("integration repair: a red resolution gate is refused before the reviewer and landing", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "resolved together\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "resolve conflict"], wd);
+      },
+    },
+    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
+  });
+  const gate = { detect: () => "true", run: () => ({ pass: false, log: "red" }) };
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters, gate });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /gate red on the resolution/);
+  assert.deepEqual(calls, ["author"], "a red resolution must not reach review");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+test("integration repair: a security finding blocks the resolution before review", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "resolved together\n");
+        writeFileSync(join(wd, "network.js"), 'fetch("https://example.test");\n');
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "unsafe resolution"], wd);
+      },
+    },
+    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.equal(out.result.failureClass, "SECURITY_FINDING");
+  assert.equal(out.result.exit, 3);
+  assert.deepEqual(calls, ["author"], "a security finding must block before review");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+test("integration repair: a reviewer DISAGREE refuses the resolution", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "resolved together\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "resolve conflict"], wd);
+      },
+    },
+    reviewer: {
+      async audit() {
+        calls.push("audit");
+        return { decision: "DISAGREE", reason: "the resolution drops base behavior" };
+      },
+    },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /drops base behavior/);
+  assert.deepEqual(calls, ["author", "audit"]);
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+test("integration repair: a failed resolver retries with the next rotation seat", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "dead", model: null, effort: null }, { agent: "good", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    dead: {
+      async author() {
+        calls.push("dead-author");
+        throw new Error("seat unavailable");
+      },
+      async audit() {
+        calls.push("dead-audit");
+        return { decision: "AGREE" };
+      },
+    },
+    good: {
+      async author(prompt, wd) {
+        calls.push("good-author");
+        writeFileSync(join(wd, "shared.txt"), "resolved by next seat\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "resolve with next seat"], wd);
+      },
+    },
+  });
+
+  const first = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+  assert.equal(first.cycle?.status, "merged");
+  assert.deepEqual(first.record.failures, []);
+  assert.deepEqual(calls, ["dead-author"]);
+  assert.equal(originSha(remote, "orch/integration"), before);
+
+  const second = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters, record: first.record });
+  assert.equal(second.cycle?.status, "merged", second.result?.reason);
+  assert.deepEqual(calls, ["dead-author", "good-author", "dead-audit"]);
+  assert.notEqual(originSha(remote, "orch/integration"), before);
+});
+
+// The gate runs the repository's own test command — arbitrary code — inside
+// the writable scratch worktree that holds the pinned `candidateSha`. If that
+// command commits anything, the tree that would be pushed is no longer the
+// tree the marker floor, the security scan and `candidateSha` itself all
+// described. `unmoved("gate")` is the only thing that catches this, and had
+// no test.
+test("integration repair: a gate command that commits into the scratch worktree is refused, not landed", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "resolved together\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "resolve conflict"], wd);
+      },
+    },
+    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
+  });
+  const gate = {
+    detect: () => "true",
+    run: (cmd, wd) => {
+      writeFileSync(join(wd, "gate-wrote-this.txt"), "not part of the resolution\n");
+      git.git(["add", "-A"], wd);
+      git.git(["commit", "-m", "the test command committed"], wd);
+      return { pass: true, log: "" };
+    },
+  };
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters, gate });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /moved the resolution/);
+  assert.deepEqual(calls, ["author"], "a gate-stage commit must be caught before the audit ever runs");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+// Same guard, the audit side: the reviewer is an agent WITH TOOLS running in
+// the same writable worktree, and is EXPECTED to read and not write.
+// `unmoved("audit")` is what stands between an audit-stage commit and pushing
+// content the audit never actually reviewed, and had no test either.
+test("integration repair: an auditor that commits into the scratch worktree is refused, not landed", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "resolved together\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "resolve conflict"], wd);
+      },
+    },
+    reviewer: {
+      async audit(branch, wd) {
+        calls.push("audit");
+        writeFileSync(join(wd, "audit-wrote-this.txt"), "not part of the resolution\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "the auditor committed"], wd);
+        return { decision: "AGREE" };
+      },
+    },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /moved the resolution/);
+  assert.deepEqual(calls, ["author", "audit"]);
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+// An allowlisted metadata path may be resolved as "ours" without becoming a
+// terminal protected-path failure. This also exercises the guardrail-touch
+// waiver after the content scan.
+test("integration repair: an allowlisted package.json \"ours\" resolution is not terminal", async () => {
+  const repo = newRepo();
+  const remote = addOrigin(repo);
+  git.git(["switch", "-c", "orch/integration"], repo);
+  commitFile(repo, "package.json", '{"version":"1.0.0"}\n', "integration version");
+  git.git(["push", "-u", "origin", "orch/integration"], repo);
+  git.git(["switch", "main"], repo);
+  commitFile(repo, "package.json", '{"version":"2.0.0"}\n', "base version bump");
+  git.git(["push", "origin", "main"], repo);
+  git.gitTry(["update-ref", "-d", "refs/remotes/origin/orch/integration"], repo);
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        // "ours": keep the integration side's content exactly, discarding
+        // base's incoming version bump.
+        writeFileSync(join(wd, "package.json"), '{"version":"1.0.0"}\n');
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "keep our version"], wd);
+      },
+    },
+    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle?.status, "merged", out.result?.reason);
+  assert.deepEqual(calls, ["author"], "an allowlisted resolution skips the reviewer");
+  assert.equal(git.git(["show", "orch/integration:package.json"], repo), '{"version":"1.0.0"}');
+  assert.notEqual(originSha(remote, "orch/integration"), before);
+});
+
+test("integration repair: content-derived guardrail findings are not waived on allowlisted paths", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "resolved together\n");
+        writeFileSync(join(wd, "package.json"), '{"version":"9.9.9","name":"CODEOWNERS"}\n');
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "unsafe metadata resolution"], wd);
+      },
+    },
+    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.equal(out.result.failureClass, "SECURITY_FINDING");
+  assert.equal(out.result.exit, 3);
+  assert.deepEqual(calls, ["author"], "content-derived guardrail findings must block before review");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+test("integration repair: a non-allowlisted \"ours\" resolution is refused before any audit", async () => {
+  const repo = newRepo();
+  const remote = addOrigin(repo);
+  git.git(["switch", "-c", "orch/integration"], repo);
+  commitFile(repo, "CODEOWNERS", "integration owners\n", "integration owners");
+  git.git(["push", "-u", "origin", "orch/integration"], repo);
+  git.git(["switch", "main"], repo);
+  commitFile(repo, "CODEOWNERS", "base owners\n", "base owners");
+  git.git(["push", "origin", "main"], repo);
+  git.gitTry(["update-ref", "-d", "refs/remotes/origin/orch/integration"], repo);
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "CODEOWNERS"), "integration owners\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "keep our owners"], wd);
+      },
+    },
+    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.equal(out.result.failureClass, "POLICY_PROTECTED_PATH");
+  assert.match(out.result.reason, /CODEOWNERS/);
+  assert.deepEqual(calls, ["author"], "the protected-path floor must refuse before the reviewer is ever asked");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+test("integration repair: conflictResolution propose is not an integration-repair mode", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "propose",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const ghCalls = [];
+  const adapters = fakeAdapters({});
+  const gh = (args) => { ghCalls.push(args); return "{}"; };
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters, gh });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /conflictResolution is not auto/);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(ghCalls, []);
+  assert.equal(originSha(remote, "orch/integration"), before);
 });
 
 test("integration repair: a per-cycle PR repairs its own branch, not the integration branch", async () => {
@@ -1205,11 +1861,12 @@ test("integration repair: lock contention stops at the retry cap instead of spin
   const slept = [];
 
   // Hand-computed from the requirement, not read off the code: the peer can
-  // hold the lock for the gate run on the updated tip and the re-gate on the
-  // merged tree, each capped at `repairCfg()`'s `stageTimeout: 7` minutes, plus
-  // the 5-minute `merge.lock` wait between them (src/lock.js:117) — 19 minutes,
-  // one round per LOCK_RETRY_MS (60s), so 19 rounds.
-  const cap = 19;
+  // hold the lock across four stages — the resolver `author()`, the gate run
+  // on the resolution, the reviewer `audit()`, and the re-gate on the merged
+  // tree — each capped at `repairCfg()`'s `stageTimeout: 7` minutes, plus the
+  // 5-minute `merge.lock` wait in the middle (src/lock.js:117): 4*7 + 5 = 33
+  // minutes, one round per LOCK_RETRY_MS (60s), so 33 rounds.
+  const cap = 33;
 
   // The last round under the cap: still handed back, and the wait is counted.
   const last = await runRepair(repo, {
@@ -1246,7 +1903,7 @@ test("integration repair: an exhausted contention cap leaves no convergence entr
   writeFileSync(join(orchDir, LOCK_NAMES.INTEGRATION_REPAIR), String(process.pid));
   const failure = { class: "REMOTE_BEHIND", fingerprint: "fp" };
   // What run-controller.js appends before dispatching.
-  const record = { attempt: 1, failures: [{ ...failure, remedy: "integration-repair" }], retries: { "repair-lock-wait": 19 } };
+  const record = { attempt: 1, failures: [{ ...failure, remedy: "integration-repair" }], retries: { "repair-lock-wait": 33 } };
 
   const out = await runRepair(repo, { record });
 

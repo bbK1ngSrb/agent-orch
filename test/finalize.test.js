@@ -351,12 +351,13 @@ test("path overlap with a peer → merge-deferred (no merge attempted)", async (
 test("post-land redrive: deferred peer is rebased + gated + landed under the same lock (#350)", async () => {
   const lockOps = [];
   const rebased = [];
+  const logRanges = [];
   const persisted = [];
   const mergedBranches = [];
   const removed = [];
   const deferredPeer = {
     sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
-    reviewedSha: "peer-reviewed", rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+    reviewedSha: "peer-reviewed", baseSha: "peer-base", rounds: 1, peerSids: ["1"], redriveAttempts: 0,
   };
   const { deps, recorded } = baseDeps({
     lock: {
@@ -376,6 +377,10 @@ test("post-land redrive: deferred peer is rebased + gated + landed under the sam
       },
       // HEAD advances per land so the integration-branch check passes twice.
       git: (args, cwd) => {
+        if (args[0] === "log") {
+          logRanges.push(args);
+          return "";
+        }
         if (args[0] === "rev-parse") {
           if (args[1] === "--short") return "abc1234";
           // worktree HEAD and repo branch tip must agree after each land
@@ -396,12 +401,16 @@ test("post-land redrive: deferred peer is rebased + gated + landed under the sam
       remove: (_d, sid) => { removed.push(sid); },
     },
   });
-  const r = await finalize(ctx(), deps);
+  const r = await finalize({ ...ctx(), cfg: { ...ctx().cfg, release: { autoBump: true } } }, deps);
   assert.equal(r.status, "merged");
   assert.deepEqual(mergedBranches, ["pr/claude/x-1", "deadbee"]);
   assert.deepEqual(rebased, [{
     branch: "pr/codex/b-2", onto: "orch/integration", expectedSha: "peer-reviewed",
   }]);
+  assert.deepEqual(logRanges, [
+    ["log", "--format=%s", "--reverse", "base..pr/claude/x-1"],
+    ["log", "--format=%s", "--reverse", "sha-1..deadbee"],
+  ]);
   assert.equal(persisted[0].reviewedSha, "deadbee", "the post-rebase OID must replace the deferred pin");
   assert.equal(deferredPeer.redriveAttempts, 1);
   assert.deepEqual(removed, ["2"]);
@@ -814,6 +823,64 @@ test("release.autoBump on → clean merge runs the version bump exactly once aga
   assert.equal(calls, 1);
   assert.equal(bumpArgs.path, "/integ");
   assert.equal(bumpArgs.entry, "release bookkeeping (no work-order text recorded)");
+});
+
+test("release.autoBump on → entry uses the first feat/fix subject, not the issue title", async () => {
+  const issueTitle = "schema accepts a flag that the handler ignores";
+  let bumpArgs;
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: {
+      ...g,
+      git: (args, cwd) => args[0] === "log"
+        ? [
+          "feat: reject inert --until modes",
+          "fix: tighten the validation message",
+          "fix: cover the revised handler path",
+          "chore(release): v0.4.346",
+        ].join("\n")
+        : g.git(args, cwd),
+      bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; },
+    },
+  });
+
+  await finalize({
+    ...bumpCtx(),
+    baseSha: "base",
+    title: issueTitle,
+    task: issueTitle,
+    closes: 279,
+  }, deps);
+
+  assert.equal(
+    bumpArgs.entry,
+    "feat: reject inert --until modes (closes [#279](https://github.com/bbk1ng/agent-orch/issues/279))",
+  );
+  assert.notEqual(bumpArgs.entry, issueTitle, "normal entries must not regress to the issue title");
+  assert.doesNotMatch(bumpArgs.entry, /chore\(release\):/);
+  assert.doesNotMatch(bumpArgs.entry, new RegExp(issueTitle));
+});
+
+test("release.autoBump on → no usable commit subject falls back to the issue title", async () => {
+  const issueTitle = "the release note needs a safe fallback";
+  let bumpArgs;
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: {
+      ...g,
+      git: (args, cwd) => args[0] === "log"
+        ? "chore(release): v0.4.346\nchore: tidy test fixtures"
+        : g.git(args, cwd),
+      bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; },
+    },
+  });
+
+  await finalize({ ...bumpCtx(), baseSha: "base", title: issueTitle, closes: 279 }, deps);
+
+  assert.equal(
+    bumpArgs.entry,
+    "the release note needs a safe fallback (closes [#279](https://github.com/bbk1ng/agent-orch/issues/279))",
+  );
 });
 
 test("clean merge on a resumed cycle (task === branch): entry is never the branch slug", async () => {

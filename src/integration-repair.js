@@ -9,20 +9,26 @@
 // integration worktree / pushes. A peer holding the repair lock means this run
 // starts no agent and gives its attempt back — the caller re-polls readiness.
 //
-// This slice (P6 split 4a) repairs REMOTE_BEHIND only: GitHub's server-side
-// update-branch, a gate run on the result, and the landing below. NO agent runs
-// anywhere in it. The resolver paths (REMOTE_CONFLICTING / REMOTE_CI_RED) are
-// #569; until they land, `repairIntegration` says so rather than pretending.
+// REMOTE_BEHIND (split 4a) is the agent-free path: GitHub's server-side
+// update-branch, a gate run on the result, and the landing below.
+// REMOTE_CONFLICTING / REMOTE_CI_RED (split 4b, #569) add a resolver agent, a
+// security scan and a reviewer audit in front of that same landing.
 //
-// Work still runs in a scratch worktree checked out on a throwaway LOCAL
-// branch, never in the persistent integration worktree `finalize` owns and
-// never detached: the gate must see the repaired tip, and #569's `audit(branch,
-// wd)` renders a prompt naming `refs/heads/<branch>` — a detached scratch would
-// have the reviewer audit the PRE-repair tip and fail open.
+// Work runs in a scratch worktree checked out on a throwaway LOCAL branch,
+// never in the persistent integration worktree `finalize` owns and never
+// detached: the gate must see the repaired tip, and `audit(branch, wd)` renders
+// a prompt naming `refs/heads/<branch>` — a detached scratch would have the
+// reviewer audit the PRE-repair tip and fail open.
 import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { checkPaths } from "./intake/allowlist.js";
+import { parseRoleSpecs } from "./config.js";
+import { scanDiff, parseRawPaths, SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "./security-review.js";
 import * as lockDefault from "./lock.js";
 import { LOCK_NAMES } from "./lock.js";
 import { updateBranch } from "./github.js";
+
+const DEFAULT_RESOLVERS = [{ agent: "claude", model: null, effort: null }];
 
 // git's own wording for "someone else moved the ref under you", across the
 // versions/locales that keep the English message: the only push failure a
@@ -34,12 +40,89 @@ function errorText(error) {
   return String(error?.message || error || "unknown error").trim();
 }
 
+// Byte-for-byte the same rule cli.js:727 applies to an in-cycle conflict, so
+// the two conflict paths cannot drift: `conflictResolution` wins, the
+// deprecated `autoResolveConflicts` boolean is the fallback, and the default is
+// `manual`.
+function modeOf(cfg) {
+  return cfg.main?.conflictResolution || (cfg.main?.autoResolveConflicts ? "auto" : "manual");
+}
+
 // #56/#58: every stage this file starts must carry the same wall-clock watchdog
-// cli.js passes to the cycle's own stages — a hung test command here would
+// cli.js passes to the cycle's own stages — a hung resolver here would
 // otherwise stall an unattended `--until` run while holding
-// `integration-repair.lock`. Two call sites today (see LOCKED_STAGES).
+// `integration-repair.lock`. Four call sites today (see LOCKED_STAGES).
 function stageTimeoutMs(cfg) {
   return cfg.stageTimeout > 0 ? cfg.stageTimeout * 60_000 : 0;
+}
+
+// Seat the resolver the way the cycle seats its own roles: the same rotation
+// cli.js's `conflictResolvers` runs, over the same `last-conflict-resolver`
+// cursor, so a repair and an in-cycle conflict resolution share one turn order
+// instead of this path pinning pool entry zero forever. Advanced eagerly —
+// before we know whether a resolver will actually run — exactly as cli.js does,
+// which is also what makes a dead seat fail over: a repair whose resolver
+// throws leaves the cursor advanced, so the next attempt starts on the next
+// seat. Called ONCE per repair; rotating again for the reviewer would
+// double-advance the shared cursor.
+function resolverPoolOf(cfg, orchDir) {
+  const pool = cfg.main?.conflictResolutionResolvers || DEFAULT_RESOLVERS;
+  if (pool.length < 2 || !orchDir) return pool;
+  mkdirSync(orchDir, { recursive: true });
+  const cursor = join(orchDir, "last-conflict-resolver");
+  const last = existsSync(cursor) ? Number.parseInt(readFileSync(cursor, "utf8"), 10) : -1;
+  const start = Number.isInteger(last) ? (last + 1) % pool.length : 0;
+  writeFileSync(cursor, String(start));
+  return pool.slice(start).concat(pool.slice(0, start));
+}
+
+// Fail-closed, in the same shape `resolveIntegrationConflict` (cli.js) uses: an
+// audit only proves something when the auditor differs from the resolver. A
+// single-agent pool finds nobody here and the repair refuses rather than
+// letting the resolver bless its own work.
+function reviewerFor(cfg, resolverAgent, resolvers) {
+  const pool = [
+    ...resolvers,
+    // Same three sources, same order, as cli.js's `conflictReviewerFor`:
+    // dropping `cfg.reviewers` here makes a repo that configures roles instead
+    // of a bare `agents:` pool find no differing seat and fail every repair.
+    ...(cfg.reviewers?.length ? parseRoleSpecs(cfg.reviewers) : []),
+    ...(cfg.agents || []).map((agent) => ({ agent, model: null, effort: null })),
+  ];
+  return pool.find((spec) => spec?.agent && spec.agent !== resolverAgent) || null;
+}
+
+// Fail closed on an unreadable diff: every path floor below reads its input
+// from one of these, and `gitTry` puts the ERROR TEXT in `.out`. Unchecked, a
+// failed diff parses to an empty path list, which reads downstream as "the
+// resolver touched nothing" — empty scan, clean gate, push.
+function diffOut(git, wd, args) {
+  const run = git.gitTry(["diff", ...args], wd);
+  return run.ok ? { ok: true, out: run.out } : { ok: false, reason: `could not read the repair diff (git diff ${args.join(" ")}): ${run.out.trim()}` };
+}
+
+// -z NUL-split (as changedFiles/#383 does) so a path with a leading space or a
+// newline survives intact.
+function conflictedPathsIn(git, wd) {
+  const listed = git.gitTry(["diff", "--name-only", "-z", "--diff-filter=U"], wd);
+  return listed.ok ? listed.out.split("\0").filter(Boolean) : [];
+}
+
+function resolverPrompt({ branch, base, cls, failure, conflicts }) {
+  return [
+    conflicts.length
+      ? `Integration repair on ${branch}: merging origin/${base} produced a merge conflict.`
+      : `Integration repair on ${branch}: red checks after merging origin/${base}.`,
+    "",
+    `Failure class: ${cls}`,
+    failure?.summary ? `Details: ${failure.summary}` : null,
+    conflicts.length ? `Conflicted files: ${conflicts.join(", ")}` : null,
+    "",
+    conflicts.length
+      ? "Act as a neutral third party; reconstruct both parents' intent. Preserve behavior from both sides unless truly incompatible."
+      : "Fix only the named failing check(s); do not widen scope.",
+    "Resolve everything, stage the result, and commit it. Do not edit unrelated files.",
+  ].filter((line) => line !== null).join("\n");
 }
 
 function addScratch(git, repo, orchDir, ref, branchName) {
@@ -276,6 +359,330 @@ async function repairBehind(ctx, deps) {
   }
 }
 
+// REMOTE_CONFLICTING / REMOTE_CI_RED: merge base in locally, and where that
+// needs a judgement call (a real conflict, or a red check), let a resolver
+// agent make it — then prove the resolution before `landRepairedTip` makes it
+// origin's. Every gate below is written to fail CLOSED: a check that could not
+// run has told us nothing, and nothing is not permission to push to a branch
+// other cycles depend on.
+async function repairConflictOrRed(ctx, deps) {
+  const { orchDir, repo, branch, base, cfg, class: cls, failure, scratchBranch } = ctx;
+  const { git, gate, adapters } = deps;
+  const mode = modeOf(cfg);
+  const timeoutMs = stageTimeoutMs(cfg);
+
+  // Compute against a FRESH origin/<branch> and base, not whatever snapshot an
+  // earlier fetch left behind. Force only the remote-tracking ref — it mirrors
+  // origin by definition, so a force-pushed origin lands here as data rather
+  // than as a fetch error.
+  const fetched = git.gitTry(["fetch", "origin", `+${branch}:refs/remotes/origin/${branch}`], repo);
+  if (!fetched.ok) return { ok: false, reason: `could not fetch origin/${branch}: ${fetched.out.trim()}` };
+  if (!git.gitTry(["fetch", "origin", base], repo).ok) {
+    return { ok: false, reason: `could not fetch origin/${base}` };
+  }
+  const scratch = addScratch(git, repo, orchDir, `origin/${branch}`, scratchBranch);
+  if (!scratch) return { ok: false, reason: "could not create the repair worktree" };
+
+  try {
+    const preSha = git.gitTry(["rev-parse", "HEAD"], scratch).out.trim();
+    // One rotated pool for the whole repair: the reviewer must be picked out of
+    // the SAME order the resolver came from (cli.js hands `conflictReviewerFor`
+    // the rotated list too).
+    const resolvers = resolverPoolOf(cfg, orchDir);
+    const resolver = resolvers[0];
+    // Paths the resolver is answerable for: the conflicted set, or (clean
+    // merge) its own pre/post diff. Drives both the audit-allowlist decision
+    // and the "did an agent touch this" exclusion below.
+    let resolverPaths = [];
+    let resolverRan = false;
+    // The tree the resolver started from — the diff base that attributes
+    // CONTENT to the resolver instead of to base. See the scan block below.
+    let resolverBase = null;
+
+    const merge = git.gitTry(["merge", "--no-edit", `origin/${base}`], scratch);
+    if (!merge.ok) {
+      const conflicts = conflictedPathsIn(git, scratch);
+      if (!conflicts.length) return { ok: false, reason: (merge.out || "merge failed").trim() };
+      // The same opt-in gate `resolveIntegrationConflict` already enforces: a
+      // repo configured with a non-auto mode never gets an agent auto-resolving
+      // a merge conflict here either. Checked BEFORE the resolver is
+      // constructed, so no agent process starts at all.
+      if (mode !== "auto") {
+        git.gitTry(["merge", "--abort"], scratch);
+        return { ok: false, reason: mode === "manual" ? "conflictResolution is manual" : "conflictResolution is not auto" };
+      }
+      resolverRan = true;
+      // Pin the CONFLICTED state as a tree so the resolver's own edits can be
+      // read back afterwards. `conflicts` alone is the pre-resolution list: a
+      // resolver that also rewrites a non-conflicted path base merged in
+      // cleanly would fall in neither `resolverPaths` nor outside
+      // `baseIncoming`, and so escape the path floor, the security scan and the
+      // audit gate together. `git add -A` resolves the index in place (markers
+      // and all) purely so `write-tree` can run; `author()` stages over it.
+      git.gitTry(["add", "-A"], scratch);
+      const wrote = git.gitTry(["write-tree"], scratch);
+      // Unchecked, a failed write-tree would leave error text where a tree sha
+      // belongs: the diff below fails, `resolverPaths` silently degrades back
+      // to `conflicts`, and both the footprint and the marker scan fail open.
+      if (!wrote.ok) {
+        git.gitTry(["merge", "--abort"], scratch);
+        return { ok: false, reason: `could not pin the conflicted tree: ${wrote.out.trim()}` };
+      }
+      resolverBase = wrote.out.trim();
+      try {
+        await adapters.get(resolver.agent).author(
+          resolverPrompt({ branch, base, cls, failure, conflicts }), scratch,
+          { model: resolver.model, effort: resolver.effort, stageTimeoutMs: timeoutMs, baseBranch: base },
+        );
+      } catch (error) {
+        git.gitTry(["merge", "--abort"], scratch);
+        // Nothing durable happened — merge aborted, scratch dropped, origin
+        // untouched — so a pool with another seat is worth one more attempt. A
+        // single-seat pool is not: it would re-run the same dead agent until
+        // `maxAttempts` and report nothing more useful than this error.
+        return { ok: false, retrySeat: resolvers.length > 1, reason: `resolver failed: ${errorText(error)}` };
+      }
+      // A tree-vs-worktree diff, so work the resolver staged but did not commit
+      // (the `commit --no-edit` below would carry it) counts too.
+      const agentDiff = diffOut(git, scratch, [...SECURITY_RAW_ARGS, resolverBase]);
+      if (!agentDiff.ok) return { ok: false, reason: agentDiff.reason };
+      resolverPaths = [...new Set([...conflicts, ...parseRawPaths(agentDiff.out)])];
+      if (git.gitTry(["rev-parse", "-q", "--verify", "MERGE_HEAD"], scratch).ok) {
+        // Re-stage before this commit, not just before the pre-resolver
+        // `write-tree` above: a resolver that edits files without running
+        // `git add` (real CLI agents normally rely on `captureAuthorWork` for
+        // that, a file this one never calls into) would otherwise leave the
+        // index exactly as `git add -A` staged it BEFORE the resolver ran —
+        // markers and all — and `commit --no-edit` commits the INDEX, not the
+        // working tree. The marker floor below greps the working tree, so
+        // without this the floor validates the resolver's fix while
+        // `candidateSha` pins the stale, unresolved content underneath it.
+        git.gitTry(["add", "-A"], scratch);
+        git.gitTry(["commit", "--no-edit"], scratch);
+      }
+    } else if (cls === "REMOTE_CI_RED") {
+      // Merge was clean but the checks were red — repair the named check. Same
+      // opt-in gate as the conflict branch above: a non-auto mode can never
+      // push this resolution, so starting the resolver only burns an agent
+      // stage (and `stageTimeout` of wall clock) to reach a verdict already known.
+      if (mode !== "auto") {
+        return { ok: false, reason: mode === "manual" ? "conflictResolution is manual" : "conflictResolution is not auto" };
+      }
+      // Pin the merge result first: a clean merge produces no
+      // `--diff-filter=U` list, so without a pre/post diff the exclusion below
+      // would also drop paths the resolver itself edited whenever base's
+      // incoming delta happened to touch the same file, exempting them from
+      // both floors.
+      resolverBase = git.gitTry(["rev-parse", "HEAD"], scratch).out.trim();
+      resolverRan = true;
+      try {
+        await adapters.get(resolver.agent).author(
+          resolverPrompt({ branch, base, cls, failure, conflicts: [] }), scratch,
+          { model: resolver.model, effort: resolver.effort, stageTimeoutMs: timeoutMs, baseBranch: base },
+        );
+      } catch (error) {
+        // Same as the conflict path: nothing durable happened, so hand the next
+        // seat an attempt when the pool has one.
+        return { ok: false, retrySeat: resolvers.length > 1, reason: `resolver failed: ${errorText(error)}` };
+      }
+      // Unlike the conflict branch, a clean merge leaves no MERGE_HEAD to react
+      // to, so there is no equivalent commit fallback here — and none is
+      // needed. Any resolver that actually changed something committed it
+      // itself (`captureAuthorWork`, or the fixture's own `git commit` above).
+      // A resolver that reports success without moving HEAD off `resolverBase`
+      // — the default pool, a fully compliant adapter, an agent that simply
+      // makes no edit — has repaired nothing: `resolverPaths` would come back
+      // empty below, which skips the marker floor, the security scan AND the
+      // audit (`reviewPaths.length` gates it), so the untouched merge tip would
+      // sail through to `landRepairedTip` and get reported merged. Refuse
+      // before any of that runs. This also catches a resolver that edited the
+      // working tree without committing: `candidateSha` below is `rev-parse
+      // HEAD`, not the working tree, so an uncommitted edit would leave the
+      // gate/audit stages testing content that never reaches origin — gate 1's
+      // own failure mode, inside the slice that exists to close it.
+      const afterResolve = git.gitTry(["rev-parse", "HEAD"], scratch);
+      if (!afterResolve.ok) return { ok: false, reason: `could not re-read the resolved tip: ${afterResolve.out.trim()}` };
+      if (afterResolve.out.trim() === resolverBase) {
+        return { ok: false, retrySeat: resolvers.length > 1, reason: "resolver committed nothing — the red check was never repaired" };
+      }
+      const agentDiff = diffOut(git, scratch, [...SECURITY_RAW_ARGS, resolverBase]);
+      if (!agentDiff.ok) return { ok: false, reason: agentDiff.reason };
+      resolverPaths = parseRawPaths(agentDiff.out);
+    }
+
+    // Marker floor over BOTH resolver paths, not just the merge-conflict one.
+    // `author()` unconditionally `git add -A`s and commits (cli-adapter.js
+    // `captureAuthorWork`), and `git commit` SUCCEEDS mid-merge with raw
+    // `<<<<<<<` still in the file — that clears git's unmerged-path
+    // bookkeeping, so nothing downstream notices on its own. On the clean
+    // REMOTE_CI_RED path there was never a conflict, so nothing else would ever
+    // look. Markers rarely fail a test suite and an allowlist-only resolution
+    // skips the audit round by design, so unchecked they reach origin. Scanned
+    // over everything the resolver touched — markers it invents in a brand-new
+    // file are markers all the same — and never a bare worktree grep: this
+    // repo's own fixtures contain marker text.
+    if (resolverPaths.length) {
+      // #568 changed this helper's return type from a bare string to an object,
+      // so `if (unresolvedConflictMarkers(...))` is now ALWAYS true and its
+      // negation always false — either would turn this floor into a constant.
+      // `error` means the search never ran (worktree gone, pathspec outside the
+      // repo); that is not permission to push, so it refuses like a hit does.
+      const { markers, error } = git.unresolvedConflictMarkers(scratch, resolverPaths);
+      if (error) return { ok: false, reason: `conflict-marker check failed: ${error}` };
+      if (markers) return { ok: false, reason: `resolver left conflict markers: ${markers.split("\n")[0]}` };
+    }
+
+    // THE candidate. Pinned once, here — after the marker floor and before the
+    // first thing that judges the tree — and used for every judgement and for
+    // the landing itself. The stages below (`gate.run` executes the repo's own
+    // test command; the reviewer audit runs an agent WITH TOOLS) both run inside
+    // this writable scratch worktree, and a fresh `rev-parse HEAD` at push time
+    // would let either of them commit content that no diff, no scan, no gate and
+    // no reviewer ever saw. Re-read and compared after each of those stages
+    // below; a mismatch is refused, never re-scanned.
+    const candidate = git.gitTry(["rev-parse", "HEAD"], scratch);
+    if (!candidate.ok) return { ok: false, reason: `could not read the resolved tip: ${candidate.out.trim()}` };
+    const candidateSha = candidate.out.trim();
+    // A resolver can abort the merge and still commit a plausible-looking
+    // repair. Refuse that tip: the repair must carry the base it was meant to
+    // merge before it can reach the shared branch. This check is shared by the
+    // conflict and clean CI-red paths.
+    const containsBase = git.gitTry(["merge-base", "--is-ancestor", `origin/${base}`, candidateSha], scratch);
+    if (!containsBase.ok) return { ok: false, reason: `repaired tip ${candidateSha} does not contain origin/${base} in its ancestry` };
+    // A stage that was supposed to only read has written to the worktree. That
+    // is an anomaly, not a new candidate: adapting (re-scanning the new tip)
+    // would make the write routine, and the safe answer to "the tree moved
+    // under the gate that was checking it" is to stop.
+    const unmoved = (stage) => {
+      const now = git.gitTry(["rev-parse", "HEAD"], scratch);
+      if (!now.ok) return `could not re-read the resolved tip after the ${stage}: ${now.out.trim()}`;
+      return now.out.trim() === candidateSha ? null : `the ${stage} moved the resolution off ${candidateSha.slice(0, 12)}`;
+    };
+
+    // Gate + security scan on the RESOLUTION, not on base's whole incoming
+    // delta: `preSha...candidateSha` is everything base brought in PLUS whatever
+    // the resolver did, so a routine base-side version bump that merged cleanly
+    // would otherwise trip the same floors a genuine resolver edit deserves to
+    // trip. Exclusion, not intersection — a resolver that ADDS a brand-new
+    // protected path is in neither set and must still be caught.
+    const resolutionDiff = diffOut(git, scratch, [...SECURITY_RAW_ARGS, `${preSha}...${candidateSha}`]);
+    if (!resolutionDiff.ok) return { ok: false, reason: resolutionDiff.reason };
+    const baseDiff = diffOut(git, scratch, [...SECURITY_RAW_ARGS, `${preSha}...origin/${base}`]);
+    if (!baseDiff.ok) return { ok: false, reason: baseDiff.reason };
+    const baseIncoming = new Set(parseRawPaths(baseDiff.out));
+    // A UNION, not a filter over the diff. A filter can only keep paths that
+    // appear in `preSha...candidateSha`, and a conflict resolved as "ours"
+    // produces content identical to `preSha` — so that path is in no diff at
+    // all, and a filter drops it from the protected-path floor and from
+    // `reviewPaths` together. What lands is not unscanned bytes (the content
+    // equals what was already there); it is that the resolver silently DISCARDED
+    // base's incoming change to that file, and nobody was asked. Every path the
+    // resolver is answerable for is therefore in unconditionally. The second
+    // half keeps the exclusion above, which is correct for what it covers.
+    const scanPaths = [...new Set([
+      ...resolverPaths,
+      ...parseRawPaths(resolutionDiff.out).filter((p) => !baseIncoming.has(p)),
+    ])];
+
+    const allowed = new Set(cfg.main?.autoResolveConflictPaths || []);
+    const reviewPaths = scanPaths.filter((p) => !allowed.has(p));
+    // Protected-path floor AFTER the allowlist, never before: `package.json`
+    // and its lockfile are both protected paths AND the operator's default
+    // `autoResolveConflictPaths` entries, so checking first would make every
+    // routine version bump on base a terminal POLICY_PROTECTED_PATH — and with
+    // `release.autoBump: true` that bump happens on essentially every landing,
+    // wedging the whole pipeline. The allowlist is the operator's explicit
+    // opt-in for exactly these paths; the CONTENT scan below still covers them.
+    const prot = checkPaths(reviewPaths);
+    if (!prot.ok) {
+      return { ok: false, terminalClass: "POLICY_PROTECTED_PATH", reason: `protected paths touched: ${prot.violations.join(", ")}` };
+    }
+    // CONTENT attribution, the other half of the path exclusion above: diff
+    // from the tree the RESOLVER started on (the pinned conflicted tree, or the
+    // clean merge result), never from `preSha`. `preSha...HEAD` on a
+    // resolver-touched path also carries every hunk base merged into that same
+    // file, so a secret or a subprocess call base brought in would be scanned
+    // as the resolver's work. `resolverBase` is null exactly when no resolver
+    // ran, and then there is nothing to attribute — scan nothing rather than
+    // fall back to a range that is all base.
+    // Both ends are tree-ishes — `resolverBase` to `candidateSha`, never a
+    // working-tree read: the scan must describe the commit that gets pushed, not
+    // whatever the directory holds when the diff happens to run.
+    const finalDiff = scanPaths.length && resolverBase
+      ? diffOut(git, scratch, [...SECURITY_DIFF_ARGS, resolverBase, candidateSha, "--", ...scanPaths])
+      : { ok: true, out: "" };
+    if (!finalDiff.ok) return { ok: false, reason: finalDiff.reason };
+    const scanned = scanDiff(finalDiff.out, { ignore: cfg.security?.ignore ?? [], rawPaths: scanPaths });
+    // The scan's `guardrail-touch` rule is a PATH floor over the same
+    // `DEFAULT_PROTECTED` list `checkPaths` uses, so leaving it unfiltered
+    // re-imposes on the allowlist exactly what the ordering above removed.
+    // Only the path floor is waived — the CONTENT rules (secret-read,
+    // subprocess, network, ...) still apply to those files.
+    // `scanDiff` marks the path-floor finding with its synthetic line; content
+    // findings carry the matched added line instead.
+    const findings = scanned.findings.filter((f) => !(
+      f.rule === "guardrail-touch" &&
+      f.line === "guardrail path changed" &&
+      allowed.has(f.file)
+    ));
+    if (findings.length) {
+      return { ok: false, terminalClass: "SECURITY_FINDING", reason: "security scan rejected the resolution", security: { ...scanned, findings } };
+    }
+    const testCmd = cfg.test === "auto" ? gate.detect(scratch) : cfg.test;
+    // Same #56/#58 watchdog as the agent stages, and deliberately BEFORE
+    // `merge.lock` is taken so a slow suite does not hold the shared merge lock.
+    if (!gate.run(testCmd, scratch, timeoutMs).pass) return { ok: false, reason: "gate red on the resolution" };
+    // `gate.run` executed the repository's own test command — arbitrary code —
+    // in this worktree. Anything it committed is content no scan read.
+    const movedByGate = unmoved("gate");
+    if (movedByGate) return { ok: false, reason: movedByGate };
+
+    // design §10A/review A6: an agent-authored resolution touching anything
+    // outside the auto-approved allowlist gets one reviewer audit before it
+    // reaches the shared branch — green tests prove the tree still works, not
+    // that the resolver picked the right side of a conflict. The audit reads
+    // `refs/heads/${scratchBranch}`, which IS the resolution (see the file
+    // header): auditing `refs/heads/<branch>` instead would review the tip from
+    // BEFORE the repair and AGREE to work it never read.
+    // Confined-to-allowlist resolutions skip it: that is what the allowlist is
+    // for.
+    if (resolverRan && reviewPaths.length) {
+      const reviewer = reviewerFor(cfg, resolver.agent, resolvers);
+      if (!reviewer) return { ok: false, reason: `no conflict reviewer configured that differs from ${resolver.agent}` };
+      let verdict;
+      try {
+        verdict = await adapters.get(reviewer.agent).audit(scratchBranch, scratch, {
+          model: reviewer.model, effort: reviewer.effort, stageTimeoutMs: timeoutMs,
+        });
+      } catch (error) {
+        return { ok: false, reason: `conflict-resolution audit failed: ${errorText(error)}` };
+      }
+      if (verdict?.decision !== "AGREE") {
+        return { ok: false, reason: `conflict resolution audit rejected: ${verdict?.reason || "reviewer disagreed"}` };
+      }
+      // The auditor is an agent with tools, run in this writable worktree. It is
+      // EXPECTED to read and not write, and that expectation is the only thing
+      // between an audit-stage commit and a push of content nothing scanned.
+      const movedByAudit = unmoved("audit");
+      if (movedByAudit) return { ok: false, reason: movedByAudit };
+    }
+
+    const landed = await landRepairedTip(ctx, deps, { sha: candidateSha });
+    // Attempt accounting, and the one place this path deliberately differs from
+    // `repairBehind`. A landing that changed nothing (contended `merge.lock`,
+    // lost push race) is a FREE retry only when nothing was spent to reach it —
+    // true here exactly when no resolver ran (a REMOTE_CONFLICTING that merged
+    // cleanly after all). Once a resolver has burned an agent stage, refunding
+    // the attempt would let a contended lock re-run a paid resolver forever, so
+    // the attempt is kept: `raced` without `precondition` falls through to
+    // `terminal` in the remedy below.
+    if (!resolverRan) return landed.raced ? { ...landed, precondition: true } : landed;
+    const { precondition, ...paid } = landed;
+    return paid;
+  } finally {
+    dropScratch(git, repo, scratch, scratchBranch);
+  }
+}
 
 // `ctx.class` is one of REMOTE_BEHIND | REMOTE_CONFLICTING | REMOTE_CI_RED —
 // the classes failure.js routes to this remedy. Returns `{ok:false,
@@ -289,11 +696,7 @@ export async function repairIntegration(ctx, deps) {
   }
   try {
     if (ctx.class === "REMOTE_BEHIND") return await repairBehind(ctx, deps);
-    // REMOTE_CONFLICTING / REMOTE_CI_RED need a resolver agent, a security
-    // scan and an audit — P6 split 4b (#569). Reporting that plainly is still
-    // strictly better than the pre-#551 state, where no executor was
-    // registered at all and every one of these classes resolved terminal.
-    return { ok: false, reason: `${ctx.class} repair is not implemented in this slice (#569)` };
+    return await repairConflictOrRed(ctx, deps);
   } catch (error) {
     // Every git helper here is `gitTry`, but `ensureIntegrationWorktree` and
     // the adapters still throw. A throw must not escape the remedy: run-
@@ -320,17 +723,18 @@ const LOCK_RETRY_MS = 60_000;
 // a bare STOPPED_AT_CAP that named no peer.
 //
 // Sized against ONE peer repair rather than fixed. The peer holds the lock
-// across, in order:
-//   1. the gate run on the updated tip, in `repairBehind`      — `stageTimeout`
-//   2. the `merge.lock` acquire, in `landRepairedTip`          — see below
-//   3. the gate re-run on the merged tree, in `landRepairedTip` — `stageTimeout`
-// Step 3 exists only when the local merge was a real merge rather than a
+// across, in order (worst path — REMOTE_CONFLICTING/REMOTE_CI_RED):
+//   1. the resolver `author()` stage, in `repairConflictOrRed` — `stageTimeout`
+//   2. the gate run on the resolution, in `repairConflictOrRed` — `stageTimeout`
+//   3. the reviewer `audit()` stage, in `repairConflictOrRed`  — `stageTimeout`
+//   4. the `merge.lock` acquire, in `landRepairedTip`          — see below
+//   5. the gate re-run on the merged tree, in `landRepairedTip` — `stageTimeout`
+// Step 5 exists only when the local merge was a real merge rather than a
 // fast-forward; the cap is deliberately sized for that worst path, since a
 // shorter one would make the loser of a concurrent repair give up mid-peer-
 // repair — and §10A makes this remedy `ready`'s only path to its goal.
-// Two `stageTimeout` windows, not the four an earlier round counted: this slice
-// has no resolver stage and no reviewer audit under the lock. #569 puts them
-// back and must raise `LOCKED_STAGES` with them.
+// REMOTE_BEHIND spends only steps 4-5 plus its own gate run; the cap covers the
+// longest path, not the shortest.
 // The peer's plain git work (fetch, update-branch, reconcile, merge, push) is
 // left unmodelled: it carries no watchdog and no bound worth guessing at, and
 // `MIN_LOCK_RETRIES` is the floor that covers it when `stageTimeout` is small.
@@ -345,13 +749,22 @@ const MIN_LOCK_RETRIES = 10;
 const MERGE_LOCK_WAIT_MS = 300_000;
 // Every stage the peer can run while holding `integration-repair.lock` — one
 // per `stageTimeoutMs(cfg)` call site under that lock. Bump this with any new
-// one.
-const LOCKED_STAGES = 2;
+// one. Four today: resolver, resolution gate, reviewer audit, landing re-gate.
+const LOCKED_STAGES = 4;
 // Counted under its own key, not the `repair-lock` counter failure.js spends on
 // the free re-polls BEFORE this remedy is ever dispatched — sharing that one
 // would arrive already exhausted and terminate on the first contention.
 const LOCK_RETRY_KEY = "repair-lock-wait";
 
+// Deliberately a fixed budget of whole `LOCK_RETRY_MS` sleeps, not an
+// elapsed-time deadline with a final poll. `Math.ceil` already rounds the
+// modelled peer hold UP to a whole retry, so the cap always overshoots it, and
+// `MIN_LOCK_RETRIES` covers the unmodelled plain-git work on top. Measuring
+// elapsed time instead would put wall clock into the same accounting the paid-
+// resolver rule constrains — a run could then hand its attempt back for a
+// reason unrelated to what it spent. Terminalizing on the last sleep names the
+// peer; one more poll would at best convert that into a repair that the caller
+// gets anyway on its next readiness round.
 function lockRetryCap(cfg) {
   return Math.max(MIN_LOCK_RETRIES, Math.ceil((LOCKED_STAGES * stageTimeoutMs(cfg) + MERGE_LOCK_WAIT_MS) / LOCK_RETRY_MS));
 }
@@ -374,7 +787,18 @@ function withoutLastFailure(record, failure, name) {
     : record;
 }
 
+// The two policy floors in `repairConflictOrRed` end the run BLOCKED (exit 3),
+// not STOPPED_AT_CAP: they are the same classes run-controller.js maps in its
+// own `BLOCKED_REASON`, reached here through a remedy rather than through a
+// local cycle escalation. REMOTE_REVIEW_REQUIRED is deliberately absent — it is
+// not a policy block, it is a run that stopped waiting for a human.
+const BLOCKED = {
+  POLICY_PROTECTED_PATH: "guardrail-path",
+  SECURITY_FINDING: "security-finding",
+};
+
 function terminal(failure, outcome, record, name) {
+  const blockedReason = BLOCKED[outcome.terminalClass];
   // A precondition failure (peer holds the lock, merge.lock timed out, no PR
   // number) started no agent and changed nothing — it must not burn an
   // attempt, same rule as remedies.js's `executed: false` path. The convergence
@@ -389,8 +813,10 @@ function terminal(failure, outcome, record, name) {
     : record;
   return {
     result: {
-      state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2,
-      failureClass: failure?.class,
+      ...(blockedReason
+        ? { state: "BLOCKED", outcome: "blocked", exit: 3, blockedReason }
+        : { state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2 }),
+      failureClass: outcome.terminalClass || failure?.class,
       failure,
       reason: `integration repair failed: ${outcome.reason}`,
     },
@@ -402,7 +828,7 @@ export function createIntegrationRepairRemedy({ run, deps, resolveLanded, gh }) 
   return (context) => integrationRepairRemedy({ ...context, run, deps, resolveLanded, gh });
 }
 
-export async function integrationRepairRemedy({ failure, record, cycle, name, run, deps, resolveLanded, gh }) {
+export async function integrationRepairRemedy({ failure, record, cycle, name, policy, run, deps, resolveLanded, gh }) {
   const cfg = run?.cfg || {};
   const integrationBranch = cfg.integrationBranch || "orch/integration";
   let land = null;
@@ -474,14 +900,25 @@ export async function integrationRepairRemedy({ failure, record, cycle, name, ru
   // counter of its own. Only the integration branch has a rollback (the local
   // merge is integration-only), but only it can lose this race: a per-cycle
   // branch is `pr/<author>/<slug>-<sid>` (cli.js:1087), sid-scoped to one run,
-  // so no peer run pushes to it. (`raced` WITHOUT `precondition` is #569's resolver
-  // path, which has already paid for a stage and keeps its attempt; it has no
-  // arm here until it exists.)
+  // so no peer run pushes to it. (`raced` WITHOUT `precondition` is the
+  // resolver path, which has already paid for an agent stage and keeps its
+  // attempt — it falls through to `terminal` below, which is the point.)
   if (outcome.raced && outcome.precondition) {
     return {
       cycle,
       record: { ...withoutLastFailure(record, failure, name), attempt: Math.max(0, (record.attempt || 0) - 1) },
     };
+  }
+  // A resolver that threw spent an agent stage, so unlike contention it KEEPS
+  // the attempt — `maxAttempts` is what bounds the failover, not the pool size.
+  // Configuring a multi-seat `conflictResolutionResolvers` pool is the
+  // operator's consent to spend that second stage, and the rotation cursor has
+  // already advanced, so the re-dispatch seats the NEXT agent. The last attempt
+  // is not handed back: it reports the resolver's own error instead of the bare
+  // `ask` the exhausted cap would produce.
+  const maxAttempts = record.policy?.maxAttempts ?? policy?.maxAttempts ?? Infinity;
+  if (outcome.retrySeat && (record.attempt || 0) < maxAttempts) {
+    return { cycle, record: withoutLastFailure(record, failure, name) };
   }
   return terminal(failure, outcome, record, name);
 }

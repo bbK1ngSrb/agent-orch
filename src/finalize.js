@@ -37,8 +37,22 @@ const ISSUE_URL_BASE = "https://github.com/bbk1ng/agent-orch/issues";
 // ctx.task to the branch (cli.js), so reject that value however it arrives.
 const NO_WORK_ORDER = "release bookkeeping (no work-order text recorded)";
 
-function changelogEntry(ctx) {
-  const candidate = oneLine(ctx.title || ctx.task);
+// Changelog policy: use the first conventional feat/fix subject in chronological
+// order. Later review-round fixes are refinements, so one representative subject
+// keeps a long branch to one line; if none is usable, retain the issue-title fallback.
+function changelogEntry(ctx, git) {
+  const base = oneLine(ctx.baseSha);
+  const branch = oneLine(ctx.reviewedSha || ctx.branch);
+  let subject = "";
+  if (base && branch) {
+    try {
+      subject = git.git(["log", "--format=%s", "--reverse", `${base}..${branch}`], ctx.repo)
+        .split("\n")
+        .map(oneLine)
+        .find((line) => /^(?:feat|fix)(?:\([^)]*\))?!?:\s+\S/.test(line)) || "";
+    } catch { /* an unreadable range uses the title fallback below */ }
+  }
+  const candidate = subject || oneLine(ctx.title || ctx.task);
   const title = candidate && candidate !== oneLine(ctx.branch) ? candidate : NO_WORK_ORDER;
   return ctx.closes
     ? `${title} (closes [#${ctx.closes}](${ISSUE_URL_BASE}/${ctx.closes}))`
@@ -255,7 +269,7 @@ async function landIntoIntegration(ctx, deps, { integration, integrationBranch, 
   // maps to a bumped `orch --version`. Opt-in via release.autoBump: a generic
   // orchestrator must not edit downstream release files by default.
   // Best-effort: never blocks the merge.
-  if (cfg.release?.autoBump) git.bumpVersion(integration, changelogEntry(ctx));
+  if (cfg.release?.autoBump) git.bumpVersion(integration, changelogEntry(ctx, git));
 
   const sha = git.git(["rev-parse", "HEAD"], integration);
   const localIntegration = git.git(["rev-parse", integrationBranch], repo);
@@ -408,7 +422,7 @@ async function redriveDeferredPeers(ctx, deps, { integration, integrationBranch,
         cfg,
         rounds: peer.rounds || 1,
         closes: peer.closes ?? null,
-        baseSha: peer.baseSha || null,
+        baseSha: redriveSha === reviewedSha ? (peer.baseSha || null) : preSha,
         title: peer.title || null,
         task: peer.task || null,
         runStats: [],
