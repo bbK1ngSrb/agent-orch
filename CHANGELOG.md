@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.345 — 2026-08-27
+- feat(integration-repair): resolve and prove a conflict before it lands (#569)
+
 ## v0.4.344 — 2026-08-27
 - A cycle killed after an agent usage limit records no run outcome, leaving resumable work with nothing pointing at it (closes [#537](https://github.com/bbk1ng/agent-orch/issues/537))
 
