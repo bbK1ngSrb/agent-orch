@@ -380,7 +380,7 @@ test("SECURITY.md states the published-release support policy", () => {
   // The package ships on npm, so the policy must answer "is the version I
   // installed supported?" — the old text claimed no versioned builds exist.
   assert.doesNotMatch(security, /no released, versioned builds/i);
-  assert.match(security, new RegExp(pkg.name.replace(/[/@]/g, "\\$&")));
+  assert.ok(security.includes(pkg.name));
   assert.match(security, /not\*{0,2}\s+backported/i);
 });
 
