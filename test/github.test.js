@@ -156,7 +156,7 @@ test("runPr --merge holds when the PR's CI checks are not green", async () => {
   // No required checks configured: the confirmed-empty rollup remains green.
   const noChecks = makeDeps({ rollup: [] });
   await runPr({ ...opts, merge: true }, noChecks);
-  assert.ok(noChecks._calls.gh.some((c) => c.args[0] === "api"), "a repo with no checks must still merge");
+  assert.ok(noChecks._calls.gh.some(isMergeCall), "a repo with no checks must still merge");
 });
 
 test("runPr fails closed when the PR head moves during review", async () => {

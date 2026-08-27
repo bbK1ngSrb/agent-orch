@@ -133,6 +133,9 @@ export function checksGreen(rollup, required) {
   const failing = list.filter((e) => !checkTerminalGreen(e) && !checkPending(e)).map(contextOf);
   if (failing.length) return { state: "red", failing };
   if (list.some(checkPending)) return { state: "pending" };
+  // Keep the empty-rollup guard before the unknown downgrade below: an empty
+  // rollup with unknown requirements must stay pending, or the ready gate
+  // would accept it with only a warning and fail open.
   if (list.length === 0) {
     if (!required.known) return { state: "pending" };
     return { state: required.contexts.length === 0 ? "green" : "pending" };
