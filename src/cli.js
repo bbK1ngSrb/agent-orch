@@ -9,7 +9,7 @@ import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh, findPrByHead } from "./github.js";
 import { runUntil } from "./run-controller.js";
-import { createRebaseRemedy } from "./remedies.js";
+import { createRebaseRemedy, createRotateRemedy } from "./remedies.js";
 import { createIntegrationRepairRemedy } from "./integration-repair.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
@@ -475,10 +475,40 @@ function fixedRoles(cfg) {
   return null;
 }
 
+function fixedSelfReview(cfg) {
+  const fixed = fixedRoles(cfg);
+  return Boolean(fixed
+    && fixed.authors.length === 1
+    && fixed.reviewers.length === 1
+    && fixed.authors[0].agent === fixed.reviewers[0].agent);
+}
+
 function configuredReviewers(cfg) {
   if (cfg.reviewers) return parseRoleSpecs(cfg.reviewers);
   if (cfg.reviewer) return [parseRoleSpec(cfg.reviewer)];
   return null;
+}
+
+function configuredSelfReviewer(cfg, authorName) {
+  return Boolean(configuredReviewers(cfg)?.some((spec) => spec.agent === authorName));
+}
+
+function singleAgentPool(cfg) {
+  return Array.isArray(cfg.agents) && cfg.agents.length === 1;
+}
+
+function roleSelectionDetail({ exclude = [], blockedAuthors = [], agents = [] } = {}) {
+  const details = [];
+  const excluded = exclude.map(exclusionName).filter(Boolean);
+  const blocked = blockedAuthors.map(exclusionName).filter(Boolean);
+  if (excluded.length) details.push(`excluded ${[...new Set(excluded)].join(", ")}`);
+  if (blocked.length) details.push(`author blocked by reviewer ${[...new Set(blocked)].join(", ")}`);
+  if (agents.length < 2) details.push(`rotation pool has ${agents.length} agent${agents.length === 1 ? "" : "s"}`);
+  return details.join("; ") || "no independent candidate remains in the rotation pool";
+}
+
+function noEligibleRole(role, options) {
+  return new Error(`orch: no eligible ${role} remains — ${roleSelectionDetail(options)}`);
 }
 
 export function applyRoleOverrides(cfg, flags, opts = {}) {
@@ -533,47 +563,121 @@ export function applyCheapOverride(cfg, flags, workOrder = null) {
   return { ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] };
 }
 
-export function nextAuthor(cfg, orchDir, pinnedAuthor = null, dry = false) {
+function exclusionName(value) {
+  return typeof value === "string" ? value : value?.name || value?.agent;
+}
+
+function exclusionRecord(value) {
+  const name = exclusionName(value);
+  if (!name) return null;
+  return typeof value === "object" && value.name
+    ? { name, reason: value.reason || "error", at: value.at || null }
+    : { name, reason: "error", at: null };
+}
+
+export function resumeExclusions(orchDir, task, author, deps = { resume, checkpoint, inflight, runRecord }) {
+  if (!author || !task) return [];
+  const sid = deps.resume.lookup(orchDir, task, author)?.sid;
+  if (!sid) return [];
+  const entries = new Map();
+  for (const source of [
+    deps.runRecord.lookup(orchDir, sid)?.excludedAgents,
+    deps.checkpoint.lookup(orchDir, sid)?.excludedAgents,
+    deps.inflight.lookup(orchDir, sid)?.excludedAgents,
+  ]) {
+    for (const value of source || []) {
+      const name = exclusionName(value);
+      if (!name || entries.has(name)) continue;
+      entries.set(name, exclusionRecord(value));
+    }
+  }
+  return [...entries.values()];
+}
+
+export function nextAuthor(cfg, orchDir, pinnedAuthor = null, dry = false, options = {}) {
+  const opts = options || {};
+  const excluded = new Set((opts.exclude || []).map(exclusionName).filter(Boolean));
+  const blockedAuthors = new Set((opts.blockedAuthors || []).map(exclusionName).filter(Boolean));
+  const agents = Array.isArray(cfg.agents) ? cfg.agents : [];
+  const persist = !dry && opts.persist !== false;
+  const reviewerCount = opts.reviewerCount == null ? null : Math.max(1, Number(opts.reviewerCount) || 1);
+  const forceRotate = Boolean(opts.forceRotate);
   // Explicit fixed roles win over rotation — the trivial "who authors, who audits".
   // Returns role specs ({agent, model, effort}) plus plain name arrays for back-compat.
-  if (!dry) mkdirSync(orchDir, { recursive: true });
   const fixed = fixedRoles(cfg);
   if (fixed) {
+    if (persist) mkdirSync(orchDir, { recursive: true });
+    const authors = fixed.authors.filter((spec) => !excluded.has(spec.agent));
+    const authorName = authors[0]?.agent;
+    // A paired fixed X/X role is an explicit request, unlike the reviewer-only
+    // rotation path, so preserve the same seat when no independent seat exists.
+    const allowSelf = fixedSelfReview(cfg);
+    let reviewers = fixed.reviewers.filter((spec) => !excluded.has(spec.agent)
+      && (allowSelf || authors.length > 1 || spec.agent !== authorName));
+    if (!reviewers.length && singleAgentPool(cfg)) {
+      reviewers = fixed.reviewers.filter((spec) => !excluded.has(spec.agent) && spec.agent === authorName);
+    }
     return {
-      authorName: fixed.authors[0].agent,
-      reviewerName: fixed.reviewers[0].agent,
-      authorNames: fixed.authors.map((s) => s.agent),
-      reviewerNames: fixed.reviewers.map((s) => s.agent),
-      authors: fixed.authors,
-      reviewers: fixed.reviewers,
+      authorName,
+      reviewerName: reviewers[0]?.agent,
+      authorNames: authors.map((s) => s.agent),
+      reviewerNames: reviewers.map((s) => s.agent),
+      authors,
+      reviewers,
     };
   }
+  if (persist) mkdirSync(orchDir, { recursive: true });
   const f = join(orchDir, "last-author");
   // Resuming a surviving branch (#27): pin its author and DON'T advance rotation —
   // this run is the prior run continuing, not a new author's turn.
   // Reviewer-only CLI overrides (D2) force reviewers while still rotating the author.
-  const forcedReviewers = configuredReviewers(cfg);
-  if (pinnedAuthor && cfg.agents.includes(pinnedAuthor)) {
-    const pi = cfg.agents.indexOf(pinnedAuthor);
-    const rotationReviewer = cfg.agents[(pi + 1) % cfg.agents.length];
-    const reviewers = forcedReviewers || [{ agent: rotationReviewer, model: null, effort: null }];
+  const configured = configuredReviewers(cfg);
+  const configuredCandidates = configured?.filter((spec) => !excluded.has(spec.agent));
+  const reviewerCandidates = (authorName) => {
+    if (configured) {
+      let eligible = configuredCandidates.filter((spec) => spec.agent !== authorName);
+      if (!eligible.length && singleAgentPool(cfg))
+        eligible = configuredCandidates.filter((spec) => spec.agent === authorName);
+      return reviewerCount == null ? eligible : eligible.slice(0, reviewerCount);
+    }
+    const authorIndex = agents.indexOf(authorName);
+    if (authorIndex < 0) return [];
+    const result = [];
+    for (let step = 1; step <= agents.length && result.length < (reviewerCount || 1); step += 1) {
+      const candidate = agents[(authorIndex + step) % agents.length];
+      if (candidate !== authorName && !excluded.has(candidate)) result.push({ agent: candidate, model: null, effort: null });
+    }
+    if (!result.length && singleAgentPool(cfg) && !excluded.has(authorName))
+      result.push({ agent: authorName, model: null, effort: null });
+    return result;
+  };
+  const pickAgent = (start) => {
+    for (let step = 0; step < agents.length; step += 1) {
+      const candidate = agents[(start + step) % agents.length];
+      if (!excluded.has(candidate) && (!blockedAuthors.has(candidate) || singleAgentPool(cfg))) return candidate;
+    }
+    return undefined;
+  };
+  const pinIndex = agents.indexOf(pinnedAuthor);
+  if (pinnedAuthor && pinIndex >= 0 && !excluded.has(pinnedAuthor) && !blockedAuthors.has(pinnedAuthor) && !forceRotate) {
+    const reviewers = reviewerCandidates(pinnedAuthor);
     return {
-      authorName: pinnedAuthor, reviewerName: reviewers[0].agent,
+      authorName: pinnedAuthor, reviewerName: reviewers[0]?.agent,
       authorNames: [pinnedAuthor], reviewerNames: reviewers.map((s) => s.agent),
       authors: [{ agent: pinnedAuthor, model: null, effort: null }],
       reviewers,
     };
   }
   const last = existsSync(f) ? readFileSync(f, "utf8").trim() : null;
-  const i = last ? (cfg.agents.indexOf(last) + 1) % cfg.agents.length : 0;
-  const authorName = cfg.agents[i];
-  const rotationReviewer = cfg.agents[(i + 1) % cfg.agents.length];
-  if (!dry) writeFileSync(f, authorName + "\n");
-  const reviewers = forcedReviewers || [{ agent: rotationReviewer, model: null, effort: null }];
+  const lastIndex = agents.indexOf(last);
+  const start = pinIndex >= 0 ? (pinIndex + 1) % agents.length : (lastIndex >= 0 ? (lastIndex + 1) % agents.length : 0);
+  const authorName = pickAgent(start);
+  const reviewers = authorName ? reviewerCandidates(authorName) : [];
+  if (persist && authorName) writeFileSync(f, authorName + "\n");
   return {
-    authorName, reviewerName: reviewers[0].agent,
-    authorNames: [authorName], reviewerNames: reviewers.map((s) => s.agent),
-    authors: [{ agent: authorName, model: null, effort: null }],
+    authorName, reviewerName: reviewers[0]?.agent,
+    authorNames: authorName ? [authorName] : [], reviewerNames: reviewers.map((s) => s.agent),
+    authors: authorName ? [{ agent: authorName, model: null, effort: null }] : [],
     reviewers,
   };
 }
@@ -899,9 +1003,26 @@ function resolveLanded(cycle, run, cfg, ghDeps, repo) {
   return { pr, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "standing", branch: integrationBranch };
 }
 
-function reviewersForAuthor(authorName, reviewerSpecs) {
+function reviewersForAuthor(authorName, reviewerSpecs, { allowSelf = false } = {}) {
   const others = reviewerSpecs.filter((s) => s.agent !== authorName);
-  return others.length ? others : reviewerSpecs;
+  return others.length || !allowSelf ? others : reviewerSpecs;
+}
+
+function persistRotationState({ orchDir, sid, runId, run, nextRun, previousAuthor }, stores = { inflight, runRecord, resume, checkpoint }) {
+  stores.inflight.setRoles(orchDir, sid, {
+    author: nextRun.author,
+    reviewers: nextRun.reviewers,
+    excludedAgents: nextRun.excludedAgents || [],
+    rotationStage: nextRun.rotationStage,
+  });
+  stores.runRecord.update(orchDir, runId, {
+    excludedAgents: nextRun.excludedAgents || [],
+  });
+  if (run.mode === "task" && nextRun.rotationStage === "started") {
+    stores.resume.clear(orchDir, run.task, previousAuthor);
+    stores.resume.record(orchDir, run.task, nextRun.authorName, { branch: nextRun.branch, sid });
+  }
+  stores.checkpoint.clear(orchDir, sid);
 }
 
 function roleLabel(spec) {
@@ -1221,16 +1342,28 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   }
 
   const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
-  const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned, dry);
+  const exclusions = dry ? [] : resumeExclusions(orchDir, task, pinned);
+  const forcedReviewers = configuredReviewers(cfg);
+  const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned, dry, {
+    exclude: exclusions,
+    blockedAuthors: forcedReviewers?.length === 1 ? forcedReviewers : [],
+  });
+  if (!authors.length) throw noEligibleRole("author", {
+    exclude: exclusions,
+    blockedAuthors: forcedReviewers?.length === 1 ? forcedReviewers : [],
+    agents: cfg.agents || [],
+  });
   const authorSpec = authors[0];
   const authorName = authorSpec.agent;
   const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
-  const reviewerList = reviewersForAuthor(authorName, reviewers);
+  const reviewerList = reviewersForAuthor(authorName, reviewers, { allowSelf: singleAgentPool(cfg) || fixedSelfReview(cfg) })
+    .filter((reviewer) => !exclusions.some((value) => exclusionName(value) === reviewer.agent));
+  if (!reviewerList.length) throw noEligibleRole("reviewer", { exclude: exclusions, agents: cfg.agents || [] });
   const run = {
     mode: "task", task, authorPrompt, workOrder: wo, allowLargeScope: Boolean(flags["allow-large-scope"]),
     branch, sid, resume: isResume, authorName, author: authorSpec,
     reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
-    reviewers: reviewerList, noMerge: !flags.pr,
+    reviewers: reviewerList, noMerge: !flags.pr, excludedAgents: exclusions,
     cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
   };
 
@@ -1244,7 +1377,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     registerWithConcurrencyCap(
       orchDir,
       sid,
-      { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList, workOrder: wo },
+      { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList, workOrder: wo, excludedAgents: exclusions },
       cfg,
       { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
     );
@@ -1660,16 +1793,40 @@ export async function main(argv, deps = {}) {
       // rotation pool resumes it instead of authoring fresh under the next agent (#27).
       // resolveTaskBranch re-validates below; this only steers author selection.
       const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
-      const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned, dry);
-      runs = authors.map((authorSpec) => {
+      const exclusions = dry ? [] : resumeExclusions(orchDir, task, pinned);
+      const forcedReviewers = configuredReviewers(cfg);
+      const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned, dry, {
+        exclude: exclusions,
+        // A reviewer-only override must never leave its requested reviewer
+        // reviewing its own work. In a two-agent pool, rotate the author away
+        // from that reviewer rather than vacating the requested seat.
+        blockedAuthors: forcedReviewers?.length === 1 ? forcedReviewers : [],
+      });
+      if (!authors.length) throw noEligibleRole("author", {
+        exclude: exclusions,
+        blockedAuthors: forcedReviewers?.length === 1 ? forcedReviewers : [],
+        agents: cfg.agents || [],
+      });
+      const reviewersForRun = (authorName) => {
+        let reviewerList = reviewersForAuthor(authorName, reviewers, { allowSelf: singleAgentPool(cfg) || fixedSelfReview(cfg) })
+          .filter((reviewer) => !exclusions.some((value) => exclusionName(value) === reviewer.agent));
+        // Cheap mode intentionally uses its single configured seat for both
+        // stages; the no-self-review rule still applies to pool rotation.
+        if (!reviewerList.length && cfg.cheap?.role === authorName)
+          reviewerList = [{ agent: authorName, model: null, effort: null }];
+        return reviewerList;
+      };
+      const eligibleAuthors = authors.filter((authorSpec) => reviewersForRun(authorSpec.agent).length);
+      if (!eligibleAuthors.length) throw noEligibleRole("reviewer", { exclude: exclusions, agents: cfg.agents || [] });
+      runs = eligibleAuthors.map((authorSpec) => {
         const authorName = authorSpec.agent;
         const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
-        const reviewerList = reviewersForAuthor(authorName, reviewers);
+        const reviewerList = reviewersForRun(authorName);
         return {
           mode, task, authorPrompt, workOrder, allowLargeScope: Boolean(flags["allow-large-scope"]),
           closes, branch, sid, resume, authorName, author: authorSpec,
           reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
-          reviewers: reviewerList,
+          reviewers: reviewerList, excludedAgents: exclusions,
           cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
         };
       });
@@ -1678,7 +1835,11 @@ export async function main(argv, deps = {}) {
       // audit-only: reviewers default to all agents except branch author. authorName unused by engine.
       const branchAuthor = branch.split("/")[1];
       const configured = configuredReviewers(cfg);
-      const reviewers = reviewersForAuthor(branchAuthor, configured || roleSpecsFromAgents(cfg.agents));
+      const reviewers = reviewersForAuthor(branchAuthor, configured || roleSpecsFromAgents(cfg.agents), {
+        allowSelf: singleAgentPool(cfg) || fixedSelfReview(cfg) || flags.reviewer != null || flags.reviewers != null
+          || configuredSelfReviewer(cfg, branchAuthor),
+      });
+      if (!reviewers.length) throw noEligibleRole("reviewer", { agents: cfg.agents || [] });
       const authorName = branchAuthor && cfg.agents.includes(branchAuthor) ? branchAuthor : cfg.agents[0];
       task = null;
       const sid = newSid();
@@ -1697,6 +1858,8 @@ export async function main(argv, deps = {}) {
     const mergedBranches = []; // cycle branches that actually landed on integration
     const prUrls = [];
     for (const run of runs) {
+      let activeRun = run;
+      const cycleRoles = [{ authorName: run.authorName, reviewerNames: run.reviewerNames }];
       // A resumed run (run.resume) reuses the ORIGINAL run's sid as its runId —
       // look up its existing record so create() below doesn't stomp
       // attempt/cycles/lastError back to genesis, and so the terminal update
@@ -1707,7 +1870,7 @@ export async function main(argv, deps = {}) {
         const accepted = registerWithConcurrencyCap(
           orchDir,
           run.sid,
-          { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers, workOrder: run.workOrder },
+          { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers, workOrder: run.workOrder, excludedAgents: run.excludedAgents },
           cfg,
           { onExceeded: (live) => {
             // design §13: stdout under --json is one JSON object per line, nothing
@@ -1756,6 +1919,7 @@ export async function main(argv, deps = {}) {
               attempt,
               retries: priorRecord?.retries || {},
               failures: priorRecord?.failures || [],
+              excludedAgents: run.excludedAgents || priorRecord?.excludedAgents || [],
               headMovedRepins: priorRecord?.headMovedRepins || 0,
               policy: { maxAttempts: runPolicy.maxAttempts },
             };
@@ -1763,15 +1927,66 @@ export async function main(argv, deps = {}) {
             // file uses (real git access stays direct — these tests run against
             // a real temp repo, only the gh CLI itself gets faked).
             const ghDeps = { gh: (deps.githubDeps || githubDeps)().gh };
+            const freshCycle = async (options = {}) => {
+              const picks = options.picks || (options.author || options.reviewers ? options : null);
+              let cycleRun = { ...activeRun, resume: true };
+              let cycleDepsForRun = cycleDeps;
+              if (picks) {
+                const previousAuthor = activeRun.authorName;
+                const { freshAuthor = false, ...rolePicks } = picks;
+                const nextRun = {
+                  ...activeRun, ...rolePicks, resume: true,
+                  // Preserve whether the replacement must re-enter authoring
+                  // when a process dies before the replacement checkpoint.
+                  rotationStage: freshAuthor ? "started" : "authored",
+                };
+
+                // Persist replacement roles and exclusions before clearing the
+                // old checkpoint, so `continue` can recover the new seats if
+                // this process dies before the replacement cycle checkpoints.
+                persistRotationState({
+                  orchDir,
+                  sid: run.sid,
+                  runId: priorRecord?.runId || run.sid,
+                  run,
+                  nextRun,
+                  previousAuthor,
+                }, deps.rotationState);
+                activeRun = nextRun;
+
+                // Keep the replacement worktree when the failed adapter left
+                // it as the only recovery copy. `runCycle` stays in resume mode
+                // so its partial-WIP guards remain active.
+                const preserved = existsSync(`${activeRun.worktree}.orch-preserve`);
+                cycleDepsForRun = preserved
+                  ? { ...cycleDeps, git: { ...cycleDeps.git, pruneWorktree() {} } }
+                  : cycleDeps;
+                checkpoint.record(orchDir, run.sid, {
+                  branch: activeRun.branch,
+                  round: 1,
+                  stage: activeRun.rotationStage,
+                  author: activeRun.author,
+                  reviewers: activeRun.reviewers,
+                  task: activeRun.task,
+                  authorPrompt: activeRun.authorPrompt,
+                  workOrder: activeRun.workOrder || null,
+                  closes: activeRun.closes || null,
+                  excludedAgents: activeRun.excludedAgents || [],
+                });
+                cycleRun = { ...activeRun, resume: true, reviewerOverride: true };
+              }
+              cycleRoles.push({ authorName: cycleRun.authorName, reviewerNames: cycleRun.reviewerNames });
+              return runCycle(cycleRun, cycleDepsForRun);
+            };
             controller = await runUntil(runPolicy, record, {
               runCycle: async ({ fresh } = {}) => fresh
-                ? runCycle({ ...run, resume: true }, cycleDeps)
+                ? freshCycle()
                 : result,
               remedies: {
                 rebase: createRebaseRemedy({
-                  run,
+                  getRun: () => activeRun,
                   deps: cycleDeps,
-                  runCycle: () => runCycle({ ...run, resume: true }, cycleDeps),
+                  runCycle: () => freshCycle(),
                 }),
                 // #551: without this key the lookup in run-controller.js
                 // misses and every REMOTE_BEHIND/CONFLICTING/CI_RED run ends
@@ -1783,6 +1998,12 @@ export async function main(argv, deps = {}) {
                   deps: { ...cycleDeps, sleep: deps.sleep },
                   gh: ghDeps.gh,
                   resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
+                }),
+                rotate: createRotateRemedy({
+                  getRun: () => activeRun,
+                  deps: cycleDeps,
+                  runCycle: freshCycle,
+                  selectRoles: nextAuthor,
                 }),
               },
               resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
@@ -1804,7 +2025,7 @@ export async function main(argv, deps = {}) {
           // Cycle returned (including all controller retries) → drop the resume
           // and checkpoint records. A throw skips this line, leaving both for
           // the next run to resume (#24).
-          if (run.mode === "task") resume.clear(orchDir, run.task, run.authorName);
+          if (run.mode === "task") resume.clearForBranch(orchDir, run.branch);
           checkpoint.clear(orchDir, run.sid);
           const persistedAttempt = controller?.attempt ?? attempt;
           const cycleRunStats = cycleResults.flatMap((cycleResult) => cycleResult.runStats || []);
@@ -1819,6 +2040,7 @@ export async function main(argv, deps = {}) {
             pr,
             ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
             ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
+            excludedAgents: controller?.excludedAgents || activeRun.excludedAgents || priorRecord?.excludedAgents || [],
             ...(controller?.failures || controller?.failure ? {
               failures: [
                 ...(controller?.failures || priorRecord?.failures || []),
@@ -1827,8 +2049,10 @@ export async function main(argv, deps = {}) {
             } : {}),
             cycles: [
               ...(priorRecord?.cycles || []),
-              ...cycleResults.map((cycleResult) => ({
-                sid: run.sid, attempt: persistedAttempt, branch: run.branch, author: run.authorName, reviewers: run.reviewerNames,
+              ...cycleResults.map((cycleResult, index) => ({
+                sid: run.sid, attempt: persistedAttempt, branch: run.branch,
+                author: cycleRoles[index]?.authorName || activeRun.authorName,
+                reviewers: cycleRoles[index]?.reviewerNames || activeRun.reviewerNames,
                 status: cycleResult.status, reason: cycleResult.reason || null,
               })),
             ],
@@ -1926,15 +2150,13 @@ export async function main(argv, deps = {}) {
     // under .orch/wt with a dead owner pid — reclaim it BEFORE reattaching the
     // branch, same as `task`/`pr` do at cycle start, or `runCycle`'s worktree
     // setup collides with the orphaned checkout. liveBranches spares real peers.
-    // Checkpoint is authoritative (survives whatever killed the process — stage
-    // timeout, adapter crash, hung stdio); inflight is only a fallback for a run
-    // that died before its first review round wrote a checkpoint. Read both
-    // BEFORE listLive() below: listLive() prunes any inflight record whose owner
-    // pid is dead — exactly the case a died-before-checkpoint resume needs to
-    // read. Reading listLive() first would delete this sid's own inflight record
-    // before inflight.lookup() got a chance to see it (#129).
+    // Checkpoint is authoritative for completed stages, while inflight carries
+    // the replacement roles and exclusions written immediately before a
+    // rotation clears the old checkpoint. Read both BEFORE listLive() below:
+    // listLive() prunes any inflight record whose owner pid is dead — exactly
+    // the case a died-before-checkpoint resume needs to read (#129).
     const ck = checkpoint.lookup(orchDir, sid);
-    const inf = ck ? null : inflight.lookup(orchDir, sid);
+    const inf = inflight.lookup(orchDir, sid);
 
     if (!dry) {
       const liveEntries = inflight.listLive(orchDir);
@@ -1963,7 +2185,11 @@ export async function main(argv, deps = {}) {
     // A pre-authoring checkpoint or inflight-only fallback may represent a run
     // that died before the author committed anything — neither record proves
     // there's work to review/merge until the branch has a committed diff.
-    if ((inf || (ck?.stage === "started" && !ck.task)) && git.changedFiles(repo, branch, cfg.baseBranch).length === 0) {
+    const branchAuthor = branch.split("/")[1];
+    const rotationRecorded = Boolean(inf?.rotationStage);
+    if (((inf && !ck) || (ck?.stage === "started" && !ck.task))
+      && !rotationRecorded
+      && git.changedFiles(repo, branch, cfg.baseBranch).length === 0) {
       if (!dry && ck) checkpoint.clear(orchDir, sid);
       throw new Error(`orch: branch ${branch} (sid ${sid}) has no committed changes — the run died before authoring finished; start a fresh \`orch task\` instead`);
     }
@@ -1973,10 +2199,7 @@ export async function main(argv, deps = {}) {
     // role outside that pool (e.g. `author: qwen3-coder-30b` with
     // `agents: [claude, codex]`), which existing config/tests already allow.
     // The real validity check is whether the name has a registered adapter.
-    const authorName = branch.split("/")[1];
-    if (!authorName) throw new Error(`orch: cannot determine an author from branch ${branch}`);
-    try { adapters.get(authorName); }
-    catch { throw new Error(`orch: cannot determine a registered author from branch ${branch}`); }
+    if (!branchAuthor) throw new Error(`orch: cannot determine an author from branch ${branch}`);
     // The original run persisted its resolved author/reviewer role specs (agent
     // + model + effort, not just names) into the checkpoint/inflight record —
     // reuse those by default so a resume picks up the same models the original
@@ -1985,18 +2208,47 @@ export async function main(argv, deps = {}) {
     // explicit --reviewer(s) on this command overrides for this resume only —
     // it never rewrites the persisted record. --author is not overridable here:
     // the branch's commits were already authored by a specific agent.
-    const persistedAuthor = ck?.author || inf?.author;
-    const authorSpec = persistedAuthor && persistedAuthor.agent === authorName
-      ? persistedAuthor : { agent: authorName, model: null, effort: null };
-    const reviewerOverride = flags.reviewers != null || flags.reviewer != null;
-    const persistedReviewers = ck?.reviewers?.length ? ck.reviewers : inf?.reviewers?.length ? inf.reviewers : null;
-    let reviewers;
-    if (!reviewerOverride && persistedReviewers) {
-      reviewers = persistedReviewers;
-    } else {
-      const configured = configuredReviewers(cfg);
-      reviewers = reviewersForAuthor(authorName, configured || roleSpecsFromAgents(cfg.agents));
+    const persistedAuthor = inf?.author || ck?.author;
+    const rotationStage = inf?.rotationStage || null;
+    const persistedExclusions = [
+      ...(priorRun?.excludedAgents || []),
+      ...(ck?.excludedAgents || []),
+      ...(inf?.excludedAgents || []),
+    ];
+    const exclusions = new Map();
+    for (const value of persistedExclusions) {
+      const entry = exclusionRecord(value);
+      if (entry && !exclusions.has(entry.name)) exclusions.set(entry.name, entry);
     }
+    const excludedNames = new Set(exclusions.keys());
+    const selectedRoles = nextAuthor(cfg, orchDir, persistedAuthor?.agent || branchAuthor, true, {
+      exclude: [...excludedNames],
+      persist: false,
+    });
+    const authorSpec = persistedAuthor?.agent && !excludedNames.has(persistedAuthor.agent)
+      ? persistedAuthor
+      : selectedRoles.authors?.[0]
+        || (!excludedNames.has(branchAuthor) ? { agent: branchAuthor, model: null, effort: null } : null);
+    if (!authorSpec) throw noEligibleRole("author", { exclude: [...excludedNames], agents: cfg.agents || [] });
+    const authorName = authorSpec.agent;
+    try { adapters.get(authorName); }
+    catch { throw new Error(`orch: cannot determine a registered author from branch ${branch}`); }
+    const reviewerOverride = flags.reviewers != null || flags.reviewer != null;
+    const persistedReviewers = inf?.reviewers?.length ? inf.reviewers : ck?.reviewers?.length ? ck.reviewers : null;
+    const configuredSelfReview = configuredSelfReviewer(cfg, authorName);
+    const eligiblePersistedReviewers = (persistedReviewers || [])
+      .filter((reviewer) => reviewer?.agent
+        && (reviewer.agent !== authorName || singleAgentPool(cfg) || configuredSelfReview)
+        && !excludedNames.has(reviewer.agent));
+    const configured = configuredReviewers(cfg);
+    const fallbackReviewers = reviewersForAuthor(authorName, configured || selectedRoles.reviewers || roleSpecsFromAgents(cfg.agents), {
+      allowSelf: singleAgentPool(cfg) || reviewerOverride || configuredSelfReview,
+    })
+      .filter((reviewer) => !excludedNames.has(reviewer.agent));
+    const reviewers = !reviewerOverride && eligiblePersistedReviewers.length
+      ? eligiblePersistedReviewers
+      : fallbackReviewers;
+    if (!reviewers.length) throw noEligibleRole("reviewer", { exclude: [...excludedNames], agents: cfg.agents || [] });
     if (!dry) preflightFn(cfg, orchDir, { only: [authorSpec.agent, ...reviewers.map((r) => r.agent)] });
 
     // Codex review (#125 stalemate): an `orch issue <n>` run stamps `Closes #n`
@@ -2022,6 +2274,7 @@ export async function main(argv, deps = {}) {
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers,
+      excludedAgents: [...exclusions.values()],
       // Codex review (#126 stalemate): `reviewers` above is what this resume
       // actually audits with — an explicit `--reviewer` override applies for
       // this run only. `persistReviewers` is what engine.js writes back into
@@ -2030,12 +2283,12 @@ export async function main(argv, deps = {}) {
       // resume can't quietly make the override permanent (see the persistCase
       // fallback to `reviewers` in engine.js: only matters when no persisted
       // record existed yet, in which case there's nothing to protect).
-      persistReviewers: persistedReviewers || reviewers,
+      persistReviewers: rotationRecorded ? reviewers : (persistedReviewers || reviewers),
       // Codex review (#126 stalemate, round 3): a checkpoint already at
       // "reviewed"/"tested" caches the OLD verdict; without this flag
       // engine.js would trust that cached verdict and skip the audit call
       // entirely, so the overridden reviewer would never actually run.
-      reviewerOverride,
+      reviewerOverride: reviewerOverride || rotationRecorded,
       cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
     };
 
@@ -2052,7 +2305,7 @@ export async function main(argv, deps = {}) {
       registerWithConcurrencyCap(
         orchDir,
         sid,
-        { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers, workOrder },
+        { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers, workOrder, excludedAgents: run.excludedAgents, rotationStage },
         cfg,
         { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
       );
@@ -2071,8 +2324,26 @@ export async function main(argv, deps = {}) {
     // continue produces no durable record at all (violates design §5's "after
     // any run a record with `outcome` exists").
     if (!dry && !priorRun) runRecord.create(orchDir, { runId, command, argv: argv.map(redact) });
+    if (!dry && rotationRecorded && !ck) {
+      checkpoint.record(orchDir, sid, {
+        branch,
+        round: 1,
+        stage: rotationStage || "started",
+        author: authorSpec,
+        reviewers: run.reviewers,
+        task: run.task,
+        authorPrompt: run.authorPrompt,
+        workOrder: run.workOrder || null,
+        closes,
+        excludedAgents: run.excludedAgents,
+      });
+    }
+    const baseContinueDeps = deps.cycleDeps || realDeps({ closes });
+    const continueDeps = !dry && rotationRecorded && existsSync(`${run.worktree}.orch-preserve`)
+      ? { ...baseContinueDeps, git: { ...baseContinueDeps.git, pruneWorktree() {} } }
+      : baseContinueDeps;
     try {
-      const result = await runCycle(run, dry ? dryDeps() : (deps.cycleDeps || realDeps({ closes })));
+      const result = await runCycle(run, dry ? dryDeps() : continueDeps);
       if (!dry) {
         checkpoint.clear(orchDir, sid);
         const outcome = outcomeForResult(result);
@@ -2083,6 +2354,7 @@ export async function main(argv, deps = {}) {
             exit: exitForResult(result),
             attempt: priorRun.attempt + 1,
             branch,
+            excludedAgents: run.excludedAgents,
             cycles: [...priorRun.cycles, { sid, attempt: priorRun.attempt + 1, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
           });
         } else {
@@ -2092,6 +2364,7 @@ export async function main(argv, deps = {}) {
             exit: exitForResult(result),
             attempt: 0,
             branch,
+            excludedAgents: run.excludedAgents,
             cycles: [{ sid, attempt: 0, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
           });
         }
