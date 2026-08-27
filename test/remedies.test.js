@@ -688,6 +688,53 @@ test("integration repair: REMOTE_CONFLICTING audits an ordinary ours resolution 
   );
 });
 
+test("integration repair: a timed-out resolver gets the stage timeout and releases integration-repair.lock", async () => {
+  const { repo } = repairFixture();
+  const cfg = repairCfg({ main: { conflictResolution: "auto" } });
+  let timeoutMs;
+  const adapters = fakeAdapters({
+    claude: {
+      async author(_prompt, _wd, options) {
+        timeoutMs = options.stageTimeoutMs;
+        throw new Error("resolver stage timed out");
+      },
+    },
+  });
+
+  const out = await runRepair(repo, { cfg, adapters, failureClass: "REMOTE_CONFLICTING" });
+
+  assert.equal(timeoutMs, 420_000);
+  assert.match(out.result.reason, /resolver failed: resolver stage timed out/);
+  assert.equal(existsSync(join(repo, ".orch", LOCK_NAMES.INTEGRATION_REPAIR)), false);
+});
+
+test("integration repair: a resolver preservation request keeps its recovery worktree and branch", async () => {
+  const { repo } = repairFixture();
+  const cfg = repairCfg({ main: { conflictResolution: "auto" } });
+  const scratch = join(repo, ".orch", "wt", "orch-repair-sidtest");
+  const preserved = Object.assign(new Error("resolver stage timed out"), { preserveWorktree: true });
+  const adapters = fakeAdapters({
+    claude: {
+      async author(_prompt, wd) {
+        writeFileSync(join(wd, "recovery.txt"), "inspect me\n");
+        throw preserved;
+      },
+    },
+  });
+
+  const out = await runRepair(repo, { cfg, adapters, failureClass: "REMOTE_CONFLICTING" });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /worktree preserved at .*orch-repair-sidtest/);
+  assert.equal(existsSync(scratch), true, "the failed resolver worktree must remain available");
+  assert.equal(
+    git.git(["rev-parse", "--verify", "refs/heads/orch-repair-sidtest"], repo),
+    git.git(["rev-parse", "HEAD"], scratch),
+    "the recovery branch must remain attached to the preserved worktree",
+  );
+  assert.notEqual(git.git(["status", "--porcelain"], scratch), "", "the merge state must remain inspectable");
+});
+
 test("integration repair: an abort-then-commit resolver cannot land a tip without base ancestry", async () => {
   const { repo, remote } = repairFixture();
   const before = originSha(remote, "orch/integration");
@@ -1733,6 +1780,39 @@ test("integration repair: a merge.lock timeout refunds the attempt and pushes no
   assert.equal(originSha(remote, "orch/integration"), before);
 });
 
+test("integration repair: a merge.lock timeout after resolver work keeps the attempt", async () => {
+  const { repo, remote } = repairFixture();
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(_prompt, wd) {
+        writeFileSync(join(wd, "shared.txt"), "resolved before lock timeout\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "resolve before lock timeout"], wd);
+      },
+    },
+    reviewer: { async audit() { return { decision: "AGREE" }; } },
+  });
+  const lock = { acquireLock, releaseLock, acquireBlocking: async () => false };
+  const entry = { class: "REMOTE_CONFLICTING", fingerprint: "fp", remedy: "integration-repair" };
+
+  const out = await runRepair(repo, {
+    cfg, adapters, lock, failureClass: "REMOTE_CONFLICTING",
+    record: { attempt: 1, failures: [entry] },
+  });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /merge\.lock timed out/);
+  assert.equal(out.record.attempt, 1, "resolver work has already consumed the attempt");
+  assert.deepEqual(out.record.failures, [entry], "paid resolver work must retain its convergence entry");
+  assert.equal(originSha(remote, "orch/integration"), git.git(["rev-parse", "orch/integration"], repo));
+});
+
 test("integration repair: the race loser re-polls and the run reaches READY on the winner's landing", async () => {
   // End to end through the REAL remedy and the REAL controller, the same shape
   // as the lock-loser test below. The unit test above proves the return shape;
@@ -1942,13 +2022,21 @@ test("integration repair: lock contention stops at the retry cap instead of spin
   // on the resolution, the reviewer `audit()`, and the re-gate on the merged
   // tree — each capped at `repairCfg()`'s `stageTimeout: 7` minutes, plus the
   // 5-minute `merge.lock` wait in the middle (src/lock.js:117): 4*7 + 5 = 33
-  // minutes, one round per LOCK_RETRY_MS (60s), so 33 rounds.
-  const cap = 33;
+  // minutes, one round per LOCK_RETRY_MS (60s), plus one explicit slack round
+  // before the final poll, so 34 rounds.
+  const cap = 34;
+  let lockPolls = 0;
+  const lock = {
+    acquireLock: () => { lockPolls += 1; return false; },
+    releaseLock: () => true,
+    acquireBlocking: async () => false,
+  };
 
   // The last round under the cap: still handed back, and the wait is counted.
   const last = await runRepair(repo, {
     record: { attempt: 1, failures: [], retries: { "repair-lock-wait": cap - 1 } },
     sleep: async (ms) => slept.push(ms),
+    lock,
   });
   assert.equal(last.cycle?.status, "merged");
   assert.equal(last.result, undefined);
@@ -1960,10 +2048,12 @@ test("integration repair: lock contention stops at the retry cap instead of spin
   const past = await runRepair(repo, {
     record: { attempt: 1, failures: [], retries: { "repair-lock-wait": cap } },
     sleep: async (ms) => slept.push(ms),
+    lock,
   });
   assert.equal(past.cycle, undefined);
   assert.equal(past.result.state, "STOPPED_AT_CAP");
   assert.match(past.result.reason, /a peer is already repairing/);
+  assert.equal(lockPolls, 2, "the exhausted budget must still perform its final lock poll");
   assert.deepEqual(slept, [60_000], "the exhausted round must not back off again");
 });
 
@@ -1980,7 +2070,7 @@ test("integration repair: an exhausted contention cap leaves no convergence entr
   writeFileSync(join(orchDir, LOCK_NAMES.INTEGRATION_REPAIR), String(process.pid));
   const failure = { class: "REMOTE_BEHIND", fingerprint: "fp" };
   // What run-controller.js appends before dispatching.
-  const record = { attempt: 1, failures: [{ ...failure, remedy: "integration-repair" }], retries: { "repair-lock-wait": 33 } };
+  const record = { attempt: 1, failures: [{ ...failure, remedy: "integration-repair" }], retries: { "repair-lock-wait": 34 } };
 
   const out = await runRepair(repo, { record });
 

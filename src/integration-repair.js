@@ -399,6 +399,7 @@ async function repairConflictOrRed(ctx, deps) {
   const scratch = addScratch(git, repo, orchDir, `origin/${branch}`, scratchBranch);
   if (!scratch) return { ok: false, reason: "could not create the repair worktree" };
   let preserveScratch = false;
+  let preserveRecovery = false;
 
   try {
     const preSha = git.gitTry(["rev-parse", "HEAD"], scratch).out.trim();
@@ -452,12 +453,18 @@ async function repairConflictOrRed(ctx, deps) {
           { model: resolver.model, effort: resolver.effort, stageTimeoutMs: timeoutMs, baseBranch: base },
         );
       } catch (error) {
-        git.gitTry(["merge", "--abort"], scratch);
-        // Nothing durable happened — merge aborted, scratch dropped, origin
-        // untouched — so a pool with another seat is worth one more attempt. A
-        // single-seat pool is not: it would re-run the same dead agent until
-        // `maxAttempts` and report nothing more useful than this error.
-        return { ok: false, retrySeat: resolvers.length > 1, reason: `resolver failed: ${errorText(error)}` };
+        const preserve = Boolean(error?.preserveWorktree);
+        if (preserve) preserveRecovery = true;
+        else git.gitTry(["merge", "--abort"], scratch);
+        // Without an explicit preservation request, nothing durable happened —
+        // merge aborted, scratch dropped, origin untouched — so a pool with
+        // another seat is worth one more attempt. A preserved recovery state is
+        // terminal: retrying would collide with the retained branch/worktree.
+        return {
+          ok: false,
+          ...(!preserve && resolvers.length > 1 ? { retrySeat: true } : {}),
+          reason: `resolver failed: ${errorText(error)}${preserve ? `; worktree preserved at ${scratch} (branch ${scratchBranch})` : ""}`,
+        };
       }
       // A tree-vs-worktree diff, so work the resolver staged but did not commit
       // (the `commit --no-edit` below would carry it) counts too.
@@ -498,7 +505,13 @@ async function repairConflictOrRed(ctx, deps) {
       } catch (error) {
         // Same as the conflict path: nothing durable happened, so hand the next
         // seat an attempt when the pool has one.
-        return { ok: false, retrySeat: resolvers.length > 1, reason: `resolver failed: ${errorText(error)}` };
+        const preserve = Boolean(error?.preserveWorktree);
+        if (preserve) preserveRecovery = true;
+        return {
+          ok: false,
+          ...(!preserve && resolvers.length > 1 ? { retrySeat: true } : {}),
+          reason: `resolver failed: ${errorText(error)}${preserve ? `; worktree preserved at ${scratch} (branch ${scratchBranch})` : ""}`,
+        };
       }
       // Unlike the conflict branch, a clean merge leaves no MERGE_HEAD to react
       // to, so there is no equivalent commit fallback here — and none is
@@ -670,7 +683,12 @@ async function repairConflictOrRed(ctx, deps) {
           model: reviewer.model, effort: reviewer.effort, stageTimeoutMs: timeoutMs,
         });
       } catch (error) {
-        return { ok: false, reason: `conflict-resolution audit failed: ${errorText(error)}` };
+        const preserve = Boolean(error?.preserveWorktree);
+        if (preserve) preserveRecovery = true;
+        return {
+          ok: false,
+          reason: `conflict-resolution audit failed: ${errorText(error)}${preserve ? `; worktree preserved at ${scratch} (branch ${scratchBranch})` : ""}`,
+        };
       }
       if (verdict?.decision !== "AGREE") {
         return { ok: false, reason: `conflict resolution audit rejected: ${verdict?.reason || "reviewer disagreed"}` };
@@ -717,8 +735,10 @@ async function repairConflictOrRed(ctx, deps) {
     const { precondition, ...paid } = landed;
     return paid;
   } finally {
-    if (preserveScratch) git.pruneWorktree(repo, scratch);
-    else dropScratch(git, repo, scratch, scratchBranch);
+    if (!preserveRecovery) {
+      if (preserveScratch) git.pruneWorktree(repo, scratch);
+      else dropScratch(git, repo, scratch, scratchBranch);
+    }
   }
 }
 
@@ -779,6 +799,10 @@ const LOCK_RETRY_MS = 60_000;
 // `stageTimeout: 0` means no watchdog at all and an unbounded peer hold; that
 // floor is the arbitrary compromise there, since waiting forever is not one.
 const MIN_LOCK_RETRIES = 10;
+// Give the modeled peer one extra polling interval for filesystem/GC and
+// scheduler slack. The poll after that interval is the final attempt before
+// terminalizing, rather than making the modeled hold the exact deadline.
+const LOCK_RETRY_SLACK_ROUNDS = 1;
 // `merge.lock` is taken INSIDE the held `integration-repair.lock`, and its wait
 // carries no `stageTimeout` — it is bounded by `acquireBlocking`'s own default
 // (src/lock.js:117, 5 minutes). Counted separately because a peer can spend it
@@ -804,7 +828,8 @@ const LOCK_RETRY_KEY = "repair-lock-wait";
 // peer; one more poll would at best convert that into a repair that the caller
 // gets anyway on its next readiness round.
 function lockRetryCap(cfg) {
-  return Math.max(MIN_LOCK_RETRIES, Math.ceil((LOCKED_STAGES * stageTimeoutMs(cfg) + MERGE_LOCK_WAIT_MS) / LOCK_RETRY_MS));
+  return Math.max(MIN_LOCK_RETRIES, Math.ceil((LOCKED_STAGES * stageTimeoutMs(cfg) + MERGE_LOCK_WAIT_MS) / LOCK_RETRY_MS))
+    + LOCK_RETRY_SLACK_ROUNDS;
 }
 
 function defaultSleep(ms) {
