@@ -67,5 +67,5 @@ function fallbackCmdSpec(bin, args) {
   // than trying to quote through cmd.exe re-parsing. Upgrade path: ship the
   // CLI as a native .exe.
   [bin, ...args].forEach(rejectCmdMeta);
-  return { bin: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", bin, ...args] };
+  return { bin: "cmd.exe", args: ["/d", "/s", "/c", bin, ...args] };
 }
