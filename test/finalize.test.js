@@ -351,12 +351,13 @@ test("path overlap with a peer → merge-deferred (no merge attempted)", async (
 test("post-land redrive: deferred peer is rebased + gated + landed under the same lock (#350)", async () => {
   const lockOps = [];
   const rebased = [];
+  const logRanges = [];
   const persisted = [];
   const mergedBranches = [];
   const removed = [];
   const deferredPeer = {
     sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
-    reviewedSha: "peer-reviewed", rounds: 1, peerSids: ["1"], redriveAttempts: 0,
+    reviewedSha: "peer-reviewed", baseSha: "peer-base", rounds: 1, peerSids: ["1"], redriveAttempts: 0,
   };
   const { deps, recorded } = baseDeps({
     lock: {
@@ -376,6 +377,10 @@ test("post-land redrive: deferred peer is rebased + gated + landed under the sam
       },
       // HEAD advances per land so the integration-branch check passes twice.
       git: (args, cwd) => {
+        if (args[0] === "log") {
+          logRanges.push(args);
+          return "";
+        }
         if (args[0] === "rev-parse") {
           if (args[1] === "--short") return "abc1234";
           // worktree HEAD and repo branch tip must agree after each land
@@ -396,12 +401,16 @@ test("post-land redrive: deferred peer is rebased + gated + landed under the sam
       remove: (_d, sid) => { removed.push(sid); },
     },
   });
-  const r = await finalize(ctx(), deps);
+  const r = await finalize({ ...ctx(), cfg: { ...ctx().cfg, release: { autoBump: true } } }, deps);
   assert.equal(r.status, "merged");
   assert.deepEqual(mergedBranches, ["pr/claude/x-1", "deadbee"]);
   assert.deepEqual(rebased, [{
     branch: "pr/codex/b-2", onto: "orch/integration", expectedSha: "peer-reviewed",
   }]);
+  assert.deepEqual(logRanges, [
+    ["log", "--format=%s", "--reverse", "base..pr/claude/x-1"],
+    ["log", "--format=%s", "--reverse", "sha-1..deadbee"],
+  ]);
   assert.equal(persisted[0].reviewedSha, "deadbee", "the post-rebase OID must replace the deferred pin");
   assert.equal(deferredPeer.redriveAttempts, 1);
   assert.deepEqual(removed, ["2"]);
