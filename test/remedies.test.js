@@ -1229,7 +1229,7 @@ test("integration repair: a non-allowlisted \"ours\" resolution is refused befor
   assert.equal(originSha(remote, "orch/integration"), before);
 });
 
-test("integration repair: conflictResolution propose is not an integration-repair mode", async () => {
+test("integration repair: conflictResolution propose publishes the resolution and pushes nothing", async () => {
   const { repo, remote } = repairFixture();
   const before = originSha(remote, "orch/integration");
   const cfg = repairCfg({
@@ -1238,17 +1238,94 @@ test("integration repair: conflictResolution propose is not an integration-repai
       conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
     },
   });
-  const calls = [];
-  const ghCalls = [];
-  const adapters = fakeAdapters({});
-  const gh = (args) => { ghCalls.push(args); return "{}"; };
+  const comments = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        writeFileSync(join(wd, "shared.txt"), "integration side\nbase side\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "propose resolution"], wd);
+      },
+    },
+    reviewer: { async audit() { return { decision: "AGREE", reason: "ready for human review" }; } },
+  });
+  const gh = (args) => { comments.push(args); return ""; };
 
   const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters, gh });
 
-  assert.equal(out.cycle, undefined);
-  assert.match(out.result.reason, /conflictResolution is not auto/);
-  assert.deepEqual(calls, []);
-  assert.deepEqual(ghCalls, []);
+  assert.equal(out.result.failureClass, "REMOTE_REVIEW_REQUIRED", out.result?.reason);
+  assert.equal(out.result.exit, 2);
+  const comment = comments.find((args) => args[0] === "pr" && args[1] === "comment");
+  assert.ok(comment);
+  assert.match(comment.join(" "), /Class: REMOTE_CONFLICTING/);
+  assert.match(comment.join(" "), /Files: shared\.txt/);
+  assert.match(comment.join(" "), /Resolver: resolver/);
+  assert.match(comment.join(" "), /Resolution branch: orch-repair-sidtest/);
+  const proposedSha = comment.join(" ").match(/Resolution: ([0-9a-f]{40})/)?.[1];
+  assert.ok(proposedSha);
+  assert.equal(git.git(["rev-parse", "refs/heads/orch-repair-sidtest"], repo), proposedSha);
+  assert.equal(git.git(["show", `${proposedSha}:shared.txt`], repo), "integration side\nbase side");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+test("integration repair: propose preserves its resolution when publication fails", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "propose",
+      conflictResolutionResolvers: [{ agent: "claude", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const adapters = fakeAdapters({
+    claude: {
+      async author(prompt, wd) {
+        writeFileSync(join(wd, "shared.txt"), "preserved proposal\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "preserve proposal"], wd);
+      },
+    },
+    reviewer: { async audit() { return { decision: "AGREE" }; } },
+  });
+
+  const out = await runRepair(repo, {
+    cfg, failureClass: "REMOTE_CONFLICTING", adapters,
+    gh: () => { throw new Error("gh: 403 Forbidden"); },
+  });
+
+  assert.notEqual(out.result.failureClass, "REMOTE_REVIEW_REQUIRED");
+  assert.match(out.result.reason, /could not post the proposed resolution to PR #9: gh: 403 Forbidden/);
+  assert.equal(git.git(["show", "orch-repair-sidtest:shared.txt"], repo), "preserved proposal");
+  assert.equal(originSha(remote, "orch/integration"), before);
+});
+
+test("integration repair: propose without a PR preserves the resolution and explains the missing publication target", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "propose",
+      conflictResolutionResolvers: [{ agent: "claude", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const adapters = fakeAdapters({
+    claude: {
+      async author(prompt, wd) {
+        writeFileSync(join(wd, "shared.txt"), "no PR proposal\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "no PR proposal"], wd);
+      },
+    },
+    reviewer: { async audit() { return { decision: "AGREE" }; } },
+  });
+
+  const out = await runRepair(repo, {
+    cfg, failureClass: "REMOTE_CONFLICTING", adapters, prNumber: null,
+  });
+
+  assert.notEqual(out.result.failureClass, "REMOTE_REVIEW_REQUIRED");
+  assert.match(out.result.reason, /no PR to post the proposed resolution to/);
+  assert.equal(git.git(["show", "orch-repair-sidtest:shared.txt"], repo), "no PR proposal");
   assert.equal(originSha(remote, "orch/integration"), before);
 });
 

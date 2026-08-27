@@ -31,7 +31,7 @@ one-line reason; §18 collects them.
 | **fast-forward** | moving a branch pointer to a descendant commit without a merge commit; how local base follows origin (`git.syncMainFromOrigin`, `git.js:207-234`). |
 | **draft PR** | a GitHub PR marked draft: visible, commentable, not mergeable until marked ready. Used as the ask-human channel for `task` runs. |
 | **mergeable / mergeStateStatus** | GitHub's PR fields: `mergeable ∈ {MERGEABLE, CONFLICTING, UNKNOWN}`; `mergeStateStatus ∈ {CLEAN, BLOCKED, BEHIND, DIRTY, UNSTABLE, HAS_HOOKS, DRAFT, UNKNOWN}`. |
-| **statusCheckRollup** | GitHub's per-PR list of checks/statuses with `state`/`conclusion` (`prChecksGreen`, `github.js:77-103`). |
+| **statusCheckRollup** | GitHub's per-PR list of checks/statuses with `state`/`conclusion`, evaluated by the shared `checksGreen` predicate (`github.js:131-145`). |
 | **failure class** | a structured code (§7) derived from a cycle/remote outcome; drives remedy choice. |
 | **remedy** | one of the four operator-orderable remedies `rebase`, `rotate`, `reauthor`, `ask` (§8, `automation.remedies`), plus **`integration-repair`** (§10A), which is always on and not operator-disablable — it is `ready`'s only path to its goal. |
 | **exit codes** | `0` reached · `1` error · `2` stopped-at-cap · `3` blocked · `4` wait-timeout · `64` usage (proposal §4.4). |
@@ -598,14 +598,8 @@ review impl-m7): `gh pr view <n> --json number,state,isDraft,headRefOid,baseRefN
    DRAFT}`; `UNKNOWN` → free retry ×3 (10 s) then `REMOTE_UNKNOWN`. `BLOCKED`
    is allowed **only** when 4 holds (i.e. the only blocker is review/ruleset);
    `UNSTABLE`/`HAS_HOOKS` are decided by 4;
-4. **checks:** this predicate is defined here, independently of today's
-   `prChecksGreen` (`github.js:99-103` returns false for an empty rollup; the
-   rule below deliberately differs). P5 does **not** update `prChecksGreen`'s
-   callers (`orch pr --merge`'s merge gate) to this predicate — that gate is
-   out of scope for a run-controller/readiness-inspector slice reviewed by an
-   agent; `orch pr --merge` and `--until ready|merged` knowingly read two
-   different green predicates until a dedicated follow-up unifies them
-   (tracked in #545). Read the required checks once per run:
+4. **checks:** use the shared `checksGreen` predicate (`github.js:131-145`)
+   for readiness and both merge paths. Read the required checks once per run:
    `gh api repos/{o}/{r}/rules/branches/<base>` returns an **array of rule
    objects**; filter `type == "required_status_checks"` and collect
    `parameters.required_status_checks[].context`; if the array is empty also
