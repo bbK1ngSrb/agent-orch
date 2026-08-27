@@ -1,59 +1,9 @@
 // Remote readiness inspector (design docs/cli-v2-design.md §9): one read of a
 // PR (`inspect`) plus a bounded poll loop around it (`waitReady`). Read-only —
-// no merge is ever attempted here (that ships in P8). This rule 4 (required
-// checks) predicate is deliberately independent of today's github.js
-// `prChecksGreen`: that helper backs `orch pr --merge`'s direct-merge path and
-// is left untouched by this slice — unifying the two is tracked in #545, not
-// done here (that gate is out of scope for an agent-reviewed slice).
-import { prView, requiredChecks, parseHttpStatus } from "./github.js";
-
-// CheckRun (GitHub Actions et al — `status`+`conclusion`) vs StatusContext (the
-// legacy commit-status API — `state`). Mirrors github.js's own PASSING_CONCLUSIONS.
-const PASSING_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-
-function checkTerminalGreen(entry) {
-  if (entry.status) return entry.status === "COMPLETED" && PASSING_CONCLUSIONS.has(entry.conclusion);
-  if (entry.state) return entry.state === "SUCCESS";
-  return false;
-}
-function checkPending(entry) {
-  if (entry.status) return entry.status !== "COMPLETED";
-  if (entry.state) return entry.state === "PENDING" || entry.state === "EXPECTED";
-  return false;
-}
-function contextOf(entry) {
-  return entry.context || entry.name;
-}
-
-// design §9 rule 4: "every statusCheckRollup entry terminal-green" is
-// unconditional — it holds regardless of whether the required-context set is
-// knowable. `required.known === false` (a 403, or any other non-404 error, on
-// both required-checks reads) only means "can't confirm every required
-// context is present"; it must never suppress a FAILURE already sitting in
-// the rollup. Check the rollup itself first, then let `!required.known`
-// downgrade an otherwise-green read to "unknown" rather than "pending" — the
-// caller decides what unknown means for its `until` mode.
-function checksGreen(rollup, required) {
-  const list = rollup || [];
-  const failing = list.filter((e) => !checkTerminalGreen(e) && !checkPending(e)).map(contextOf);
-  if (failing.length) return { state: "red", failing };
-  if (list.some(checkPending)) return { state: "pending" };
-  // design §9 rule 4: "an empty rollup is green only when the required set is
-  // known and empty" — an unknown required-checks read (403) must not be read
-  // as "no required checks exist"; that guard has to run BEFORE the `unknown`
-  // downgrade below, or an empty rollup with an unreadable required set
-  // fail-opens straight to ready instead of staying pending.
-  if (list.length === 0) {
-    if (!required.known) return { state: "pending" };
-    return { state: required.contexts.length === 0 ? "green" : "pending" };
-  }
-  if (!required.known) return { state: "unknown" };
-  const requiredSet = new Set(required.contexts);
-  for (const ctx of requiredSet) {
-    if (!list.some((e) => contextOf(e) === ctx)) return { state: "pending" };
-  }
-  return { state: "green" };
-}
+// no merge is ever attempted here (that ships in P8). The §9 rule 4 checks
+// predicate is shared with github.js's merge gates so all paths use the same
+// required-checks semantics.
+import { prView, requiredChecks, parseHttpStatus, checksGreen } from "./github.js";
 
 function safeRevParse(deps, ref) {
   try { return deps.git.git(["rev-parse", ref], deps.repo); } catch { return null; }

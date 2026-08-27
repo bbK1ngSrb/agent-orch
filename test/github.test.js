@@ -9,7 +9,7 @@ function makeDeps({
   status = "approved", state = "OPEN",
   mergedState = "MERGED", mergeCommitOid = "abc123def", ancestorFails = false,
   fetchLockFailures = 0, reviewedSha = "reviewed123def", currentHeadSha = reviewedSha,
-  rollup = null,
+  rollup = null, requiredContexts = [], requiredChecksError = null,
 } = {}) {
   const calls = { gh: [], git: [] };
   let fetchAttempts = 0;
@@ -22,8 +22,22 @@ function makeDeps({
         if (args.includes("state,mergeCommit")) {
           return JSON.stringify({ state: mergedState, mergeCommit: mergeCommitOid ? { oid: mergeCommitOid } : null });
         }
-        if (args.includes("statusCheckRollup")) return JSON.stringify({ statusCheckRollup: rollup || [] });
+        if (args.some((a) => String(a).includes("statusCheckRollup"))) {
+          return JSON.stringify({ baseRefName: "main", statusCheckRollup: rollup || [] });
+        }
         return JSON.stringify({ number: 7, headRefName: "feature/x", state });
+      }
+      if (args[0] === "api" && args.some((a) => String(a).includes("/rules/branches/"))) {
+        if (requiredChecksError) throw new Error(requiredChecksError);
+        if (!requiredContexts.length) return "[]";
+        return JSON.stringify([{
+          type: "required_status_checks",
+          parameters: { required_status_checks: requiredContexts.map((context) => ({ context })) },
+        }]);
+      }
+      if (args[0] === "api" && args.some((a) => String(a).includes("/branches/main/protection"))) {
+        if (requiredChecksError) throw new Error(requiredChecksError);
+        return JSON.stringify({ required_status_checks: { contexts: requiredContexts } });
       }
       if (args[0] === "api" && args.some((a) => a.includes("pulls/7/merge"))) {
         const pinnedSha = args.find((a) => a.startsWith("sha="))?.slice(4);
@@ -104,6 +118,14 @@ test("runPr merges only with merge flag + approved", async () => {
 
 test("runPr --merge holds when the PR's CI checks are not green", async () => {
   const isMergeCall = (c) => c.args[0] === "api" && c.args.some((a) => String(a).includes("/merge"));
+  // An empty rollup is not green when branch protection requires a check that
+  // has not reported. This is the discriminating case against the old
+  // caller-controlled empty-rollup override.
+  const missingRequired = makeDeps({ rollup: [], requiredContexts: ["test"] });
+  const missingResult = await runPr({ ...opts, merge: true }, missingRequired);
+  assert.ok(!missingRequired._calls.gh.some(isMergeCall), "must not merge with an empty rollup and required checks");
+  assert.equal(missingResult.mergeHold, "checks not green");
+
   // A required check still running: orch's own "approved" verdict must not be
   // mistaken for CI being green.
   const pending = makeDeps({ rollup: [{ status: "IN_PROGRESS", conclusion: null }] });
@@ -116,15 +138,25 @@ test("runPr --merge holds when the PR's CI checks are not green", async () => {
   await runPr({ ...opts, merge: true }, failed);
   assert.ok(!failed._calls.gh.some(isMergeCall), "must not merge with a failing check");
 
-  const green = makeDeps({ rollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }, { state: "SUCCESS" }] });
+  const unreadableRequired = makeDeps({ rollup: [], requiredChecksError: "HTTP 403: Resource not accessible" });
+  const unreadableResult = await runPr({ ...opts, merge: true }, unreadableRequired);
+  assert.ok(!unreadableRequired._calls.gh.some(isMergeCall), "must not merge when required checks cannot be read");
+  assert.equal(unreadableResult.mergeHold, "checks not green");
+
+  const green = makeDeps({
+    requiredContexts: ["test", "lint"],
+    rollup: [
+      { context: "test", status: "COMPLETED", conclusion: "SUCCESS" },
+      { context: "lint", state: "SUCCESS" },
+    ],
+  });
   await runPr({ ...opts, merge: true }, green);
   assert.ok(green._calls.gh.some(isMergeCall), "green checks must still merge");
 
-  // No CI configured at all: the rollup is permanently empty, so --merge stays
-  // usable rather than becoming a silent no-op.
+  // No required checks configured: the confirmed-empty rollup remains green.
   const noChecks = makeDeps({ rollup: [] });
   await runPr({ ...opts, merge: true }, noChecks);
-  assert.ok(noChecks._calls.gh.some((c) => c.args[0] === "api"), "a repo with no checks must still merge");
+  assert.ok(noChecks._calls.gh.some(isMergeCall), "a repo with no checks must still merge");
 });
 
 test("runPr fails closed when the PR head moves during review", async () => {
@@ -617,7 +649,8 @@ test("openIntegrationPr with main.autoMerge directly merges the persistent integ
 
   assert.equal(r.prUrl, "https://github.com/o/r/pull/12");
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge"), "must not use gh pr merge precheck");
-  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "view" && c.includes("statusCheckRollup")));
+  assert.ok(calls.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "view"
+    && c.some((a) => String(a).includes("statusCheckRollup"))));
   const direct = calls.find((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.includes("merge_method=merge")));
   assert.ok(direct, "main.autoMerge must attempt a direct merge");
   // #182: the REST merge endpoint is keyed by numeric PR id. On the create
@@ -640,7 +673,7 @@ test("openIntegrationPr arms native auto-merge and still runs the green-gated di
   // review requirement is satisfied by a ruleset bypass_actor grant rather than a
   // real approval, GitHub's native auto-merge stays BLOCKED forever even after
   // checks pass, so the direct merge is the only thing that lands the PR. It is
-  // gated on prChecksGreen, so it only fires once checks are green — never an
+  // gated on the shared §9 checksGreen predicate, so it only fires once checks are green — never an
   // early racing 405.
   const calls = [];
   const gh = (args) => {
@@ -726,7 +759,7 @@ test("openIntegrationPr waits when a required check is still EXPECTED (not yet r
 
 test("openIntegrationPr treats SKIPPED and NEUTRAL required checks as green", async () => {
   // GitHub counts a SKIPPED (path-filtered) or NEUTRAL required check as
-  // satisfied for merge purposes. prChecksGreen must too — otherwise the direct
+  // satisfied for merge purposes. The shared checksGreen predicate must too — otherwise the direct
   // merge would stall forever on any repo whose required checks include a
   // skippable job (COMPLETED, but conclusion !== SUCCESS).
   const calls = [];
@@ -783,6 +816,8 @@ test("openIntegrationPr logs a non-405/409 direct-merge failure instead of hidin
       if (args[0] === "--version") return "gh 2";
       if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 12, url: "https://github.com/o/r/pull/12" }]);
       if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+      if (args[0] === "api" && args.some((a) => String(a).includes("/rules/branches/"))) return "[]";
+      if (args[0] === "api" && args.some((a) => String(a).includes("/branches/main/protection"))) return "{}";
       if (args[0] === "api") throw new Error(stderr);
       return "";
     };
@@ -813,6 +848,8 @@ test("tryMergeDirect classifies on the gh status, not on a PR number that looks 
     if (args[0] === "--version") return "gh 2";
     if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 405, url: "https://github.com/o/r/pull/405" }]);
     if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ statusCheckRollup: [{ state: "SUCCESS" }] });
+    if (args[0] === "api" && args.some((a) => String(a).includes("/rules/branches/"))) return "[]";
+    if (args[0] === "api" && args.some((a) => String(a).includes("/branches/main/protection"))) return "{}";
     if (args[0] === "api") throw err;
     return "";
   };
