@@ -1025,16 +1025,6 @@ function persistRotationState({ orchDir, sid, runId, run, nextRun, previousAutho
   stores.checkpoint.clear(orchDir, sid);
 }
 
-// The persisted exclusion set is the single durable signal that a seat was
-// actually re-seated. Branch names and author identity can differ for reasons
-// unrelated to rotation (notably `orch review`), so consumers must not infer
-// this state from either.
-function rotationWasRecorded(...records) {
-  return records.some((record) => Array.isArray(record?.excludedAgents)
-    ? record.excludedAgents.length > 0
-    : Boolean(record?.excludedAgents));
-}
-
 function roleLabel(spec) {
   return formatRole(spec, " · ");
 }
@@ -2196,7 +2186,7 @@ export async function main(argv, deps = {}) {
     // that died before the author committed anything — neither record proves
     // there's work to review/merge until the branch has a committed diff.
     const branchAuthor = branch.split("/")[1];
-    const rotationRecorded = rotationWasRecorded(priorRun, ck, inf);
+    const rotationRecorded = Boolean(inf?.rotationStage);
     if (((inf && !ck) || (ck?.stage === "started" && !ck.task))
       && !rotationRecorded
       && git.changedFiles(repo, branch, cfg.baseBranch).length === 0) {

@@ -1543,6 +1543,7 @@ test("orch continue re-seats an excluded author from the inflight record", async
     branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo),
     author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
     excludedAgents: [{ name: "claude", reason: "quota", at: "2026-08-27T00:00:00.000Z" }],
+    rotationStage: "started",
   });
 
   const authorCalls = [];
@@ -3857,6 +3858,54 @@ test("orch continue <sid> reuses the persisted author/reviewer model+effort by d
   assert.equal(auditOpts[0].allowLargeScope, false); // legacy persisted sanction is not reused
 });
 
+test("orch continue ignores an exclusion unrelated to the cached reviewer", async () => {
+  const repo = initGitRepo("orch-continue-unrelated-exclusion-");
+  const sid = "unrel4ted";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  const originalReviewers = [{ agent: "codex", model: "gpt-5.1", effort: null }];
+  checkpointDep.record(orchDir, sid, {
+    branch, oid: gitDep.git(["rev-parse", branch], repo), round: 1,
+    stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude", model: null, effort: null },
+    reviewers: originalReviewers,
+    excludedAgents: [{ name: "unrelated-agent", reason: "quota" }],
+  });
+
+  let auditCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("resume must not re-author"); },
+        async audit() {
+          auditCalls += 1;
+          return { decision: "AGREE", reason: "still good", raw: "", usage: {} };
+        },
+      }),
+    },
+    // Leave the checkpoint behind after engine.js records the round so both
+    // the cached-verdict and persisted-reviewer behavior are observable.
+    finalize: async () => { throw new Error("simulated crash after checkpoint write"); },
+  };
+  writeFileSync(join(orchDir, "orch.yml"), "agents: [claude, codex, copilot]\n");
+
+  await assert.rejects(
+    runMainInRepo(repo, ["continue", sid], { cycleDeps }),
+    /simulated crash/,
+  );
+
+  assert.equal(auditCalls, 0); // the cached AGREE verdict remains valid
+  assert.deepEqual(checkpointDep.lookup(orchDir, sid).reviewers, originalReviewers);
+});
+
 // Codex review: preflight used to validate the FULL current orch.yml (its
 // whole `agents:` pool plus any fixed roles) before a resume ever got to reuse
 // its persisted author/reviewer specs — so an unrelated/unknown agent named
@@ -4026,6 +4075,7 @@ test("orch continue <sid> --reviewer override does not leak into the checkpoint 
     branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
     author: { agent: "claude", model: null, effort: null },
     reviewers: originalReviewers,
+    excludedAgents: [{ name: "unrelated-agent", reason: "quota" }],
   });
 
   const cycleDeps = {
@@ -4163,7 +4213,10 @@ test("orch continue <sid> refuses to resume an inflight-only branch with no comm
   // branch carries no committed diff vs. main. A dead pid, not process.pid —
   // this must simulate the process actually having died, or the still-live
   // guard (added after #125's stalemate) would refuse it for the wrong reason.
-  inflight.register(join(repo, ".orch"), sid, { branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo) });
+  inflight.register(join(repo, ".orch"), sid, {
+    branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo),
+    excludedAgents: [{ name: "unrelated-agent", reason: "quota" }],
+  });
 
   await assert.rejects(
     runMainInRepo(repo, ["continue", sid]),
