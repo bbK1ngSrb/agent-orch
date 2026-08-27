@@ -561,6 +561,43 @@ test("integration repair: REMOTE_CONFLICTING resolves under conflictResolution a
   assert.deepEqual(calls, ["author", "audit"]);
   assert.equal(git.git(["show", "orch/integration:shared.txt"], repo), "resolved together");
   assert.equal(originSha(remote, "orch/integration"), git.git(["rev-parse", "orch/integration"], repo));
+  const baseTip = originSha(remote, "main");
+  const integrationTip = originSha(remote, "orch/integration");
+  assert.ok(
+    git.gitTry(["merge-base", "--is-ancestor", baseTip, integrationTip], remote).ok,
+    "the landed integration tip must contain the base tip",
+  );
+});
+
+test("integration repair: an abort-then-commit resolver cannot land a tip without base ancestry", async () => {
+  const { repo, remote } = repairFixture();
+  const before = originSha(remote, "orch/integration");
+  const cfg = repairCfg({
+    main: {
+      conflictResolution: "auto",
+      conflictResolutionResolvers: [{ agent: "resolver", model: null, effort: null }, { agent: "reviewer", model: null, effort: null }],
+    },
+  });
+  const calls = [];
+  const adapters = fakeAdapters({
+    resolver: {
+      async author(prompt, wd) {
+        calls.push("author");
+        git.git(["merge", "--abort"], wd);
+        writeFileSync(join(wd, "shared.txt"), "resolution without base\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "abort merge then commit"], wd);
+      },
+    },
+    reviewer: { async audit() { calls.push("audit"); return { decision: "AGREE" }; } },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle, undefined);
+  assert.match(out.result.reason, /does not contain origin\/main in its ancestry/);
+  assert.deepEqual(calls, ["author"], "ancestry must be checked before gate or audit");
+  assert.equal(originSha(remote, "orch/integration"), before, "a candidate without base ancestry must not be pushed");
 });
 
 // §10A acceptance criterion 3: markers never land. `git add -A` + `git commit`

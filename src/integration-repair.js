@@ -554,6 +554,12 @@ async function repairConflictOrRed(ctx, deps) {
     const candidate = git.gitTry(["rev-parse", "HEAD"], scratch);
     if (!candidate.ok) return { ok: false, reason: `could not read the resolved tip: ${candidate.out.trim()}` };
     const candidateSha = candidate.out.trim();
+    // A resolver can abort the merge and still commit a plausible-looking
+    // repair. Refuse that tip: the repair must carry the base it was meant to
+    // merge before it can reach the shared branch. This check is shared by the
+    // conflict and clean CI-red paths.
+    const containsBase = git.gitTry(["merge-base", "--is-ancestor", `origin/${base}`, candidateSha], scratch);
+    if (!containsBase.ok) return { ok: false, reason: `repaired tip ${candidateSha} does not contain origin/${base} in its ancestry` };
     // A stage that was supposed to only read has written to the worktree. That
     // is an anomaly, not a new candidate: adapting (re-scanning the new tip)
     // would make the write routine, and the safe answer to "the tree moved
