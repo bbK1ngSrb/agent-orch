@@ -1,7 +1,7 @@
 # Changelog
 
 ## v0.4.346 — 2026-08-27
-- orch pr <n> --until ready|merged is a silent no-op — schema accepts it, the handler never reads it (closes [#546](https://github.com/bbk1ng/agent-orch/issues/546))
+- fix(schema): `orch pr` now rejects `--until ready|merged` instead of accepting and ignoring them; `--until once` stays valid because a PR audit is a single pass (closes [#546](https://github.com/bbk1ng/agent-orch/issues/546))
 
 ## v0.4.345 — 2026-08-27
 - feat(integration-repair): resolve and prove a conflict before it lands (#569)
