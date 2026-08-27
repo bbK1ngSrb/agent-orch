@@ -103,25 +103,51 @@ function tryMergeDirect(gh, prRef, method, sha = null, log = () => {}) {
 //     GitHub is still waiting on) both keep us waiting — that "wait on a
 //     not-yet-reported required context" is what makes this a "wait for required
 //     checks" gate rather than a "whatever has reported so far is green" gate.
-// Anything non-terminal (QUEUED / IN_PROGRESS) or failing (FAILURE / ERROR /
-// CANCELLED / TIMED_OUT / ACTION_REQUIRED) makes the whole rollup not-green, so
-// the direct merge holds until the checks settle.
+// Anything non-terminal or failing makes the whole rollup not-green. An empty
+// rollup is green only when the required-checks read confirms there are no
+// required contexts, and an unknown required-checks read always fails closed.
 const PASSING_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 
-function checkPassed(check) {
-  if (check.status) return check.status === "COMPLETED" && PASSING_CONCLUSIONS.has(check.conclusion);
-  return check.state === "SUCCESS";
+function checkTerminalGreen(entry) {
+  if (entry.status) return entry.status === "COMPLETED" && PASSING_CONCLUSIONS.has(entry.conclusion);
+  if (entry.state) return entry.state === "SUCCESS";
+  return false;
 }
 
-// `emptyIsGreen` decides what an empty rollup means. The integration path polls
-// every cycle, so it treats "no check has reported yet" as not-green and simply
-// retries. `orch pr <n> --merge` is one-shot: on a repo with no CI at all the
-// rollup is permanently empty, and a strict reading would make --merge a
-// silent no-op forever — so that path opts into "no checks configured ⇒ green".
-function prChecksGreen(gh, prRef, { emptyIsGreen = false } = {}) {
-  const data = JSON.parse(gh(["pr", "view", String(prRef), "--json", "statusCheckRollup"]) || "{}");
-  const checks = data.statusCheckRollup || [];
-  return checks.length ? checks.every(checkPassed) : emptyIsGreen;
+function checkPending(entry) {
+  if (entry.status) return entry.status !== "COMPLETED";
+  if (entry.state) return entry.state === "PENDING" || entry.state === "EXPECTED";
+  return false;
+}
+
+function contextOf(entry) {
+  return entry.context || entry.name;
+}
+
+// Design §9 rule 4: every reported entry must be terminal-green, every
+// required context must be present, and an empty rollup is green only when the
+// required set is known and empty. Keep this predicate shared by readiness and
+// both merge paths so no caller can weaken the gate with an empty-rollup flag.
+export function checksGreen(rollup, required) {
+  const list = rollup || [];
+  const failing = list.filter((e) => !checkTerminalGreen(e) && !checkPending(e)).map(contextOf);
+  if (failing.length) return { state: "red", failing };
+  if (list.some(checkPending)) return { state: "pending" };
+  if (list.length === 0) {
+    if (!required.known) return { state: "pending" };
+    return { state: required.contexts.length === 0 ? "green" : "pending" };
+  }
+  if (!required.known) return { state: "unknown" };
+  const requiredSet = new Set(required.contexts);
+  for (const ctx of requiredSet) {
+    if (!list.some((e) => contextOf(e) === ctx)) return { state: "pending" };
+  }
+  return { state: "green" };
+}
+
+function checksForPrMerge(prRef, base, deps) {
+  const data = prView(prRef, ["baseRefName", "statusCheckRollup"], deps);
+  return checksGreen(data.statusCheckRollup, requiredChecks(data.baseRefName || base, deps));
 }
 
 // `cached` is a mergeability read the caller already paid for. Pass it ONLY
@@ -361,7 +387,7 @@ export async function runPr(opts, deps) {
       // Fail closed: an unreadable rollup is not a green one.
       let green;
       try {
-        green = prChecksGreen(gh, String(n), { emptyIsGreen: true });
+        green = checksForPrMerge(String(n), cfg.baseBranch || "main", deps).state === "green";
       } catch (e) {
         throw new Error(`orch pr #${pr.number}: could not read CI status before merging: ${e.message}`, { cause: e });
       }
@@ -632,12 +658,12 @@ export async function openIntegrationPr(ctx, deps) {
     }
   }
   // main.autoMerge runs alongside native auto-merge, not as an either/or. It is
-  // gated on prChecksGreen, so it holds until every reported check — including a
-  // required context GitHub still lists as EXPECTED — is terminal and green,
-  // rather than racing the merge while a check is still IN_PROGRESS. (A required
-  // check GitHub never surfaces in the rollup at all could still make the direct
-  // call 405; that failure is swallowed by tryMergeDirect and simply retried the
-  // next cycle.) This direct merge is the fallback that matters when native
+  // gated on the shared §9 checksGreen predicate, so it holds until every
+  // reported check — including a required context GitHub still lists as
+  // EXPECTED — is terminal and green, and every required context is present.
+  // (A required check GitHub never surfaces in the rollup at all keeps the
+  // direct call from happening; the next cycle retries.) This direct merge is
+  // the fallback that matters when native
   // auto-merge stays stuck at BLOCKED forever: if the review requirement is
   // satisfied by a ruleset bypass_actor grant rather than a real approval, GitHub
   // never auto-merges even after checks pass (verified empirically), and this
@@ -648,7 +674,7 @@ export async function openIntegrationPr(ctx, deps) {
   // is logged once and that newer cycle owns the merge.
   if (cfg?.main?.autoMerge) {
     try {
-      if (prChecksGreen(gh, prRef)) tryMergeDirect(gh, prRef, "merge", tipSha, log);
+      if (checksForPrMerge(prRef, base, deps).state === "green") tryMergeDirect(gh, prRef, "merge", tipSha, log);
     } catch (e) {
       log(`could not inspect checks for ${branch}: ${e.message}`);
     }
