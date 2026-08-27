@@ -816,6 +816,64 @@ test("release.autoBump on → clean merge runs the version bump exactly once aga
   assert.equal(bumpArgs.entry, "release bookkeeping (no work-order text recorded)");
 });
 
+test("release.autoBump on → entry uses the first feat/fix subject, not the issue title", async () => {
+  const issueTitle = "schema accepts a flag that the handler ignores";
+  let bumpArgs;
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: {
+      ...g,
+      git: (args, cwd) => args[0] === "log"
+        ? [
+          "feat: reject inert --until modes",
+          "fix: tighten the validation message",
+          "fix: cover the revised handler path",
+          "chore(release): v0.4.346",
+        ].join("\n")
+        : g.git(args, cwd),
+      bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; },
+    },
+  });
+
+  await finalize({
+    ...bumpCtx(),
+    baseSha: "base",
+    title: issueTitle,
+    task: issueTitle,
+    closes: 279,
+  }, deps);
+
+  assert.equal(
+    bumpArgs.entry,
+    "feat: reject inert --until modes (closes [#279](https://github.com/bbk1ng/agent-orch/issues/279))",
+  );
+  assert.notEqual(bumpArgs.entry, issueTitle, "normal entries must not regress to the issue title");
+  assert.doesNotMatch(bumpArgs.entry, /chore\(release\):/);
+  assert.doesNotMatch(bumpArgs.entry, new RegExp(issueTitle));
+});
+
+test("release.autoBump on → no usable commit subject falls back to the issue title", async () => {
+  const issueTitle = "the release note needs a safe fallback";
+  let bumpArgs;
+  const g = baseDeps().deps.git;
+  const { deps } = baseDeps({
+    git: {
+      ...g,
+      git: (args, cwd) => args[0] === "log"
+        ? "chore(release): v0.4.346\nchore: tidy test fixtures"
+        : g.git(args, cwd),
+      bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; },
+    },
+  });
+
+  await finalize({ ...bumpCtx(), baseSha: "base", title: issueTitle, closes: 279 }, deps);
+
+  assert.equal(
+    bumpArgs.entry,
+    "the release note needs a safe fallback (closes [#279](https://github.com/bbk1ng/agent-orch/issues/279))",
+  );
+});
+
 test("clean merge on a resumed cycle (task === branch): entry is never the branch slug", async () => {
   let bumpArgs;
   const { deps } = baseDeps({
