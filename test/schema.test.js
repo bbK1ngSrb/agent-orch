@@ -202,10 +202,14 @@ test("--max-attempts is not declared — it would be a silent no-op, nothing rea
   );
 });
 
-test("--until ready|merged is available on task/issue/review (P5 run controller); continue/pr aren't wired yet", () => {
-  assert.doesNotThrow(() => validate("task", { until: "once" }));
+test("--until ready|merged is available on task/issue/review; continue/pr aren't wired yet", () => {
+  for (const command of ["task", "issue", "review"]) {
+    assert.doesNotThrow(() => validate(command, { until: "once" }), `${command} once`);
+  }
   for (const mode of ["ready", "merged"]) {
-    assert.doesNotThrow(() => validate("task", { until: mode }), mode);
+    for (const command of ["task", "issue", "review"]) {
+      assert.doesNotThrow(() => validate(command, { until: mode }), `${command} ${mode}`);
+    }
     assert.throws(
       () => validate("continue", { until: mode }),
       (e) => e.exit === 64 && /is not yet available/.test(e.message),
@@ -213,7 +217,7 @@ test("--until ready|merged is available on task/issue/review (P5 run controller)
     );
     assert.throws(
       () => validate("pr", { until: mode }),
-      (e) => e.exit === 64 && /is not yet available/.test(e.message),
+      (e) => e.exit === 64 && /^--until is not valid with 'orch pr'/.test(e.message),
       `pr ${mode}`,
     );
   }

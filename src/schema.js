@@ -130,8 +130,10 @@ export const COMMANDS = {
   // called with allowReviewerOnly, so a passed --author was silently ignored
   // while runPr assigned the reviewer as authorName. Accepting the flag was
   // the exact "nobody read your flag" lie this schema exists to remove.
+  // --until is intentionally absent until #525 wires pr through the run
+  // controller; accepting it before then would silently discard the flag.
   pr: {
-    mutates: true, flags: ["config-file", "dry", "merge", "until", "allow-large-scope", "reviewer", "reviewers"],
+    mutates: true, flags: ["config-file", "dry", "merge", "allow-large-scope", "reviewer", "reviewers"],
     rows: [["pr <number>", "Review a GitHub PR; add --merge to merge if approved."]],
   },
   release: {
