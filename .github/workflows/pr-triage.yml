@@ -1,0 +1,157 @@
+name: PR triage
+# When `ci` goes red on a pull request, have Claude read the failing job and
+# either file a durable issue or post a next-step proposal on the PR.
+#
+# Detect-and-report only. This job never edits a file and never opens a PR:
+# agent-authored changes to `main` route through orch (see CLAUDE.md), so
+# triage deliberately stops at the issue/comment boundary. The loop closes by
+# hand — issue filed, you comment `@orch-bot` on it, the poller runs the cycle.
+#
+# `workflow_run` always executes the copy of this file that is on the default
+# branch, so nothing fires until this is merged to `main`. Pushing it to a
+# branch and watching for runs will show none; that is expected, not a bug.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+jobs:
+  triage:
+    # Red runs only, from same-repo PRs only. A fork PR cannot read the OAuth
+    # secret anyway (the run would just fail), and on a public repo an
+    # unguarded trigger lets any PR author burn the maintainer's Claude quota.
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # actions: read is what lets Claude fetch the failing job's log. A triage
+      # agent that cannot read the failure can only guess at its cause.
+      actions: read
+      # write, not read: the GITHUB_TOKEN is scoped per job, so a read-only
+      # scope makes it physically impossible for this agent to publish the
+      # issue or the comment — the API call is rejected and the job still
+      # exits 0, leaving a green check over silence. See issue #495.
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Triage the failing run
+        id: triage
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            The `ci` workflow failed on a pull request in this repository.
+            Triage that failure. Facts you already have:
+
+            - Run id:   ${{ github.event.workflow_run.id }}
+            - Head SHA: ${{ github.event.workflow_run.head_sha }}
+
+            (Only the run id and the SHA are interpolated here, and both are
+            machine-generated values. The branch name is deliberately left out:
+            it is human-authored text, and text from outside the workflow does
+            not belong in an agent's instructions.)
+
+            Work through these steps in order.
+
+            1. Resolve the pull request number from the head SHA:
+               `gh pr list --state open --search "${{ github.event.workflow_run.head_sha }}" --json number,title`
+               If no open PR matches, stop here and do nothing at all. A failure
+               on a branch with no open PR has no one to report to.
+
+            2. Read what actually failed, rather than guessing from the job name:
+               `gh run view ${{ github.event.workflow_run.id }} --log-failed`
+
+            3. If the only failing job is the `windows-latest` matrix leg, stop
+               and do nothing. That leg is advisory rather than gating, and the
+               underlying gap is already tracked in issue #134. Filing again
+               would just add noise to a known problem.
+
+            4. Deduplicate before you write anything. CI re-runs on every push,
+               so a persistently red branch would otherwise produce one issue per
+               push. Search for an existing open issue carrying the marker for
+               this PR (substitute the real number for `<number>`):
+               `gh issue list --state open --search "ci-fail-PR-<number>" --json number,body`
+               The marker uses dashes and no colon on purpose: GitHub's issue
+               search treats a colon as a qualifier separator, so a search for
+               `ci-fail:PR-592` is read as an unknown qualifier and returns
+               nothing — which would defeat the entire point of the marker.
+               The search is also fuzzy: it tokenizes the term and will return
+               loosely related issues. So confirm the literal string
+               `ci-fail-PR-<number>` appears in a returned issue's body before
+               treating it as a match.
+               - If one matches, add a comment to that existing issue describing
+                 what changed since the previous failure, and stop. Never open a
+                 second issue for the same PR.
+               - If none matches, continue to step 5.
+
+            5. Decide which kind of failure this is, then take exactly one action.
+
+               a. A reproducible defect in the code under test — a genuine
+                  assertion failure, a crash, a logic error introduced by the
+                  change: open an issue.
+                  `gh issue create --title "ci: <concise description of the failure>" --body "<body>"`
+                  The body must contain the marker line `ci-fail-PR-<number>` on
+                  a line of its own (this is what step 4 searches for), and must
+                  also cover: what fails, the decisive log line quoted exactly as
+                  it appeared, why it matters, a minimal reproduction, and a
+                  severity.
+
+               b. An infrastructure or transient failure — a network error, an
+                  npm registry hiccup, a runner flake, a timeout, a missing
+                  secret: do not open an issue. These are not defects in the
+                  code and an issue for one rots immediately. Post a single
+                  comment on the PR naming the cause and the concrete next step
+                  (usually re-run the job, sometimes fix a secret).
+                  `gh pr comment <number> --body "<body>"`
+
+               c. If you genuinely cannot tell which of the two it is, prefer the
+                  PR comment. A wrong comment is cheap to ignore; a wrong issue
+                  is durable clutter someone has to triage later.
+
+            Hard constraints:
+
+            - Do not edit any file, do not commit, and do not open a pull
+              request. Agent-authored changes to this repository run through the
+              orch pipeline, not through you. Your entire output is one issue or
+              one comment.
+            - Write in this repository's teaching tone (see CLAUDE.md): explain
+              the mechanism that broke and why it broke that way, define
+              non-obvious terms briefly in line, and stay concrete. Normal
+              English prose.
+            - Quote log lines exactly. Never reconstruct a stack trace or an
+              error message you did not actually read in step 2.
+
+            Finally, print one line to stdout recording what you did, so the job
+            log says so even when the right answer was to stay silent:
+            `TRIAGE: opened-issue #<n>` / `TRIAGE: commented-on-issue #<n>` /
+            `TRIAGE: commented-on-pr #<n>` / `TRIAGE: no-action <reason>`.
+
+      # A green check that means "the job exited 0" is decoration, not a gate.
+      # If the triage agent had a tool call refused, say so loudly instead —
+      # otherwise a permissions mistake looks identical to a clean, quiet run.
+      - name: Fail if the triage agent was blocked
+        if: always() && steps.triage.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.triage.outputs.execution_file }}
+        run: |
+          # -e/-o pipefail: an unreadable or malformed log must go red, not
+          # silently green — that failure mode is the whole point of this step.
+          # jq -s slurps, so this reads both a JSON array and newline-delimited
+          # JSON; `..` then walks whatever shape the log happens to have.
+          set -euo pipefail
+          denials=$(jq -s '[.. | objects | .permission_denials_count? // empty] | max // 0' \
+            "$EXECUTION_FILE")
+          echo "permission_denials_count: $denials"
+          if [ "${denials:-0}" -gt 0 ]; then
+            echo "::error::Triage agent had $denials tool call(s) denied; the triage is incomplete." >&2
+            exit 1
+          fi

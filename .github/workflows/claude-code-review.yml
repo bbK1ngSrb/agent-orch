@@ -45,7 +45,41 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # The slash command stays on the first line so it is parsed as a
+          # command invocation; everything after the blank line is a follow-up
+          # instruction to the same agent, which already holds its own findings
+          # in context. That is why this needs no second workflow: `--comment`
+          # posts inline comments and never sets a review state, so there is no
+          # `CHANGES_REQUESTED` event for another job to trigger on.
+          prompt: |
+            /code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+
+            Then, once the review is posted: if any finding you reported is a
+            correctness bug — not a style nit, not a simplification suggestion —
+            leave one summary comment on the PR proposing the next step, saying
+            which finding to fix first and how. If every finding is a nit, or
+            there were no findings at all, post nothing; a "looks good" comment
+            on every PR trains people to stop reading them.
+
+            Before writing that comment, look for an existing comment of yours
+            on this PR carrying the marker `review-triage-PR-${{ github.event.pull_request.number }}`
+            (dashes, no colon — a colon reads as a search qualifier and matches
+            nothing). The review re-runs on every push, so without this check a
+            PR that takes five pushes collects five near-identical comments.
+
+            The summary comment belongs to the PR's *issue* comment stream, not
+            the inline review-comment stream the findings went to — those are
+            two different API endpoints and only the first one holds a
+            conversation-level comment. So list with
+            `gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments --jq '.[] | {id, body}'`,
+            and if a body carries the marker, edit that comment in place with
+            `gh api -X PATCH repos/${{ github.repository }}/issues/comments/<id> -f body=@-`;
+            otherwise post a new one. Either way the body must contain the
+            marker line.
+
+            Do not edit files and do not open a pull request: agent-authored
+            changes to this repository route through the orch pipeline, not
+            through you. Your output is the review plus at most one comment.
           allowed_bots: 'orch-bot[bot]'
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
