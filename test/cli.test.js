@@ -5901,7 +5901,12 @@ test("missing required positional exits 64 like every other usage error", async 
   await assert.rejects(() => main(["task"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["review"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["continue"], { preflight() {} }), (e) => e.exit === 64);
-  await assert.rejects(() => main(["pr", "abc"], { preflight() {} }), (e) => e.exit === 64);
+  // This deliberately uses no probe stub: a missing branch is answerable from
+  // local git and must remain a usage error in a bare environment.
+  await assert.rejects(
+    () => runMainCapture(["pr", "abc"]),
+    (e) => e.exit === 64 && /branch does not exist/.test(e.message),
+  );
   await assert.rejects(() => main(["agent", "add"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["agent", "build"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(
