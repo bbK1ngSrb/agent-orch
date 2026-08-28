@@ -301,6 +301,7 @@ github:
 # ===================================================================
 automation:
   mcpMayMerge: false                    # true = MCP orch_pr may request --until merged; default: false
+  detachLogDir: .orch/logs              # detached-run log directory; default: .orch/logs
 
 
 # ===================================================================
@@ -1484,7 +1485,6 @@ export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDi
   if (waited.exited) {
     const code = Number.isInteger(waited.exited.code) ? waited.exited.code : 1;
     const tail = logTail(finalLog);
-    if (tail) process.stderr.write(`${tail}\n`);
     throw Object.assign(new Error(`detached child exited with code ${code} (log: ${finalLog})${tail ? `\n${tail}` : ""}`), { exit: code });
   }
   const event = { event: "run.detached", pid, log: finalLog, runId: null, starting: true };

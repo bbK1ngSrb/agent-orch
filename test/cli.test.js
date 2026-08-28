@@ -144,6 +144,71 @@ test("--detach waits for the child run record and reports its handle", async () 
   }
 });
 
+test("--detach child registers a live run visible to dashboard JSON", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-detach-e2e-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+  execFileSync("git", ["-c", "user.name=orch-test", "-c", "user.email=orch-test@example.invalid", "commit", "--allow-empty", "-m", "test"], { cwd: repo, stdio: "ignore" });
+  const cliUrl = new URL("../src/cli.js", import.meta.url).href;
+  const script = join(repo, "detached-child.mjs");
+  writeFileSync(script, [
+    `import { main } from ${JSON.stringify(cliUrl)};`,
+    "const wait = new Promise(() => {});",
+    "setInterval(() => {}, 1000);",
+    "await main(process.argv.slice(2), {",
+    "  preflight: () => {},",
+    "  maybeNotifyUpdate: () => Promise.resolve(),",
+    "  cycleDeps: {",
+    "    adapters: { get: () => ({ audit: async () => wait }) },",
+    "    git: { git: () => \"base\", attachExistingBranch() {}, changedFiles() { return []; } },",
+    "    gate: { detect: () => \"true\" },",
+    "    notify: { phase() {} },",
+    "  },",
+    "});",
+  ].join("\n"));
+  let childProcess;
+  const parentLogs = [];
+  const previousLog = console.log;
+  const previousCwd = cwd();
+  chdir(repo);
+  console.log = (...args) => parentLogs.push(args.map(String).join(" "));
+  try {
+    const event = await main(["review", "main", "--detach"], {
+      script,
+      spawn: (...args) => {
+        childProcess = spawn(...args);
+        return childProcess;
+      },
+      detachPollMs: 1,
+      detachWaitMs: 1000,
+    });
+    assert.equal(event.event, "run.detached");
+    const record = inflight.lookup(join(repo, ".orch"), event.runId);
+    assert.equal(record.detached, true);
+    assert.equal(record.detachedLog, event.log);
+    assert.equal(record.runId, event.runId);
+
+    const dashboardLogs = [];
+    console.log = (...args) => dashboardLogs.push(args.map(String).join(" "));
+    await main(["dashboard", "--once", "--json"], { maybeNotifyUpdate: () => Promise.resolve() });
+    const snapshot = JSON.parse(dashboardLogs[0]);
+    const live = snapshot.live.find((entry) => entry.runId === event.runId);
+    assert.ok(live);
+    assert.equal(live.detached, true);
+    assert.equal(live.detachedLog, event.log);
+    assert.equal(live.runId, event.runId);
+    assert.equal(parentLogs.length, 1);
+  } finally {
+    if (childProcess && childProcess.exitCode === null && childProcess.signalCode === null) {
+      await new Promise((resolve) => {
+        childProcess.once("exit", resolve);
+        childProcess.kill("SIGTERM");
+      });
+    }
+    console.log = previousLog;
+    chdir(previousCwd);
+  }
+});
+
 test("--detach ignores a stale recycled-PID record while the child is still starting", async () => {
   const repo = mkdtempSync(join(tmpdir(), "orch-detach-starting-"));
   runRecordDep.create(join(repo, ".orch"), {
@@ -188,6 +253,7 @@ test("--detach propagates an early child exit and prints the log tail", async ()
   chdir(repo);
   process.stderr.write = (chunk) => { stderr += String(chunk); return true; };
   try {
+    let error;
     await assert.rejects(
       () => main(["tsk", "detached work", "--detach"], {
         spawn: (...args) => {
@@ -200,10 +266,14 @@ test("--detach propagates an early child exit and prints the log tail", async ()
         },
         detachPollMs: 1,
         detachWaitMs: 100,
+      }).catch((caught) => {
+        error = caught;
+        throw caught;
       }),
       (error) => error.exit === 64 && /line-21/.test(error.message),
     );
-    assert.match(stderr, /line-21/);
+    assert.equal((error.message.match(/line-21/g) || []).length, 1);
+    assert.doesNotMatch(stderr, /line-21/);
     assert.doesNotMatch(stderr, /line-1\n/);
   } finally {
     process.stderr.write = previousWrite;

@@ -1297,6 +1297,7 @@ merge: no-ff                     # ff-only | no-ff | pr
 # === MCP PR merge opt-in ===
 automation:
   mcpMayMerge: false              # true = MCP orch_pr may request --until merged
+  detachLogDir: .orch/logs        # detached-run log directory; default: .orch/logs
 
 # === Cheap-agent dispatch (optional) ===
 # cheap:

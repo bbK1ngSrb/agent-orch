@@ -124,6 +124,7 @@ github:
 # ===================================================================
 automation:
   mcpMayMerge: false                    # true = MCP orch_pr may request --until merged; default: false
+  detachLogDir: .orch/logs              # detached-run log directory; default: .orch/logs
 
 
 # ===================================================================
