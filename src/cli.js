@@ -1447,6 +1447,9 @@ async function waitForDetached(orchDir, pid, child, { waitMs = DETACH_WAIT_MS, p
 // handle. The inherited log path is kept stable so the child and parent always
 // refer to the same file.
 export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDir = join(repo, ".orch"), cfg, deps = {} } = {}) {
+  if (!existsSync(join(repo, ".orch"))) {
+    throw usageError("orch: detached runs require .orch — run `orch init` first");
+  }
   const config = cfg || load(repo, flags["config-file"]);
   const configuredDir = config.automation?.detachLogDir || ".orch/logs";
   const logDir = isAbsolute(configuredDir) ? configuredDir : join(repo, configuredDir);
