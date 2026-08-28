@@ -266,31 +266,56 @@ test("two-agent author rotation uses the failed seat's next configured model", a
     runCycle: (cycle) => { picked = cycle; return executeCycle({ ...run, ...cycle }, deps); },
   });
   assert.equal(usedModel, "model-a");
-  assert.deepEqual(picked.excludedAgents, []);
-  assert.deepEqual(result.record.excludedAgents, []);
+  assert.deepEqual(picked.excludedAgents.map((entry) => entry.name), ["a"]);
+  assert.deepEqual(result.record.excludedAgents.map((entry) => entry.name), ["a"]);
   assert.equal(result.cycle.status, "approved");
 });
 
 test("two-agent reviewer rotation uses the failed seat's next configured model", async () => {
+  let usedModel;
   let picked;
+  const run = {
+    mode: "task", task: "rotate reviewer model", branch: "pr/a/rotate-reviewer-model", authorName: "a",
+    author: { agent: "a" }, reviewerName: "b", reviewerNames: ["b"], reviewers: [{ agent: "b" }],
+    cfg: {
+      agents: ["a", "b"], automation: { rotateModels: { b: ["model-b"] } },
+      roundCap: 1, baseBranch: "main", integrationBranch: "main", test: "auto",
+      scope: { maxLines: 0, ignore: [] }, docs: { paths: [] }, security: { ignore: [] },
+    },
+    orchDir: "/orch", repo: "/repo", worktree: "/wt", noMerge: true,
+  };
+  const deps = {
+    adapters: { get: (name) => ({
+      name, capabilities: { model: true },
+      async author() { return { usage: {} }; },
+      async audit(_branch, _worktree, options) {
+        usedModel = options.model;
+        return { decision: "AGREE", reason: "ok", raw: "" };
+      },
+    }) },
+    git: {
+      createTaskBranch() {}, attachExistingBranch() {}, pruneWorktree() {},
+      changedFiles: () => ["src/change.js"],
+      git: (args) => args[0] === "rev-parse" ? HEAD : "",
+    },
+    gate: { detect: () => "true", run: () => ({ pass: true }) },
+    scope: { count: () => 0 },
+    notify: { phase() {}, writeRound() {}, writeRoundRaw() {}, recordRun() {} },
+  };
   const result = await rotateRemedy({
     failure: { class: "AGENT_QUOTA" },
     cycle: { failedRole: "reviewer", failedAgents: [{ agent: "b", quota: true }] },
     record: { attempt: 1, excludedAgents: [] },
-    run: {
-      author: { agent: "a" }, reviewers: [{ agent: "b" }],
-      cfg: { agents: ["a", "b"], automation: { rotateModels: { b: ["model-b"] } } },
-      orchDir: mkdtempSync(join(tmpdir(), "orch-rotate-reviewer-model-")),
-    },
-    deps: { adapters: { get: () => ({ capabilities: { model: true } }) } },
+    run, deps,
     selectRoles: nextAuthor,
-    runCycle: async (cycle) => { picked = cycle; return { status: "approved" }; },
+    runCycle: (cycle) => { picked = cycle; return executeCycle({ ...run, ...cycle }, deps); },
   });
+  assert.equal(usedModel, "model-b");
   assert.equal(picked.author.agent, "a");
   assert.equal(picked.reviewers[0].agent, "b");
-  assert.equal(picked.reviewers[0].model, "model-b");
-  assert.deepEqual(picked.excludedAgents, []);
-  assert.deepEqual(result.record.excludedAgents, []);
+  assert.deepEqual(picked.excludedAgents.map((entry) => entry.name), ["b"]);
+  assert.deepEqual(result.record.excludedAgents.map((entry) => entry.name), ["b"]);
+  assert.equal(result.cycle.status, "approved");
 });
 
 test("two-agent author rotation degrades when the model ladder is exhausted", async () => {
