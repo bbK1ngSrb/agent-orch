@@ -58,6 +58,14 @@ test("config --check returns a non-zero status for invalid config", async () => 
   assert.match(result.output, /test must be a non-empty string/);
 });
 
+test("config --check returns a non-zero status for unknown config keys", async () => {
+  const repo = tmp();
+  writeFileSync(join(repo, "orch.yml"), "landng: pr\n");
+  const result = await runConfig(repo, ["--check"]);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.output, /unknown key 'landng'/);
+});
+
 test("config inspection is not replaced by the dry-run wizard plan", async () => {
   const repo = tmp();
   writeFileSync(join(repo, "orch.yml"), "stageTimeout: 7\n");

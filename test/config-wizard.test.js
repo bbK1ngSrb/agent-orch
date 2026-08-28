@@ -56,6 +56,12 @@ test("non-TTY config wizard exits clearly without hanging", async () => {
   await assert.rejects(() => runConfigWizard({ repo: tmp(), stdin, stdout: new Writable({ write(_c, _e, cb) { cb(); } }) }), /interactive config needs a TTY/);
 });
 
+test("wizard loads a null test value so the field can be repaired", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "test: null\n");
+  assert.equal(loadTarget(join(d, "orch.yml")).test, "auto");
+});
+
 test("configToYaml validates before serializing", () => {
   const cfg = applyAnswer(DEFAULTS, OPTION_CATALOG.find((entry) => entry.keys[0] === "github.autoMergePr"), true);
   const yaml = configToYaml(cfg);

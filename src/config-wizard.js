@@ -223,6 +223,9 @@ export function loadTarget(target) {
     // the runtime loader while the wizard still exposes its legacy controls.
     normalizeV2Config(cfg, user, {});
     normalizeMainConfig(cfg, user.main || {}, {});
+    // The wizard is also the repair path for an incomplete test setting.
+    // Runtime loading still rejects it; use the documented default only here.
+    if (typeof cfg.test !== "string" || !cfg.test.trim()) cfg.test = DEFAULTS.test;
     validate(cfg, aliasOnly ? "reviseCap" : "roundCap");
     return cfg;
   }

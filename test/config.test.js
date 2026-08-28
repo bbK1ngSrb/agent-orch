@@ -142,10 +142,17 @@ test("removed config keys remain valid but report exact replacement warnings", (
   ]);
 });
 
-test("unknown config keys remain ignored before the schema cutover", () => {
+test("closed config schema rejects unknown keys but accepts inert v2 keys", () => {
   const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "typo: true\nmain:\n  typo: true\nautomation:\n  rotateModels:\n    codex: [gpt-5]\nenv:\n  passthrough: [CI]\n");
-  assert.doesNotThrow(() => load(d));
+  writeFileSync(join(d, "orch.yml"), "landng: pr\nmain:\n  typo: true\n");
+  assert.throws(
+    () => load(d, undefined, { onWarning() {} }),
+    (error) => error.message.includes("orch.yml: unknown key 'landng' (typo? see orch.example.yml).")
+      && error.message.includes("orch.yml: unknown key 'main.typo'."),
+  );
+  const valid = tmp();
+  writeFileSync(join(valid, "orch.yml"), "automation:\n  rotateModels:\n    codex: [gpt-5]\nenv:\n  passthrough: [CI]\n");
+  assert.doesNotThrow(() => load(valid, undefined, { onWarning() {} }));
 });
 
 test("configReport returns effective values, provenance, and warnings", () => {
@@ -169,6 +176,15 @@ test("configReport labels only leaves and keeps aliases on the same source", () 
   assert.equal(report.sources["main.autoMerge"], "orch.yml");
   assert.equal(report.sources.landing, "orch.yml");
   assert.equal(report.sources.merge, "orch.yml");
+});
+
+test("configReport uses the .orch config path in warning provenance", () => {
+  const d = tmp();
+  mkdirSync(join(d, ".orch"), { recursive: true });
+  writeFileSync(join(d, ".orch", "orch.yml"), "main:\n  autoMerge: true\n");
+  const report = configReport(d);
+  assert.equal(report.sources["main.autoMerge"], ".orch/orch.yml");
+  assert.match(report.warnings[0], /^\.orch\/orch\.yml:/);
 });
 
 test("configReport provenance follows override precedence across renamed keys", () => {
