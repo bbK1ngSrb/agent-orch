@@ -69,7 +69,7 @@ function requireIssueNumber(value) {
 }
 
 function requireUntil(value) {
-  const until = value == null ? "ready" : value;
+  const until = value == null ? "once" : value;
   if (!["once", "ready", "merged"].includes(until)) throw new Error("until must be one of: once, ready, merged");
   return until;
 }
@@ -149,7 +149,7 @@ export const TOOLS = [
       properties: {
         number: { type: "integer", description: "GitHub PR number." },
         branch: { type: "string", description: "Local or origin branch name." },
-        until: { type: "string", enum: ["once", "ready", "merged"], default: "ready" },
+        until: { type: "string", enum: ["once", "ready", "merged"], default: "once" },
       },
       additionalProperties: false,
       oneOf: [{ required: ["number"] }, { required: ["branch"] }],

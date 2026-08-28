@@ -88,6 +88,7 @@ test("an unknown method is a protocol error, an unknown tool is an invalid-param
 
 test("orch_pr fixes its target and gates merged mode by repository config", async () => {
   const tool = TOOLS.find((candidate) => candidate.name === "orch_pr");
+  assert.deepEqual(tool.argv({ number: 7 }), ["pr", "7", "--until", "once"]);
   assert.deepEqual(tool.argv({ number: 7, until: "once" }), ["pr", "7", "--until", "once"]);
   assert.deepEqual(tool.argv({ branch: "feature/x", until: "ready" }), ["pr", "feature/x", "--until", "ready"]);
   assert.throws(() => tool.argv({ number: 7, branch: "feature/x" }), /exactly one/);
