@@ -28,6 +28,7 @@ import * as lockDefault from "./lock.js";
 import { LOCK_NAMES } from "./lock.js";
 import { updateBranch } from "./github.js";
 import { redact } from "./redact.js";
+import { frameUntrustedReference, neutralizeFence } from "./intake/workorder.js";
 
 const DEFAULT_RESOLVERS = [{ agent: "claude", model: null, effort: null }];
 
@@ -109,16 +110,21 @@ function conflictedPathsIn(git, wd) {
   return listed.ok ? listed.out.split("\0").filter(Boolean) : [];
 }
 
-function resolverPrompt({ branch, base, cls, failure, conflicts }) {
-  return [
+export function resolverPrompt({ branch, base, cls, failure, conflicts }) {
+  const ref = [
     conflicts.length
-      ? `Integration repair on ${branch}: merging origin/${base} produced a merge conflict.`
-      : `Integration repair on ${branch}: red checks after merging origin/${base}.`,
+      ? `Integration repair on ${neutralizeFence(branch)}: merging origin/${neutralizeFence(base)} produced a merge conflict.`
+      : `Integration repair on ${neutralizeFence(branch)}: red checks after merging origin/${neutralizeFence(base)}.`,
     "",
-    `Failure class: ${cls}`,
-    failure?.summary ? `Details: ${failure.summary}` : null,
-    conflicts.length ? `Conflicted files: ${conflicts.join(", ")}` : null,
-    "",
+    `Failure class: ${neutralizeFence(cls)}`,
+    failure?.summary ? `Details: ${neutralizeFence(failure.summary)}` : null,
+    conflicts.length
+      ? `Conflicted files: ${conflicts.map((path) => neutralizeFence(path)).join(", ")}`
+      : null,
+  ].filter((line) => line !== null).join("\n");
+
+  return [
+    frameUntrustedReference(ref),
     conflicts.length
       ? "Act as a neutral third party; reconstruct both parents' intent. Preserve behavior from both sides unless truly incompatible."
       : "Fix only the named failing check(s); do not widen scope.",
