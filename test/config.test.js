@@ -111,6 +111,15 @@ test("v2 landing and automation aliases normalize to the runtime config", () => 
   assert.deepEqual(c.main.autoResolveConflictPaths, ["src/**"]);
 });
 
+test("--config-file canonical conflict resolvers beat orch.yml v2 aliases", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "automation:\n  conflictResolvers: [claude]\n");
+  const override = join(d, "custom.yml");
+  writeFileSync(override, "main:\n  conflictResolutionResolvers: [codex]\n");
+  const c = load(d, override, { onWarning() {} });
+  assert.deepEqual(c.main.conflictResolutionResolvers, [{ agent: "codex", model: null, effort: null }]);
+});
+
 test("test and author values are validated as non-empty strings", () => {
   const badTest = tmp();
   writeFileSync(join(badTest, "orch.yml"), "test: null\n");
@@ -199,6 +208,28 @@ test("configReport attributes normalized values to the source that supplied them
   assert.equal(aliasReport.config.main.conflictResolution, "auto");
   assert.equal(aliasReport.sources["main.conflictResolution"], "orch.yml");
   assert.equal(aliasReport.sources["main.autoResolveConflicts"], "orch.yml");
+});
+
+test("configReport matches loaded conflict resolvers across config layers", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "automation:\n  conflictResolvers: [claude]\n");
+  const override = join(d, "custom.yml");
+  writeFileSync(override, "main:\n  conflictResolutionResolvers: [codex]\n");
+  const effective = load(d, override, { onWarning() {} });
+  const report = configReport(d, override);
+  assert.deepEqual(report.config.main.conflictResolutionResolvers, effective.main.conflictResolutionResolvers);
+  assert.equal(report.sources["main.conflictResolutionResolvers"], "--config-file");
+});
+
+test("removed-key warnings name --config-file when that layer supplied the key", () => {
+  const d = tmp();
+  const override = join(d, "custom.yml");
+  writeFileSync(override, "main:\n  autoMerge: true\n");
+  const warnings = [];
+  load(d, override, { onWarning: (warning) => warnings.push(warning) });
+  assert.deepEqual(warnings, [
+    "--config-file: 'main.autoMerge' will be removed in v0.5.0; use --until merged for per-run merging.",
+  ]);
 });
 
 test("stageTimeout of 0 disables the watchdog; negative/non-integer throws (#56)", () => {

@@ -385,19 +385,28 @@ test("--dry completes without any agent CLI on PATH (F2)", async () => {
   }
 });
 
-// P11 makes `test` a required non-empty string, so a legacy null value is
-// rejected before a dry cycle can start.
-test("--dry rejects a null test command", async () => {
+// P11 makes `test` a required non-empty string. Keep the documented escalation
+// path covered by using a valid command value and simulating a repo with no
+// detected gate in dryDeps.
+test("--dry that escalates still writes its brief under .orch (#471 wording)", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-dry-esc-"));
   const override = join(d, "custom.yml");
-  writeFileSync(override, "test: null\n");
+  writeFileSync(override, "test: auto\n");
   const prev = cwd();
   chdir(d);
   try {
     process.exitCode = 0;
-    await assert.rejects(() => main(["task", "hello world", "--dry", "--config-file", override, "--no-banner"], {
+    await main(["task", "hello world", "--dry", "--config-file", override, "--no-banner"], {
       stdout: { write() {} },
-    }), /test must be a non-empty string/);
+      dryNoTestGate: true,
+    });
+    assert.equal(process.exitCode, 2); // escalated
+    assert.equal(existsSync(join(d, ".orch", "kpi.json")), true);
+    // Branch name carries a random suffix, so walk for the brief instead of
+    // spelling its path (readdirSync recursive: true needs Node >= 20).
+    const hasBrief = (dir) => readdirSync(dir, { withFileTypes: true })
+      .some((e) => (e.isDirectory() ? hasBrief(join(dir, e.name)) : e.name === "DECISION.md"));
+    assert.ok(hasBrief(join(d, ".orch", "reviews")), "escalated dry run wrote no DECISION.md");
   } finally {
     chdir(prev);
     process.exitCode = 0;

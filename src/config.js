@@ -105,12 +105,12 @@ export function gateTimeoutMs(cfg = {}) {
   return Number(minutes) > 0 ? Number(minutes) * 60_000 : 0;
 }
 
-function collectConfigIssues(source, warnings, problems, prefix = "") {
+function collectConfigIssues(source, warnings, problems, prefix = "", label = "orch.yml") {
   if (!isObject(source)) return;
   for (const [key, value] of Object.entries(source)) {
     const path = prefix ? `${prefix}.${key}` : key;
     if (REMOVED_CONFIG_MESSAGES.has(path)) {
-      let warning = REMOVED_CONFIG_MESSAGES.get(path);
+      const warning = REMOVED_CONFIG_MESSAGES.get(path).replace("orch.yml:", `${label}:`);
       warnings.add(warning);
       continue;
     }
@@ -120,14 +120,14 @@ function collectConfigIssues(source, warnings, problems, prefix = "") {
       // the v2 spelling changes are warnings rather than a schema cutover.
       continue;
     }
-    if (isObject(value)) collectConfigIssues(value, warnings, problems, path);
+    if (isObject(value)) collectConfigIssues(value, warnings, problems, path, label);
   }
 }
 
 function warningList(user, override) {
   const warnings = new Set();
-  collectConfigIssues(user, warnings, new Set());
-  collectConfigIssues(override, warnings, new Set());
+  collectConfigIssues(user, warnings, new Set(), "", "orch.yml");
+  collectConfigIssues(override, warnings, new Set(), "", "--config-file");
   for (const [source, label] of [[user, "orch.yml"], [override, "--config-file"]]) {
     const picked = pickRoundCap(source, label);
     if (picked?.warning) warnings.add(picked.warning);
@@ -343,12 +343,22 @@ export function normalizeV2Config(cfg, user = {}, override = {}) {
   cfg.gateTimeout = gateSource ? gateSource.gateTimeout : cfg.stageTimeout;
 
   if (has(override.automation || {}, "conflictResolvers") || has(user.automation || {}, "conflictResolvers")) {
-    const source = has(override.automation || {}, "conflictResolvers") ? override.automation : user.automation;
-    cfg.main.conflictResolutionResolvers = source.conflictResolvers;
+    const overrideAutomation = override.automation || {};
+    const userAutomation = user.automation || {};
+    if (has(overrideAutomation, "conflictResolvers")) {
+      cfg.main.conflictResolutionResolvers = overrideAutomation.conflictResolvers;
+    } else if (!has(override.main || {}, "conflictResolutionResolvers")) {
+      cfg.main.conflictResolutionResolvers = userAutomation.conflictResolvers;
+    }
   }
   if (has(override.automation || {}, "conflictAutoPaths") || has(user.automation || {}, "conflictAutoPaths")) {
-    const source = has(override.automation || {}, "conflictAutoPaths") ? override.automation : user.automation;
-    cfg.main.autoResolveConflictPaths = source.conflictAutoPaths;
+    const overrideAutomation = override.automation || {};
+    const userAutomation = user.automation || {};
+    if (has(overrideAutomation, "conflictAutoPaths")) {
+      cfg.main.autoResolveConflictPaths = overrideAutomation.conflictAutoPaths;
+    } else if (!has(override.main || {}, "autoResolveConflictPaths")) {
+      cfg.main.autoResolveConflictPaths = userAutomation.conflictAutoPaths;
+    }
   }
   return { landingKey, cfg };
 }
@@ -442,9 +452,8 @@ export function configReport(dir, overridePath) {
     return true;
   };
   const sourceFor = (overrideHas, userHas) => overrideHas ? "--config-file" : userHas ? userSource : "default";
-  const normalizedSource = (canonical, legacy) => hasPath(override, canonical) ? "--config-file"
-    : hasPath(user, canonical) ? userSource
-      : sourceFor(hasPath(override, legacy), hasPath(user, legacy));
+  const normalizedSource = (canonical, legacy) => hasPath(override, canonical) || hasPath(override, legacy) ? "--config-file"
+    : hasPath(user, canonical) || hasPath(user, legacy) ? userSource : "default";
   const modeSource = sourceFor(
     hasPath(override, "main.conflictResolution") || !hasPath(user, "main.conflictResolution") && hasPath(override, "main.autoResolveConflicts"),
     hasPath(user, "main.conflictResolution") || !hasPath(override, "main.conflictResolution") && hasPath(user, "main.autoResolveConflicts"),

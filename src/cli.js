@@ -976,7 +976,7 @@ export function realDeps({ closes = null } = {}) {
   const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify: notifyDep });
   return { adapters, git, gate, scope, notify: notifyDep, inflight, finalize: finalizeDep, checkpoint, reviewLog };
 }
-function dryDeps() {
+function dryDeps({ noTestGate = false } = {}) {
   const verdict = { decision: "AGREE", reason: "(dry-run: assumed agree)", raw: "" };
   return {
     adapters: { get: (n) => ({ name: n, async author() {}, async audit() { return verdict; } }) },
@@ -985,7 +985,7 @@ function dryDeps() {
       git() { return "(dry-run)"; },
       changedFiles() { return ["(dry-run)"]; },
     },
-    gate: { detect: () => "true", run: () => ({ pass: true, log: "(dry-run)" }) },
+    gate: { detect: () => noTestGate ? null : "true", run: () => ({ pass: true, log: "(dry-run)" }) },
     scope: { count: () => 0 },
     inflight: { setPaths() {} },
     finalize: async () => ({ status: "merged", reason: "dry-run", sha: "dry" }),
@@ -2344,7 +2344,7 @@ export async function main(argv, deps = {}) {
       }
       emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
-        const cycleDeps = dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes }));
+        const cycleDeps = dry ? dryDeps({ noTestGate: deps.dryNoTestGate }) : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes }));
         const result = await runCycle(run, cycleDeps);
         results.push(result);
         let finalResult = result;
