@@ -50,13 +50,31 @@ function makeDeps({ verdict = { decision: "AGREE", reason: "both intents preserv
     },
   };
   const gate = {
-    run(cmd, wd) {
-      calls.push(["gate", cmd, wd]);
+    run(cmd, wd, timeoutMs) {
+      calls.push(["gate", cmd, wd, timeoutMs]);
       return { pass: true, log: "" };
     },
   };
   return { adapters, git, gate, calls };
 }
+
+test("in-cycle conflict gates use gateTimeout", async () => {
+  const deps = makeDeps();
+  const config = cfg();
+  config.gateTimeout = 9;
+  const result = await resolveIntegrationConflict({
+    repo: "/repo",
+    orchDir: tmp(),
+    cfg: config,
+    branch: "orch/integration",
+    base: "main",
+    testCmd: "npm test",
+  }, deps);
+
+  assert.equal(result.ok, false);
+  const gate = deps.calls.find((call) => call[0] === "gate");
+  assert.equal(gate[3], 540_000);
+});
 
 function cfg(overrides = {}) {
   return {

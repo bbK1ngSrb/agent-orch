@@ -1197,13 +1197,13 @@ test("merged path never deletes the integration or base branch even if handed as
   assert.equal(deleted, null);
 });
 
-test("guard 2 gets cfg.stageTimeout as a wall-clock cap, since it runs under merge.lock (#505)", async () => {
+test("guard 2 gets cfg.gateTimeout as a wall-clock cap (#505)", async () => {
   let gateArgs = null;
   const { deps } = baseDeps({
     gate: { run: (...a) => { gateArgs = a; return { pass: true, log: "" }; } },
   });
-  await finalize({ ...ctx(), cfg: { ...ctx().cfg, stageTimeout: 30 } }, deps);
-  assert.equal(gateArgs[2], 1_800_000, "30 minutes threaded to the gate in ms");
+  await finalize({ ...ctx(), cfg: { ...ctx().cfg, stageTimeout: 30, gateTimeout: 7 } }, deps);
+  assert.equal(gateArgs[2], 420_000, "gateTimeout is threaded to the gate in ms");
 
   // stageTimeout: 0 disables the watchdog everywhere, gate included.
   gateArgs = null;

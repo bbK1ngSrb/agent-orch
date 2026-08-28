@@ -39,7 +39,8 @@ test("answers assemble into a config validate accepts and YAML round-trips", () 
   cfg = applyAnswer(cfg, OPTION_CATALOG.find((entry) => entry.keys[0] === "cheap.paths"), "*.md, docs/**");
   validate(cfg);
   const roundTrip = parse(configToYaml(cfg));
-  assert.equal(roundTrip.merge, "pr");
+  assert.equal(roundTrip.landing, "pr");
+  assert.equal(Object.hasOwn(roundTrip, "merge"), false);
   assert.equal(roundTrip.roundCap, 5);
   assert.deepEqual(roundTrip.cheap.paths, ["*.md", "docs/**"]);
 });
@@ -55,11 +56,18 @@ test("non-TTY config wizard exits clearly without hanging", async () => {
   await assert.rejects(() => runConfigWizard({ repo: tmp(), stdin, stdout: new Writable({ write(_c, _e, cb) { cb(); } }) }), /interactive config needs a TTY/);
 });
 
+test("wizard loads a null test value so the field can be repaired", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "test: null\n");
+  assert.equal(loadTarget(join(d, "orch.yml")).test, "auto");
+});
+
 test("configToYaml validates before serializing", () => {
   const cfg = applyAnswer(DEFAULTS, OPTION_CATALOG.find((entry) => entry.keys[0] === "github.autoMergePr"), true);
   const yaml = configToYaml(cfg);
   const saved = parse(yaml);
   assert.equal(saved.github.autoMergePr, true);
+  assert.equal(Object.hasOwn(saved, "merge"), false);
   // Serialized form omits the deprecated alias; reload via load() re-derives it.
   assert.equal(Object.hasOwn(saved.main || {}, "autoResolveConflicts"), false);
   const d = tmp();

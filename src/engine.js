@@ -4,6 +4,7 @@ import { buildRevisionPrompt } from "./intake/workorder.js";
 import { scanDiff, formatSecurityFindings, parseRawPaths, SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "./security-review.js";
 import { formatUsage, totalUsage } from "./usage.js";
 import { classify, fingerprint, TRIGGERS } from "./failure.js";
+import { gateTimeoutMs } from "./config.js";
 
 const RAW_OUTPUT_TAIL_CHARS = 12_000;
 const STAGE_RESULT_MAX_CHARS = 200;
@@ -417,7 +418,7 @@ export async function runCycle(opts, deps) {
           skipTest = false;
         } else {
           notify.phase("gate", `running: ${testCmd}`);
-          ({ pass } = gate.run(testCmd, worktree, stageTimeoutMs));
+          ({ pass } = gate.run(testCmd, worktree, gateTimeoutMs(cfg)));
           notify.phase("gate", testCmd, pass ? "ok" : "fail");
           if (pass) checkpoint?.record(orchDir, sid, { branch, oid: reviewedSha, round, stage: "tested", reason: verdict.reason, ...checkpointMeta });
         }

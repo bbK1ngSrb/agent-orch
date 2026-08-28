@@ -385,21 +385,20 @@ test("--dry completes without any agent CLI on PATH (F2)", async () => {
   }
 });
 
-// Pairs with the test above: that one pins the clean path (no `.orch/` at all),
-// this one pins the documented exception. dryDeps() stubs the round/run writers
-// but leaves notify.escalate real — escalating is how orch reports that a cycle
-// cannot proceed, so a plan that hits it still writes its brief. With `test:`
-// unset there is no gate command, so the AGREE branch escalates instead.
+// P11 makes `test` a required non-empty string. Keep the documented escalation
+// path covered by using a valid command value and simulating a repo with no
+// detected gate in dryDeps.
 test("--dry that escalates still writes its brief under .orch (#471 wording)", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-dry-esc-"));
   const override = join(d, "custom.yml");
-  writeFileSync(override, "test: null\n");
+  writeFileSync(override, "test: auto\n");
   const prev = cwd();
   chdir(d);
   try {
     process.exitCode = 0;
     await main(["task", "hello world", "--dry", "--config-file", override, "--no-banner"], {
       stdout: { write() {} },
+      dryNoTestGate: true,
     });
     assert.equal(process.exitCode, 2); // escalated
     assert.equal(existsSync(join(d, ".orch", "kpi.json")), true);
@@ -757,7 +756,7 @@ test("help documents upgrade command and check flag", async () => {
     console.log = prevLog;
   }
   assert.match(out, /upgrade, update/);
-  assert.match(out, /--check\s+With upgrade/);
+  assert.match(out, /--check\s+With config, validate; with upgrade/);
 });
 
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
