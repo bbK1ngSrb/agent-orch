@@ -48,12 +48,13 @@ test("dashboard preserves detached run metadata in its live snapshot", () => {
     pid: process.pid,
     baseSha: "abc",
     detached: true,
-    log: "/tmp/detached.log",
+    detachedLog: "/tmp/detached.log",
     runId: "run-1",
   });
   const [cycle] = dashboard.snapshot(d).live;
   assert.equal(cycle.detached, true);
-  assert.equal(cycle.log, "/tmp/detached.log");
+  assert.equal(cycle.detachedLog, "/tmp/detached.log");
+  assert.equal(cycle.log, null);
   assert.equal(cycle.runId, "run-1");
   assert.match(dashboard.render(d), /\/tmp\/detached\.log/);
 });

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
@@ -1380,13 +1380,6 @@ function detachStamp(date = new Date()) {
   return `${date.getUTCFullYear()}${p(date.getUTCMonth() + 1)}${p(date.getUTCDate())}-${p(date.getUTCHours())}${p(date.getUTCMinutes())}${p(date.getUTCSeconds())}`;
 }
 
-function detachedLogForChild(raw) {
-  if (!raw) return null;
-  const match = /^(.*[\\/])(\d{8}-\d{6})-(\d+)\.log$/.exec(raw);
-  if (!match || Number(match[3]) !== process.ppid) return raw;
-  return `${match[1]}${match[2]}-${process.pid}.log`;
-}
-
 function logTail(path, lines = 20) {
   try {
     return readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).slice(-lines).join("\n");
@@ -1397,14 +1390,14 @@ function logTail(path, lines = 20) {
 
 function detachedInfo(runId, log) {
   if (process.env.ORCH_DETACHED !== "1") return null;
-  return { pid: process.pid, log: detachedLogForChild(log), startedAt: new Date().toISOString(), runId };
+  return { pid: process.pid, detachedLog: log, startedAt: new Date().toISOString(), runId };
 }
 
 function detachedRecordInfo(info) {
-  return info && { pid: info.pid, log: info.log, startedAt: info.startedAt };
+  return info && { pid: info.pid, detachedLog: info.detachedLog, startedAt: info.startedAt };
 }
 
-function installDetachedSignalCleanup(orchDir, runId, info) {
+export function installDetachedSignalCleanup(orchDir, runId, info) {
   if (!info) return null;
   setProcessSignalCleanup((signal) => {
     runRecord.update(orchDir, runId, {
@@ -1441,9 +1434,8 @@ async function waitForDetached(orchDir, pid, child, { waitMs = DETACH_WAIT_MS, p
 
 // Parent-side half of --detach. The child gets the original argv without the
 // control flag and writes its durable run identity before the parent reports a
-// handle. A parent PID is used while opening the inherited fd; it is renamed
-// to the child PID as soon as spawn returns, which keeps the required filename
-// shape without buffering the child's output in the parent.
+// handle. The inherited log path is kept stable so the child and parent always
+// refer to the same file.
 export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDir = join(repo, ".orch"), cfg, deps = {} } = {}) {
   const config = cfg || load(repo, flags["config-file"]);
   const configuredDir = config.automation?.detachLogDir || ".orch/logs";
@@ -1453,7 +1445,6 @@ export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDi
   const logPath = join(logDir, `${stamp}-${process.pid}.log`);
   const open = deps.openSync || openSync;
   const close = deps.closeSync || closeSync;
-  const rename = deps.renameSync || renameSync;
   const spawnFn = deps.spawn || spawn;
   const fd = open(logPath, "w");
   let child;
@@ -1468,12 +1459,6 @@ export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDi
       windowsHide: true,
     });
     child.unref?.();
-    if (Number.isInteger(child.pid)) {
-      const candidate = join(logDir, `${stamp}-${child.pid}.log`);
-      if (candidate !== logPath) {
-        try { rename(logPath, candidate); finalLog = candidate; } catch { /* Windows may keep the inherited fd open */ }
-      }
-    }
   } finally {
     close(fd);
   }
@@ -1487,7 +1472,7 @@ export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDi
     const event = {
       event: "run.detached",
       pid,
-      log: waited.record.detached?.log || finalLog,
+      log: waited.record.detached?.detachedLog || waited.record.detached?.log || finalLog,
       runId: waited.record.runId || waited.record.detached?.runId,
     };
     if (flags.json) console.log(JSON.stringify(event));
@@ -1500,7 +1485,10 @@ export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDi
     if (tail) process.stderr.write(`${tail}\n`);
     throw Object.assign(new Error(`detached child exited with code ${code} (log: ${finalLog})${tail ? `\n${tail}` : ""}`), { exit: code });
   }
-  throw Object.assign(new Error(`detached child did not register within ${DETACH_WAIT_MS}ms (log: ${finalLog})`), { exit: 1 });
+  const event = { event: "run.detached", pid, log: finalLog, runId: null, starting: true };
+  if (flags.json) console.log(JSON.stringify(event));
+  else console.log(`orch: run still starting — pid ${pid}; log ${finalLog}`);
+  return event;
 }
 
 function commentOnIssue(result, branch, closes, githubDepsFn) {
@@ -2267,7 +2255,7 @@ export async function main(argv, deps = {}) {
             branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null,
             author: run.author, reviewers: run.reviewers, workOrder: run.workOrder,
             excludedAgents: run.excludedAgents,
-            ...(detachedRun ? { detached: true, log: detachedRun.log, runId: detachedRun.runId } : {}),
+            ...(detachedRun ? { detached: true, detachedLog: detachedRun.detachedLog, runId: detachedRun.runId } : {}),
           },
           cfg,
           { onExceeded: (live) => {
@@ -2837,7 +2825,7 @@ export async function main(argv, deps = {}) {
           branch, pid: process.pid, baseSha, closes, author: authorSpec,
           reviewers: run.persistReviewers, workOrder, excludedAgents: run.excludedAgents,
           rotationStage,
-          ...(detachedRun ? { detached: true, log: detachedRun.log, runId: detachedRun.runId } : {}),
+          ...(detachedRun ? { detached: true, detachedLog: detachedRun.detachedLog, runId: detachedRun.runId } : {}),
         },
         cfg,
         { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
