@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { create, update, lookup, resumeTerminal, SCHEMA_VERSION } from "../src/run-record.js";
+import { create, update, lookup, findDetached, resumeTerminal, SCHEMA_VERSION } from "../src/run-record.js";
 import { writeFileAtomic } from "../src/atomic-file.js";
 
 function tmpOrchDir() {
@@ -50,6 +50,25 @@ test("lookup resolves by a cycle sid recorded under a run", () => {
   update(d, "100-0", { cycles: [{ sid: "100-1", attempt: 1, branch: "pr/claude/x-100-1" }] });
   const found = lookup(d, "100-1");
   assert.equal(found.runId, "100-0");
+});
+
+test("findDetached ignores an older record for a recycled child pid", () => {
+  const d = tmpOrchDir();
+  create(d, {
+    runId: "old-run",
+    command: "task",
+    argv: [],
+    detached: { pid: 4242, startedAt: "2026-08-27T00:00:00.000Z", runId: "old-run" },
+  });
+  create(d, {
+    runId: "new-run",
+    command: "task",
+    argv: [],
+    detached: { pid: 4242, startedAt: "2026-08-28T00:00:00.000Z", runId: "new-run" },
+  });
+
+  assert.equal(findDetached(d, 4242, "2026-08-27T12:00:00.000Z").runId, "new-run");
+  assert.equal(findDetached(d, 4242, "2026-08-28T00:00:00.001Z"), null);
 });
 
 test("atomic write survives a simulated crash (original record untouched, no partial file left)", () => {

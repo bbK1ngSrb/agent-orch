@@ -17,8 +17,11 @@ const dir = (orchDir) => join(orchDir, "inflight");
 // before its first checkpoint is written.
 // `rotationStage` tells `continue` whether that replacement must re-enter the
 // author stage or can resume directly at review.
-export function register(orchDir, sid, { branch, pid, baseSha, closes = null, author = null, reviewers = null, workOrder = null, excludedAgents = [], rotationStage = null }) {
-  writeRecord(dir(orchDir), sid, { sid, branch, pid, baseSha, closes, author, reviewers, workOrder, excludedAgents, rotationStage, paths: [] });
+export function register(orchDir, sid, { branch, pid, baseSha, closes = null, author = null, reviewers = null, workOrder = null, excludedAgents = [], rotationStage = null, detached = false, detachedLog = null, log = null, runId = null }) {
+  writeRecord(dir(orchDir), sid, {
+    sid, branch, pid, baseSha, closes, author, reviewers, workOrder, excludedAgents, rotationStage, paths: [],
+    ...(detached ? { detached: true, detachedLog: detachedLog || log, runId: runId || sid } : {}),
+  });
 }
 
 // Persist replacement roles before a rotated cycle starts. Missing or

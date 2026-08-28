@@ -56,6 +56,7 @@ export function liveCycles(orchDir) {
         stage: ck ? (STAGE_LABELS[ck.stage] || ck.stage) : "authoring",
         round: ck?.round ?? null,
         lastUpdate: ck?.ts || e.ts,
+        ...(e.detached ? { detached: true, detachedLog: e.detachedLog || e.log || null, runId: e.runId || e.sid } : {}),
       };
     })
     .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
@@ -259,6 +260,7 @@ export function render(orchDir, opts = {}) {
       const round = c.round != null ? ` round ${c.round}` : "";
       lines.push(`  ${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}  pid=${c.pid}  since ${formatTimestamp(c.startedAt)}`);
       if (c.log) lines.push(`    log (${c.log.file}): ${c.log.tail.split("\n").pop()}`);
+      else if (c.detachedLog) lines.push(`    log (${c.detachedLog})`);
     }
   }
   lines.push("");

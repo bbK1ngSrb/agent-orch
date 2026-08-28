@@ -633,6 +633,9 @@ got to. `orch_status` and `orch_plan` return immediately.
 - **`--no-tidy`** — skip the post-merge tidy (see §4.5) and leave every
   branch and checkout exactly as the cycle left them.
 - **`--no-banner`** — suppress the startup banner (for scripts and logs).
+- **`--detach`** — run a `task`, `issue`, `review`, `continue`, or `pr` in the
+  background. The parent prints the child PID and log path, plus the run ID
+  once registration is visible; use `orch dashboard` to follow the run.
 - **`--allow-protected`** — run a `task`/`issue` even though the work order text
   names a protected path, instead of being refused at intake. See §2.14.
 - **`--allow-large-scope`** — explicitly sanction a deliberately large review
@@ -1294,6 +1297,7 @@ merge: no-ff                     # ff-only | no-ff | pr
 # === MCP PR merge opt-in ===
 automation:
   mcpMayMerge: false              # true = MCP orch_pr may request --until merged
+  detachLogDir: .orch/logs        # detached-run log directory; default: .orch/logs
 
 # === Cheap-agent dispatch (optional) ===
 # cheap:

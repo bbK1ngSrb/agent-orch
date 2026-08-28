@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
@@ -53,6 +53,7 @@ import { run as runTui } from "./tui/loop.js";
 import { maybeNotifyUpdate, runUpdateCheckChild } from "./update-check.js";
 import { runUpgrade } from "./upgrade.js";
 import { totalUsage } from "./usage.js";
+import { setProcessSignalCleanup } from "./adapters/cli-adapter.js";
 
 export { slugify };
 export { resolveAgentBin };
@@ -80,8 +81,11 @@ export function spawnDocsTask(prompt, deps = { spawn }, orchDir) {
       fd = (deps.openSync || openSync)(join(orchDir, "auto-docs.log"), "a");
       stdio = ["ignore", fd, fd];
     }
+    const env = { ...process.env };
+    delete env.ORCH_DETACHED;
+    delete env.ORCH_DETACH_LOG;
     deps.spawn(process.execPath, [process.argv[1], "task", tagged],
-      { detached: true, stdio }).unref();
+      { detached: true, stdio, env }).unref();
   } finally {
     if (fd !== undefined) (deps.closeSync || closeSync)(fd);
   }
@@ -297,6 +301,7 @@ github:
 # ===================================================================
 automation:
   mcpMayMerge: false                    # true = MCP orch_pr may request --until merged; default: false
+  detachLogDir: .orch/logs              # detached-run log directory; default: .orch/logs
 
 
 # ===================================================================
@@ -1368,6 +1373,126 @@ export function registerWithConcurrencyCap(orchDir, sid, meta, cfg, { onExceeded
   return true;
 }
 
+const DETACH_WAIT_MS = 5_000;
+const DETACH_POLL_MS = 25;
+
+function detachStamp(date = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${date.getUTCFullYear()}${p(date.getUTCMonth() + 1)}${p(date.getUTCDate())}-${p(date.getUTCHours())}${p(date.getUTCMinutes())}${p(date.getUTCSeconds())}`;
+}
+
+function logTail(path, lines = 20) {
+  try {
+    return readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).slice(-lines).join("\n");
+  } catch {
+    return "";
+  }
+}
+
+function detachedInfo(runId, log) {
+  if (process.env.ORCH_DETACHED !== "1") return null;
+  return { pid: process.pid, detachedLog: log, startedAt: new Date().toISOString(), runId };
+}
+
+function detachedRecordInfo(info) {
+  return info && { pid: info.pid, detachedLog: info.detachedLog, startedAt: info.startedAt };
+}
+
+export function installDetachedSignalCleanup(orchDir, runId, info) {
+  if (!info) return null;
+  setProcessSignalCleanup((signal) => {
+    runRecord.update(orchDir, runId, {
+      state: "ERROR",
+      outcome: "error",
+      exit: 1,
+      interrupted: { at: new Date().toISOString(), signal },
+    });
+    for (const lockName of Object.values(LOCK_NAMES)) releaseLock(orchDir, lockName);
+  });
+  return () => setProcessSignalCleanup(null);
+}
+
+async function waitForDetached(orchDir, pid, child, { waitMs = DETACH_WAIT_MS, pollMs = DETACH_POLL_MS, startedAt = "" } = {}) {
+  let exited = null;
+  const onExit = (code, signal) => { exited = { code, signal }; };
+  if (typeof child?.once === "function") child.once("exit", onExit);
+  else if (typeof child?.on === "function") child.on("exit", onExit);
+
+  const deadline = Date.now() + waitMs;
+  try {
+    for (;;) {
+      const record = runRecord.findDetached(orchDir, pid, startedAt);
+      if (record) return { record };
+      if (exited) return { exited };
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { timedOut: true };
+      await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
+    }
+  } finally {
+    if (typeof child?.removeListener === "function") child.removeListener("exit", onExit);
+  }
+}
+
+// Parent-side half of --detach. The child gets the original argv without the
+// control flag and writes its durable run identity before the parent reports a
+// handle. The inherited log path is kept stable so the child and parent always
+// refer to the same file.
+export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDir = join(repo, ".orch"), cfg, deps = {} } = {}) {
+  const config = cfg || load(repo, flags["config-file"]);
+  const configuredDir = config.automation?.detachLogDir || ".orch/logs";
+  const logDir = isAbsolute(configuredDir) ? configuredDir : join(repo, configuredDir);
+  mkdirSync(logDir, { recursive: true });
+  const stamp = detachStamp();
+  const logPath = join(logDir, `${stamp}-${process.pid}.log`);
+  const open = deps.openSync || openSync;
+  const close = deps.closeSync || closeSync;
+  const spawnFn = deps.spawn || spawn;
+  const fd = open(logPath, "w");
+  const startedAt = new Date().toISOString();
+  let child;
+  const finalLog = logPath;
+  try {
+    const childArgv = argv.filter((arg) => arg !== "--detach");
+    const script = deps.script || process.argv[1] || new URL("../bin/orch.js", import.meta.url).pathname;
+    child = spawnFn(process.execPath, [script, ...childArgv], {
+      detached: true,
+      stdio: ["ignore", fd, fd],
+      env: { ...process.env, ORCH_DETACHED: "1", ORCH_DETACH_LOG: logPath },
+      windowsHide: true,
+    });
+    child.unref?.();
+  } finally {
+    close(fd);
+  }
+
+  const pid = child.pid ?? null;
+  const waited = await waitForDetached(orchDir, pid, child, {
+    waitMs: deps.detachWaitMs ?? DETACH_WAIT_MS,
+    pollMs: deps.detachPollMs ?? DETACH_POLL_MS,
+    startedAt,
+  });
+  if (waited.record) {
+    const event = {
+      event: "run.detached",
+      pid,
+      log: waited.record.detached?.detachedLog || waited.record.detached?.log || finalLog,
+      runId: waited.record.runId || waited.record.detached?.runId,
+    };
+    if (flags.json) console.log(JSON.stringify(event));
+    else console.log(`orch: run detached — pid ${pid}; log ${finalLog}; runId ${event.runId}`);
+    return event;
+  }
+  if (waited.exited) {
+    const code = Number.isInteger(waited.exited.code) ? waited.exited.code : 1;
+    const tail = logTail(finalLog);
+    throw Object.assign(new Error(`detached child exited with code ${code} (log: ${finalLog})${tail ? `\n${tail}` : ""}`), { exit: code });
+  }
+  const event = { event: "run.detached", pid, log: finalLog, runId: null, starting: true };
+  if (flags.json) console.log(JSON.stringify(event));
+  else console.log(`orch: run still starting — pid ${pid}; log ${finalLog}`);
+  return event;
+}
+
 function commentOnIssue(result, branch, closes, githubDepsFn) {
   if (!closes) return;
   try {
@@ -1625,11 +1750,20 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
 
 export async function main(argv, deps = {}) {
   const { command, rest, flags } = parse(argv);
+  const detachedChild = process.env.ORCH_DETACHED === "1";
   // First statement after parse deliberately: behind any early return
   // (version/help/upgrade) a misapplied flag is still dropped silently. The
   // schema rejects a flag this command does not read, `--dry` on a read-only
   // command, and a bad numeric/enum value — all exit 64, before anything runs.
-  validateFlags(command, flags);
+  validateFlags(command, flags, { detachedChild });
+
+  // A detached parent must hand even malformed commands to the child: that
+  // preserves the child's real usage/preflight exit code and makes its log the
+  // diagnostic source. The child has ORCH_DETACHED but no --detach flag, so it
+  // continues through the normal command path below.
+  if (flags.detach && !detachedChild) {
+    return detachRun(argv, { flags, repo: process.cwd(), deps });
+  }
   validatePositionals(command, rest, flags);
 
   // An unrecognised command used to fall through all the way to the bottom of
@@ -2111,12 +2245,20 @@ export async function main(argv, deps = {}) {
       // attempt/cycles/lastError back to genesis, and so the terminal update
       // appends this cycle instead of replacing the whole history.
       const priorRecord = dry ? null : runRecord.lookup(orchDir, run.sid);
+      const detachedRun = detachedInfo(priorRecord?.runId || run.sid, process.env.ORCH_DETACH_LOG);
+      const detachedRecord = detachedRecordInfo(detachedRun);
+      let clearDetachedCleanup = null;
       if (!dry) {
         const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
         const accepted = registerWithConcurrencyCap(
           orchDir,
           run.sid,
-          { branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null, author: run.author, reviewers: run.reviewers, workOrder: run.workOrder, excludedAgents: run.excludedAgents },
+          {
+            branch: run.branch, pid: process.pid, baseSha, closes: run.closes || null,
+            author: run.author, reviewers: run.reviewers, workOrder: run.workOrder,
+            excludedAgents: run.excludedAgents,
+            ...(detachedRun ? { detached: true, detachedLog: detachedRun.detachedLog, runId: detachedRun.runId } : {}),
+          },
           cfg,
           { onExceeded: (live) => {
             // design §13: stdout under --json is one JSON object per line, nothing
@@ -2139,7 +2281,9 @@ export async function main(argv, deps = {}) {
         }
         // runId == this cycle's sid (design §5.1/§5.3) until the run-controller
         // (P5) can extend a run across more than one cycle. `--dry` writes none.
-        if (!priorRecord) runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact), policy: runPolicy, prTarget: run.prTarget || null });
+        if (!priorRecord) runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact), policy: runPolicy, prTarget: run.prTarget || null, detached: detachedRecord });
+        else if (detachedRecord) runRecord.update(orchDir, priorRecord.runId, { detached: detachedRecord });
+        clearDetachedCleanup = installDetachedSignalCleanup(orchDir, priorRecord?.runId || run.sid, detachedRun);
       }
       emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
@@ -2457,6 +2601,7 @@ export async function main(argv, deps = {}) {
         if (jsonMode) emit({ event: "run.end", runId: run.sid, outcome: "error", exit: 1, usage: {} });
         throw err;
       } finally {
+        clearDetachedCleanup?.();
         if (!dry) for (const cycleSid of registeredSids) inflight.deregister(orchDir, cycleSid);
         if (!dry && !resumable && run.prTarget?.ephemeral
           && orchOwnsBranch(run.prTarget.sourceBranch, orchDir)) {
@@ -2662,6 +2807,9 @@ export async function main(argv, deps = {}) {
       cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
     };
 
+    const detachedRun = detachedInfo(priorRun?.runId || sid, process.env.ORCH_DETACH_LOG);
+    const detachedRecord = detachedRecordInfo(detachedRun);
+    let clearDetachedCleanup = null;
     if (!dry) {
       const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
       // Codex review (#126 stalemate, round 2): this is `continue`'s OWN
@@ -2675,7 +2823,12 @@ export async function main(argv, deps = {}) {
       registerWithConcurrencyCap(
         orchDir,
         resumeSid,
-        { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers, workOrder, excludedAgents: run.excludedAgents, rotationStage },
+        {
+          branch, pid: process.pid, baseSha, closes, author: authorSpec,
+          reviewers: run.persistReviewers, workOrder, excludedAgents: run.excludedAgents,
+          rotationStage,
+          ...(detachedRun ? { detached: true, detachedLog: detachedRun.detachedLog, runId: detachedRun.runId } : {}),
+        },
         cfg,
         { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
       );
@@ -2693,7 +2846,9 @@ export async function main(argv, deps = {}) {
     // record must still leave one behind if runCycle throws, or a crashed
     // continue produces no durable record at all (violates design §5's "after
     // any run a record with `outcome` exists").
-    if (!dry && !priorRun) runRecord.create(orchDir, { runId, command, argv: argv.map(redact) });
+    if (!dry && !priorRun) runRecord.create(orchDir, { runId, command, argv: argv.map(redact), detached: detachedRecord });
+    else if (!dry && detachedRecord) runRecord.update(orchDir, runId, { detached: detachedRecord });
+    clearDetachedCleanup = installDetachedSignalCleanup(orchDir, runId, detachedRun);
     if (!dry && rotationRecorded && !ck) {
       checkpoint.record(orchDir, resumeSid, {
         branch,
@@ -2986,6 +3141,7 @@ export async function main(argv, deps = {}) {
       emit({ event: "run.end", runId, outcome: "error", exit: 1, usage: {} });
       throw err;
     } finally {
+      clearDetachedCleanup?.();
       if (!dry) for (const cycleSid of registeredSids) inflight.deregister(orchDir, cycleSid);
     }
     return;
