@@ -7,7 +7,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, ghShell, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -20,6 +20,47 @@ import { makeCliAdapter } from "../src/adapters/cli-adapter.js";
 import { IS_WINDOWS } from "../src/platform.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
+
+test("ghShell retries one authentication failure and keeps stdin non-interactive", () => {
+  const calls = [];
+  const sleeps = [];
+  let attempts = 0;
+  const result = ghShell(["auth", "status"], undefined, {
+    exec: (_bin, args, options) => {
+      calls.push({ args, options });
+      attempts++;
+      if (attempts === 1) {
+        const error = new Error("HTTP 401: Bad credentials");
+        error.status = 401;
+        throw error;
+      }
+      return "Logged in";
+    },
+    sleep: (ms) => sleeps.push(ms),
+  });
+
+  assert.equal(result, "Logged in");
+  assert.equal(attempts, 2);
+  assert.deepEqual(sleeps, [100]);
+  assert.deepEqual(calls[0].options.stdio, ["ignore", "pipe", "pipe"]);
+});
+
+test("ghShell does not retry a non-authentication failure", () => {
+  let attempts = 0;
+  const sleeps = [];
+  assert.throws(() => ghShell(["pr", "view", "1"], undefined, {
+    exec: () => {
+      attempts++;
+      const error = new Error("HTTP 500: Server error");
+      error.status = 500;
+      throw error;
+    },
+    sleep: (ms) => sleeps.push(ms),
+  }), /HTTP 500/);
+  assert.equal(attempts, 1);
+  assert.deepEqual(sleeps, []);
+});
+
 function mockSpawn() {
   const calls = [];
   const spawn = (...args) => { calls.push(args); return { unref() {} }; };
@@ -1144,6 +1185,42 @@ test("orch issue posts a gh issue comment on escalation", async () => {
     assert.match(calls[0].input, /ESCALATED/);
     assert.match(calls[0].input, /stalemate after cap/);
   } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch issue saves an escalation comment when GitHub rejects both attempts", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-issue-comment-fallback-");
+  const commentPath = join(repo, ".orch", "issue-52-comment.md");
+  let commentAttempts = 0;
+  let stderr = "";
+  const previousWrite = process.stderr.write;
+  process.stderr.write = (chunk) => { stderr += String(chunk); return true; };
+  const exec = (_bin, args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "issue" && args[1] === "view") {
+      return JSON.stringify({ number: 52, title: "stale base", body: "orch bases cycles on local main", state: "OPEN" });
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      commentAttempts++;
+      const error = new Error("HTTP 401: Bad credentials");
+      error.status = 401;
+      throw error;
+    }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const gh = (args, input) => ghShell(args, input, { exec, sleep() {} });
+  const escalating = { ...fakeCycleDeps(), finalize: async () => ({ status: "escalated", reason: "stalemate after cap", sha: "x" }) };
+  try {
+    await runMainInRepo(repo, ["issue", "52"], { cycleDeps: escalating, githubDeps: () => ({ gh }) });
+    assert.equal(commentAttempts, 2);
+    assert.ok(existsSync(commentPath));
+    assert.match(readFileSync(commentPath, "utf8"), /<!-- orch:result -->[\s\S]*ESCALATED[\s\S]*stalemate after cap/);
+    assert.match(stderr, new RegExp(`comment saved to ${commentPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  } finally {
+    process.stderr.write = previousWrite;
     process.exitCode = savedExitCode;
   }
 });
