@@ -1528,6 +1528,16 @@ function remoteBranchRefExists(repo, branch) {
   return git.gitTry(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], repo).ok;
 }
 
+function validateLocalPrTarget(repo, target) {
+  const value = String(target || "").trim();
+  if (!/^\d+$/.test(value) && !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value)) {
+    throw usageError("usage: orch pr <number> or <branch> [--until once|ready|merged]");
+  }
+  if (/^\d+$/.test(value)) return;
+  if (git.branchExists(repo, value) || remoteBranchRefExists(repo, value)) return;
+  throw usageError(`usage: orch pr <number> or <branch> [--until once|ready|merged]\norch pr ${value}: branch does not exist locally or as origin/${value}`);
+}
+
 export function resolveTaskBranch(ctx, deps = { git, resume }) {
   const { repo, orchDir, task, authorName, dry = false, liveBranches = new Set(), baseBranch = "main", roundCap } = ctx;
   const { git: g, resume: r } = deps;
@@ -1765,6 +1775,9 @@ export async function main(argv, deps = {}) {
     return detachRun(argv, { flags, repo: process.cwd(), deps });
   }
   validatePositionals(command, rest, flags);
+  if (command === "pr" && !flags.help && !flags.version) {
+    validateLocalPrTarget(process.cwd(), rest[0]);
+  }
 
   // An unrecognised command used to fall through all the way to the bottom of
   // this function, past the update-check network call and the GitHub App
