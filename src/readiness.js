@@ -23,7 +23,7 @@ export function inspect({ pr, expectedHead, landing, cfg = {}, required } = {}, 
   try {
     data = prView(
       pr,
-      "number,state,isDraft,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,url",
+      "number,state,isDraft,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,mergeCommit,url",
       deps,
     );
   } catch (e) {
@@ -47,6 +47,9 @@ export function inspect({ pr, expectedHead, landing, cfg = {}, required } = {}, 
   }
 
   if (data.state === "MERGED") {
+    if (landing === "pr") {
+      return { ready: true, headSha: data.headRefOid, mergedBy: "external", mergeCommit: data.mergeCommit, warnings: [] };
+    }
     const base = `origin/${cfg.baseBranch || "main"}`;
     if (isAncestor(deps, expectedHead, base)) {
       return { ready: true, headSha: data.headRefOid, mergedBy: "external", warnings: [] };

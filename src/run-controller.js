@@ -57,6 +57,7 @@ function withRecord(result, record, cycleResults) {
     ...(record.policy ? { policy: { ...record.policy } } : {}),
     ...(record.human ? { human: record.human } : {}),
     ...(record.excludedAgents ? { excludedAgents: [...record.excludedAgents] } : {}),
+    ...(record.merge ? { merge: record.merge } : {}),
     ...(cycleResults?.length > 1 ? { cycleResults: [...cycleResults] } : {}),
   };
 }
@@ -131,6 +132,8 @@ export async function runUntil(policy, record = {}, deps) {
     cycleResults.push(next);
   };
 
+  let repinnedHead = null;
+  let repinPending = false;
   for (let loop = 0; loop < MAX_REMEDY_LOOPS; loop += 1) {
     // "approved" (engine.js's noMerge path) is a success terminal exactly
     // like "merged"/"pr".
@@ -152,7 +155,14 @@ export async function runUntil(policy, record = {}, deps) {
       continue;
     }
 
-    const land = deps.resolveLanded(cycle);
+    let land = deps.resolveLanded(cycle);
+    if (repinnedHead && land.landing === "standing") land = { ...land, expectedHead: repinnedHead };
+    if (!land.pr?.number && policy.integrationBranch && policy.integrationBranch === policy.baseBranch) {
+      return withRecord({
+        state: policy.until === "merged" ? "MERGED" : "READY", outcome: "reached", exit: 0,
+        headSha: land.expectedHead, cycle, land,
+      }, currentRecord, cycleResults);
+    }
     if (!land.pr?.number) {
       // The land landed locally but orch could not find/open its PR.
       const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "no PR found for the landed branch") };
@@ -170,7 +180,9 @@ export async function runUntil(policy, record = {}, deps) {
 
     if (readiness.ready) {
       let headMovedRepins = currentRecord.headMovedRepins || 0;
-      if (readiness.headMoved) {
+      const alreadyChargedRepin = readiness.headMoved && repinPending;
+      repinPending = false;
+      if (readiness.headMoved && !alreadyChargedRepin) {
         headMovedRepins += 1;
         if (headMovedRepins > MAX_HEAD_REPINS) {
           const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "head-moved-repin-cap") };
@@ -182,12 +194,60 @@ export async function runUntil(policy, record = {}, deps) {
         }
       }
       currentRecord = { ...currentRecord, headMovedRepins };
+      if (readiness.headMoved && readiness.headSha) repinnedHead = readiness.headSha;
       if (policy.until === "merged") {
-        return withRecord({
-          state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, note: "merge phase ships in P8",
-          warnings: readiness.warnings || [], headSha: readiness.headSha, headMovedRepins,
-          cycle, land,
-        }, currentRecord, cycleResults);
+        const mergeLand = {
+          ...land,
+          expectedHead: readiness.mergedBy === "external" ? land.expectedHead : readiness.headSha || land.expectedHead,
+        };
+        const mergeResult = typeof deps.mergeStanding === "function"
+          ? await deps.mergeStanding({
+            record: { ...currentRecord, expectedHead: mergeLand.expectedHead, pr: mergeLand.pr, landing: mergeLand.landing },
+            cfg: policy,
+            land: mergeLand,
+            readiness,
+          }, deps)
+          : {
+            result: "rejected",
+            failure: { class: "REMOTE_MERGE_REJECTED", summary: "merge phase is unavailable" },
+          };
+        if (mergeResult.merge) currentRecord = { ...currentRecord, merge: mergeResult.merge };
+        if (mergeResult.result === "head-moved" && mergeLand.landing === "standing") {
+          headMovedRepins += 1;
+          if (headMovedRepins > MAX_HEAD_REPINS) {
+            const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "head-moved-repin-cap") };
+            const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land: mergeLand });
+            if (outcome.done) return withRecord({ ...outcome.result, cycle, land: mergeLand }, outcome.record, cycleResults);
+            currentRecord = { ...outcome.record, headMovedRepins };
+            if (outcome.cycle) pushCycle(outcome.cycle);
+            continue;
+          }
+          repinnedHead = mergeResult.headSha || repinnedHead;
+          repinPending = !mergeResult.headSha;
+          currentRecord = { ...currentRecord, headMovedRepins };
+          continue;
+        }
+        if (mergeResult.result === "merged") {
+          return withRecord({
+            state: "MERGED", outcome: "reached", exit: 0,
+            warnings: readiness.warnings || [], headSha: mergeResult.headSha || mergeLand.expectedHead,
+            headMovedRepins, mergeCommit: mergeResult.mergeCommit,
+            merge: mergeResult.merge, cycle, land: mergeLand,
+          }, currentRecord, cycleResults);
+        }
+        const mergeFailure = mergeResult.failure || {
+          class: "REMOTE_MERGE_REJECTED",
+          summary: "merge phase did not complete",
+        };
+        const failure = {
+          ...mergeFailure,
+          fingerprint: mergeFailure.fingerprint || computeFingerprint(mergeFailure.class, mergeFailure.summary || ""),
+        };
+        const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land: mergeLand });
+        if (outcome.done) return withRecord({ ...outcome.result, cycle, land: mergeLand }, outcome.record, cycleResults);
+        currentRecord = outcome.record;
+        if (outcome.cycle) pushCycle(outcome.cycle);
+        continue;
       }
       return withRecord({
         state: "READY", outcome: "reached", exit: 0,

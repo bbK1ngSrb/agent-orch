@@ -248,12 +248,33 @@ test("runUntil: cycle escalated on a BLOCKED-terminal class (protected path) -> 
   assert.equal(result.blockedReason, "guardrail-path");
 });
 
-test("runUntil: --until merged stops at readiness (exit 2) — merge phase ships in P8", async () => {
-  const deps = baseDeps();
+test("runUntil: --until merged calls the head-bound merge phase and reaches MERGED", async () => {
+  let seen;
+  const deps = baseDeps({
+    mergeStanding: async (args) => {
+      seen = args;
+      return { result: "merged", headSha: HEAD, mergeCommit: "b".repeat(40), merge: { requests: [] } };
+    },
+  });
   const result = await runUntil({ ...POLICY, until: "merged" }, {}, deps);
-  assert.equal(result.exit, 2);
-  assert.equal(result.state, "STOPPED_AT_CAP");
-  assert.equal(result.note, "merge phase ships in P8");
+  assert.equal(result.exit, 0);
+  assert.equal(result.state, "MERGED");
+  assert.equal(result.mergeCommit, "b".repeat(40));
+  assert.equal(seen.land.expectedHead, HEAD);
+});
+
+test("runUntil: a head-bound 409 rechecks readiness and merges the repinned head", async () => {
+  let mergeCalls = 0;
+  const result = await runUntil({ ...POLICY, until: "merged" }, {}, baseDeps({
+    mergeStanding: async () => (++mergeCalls === 1
+      ? { result: "head-moved" }
+      : { result: "merged", headSha: HEAD, mergeCommit: "b".repeat(40), merge: { requests: [] } }),
+  }));
+
+  assert.equal(result.state, "MERGED");
+  assert.equal(result.exit, 0);
+  assert.equal(result.headMovedRepins, 1);
+  assert.equal(mergeCalls, 2);
 });
 
 // Regression: `--until merged` must actually reach readiness before stopping
