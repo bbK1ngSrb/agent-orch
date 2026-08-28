@@ -257,7 +257,10 @@ export async function mergeStanding({ record = {}, cfg = {}, land, readiness } =
   const expectedHead = readiness?.mergedBy === "external"
     ? (land?.expectedHead || record.expectedHead || readiness.headSha)
     : (readiness?.headSha || land?.expectedHead || record.expectedHead);
-  const landing = land?.landing || record.landing || cfg.landing || (cfg.merge === "pr" ? "pr" : integration === base ? "base" : "standing");
+  // `land.landing` is the route (standing/base/pr); cfg.landing is the
+  // merge strategy (ff-only/no-ff/pr), so it must not be used as a route.
+  const landing = land?.landing || record.landing
+    || (cfg.merge === "pr" ? "pr" : integration === base ? "base" : "standing");
   const paths = land?.paths || record.paths || [];
 
   if (integration === base && landing === "base") return { result: "merged", headSha: expectedHead, mergedBy: "orch" };

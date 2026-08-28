@@ -178,11 +178,15 @@ export function validateCatalog(catalog = OPTION_CATALOG, defaults = DEFAULTS) {
 
 export function configToYaml(cfg) {
   const out = cloneConfig(cfg);
+  // Keep the wizard's legacy merge control and the runtime alias in sync before
+  // writing the canonical landing key.
+  normalizeV2Config(out, { landing: out.merge ?? out.landing }, {});
   // Preserve the in-memory mode as explicit so serialization cannot flip propose/auto
   // back through the deprecated alias (Codex #3 / A4).
   normalizeMainConfig(out, { conflictResolution: out.main.conflictResolution }, {});
   validate(out);
   const main = { ...out.main };
+  delete out.merge;
   // Canonical field only — writing both alias + mode is what inverted behavior on reload.
   delete main.autoResolveConflicts;
   if (main.conflictResolutionResolvers != null) {

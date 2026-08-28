@@ -126,7 +126,6 @@ automation:
   humanWaitHours: 24                     # bounded wait for a human reply; default: 24
   mcpMayMerge: false                    # true = MCP orch_pr may request --until merged; default: false
   remedies: null                        # ordered subset of rebase, rotate, reauthor, ask; default: fallback order
-  rotateModels: {}                      # optional agent -> model-list escalation ladders
   pollSeconds: 30                       # readiness poll interval; default: 30
   ciWaitMinutes: 30                     # readiness wait window; default: 30
   conflictResolvers: null               # role specs for integration conflict repair
@@ -140,13 +139,6 @@ automation:
 
 # main.autoMerge, github.autoMergePr, main.conflictResolution, and the
 # other v0.4 main.* spellings remain supported with warnings until P12.
-
-
-# ===================================================================
-# Adapter environment additions (optional)
-# ===================================================================
-env:
-  passthrough: []                        # extra adapter env keys; credentials are rejected
 
 
 # ===================================================================

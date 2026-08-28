@@ -199,6 +199,18 @@ test("mergeStanding supports per-cycle PR landing with its configured merge meth
   assert.ok(mergeCall.includes("merge_method=squash"));
 });
 
+test("mergeStanding treats config landing as a merge strategy, not a route", async () => {
+  const deps = fakeDeps({ required: [] });
+  const result = await mergeStanding({
+    record: {},
+    cfg: { ...CFG, integrationBranch: "main", landing: "no-ff", merge: "no-ff" },
+    readiness: { headSha: HEAD, required: { known: true, contexts: [] } },
+  }, deps);
+
+  assert.equal(result.result, "merged");
+  assert.equal(deps.calls.filter((args) => args.some((arg) => String(arg).includes("/pulls/9/merge"))).length, 0);
+});
+
 test("mergeStanding does not bypass a per-cycle PR when integration and base match", async () => {
   const deps = fakeDeps({ required: [] });
   const result = await mergeStanding({
