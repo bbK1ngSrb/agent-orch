@@ -552,13 +552,13 @@ function repairCfg(overrides = {}) {
   };
 }
 
-function runRepair(repo, { cfg = repairCfg(), gh = () => "{}", branch = "orch/integration", landing = "standing", failureClass = "REMOTE_BEHIND", failureSummary, prNumber = 9, gitDep = git, sleep = async () => {}, lock = null, record = { attempt: 1, failures: [] }, gate = { detect: () => "true", run: () => ({ pass: true, log: "" }) }, adapters = null } = {}) {
+function runRepair(repo, { cfg = repairCfg(), gh = () => "{}", branch = "orch/integration", remoteBranch, landing = "standing", failureClass = "REMOTE_BEHIND", failureSummary, prNumber = 9, gitDep = git, sleep = async () => {}, lock = null, record = { attempt: 1, failures: [] }, gate = { detect: () => "true", run: () => ({ pass: true, log: "" }) }, adapters = null } = {}) {
   return integrationRepairRemedy({
     name: "integration-repair",
     failure: { class: failureClass, fingerprint: "fp", ...(failureSummary !== undefined ? { summary: failureSummary } : {}) },
     record,
     cycle: { status: "merged" },
-    run: { repo, orchDir: join(repo, ".orch"), sid: "sidtest", cfg },
+    run: { repo, orchDir: join(repo, ".orch"), sid: "sidtest", cfg, ...(remoteBranch ? { prTarget: { remoteBranch } } : {}) },
     deps: { git: gitDep, gate, sleep, ...(lock ? { lock } : {}), ...(adapters ? { adapters } : {}) },
     resolveLanded: () => ({ pr: { number: prNumber }, landing, branch }),
     gh,
@@ -615,6 +615,22 @@ test("integration repair: REMOTE_BEHIND updates the PR branch, gates the new tip
     originSha(remote, "orch/integration"),
     "the local integration branch must be fast-forwarded onto the repaired tip",
   );
+});
+
+test("integration repair: a synthetic numeric-PR checkout pushes the actual PR head ref", async () => {
+  const { repo, remote } = repairFixture();
+  git.git(["branch", "pr-9", "orch/integration"], repo);
+  git.git(["branch", "feature/x", "orch/integration"], repo);
+  git.git(["push", "-u", "origin", "feature/x"], repo);
+  git.gitTry(["update-ref", "-d", "refs/remotes/origin/feature/x"], repo);
+  const before = originSha(remote, "feature/x");
+  const out = await runRepair(repo, {
+    branch: "pr-9", remoteBranch: "feature/x", gh: peerUpdateBranch(remote, "feature/x"),
+  });
+
+  assert.equal(out.cycle?.status, "merged", out.result?.reason);
+  assert.notEqual(originSha(remote, "feature/x"), before);
+  assert.equal(git.git(["rev-parse", "pr-9"], repo), originSha(remote, "feature/x"));
 });
 
 // §10A acceptance criterion 2: "manual means manual" — the default, and the

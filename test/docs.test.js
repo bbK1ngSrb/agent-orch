@@ -180,10 +180,24 @@ test("the manual scopes --until modes to wired commands (#525)", () => {
   const bullet = manual.match(/^- \*\*`--until <mode>`\*\*[\s\S]*?(?=\n- \*\*)/m);
   assert.ok(bullet, "manual does not document the --until flag");
   assert.match(bullet[0], /`once` is the default/);
-  assert.match(bullet[0], /`task`, `issue`, and `review` also support `ready`/);
-  assert.match(bullet[0], /`continue` and `pr` currently accept only `--until once`/);
-  assert.match(bullet[0], /`ready` and `merged` are refused with exit `64`/);
+  assert.match(bullet[0], /`task`, `issue`, `review`, and `pr` support `ready`/);
+  assert.match(bullet[0], /`continue` currently accepts only `--until once`/);
+  assert.match(bullet[0], /On `pr`, `--merge` remains a compatibility\s+alias for `--until merged`/);
   assert.doesNotMatch(bullet[0], /only `--until once` .* exists today/);
+});
+
+test("docs document the MCP PR merge tool and explicit opt-in", () => {
+  for (const doc of [readme, manual, ORCH_DOC]) {
+    assert.match(doc, /orch_pr/);
+    assert.match(doc, /automation\.mcpMayMerge/);
+  }
+  assert.match(exampleConfig, /orch_pr/);
+  assert.match(exampleConfig, /mcpMayMerge/);
+  assert.match(manual, /\| `orch_pr` \|/);
+  assert.match(manual, /merged[\s\S]*refused unless[\s\S]*true/i);
+  for (const doc of [readme, manual]) {
+    assert.doesNotMatch(doc, /no `orch pr` tool/);
+  }
 });
 
 test("docs document the dashboard's cached state reads", () => {

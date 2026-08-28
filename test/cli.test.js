@@ -6,7 +6,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -2994,9 +2994,242 @@ test("CLI role overrides replace orch.yml fixed roles", () => {
   assert.deepEqual(overridden.reviewers, ["codex", "claude"]);
 });
 
-test("pr rejects a non-numeric PR number", async () => {
-  await assert.rejects(() => runMainCapture(["pr", "abc"]), /usage: orch pr <number>/);
+test("pr accepts a branch target and rejects a missing branch", async () => {
+  const repo = initGitRepo("orch-pr-branch-target-");
+  gitDep.git(["branch", "feature/x"], repo);
+  assert.doesNotThrow(() => resolvePrTarget({
+    target: "feature/x", repo, orchDir: join(repo, ".orch"),
+  }));
+  await assert.rejects(() => runMainCapture(["pr", "abc"]), /branch does not exist/);
   await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
+});
+
+test("pr target resolution keeps colleague branches off the push path", () => {
+  const repo = initGitRepo("orch-pr-authority-");
+  gitDep.git(["branch", "feature/colleague"], repo);
+  const calls = [];
+  const pr = {
+    number: 17, state: "OPEN", headRefName: "feature/colleague", headRefOid: "head17",
+    baseRefName: "main", isCrossRepository: false, maintainerCanModify: true, isDraft: false,
+    url: "https://example.invalid/pull/17",
+  };
+  const gh = (args) => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 17, url: pr.url, isDraft: false, headRefOid: pr.headRefOid }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify(pr);
+    if (args[0] === "api") return JSON.stringify({ permissions: { push: true } });
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const target = resolvePrTarget({
+    target: pr.headRefName, repo, orchDir: join(repo, ".orch"), baseBranch: "main", until: "ready", gh,
+  });
+  assert.equal(target.canPushHead, false);
+  assert.equal(target.needsRepairBranch, true);
+  assert.equal(calls.filter((args) => args[0] === "api").length, 1);
+});
+
+test("PR landing derives changed paths when the review cycle omits them", () => {
+  const repo = initGitRepo("orch-pr-paths-");
+  gitDep.git(["checkout", "-b", "pr-17"], repo);
+  writeFileSync(join(repo, "pr.txt"), "PR head\n");
+  gitDep.git(["add", "pr.txt"], repo);
+  gitDep.git(["commit", "-m", "PR head"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const landed = resolveLanded(
+    { status: "approved" },
+    { branch: "pr-17", prTarget: { number: 17, branch: "pr-17" } },
+    { baseBranch: "main" },
+    {},
+    repo,
+  );
+  assert.deepEqual(landed.paths, ["pr.txt"]);
+});
+
+test("PR repair preparation publishes an owned repair branch, not the original head", () => {
+  const repo = initGitRepo("orch-pr-repair-");
+  const { remote } = addOriginWithPeer(repo);
+  gitDep.git(["checkout", "-b", "pr-17"], repo);
+  writeFileSync(join(repo, "pr.txt"), "PR head\n");
+  gitDep.git(["add", "pr.txt"], repo);
+  gitDep.git(["commit", "-m", "PR head"], repo);
+  gitDep.git(["branch", "feature/colleague"], repo);
+  gitDep.git(["push", "origin", "feature/colleague"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const original = gitDep.git(["rev-parse", "feature/colleague"], remote);
+  const calls = [];
+  const repairPr = preparePrRepairRun({
+    repo,
+    orchDir: join(repo, ".orch"),
+    sid: "repair-sid",
+    branch: "pr-17",
+    worktree: join(repo, ".orch", "wt", "pr-17"),
+    prTarget: { number: 17, originalNumber: 17, baseBranch: "main" },
+  }, { baseBranch: "main" }, {
+    gh(args) {
+      calls.push(args);
+      if (args[0] === "pr" && args[1] === "list") return "[]";
+      if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/42\n";
+      throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    },
+  });
+
+  const repairBranch = "pr/repair/17-repair-sid";
+  assert.equal(repairPr.branch, repairBranch);
+  assert.equal(repairPr.prTarget.number, 42);
+  assert.equal(gitDep.git(["rev-parse", repairBranch], remote), gitDep.git(["rev-parse", "pr-17"], repo));
+  assert.equal(gitDep.git(["rev-parse", "feature/colleague"], remote), original);
+  assert.ok(calls.some((args) => args[0] === "pr" && args[1] === "create" && args.includes(repairBranch)));
+});
+
+test("orch continue restores PR push authority and pushes the owned repair branch", async () => {
+  const repo = initGitRepo("orch-pr-continue-authority-");
+  const { remote } = addOriginWithPeer(repo);
+  const sid = "prresume";
+  const sourceBranch = "pr-9";
+  const remoteBranch = "feature/colleague";
+  gitDep.git(["checkout", "-b", sourceBranch], repo);
+  writeFileSync(join(repo, "pr.txt"), "PR head\n");
+  gitDep.git(["add", "pr.txt"], repo);
+  gitDep.git(["commit", "-m", "PR head"], repo);
+  gitDep.git(["push", "origin", `${sourceBranch}:refs/heads/${remoteBranch}`], repo);
+  gitDep.git(["checkout", "main"], repo);
+  const head = gitDep.git(["rev-parse", sourceBranch], repo);
+  const orchDir = join(repo, ".orch");
+  const prTarget = {
+    number: 9,
+    originalNumber: 9,
+    branch: sourceBranch,
+    sourceBranch,
+    remoteBranch,
+    headRefName: remoteBranch,
+    headRefOid: head,
+    baseBranch: "main",
+    canPushHead: false,
+    needsRepairBranch: true,
+    ephemeral: true,
+  };
+  checkpointDep.record(orchDir, sid, {
+    branch: sourceBranch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid, command: "pr", argv: ["pr", "9", "--until", "ready"],
+    policy: { until: "ready", maxAttempts: 1 }, prTarget,
+  });
+
+  const repairBranch = `pr/repair/9-${sid}`;
+  const pushes = [];
+  let repaired = false;
+  const baseCycleDeps = fakeCycleDeps();
+  const cycleDeps = {
+    ...baseCycleDeps,
+    git: {
+      ...baseCycleDeps.git,
+      gitTry(args, cwd) {
+        if (args[0] === "push") pushes.push({ args, cwd });
+        return gitDep.gitTry(args, cwd);
+      },
+    },
+  };
+  const gh = (args) => {
+    if (args[0] === "pr" && args[1] === "view") {
+      const number = String(args[2]);
+      return JSON.stringify({
+        number: Number(number), state: "OPEN", isDraft: false, headRefOid: head,
+        baseRefName: "main", mergeable: "MERGEABLE", mergeStateStatus: number === "9" && !repaired ? "BEHIND" : "CLEAN",
+        reviewDecision: null, statusCheckRollup: [],
+      });
+    }
+    if (args[0] === "pr" && args[1] === "list") return "[]";
+    if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/42\n";
+    if (args[0] === "api" && args.some((arg) => String(arg).endsWith("/update-branch"))) {
+      repaired = true;
+      return "{}";
+    }
+    if (args[0] === "api") return "[]";
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+
+  await runMainInRepo(repo, ["continue", sid, "--no-tidy"], {
+    cycleDeps,
+    githubDeps: () => ({ gh, git: gitDep.git }),
+    sleep: async () => {},
+  });
+
+  const pushedRefs = pushes.map(({ args }) => args[args.indexOf("origin") + 1].split(":").at(-1));
+  assert.ok(pushedRefs.includes(`refs/heads/${repairBranch}`), "resume must push the owned repair branch");
+  assert.ok(!pushedRefs.includes(`refs/heads/${remoteBranch}`), "resume must not push the contributor branch");
+  assert.equal(gitDep.git(["rev-parse", remoteBranch], remote), head, "the contributor branch must remain untouched");
+  const record = JSON.parse(readFileSync(join(orchDir, "run-records", `${sid}.json`), "utf8"));
+  assert.equal(record.prTarget.remoteBranch, repairBranch, "the persisted target must follow the repair branch");
+});
+
+test("resumable numeric PR runs keep their ephemeral source branch for continue", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-pr-resumable-branch-");
+  const { remote } = addOriginWithPeer(repo);
+  const sourceBranch = "feature/colleague";
+  gitDep.git(["checkout", "-b", sourceBranch], repo);
+  writeFileSync(join(repo, "pr.txt"), "PR head\n");
+  gitDep.git(["add", "pr.txt"], repo);
+  gitDep.git(["commit", "-m", "PR head"], repo);
+  gitDep.git(["push", "origin", sourceBranch], repo);
+  const head = gitDep.git(["rev-parse", sourceBranch], repo);
+  gitDep.git(["update-ref", "refs/pull/123/head", head], remote);
+  gitDep.git(["checkout", "main"], repo);
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "automation:\n  remedies: [ask]\n  humanWaitHours: 0.000001\n");
+
+  let secondRun = false;
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({
+      number: 123, state: "OPEN", headRefName: sourceBranch, headRefOid: head,
+      baseRefName: "main", isCrossRepository: false, maintainerCanModify: true,
+      isDraft: false, url: "https://github.com/o/r/pull/123",
+    });
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{
+      number: 123, url: "https://github.com/o/r/pull/123", isDraft: false, headRefOid: head,
+    }]);
+    if (args[0] === "api" && args[1] === "repos/{owner}/{repo}") return JSON.stringify({ permissions: { push: true } });
+    if (args[0] === "api" && String(args[1]).includes("collaborators/")) return JSON.stringify({ permission: "write" });
+    if (args[0] === "api" && args.some((arg) => String(arg).includes("/comments"))) {
+      if (args.includes("-X") && args.includes("POST")) return JSON.stringify({ id: 1 });
+      return secondRun ? JSON.stringify([{ id: 2, body: "orch: abandon", user: { login: "maintainer", type: "User" } }]) : "[]";
+    }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: { get: (name) => ({ name, async audit() { return { decision: "DISAGREE", reason: "needs work", raw: "" }; } }) },
+  };
+  let nowCalls = 0;
+  const deps = {
+    cycleDeps,
+    githubDeps: () => ({ gh, git: gitDep.git }),
+    sleep: async () => {},
+    now: () => (nowCalls++ === 0 ? 0 : 1_000_000),
+  };
+
+  try {
+    const logs = await runMainInRepo(repo, ["pr", "123", "--until", "ready", "--json"], deps);
+    const recordDir = join(repo, ".orch", "run-records");
+    const record = JSON.parse(readFileSync(join(recordDir, readdirSync(recordDir)[0]), "utf8"));
+    assert.equal(record.outcome, "wait-timeout");
+    assert.equal(record.prTarget.remoteBranch, sourceBranch, "the PR target must be persisted for continue");
+    assert.ok(gitDep.branchExists(repo, "pr-123"), "a resumable run must keep its ephemeral source branch");
+    assert.match(logs.join("\n"), new RegExp(`orch continue ${record.runId}`));
+
+    secondRun = true;
+    const resumedLogs = await runMainInRepo(repo, ["continue", record.runId, "--no-tidy"], deps);
+    assert.match(resumedLogs.join("\n"), /escalated/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
 });
 
 test("a flag not read by the command is rejected", async () => {
@@ -3046,6 +3279,10 @@ test("a flag not read by the command is rejected", async () => {
       argv.join(" "),
     );
   }
+  await assert.rejects(
+    () => runMainCapture(["pr", "42", "--merge", "--until", "ready", "--dry"]),
+    (e) => e.exit === 64 && /--merge is an alias for --until merged/.test(e.message),
+  );
   // The message points at where the flag IS legal.
   await assert.rejects(() => runMainCapture(["issue", "42", "--merge"]), /only with: orch pr/);
   // ...and a flag stays legal where it is actually consumed: `pr` gets past the
