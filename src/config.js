@@ -17,10 +17,12 @@ const DEFAULTS = {
                     // instead of hanging forever on an infinite "still running" heartbeat.
                     // #505: the test gate gets the same cap — it runs under merge.lock,
                     // so a hung test command would stall every concurrent cycle.
+  gateTimeout: 25, // test-gate wall-clock cap in minutes; defaults to stageTimeout
   baseBranch: "main", // trunk orch reads from, diffs against, and opens PRs to
   integrationBranch: "orch/integration", // local merge target; baseBranch is advanced only by GitHub PR + ff-only fetch
   merge: "no-ff", // ff-only | no-ff | pr — "pr" skips local integration: an AGREE+green
                   // cycle opens a per-cycle PR (github.openPr) instead of git.mergeInWorktree
+  landing: "no-ff", // canonical spelling of merge; values are unchanged until P12
   concurrency: 4, // max concurrent cycles per repo dir; over this, a cycle exits rather than blocks
   cheap: {
     role: null, // role spec ("<agent> [model] [effort]") used for author+reviewer when cheap routing triggers
@@ -57,19 +59,102 @@ const DEFAULTS = {
     humanWaitHours: 24, // bounded wait for an `ask` reply; continue resumes it later
     mcpMayMerge: false, // MCP may request `--until merged` only when explicitly enabled
     remedies: null, // null uses the failure table order; operators may override the priority
+    rotateModels: {}, // optional ordered model ladders used by the rotate remedy
     pollSeconds: 30, // initial readiness poll interval; backs off 2x per attempt, capped at 10 min
     ciWaitMinutes: 30, // bound on one readiness wait window before it counts as an attempt (REMOTE_CI_TIMEOUT)
+    conflictResolvers: null, // canonical spelling of main.conflictResolutionResolvers
+    conflictAutoPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json"],
     detachLogDir: ".orch/logs",
   },
+  env: { passthrough: [] }, // extra adapter env keys; secrets are rejected by validate()
 };
+
+const REMOVED_CONFIG_MESSAGES = new Map([
+  ["merge", "orch.yml: 'merge' was renamed to 'landing' in v0.5.0 (same values). Rename the key."],
+  ["main.autoMerge", "orch.yml: 'main.autoMerge' was removed in v0.5.0. Merging is now a per-run goal: pass --until merged (poller/MCP: see docs/cli-v2-proposal.md §4.6)."],
+  ["github.autoMergePr", "orch.yml: 'github.autoMergePr' was removed in v0.5.0. Native auto-merge is no longer used; --until merged merges when green."],
+  ["main.conflictResolution", "orch.yml: 'main.conflictResolution'/'main.autoResolveConflicts' were removed in v0.5.0. Conflict repair is a loop remedy under --until ready|merged; disable it with automation.remedies."],
+  ["main.autoResolveConflicts", "orch.yml: 'main.conflictResolution'/'main.autoResolveConflicts' were removed in v0.5.0. Conflict repair is a loop remedy under --until ready|merged; disable it with automation.remedies."],
+  ["main.conflictResolutionResolvers", "orch.yml: 'main.conflictResolutionResolvers' was removed in v0.5.0; use 'automation.conflictResolvers'."],
+  ["main.autoResolveConflictPaths", "orch.yml: 'main.autoResolveConflictPaths' was removed in v0.5.0; use 'automation.conflictAutoPaths'."],
+  ["reviseCap", "orch.yml: 'reviseCap' was removed in v0.5.0; use 'roundCap'."],
+]);
+
+const CONFIG_CHILDREN = {
+  cheap: new Set(["role", "paths"]),
+  scope: new Set(["maxLines", "ignore"]),
+  security: new Set(["ignore"]),
+  github: new Set(["mergeMethod"]),
+  main: new Set(),
+  docs: new Set(["autoUpdate", "prompt", "paths"]),
+  release: new Set(["autoBump"]),
+  automation: new Set([
+    "maxAttempts", "humanWaitHours", "mcpMayMerge", "remedies", "rotateModels",
+    "pollSeconds", "ciWaitMinutes", "conflictResolvers", "conflictAutoPaths", "detachLogDir",
+  ]),
+  env: new Set(["passthrough"]),
+};
+
+const CONFIG_KEYS = new Set([
+  "agents", "author", "reviewer", "authors", "reviewers", "test", "roundCap", "stageTimeout",
+  "gateTimeout", "baseBranch", "integrationBranch", "landing", "concurrency", "cheap", "scope",
+  "security", "github", "main", "docs", "release", "automation", "env",
+]);
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function collectConfigIssues(source, warnings, problems, prefix = "") {
+  if (!isObject(source)) return;
+  for (const [key, value] of Object.entries(source)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (REMOVED_CONFIG_MESSAGES.has(path)) {
+      let warning = REMOVED_CONFIG_MESSAGES.get(path);
+      warnings.add(warning);
+      continue;
+    }
+    const known = prefix ? CONFIG_CHILDREN[prefix]?.has(key) : CONFIG_KEYS.has(key);
+    if (!known) {
+      problems.add(path.startsWith("main.")
+        ? `orch.yml: unknown key '${path}'.`
+        : `orch.yml: unknown key '${path}' (typo? see orch.example.yml).`);
+      continue;
+    }
+    // rotateModels is a map keyed by adapter name, not a closed object whose
+    // entries should be interpreted as config paths.
+    if (isObject(value) && path !== "automation.rotateModels") collectConfigIssues(value, warnings, problems, path);
+  }
+}
+
+function warningList(user, override) {
+  const warnings = new Set();
+  collectConfigIssues(user, warnings, new Set());
+  collectConfigIssues(override, warnings, new Set());
+  return [...warnings];
+}
+
+function problemList(user, override) {
+  const problems = new Set();
+  collectConfigIssues(user, new Set(), problems);
+  collectConfigIssues(override, new Set(), problems);
+  return [...problems];
+}
 
 // roundCapKey names the spelling the operator actually wrote, so an error about a
 // bad value never mentions a key that is absent from their config.
-export function validate(cfg, roundCapKey = "roundCap") {
+export function validate(cfg, roundCapKey = "roundCap", landingKey = cfg?.landing !== undefined ? "landing" : "merge") {
+  if (!isObject(cfg)) throw new Error("orch.yml: config must be a mapping");
   if (!Array.isArray(cfg.agents) || cfg.agents.length < 1)
     throw new Error("orch.yml: agents must be a non-empty list");
   if (!cfg.agents.every((agent) => typeof agent === "string" && /^\S+$/.test(agent)))
     throw new Error("orch.yml: agents entries must be bare adapter names; put model/effort in author/reviewer or use CLI overrides");
+  if (cfg.test == null || typeof cfg.test !== "string" || !cfg.test.trim())
+    throw new Error("orch.yml: test must be a non-empty string");
+  if (cfg.author != null && (typeof cfg.author !== "string" || !cfg.author.trim()))
+    throw new Error("orch.yml: author must be a non-empty string");
+  if (cfg.reviewer != null && (typeof cfg.reviewer !== "string" || !cfg.reviewer.trim()))
+    throw new Error("orch.yml: reviewer must be a non-empty string");
   if ((cfg.author == null) !== (cfg.reviewer == null))
     throw new Error("orch.yml: set both author and reviewer, or neither");
   if ((cfg.authors == null) !== (cfg.reviewers == null))
@@ -78,12 +163,15 @@ export function validate(cfg, roundCapKey = "roundCap") {
     throw new Error("orch.yml: authors must be a non-empty list of strings");
   if (cfg.reviewers != null && (!Array.isArray(cfg.reviewers) || cfg.reviewers.length < 1 || !cfg.reviewers.every((r) => typeof r === "string" && r.trim())))
     throw new Error("orch.yml: reviewers must be a non-empty list of strings");
-  if (!["ff-only", "no-ff", "pr"].includes(cfg.merge))
-    throw new Error("orch.yml: merge must be ff-only, no-ff, or pr");
+  const landing = cfg.landing ?? cfg.merge;
+  if (!["ff-only", "no-ff", "pr"].includes(landing))
+    throw new Error(`orch.yml: ${landingKey} must be ff-only, no-ff, or pr`);
   if (!Number.isInteger(cfg.roundCap) || cfg.roundCap < 1)
     throw new Error(`orch.yml: ${roundCapKey} must be a positive integer`);
   if (!Number.isInteger(cfg.stageTimeout) || cfg.stageTimeout < 0)
     throw new Error("orch.yml: stageTimeout must be a non-negative integer (minutes; 0 disables)");
+  if (!Number.isInteger(cfg.gateTimeout) || cfg.gateTimeout < 0)
+    throw new Error("orch.yml: gateTimeout must be a non-negative integer (minutes; 0 disables)");
   if (typeof cfg.baseBranch !== "string" || !cfg.baseBranch.trim())
     throw new Error("orch.yml: baseBranch must be a non-empty string");
   if (typeof cfg.integrationBranch !== "string" || !cfg.integrationBranch.trim())
@@ -129,6 +217,10 @@ export function validate(cfg, roundCapKey = "roundCap") {
     throw new Error("orch.yml: automation.humanWaitHours must be a number greater than 0 and at most 720");
   if (typeof cfg.automation.mcpMayMerge !== "boolean")
     throw new Error("orch.yml: automation.mcpMayMerge must be a boolean");
+  if (!isObject(cfg.automation.rotateModels)
+    || Object.values(cfg.automation.rotateModels).some((models) => !Array.isArray(models)
+      || models.length < 1 || !models.every((model) => typeof model === "string" && model.trim())))
+    throw new Error("orch.yml: automation.rotateModels must map agents to non-empty lists of model strings");
   const remedyNames = new Set(["rebase", "rotate", "reauthor", "ask"]);
   if (cfg.automation.remedies !== null && (!Array.isArray(cfg.automation.remedies)
     || new Set(cfg.automation.remedies).size !== cfg.automation.remedies.length
@@ -140,6 +232,10 @@ export function validate(cfg, roundCapKey = "roundCap") {
     throw new Error("orch.yml: automation.ciWaitMinutes must be a positive integer");
   if (typeof cfg.automation.detachLogDir !== "string" || !cfg.automation.detachLogDir.trim())
     throw new Error("orch.yml: automation.detachLogDir must be a non-empty string");
+  if (!Array.isArray(cfg.env.passthrough) || !cfg.env.passthrough.every((key) => typeof key === "string" && /^[A-Z_][A-Z0-9_]*$/.test(key)))
+    throw new Error("orch.yml: env.passthrough must be an array of valid environment variable names");
+  if (cfg.env.passthrough.some((key) => key === "GH_TOKEN" || key === "GITHUB_TOKEN" || key === "GH_ENTERPRISE_TOKEN" || key.startsWith("ORCH_APP_")))
+    throw new Error("orch.yml: env.passthrough may not include GitHub or ORCH_APP credentials");
 }
 
 // A role spec is "<agent> [model] [effort]" — whitespace-separated fields.
@@ -200,12 +296,8 @@ export function configPath(dir) {
 // that says reviseCap must still beat an orch.yml that says roundCap, otherwise the
 // override is silently dropped — the exact failure the alias exists to prevent.
 // Returns { value, key } or null when this source names neither key.
-function pickRoundCap(source, label) {
+function pickRoundCap(source) {
   const has = (k) => Object.prototype.hasOwnProperty.call(source, k);
-  if (has("roundCap") && has("reviseCap"))
-    console.warn(`orch: ${label} sets both roundCap and reviseCap; using roundCap and ignoring the deprecated reviseCap`);
-  else if (has("reviseCap"))
-    console.warn(`orch: ${label} uses deprecated reviseCap; rename it to roundCap (same meaning: total review rounds, initial review included)`);
   if (has("roundCap")) return { value: source.roundCap, key: "roundCap" };
   if (has("reviseCap")) return { value: source.reviseCap, key: "reviseCap" };
   return null;
@@ -228,10 +320,35 @@ export function mergeConfig(user = {}, override = {}) {
     docs: { ...DEFAULTS.docs, ...(user.docs || {}), ...(override.docs || {}) },
     release: { ...DEFAULTS.release, ...(user.release || {}), ...(override.release || {}) },
     automation: { ...DEFAULTS.automation, ...(user.automation || {}), ...(override.automation || {}) },
+    env: { ...DEFAULTS.env, ...(user.env || {}), ...(override.env || {}) },
   };
 }
 
-export function load(dir, overridePath) {
+export function normalizeV2Config(cfg, user = {}, override = {}) {
+  const has = (source, key) => Object.prototype.hasOwnProperty.call(source, key);
+  const landingSource = has(override, "landing") || has(override, "merge") ? override
+    : has(user, "landing") || has(user, "merge") ? user : null;
+  const landingKey = landingSource ? (has(landingSource, "landing") ? "landing" : "merge") : "landing";
+  cfg.landing = landingSource ? landingSource[landingKey] : DEFAULTS.landing;
+  // Cycle code in pre-cutover releases still reads cfg.merge. Keep the old
+  // runtime alias while making landing the source of truth for new configs.
+  cfg.merge = cfg.landing;
+
+  const gateSource = has(override, "gateTimeout") ? override : has(user, "gateTimeout") ? user : null;
+  cfg.gateTimeout = gateSource ? gateSource.gateTimeout : cfg.stageTimeout;
+
+  if (has(override.automation || {}, "conflictResolvers") || has(user.automation || {}, "conflictResolvers")) {
+    const source = has(override.automation || {}, "conflictResolvers") ? override.automation : user.automation;
+    cfg.main.conflictResolutionResolvers = source.conflictResolvers;
+  }
+  if (has(override.automation || {}, "conflictAutoPaths") || has(user.automation || {}, "conflictAutoPaths")) {
+    const source = has(override.automation || {}, "conflictAutoPaths") ? override.automation : user.automation;
+    cfg.main.autoResolveConflictPaths = source.conflictAutoPaths;
+  }
+  return { landingKey, cfg };
+}
+
+function readConfigLayers(dir, overridePath) {
   let user = {};
   const p = configPath(dir);
   if (existsSync(p)) user = parse(readFileSync(p, "utf8")) || {};
@@ -240,16 +357,71 @@ export function load(dir, overridePath) {
     if (!existsSync(overridePath)) throw new Error(`orch: --config-file not found: ${overridePath}`);
     override = parse(readFileSync(overridePath, "utf8")) || {};
   }
+  return { user, override };
+}
+
+export function load(dir, overridePath, { onWarning = console.warn } = {}) {
+  const { user, override } = readConfigLayers(dir, overridePath);
   const cfg = mergeConfig(user, override);
+  for (const warning of warningList(user, override)) onWarning(warning);
+  const problems = problemList(user, override);
+  if (problems.length) throw new Error(problems.join("\n"));
   // Both layers are consulted so each deprecated spelling gets its own warning.
-  const fromOverride = pickRoundCap(override, "--config-file");
-  const fromUser = pickRoundCap(user, "orch.yml");
+  const fromOverride = pickRoundCap(override);
+  const fromUser = pickRoundCap(user);
   const picked = fromOverride ?? fromUser;
   delete cfg.reviseCap; // one source of truth downstream
   cfg.roundCap = picked ? picked.value : DEFAULTS.roundCap;
+  const { landingKey } = normalizeV2Config(cfg, user, override);
   normalizeMainConfig(cfg, user.main || {}, override.main || {});
-  validate(cfg, picked?.key);
+  validate(cfg, picked?.key || "roundCap", landingKey);
   return cfg;
+}
+
+function flatten(value, prefix, target, source) {
+  if (!isObject(value)) return;
+  for (const [key, child] of Object.entries(value)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    target[path] = source;
+    if (isObject(child)) flatten(child, path, target, source);
+  }
+}
+
+// Non-interactive config consumers need the same effective values as load(),
+// plus enough provenance to explain where each value came from.
+export function configReport(dir, overridePath) {
+  let user = {};
+  let override = {};
+  const problems = [];
+  try {
+    ({ user, override } = readConfigLayers(dir, overridePath));
+  } catch (error) {
+    problems.push(error.message);
+  }
+  problems.push(...problemList(user, override));
+  const warnings = warningList(user, override);
+  let config = null;
+  if (!problems.length) {
+    try {
+      config = load(dir, overridePath, { onWarning: () => {} });
+    } catch (error) {
+      problems.push(error.message);
+    }
+  }
+  const sources = {};
+  flatten(DEFAULTS, "", sources, "default");
+  const has = (source, key) => Object.hasOwn(source, key);
+  const userSource = existsSync(join(dir, ".orch", "orch.yml")) ? ".orch/orch.yml"
+    : existsSync(join(dir, "orch.yml")) ? "orch.yml" : "default";
+  flatten(user, "", sources, userSource);
+  flatten(override, "", sources, "--config-file");
+  const landingSource = has(override, "landing") || has(override, "merge") ? "--config-file"
+    : has(user, "landing") || has(user, "merge") ? userSource : "default";
+  sources.landing = landingSource;
+  if (!has(override, "gateTimeout") && !has(user, "gateTimeout")) {
+    sources.gateTimeout = sources.stageTimeout;
+  }
+  return { config, sources, warnings, problems, ok: problems.length === 0 };
 }
 
 export function normalizeMainConfig(cfg, userMain = {}, overrideMain = {}) {

@@ -140,10 +140,11 @@ test("--help and --version are legal on every command", () => {
   }
 });
 
-test("--json is scoped to dashboard and run-controller commands, not global", () => {
+test("--json is scoped to dashboard, config, and run-controller commands", () => {
   assert.doesNotThrow(() => validate("dashboard", { json: true }));
+  assert.doesNotThrow(() => validate("config", { json: true }));
   const RUN_CONTROLLED = new Set(["task", "issue", "review", "pr"]);
-  for (const command of Object.keys(COMMANDS).filter((c) => c !== "dashboard")) {
+  for (const command of Object.keys(COMMANDS).filter((c) => c !== "dashboard" && c !== "config")) {
     if (command === "continue") {
       assert.doesNotThrow(() => validate(command, { json: true }), "orch continue --json");
       continue;

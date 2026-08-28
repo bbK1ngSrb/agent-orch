@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
-import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
+import { load, configPath, configReport, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import {
@@ -240,11 +240,12 @@ roundCap: 3                             # max review rounds incl. the first, bef
                                         # (reviseCap is the deprecated alias for this key)
 stageTimeout: 25                        # wall-clock cap in minutes for each agent stage AND the test gate;
                                         # 0 disables; default: 25
+gateTimeout: 25                        # wall-clock cap in minutes for the test gate; defaults to stageTimeout
 concurrency: 4                          # max concurrent cycles per repo dir; over-cap launches exit; default: 4
 baseBranch: main                        # trunk orch reads/diffs/PRs against (e.g. dev if main is deploy-only); default: main
 integrationBranch: orch/integration     # local merge target for no-ff/ff-only; default: orch/integration
-merge: no-ff                            # into integrationBranch: ff-only | no-ff | pr; default: no-ff
-                                        # (pr = skip local integration, open a per-cycle branch PR)
+landing: no-ff                          # into integrationBranch: ff-only | no-ff | pr; default: no-ff
+                                        # (pr = skip local integration, open a per-cycle branch PR; was merge:)
 
 
 # ===================================================================
@@ -291,33 +292,38 @@ scope:
 # ===================================================================
 github:
   mergeMethod: squash                   # gh pr merge strategy for non-integration PRs; default: squash
-  autoMergePr: false                    # enable GitHub native auto-merge on PRs orch opens/updates; default: false
-                                        # (needs "Allow merge commits" on for the integration PR; see
-                                        # docs/orch-manual.md for the ruleset bypass_actors caveat)
+                                        # (the standing integration PR always uses a merge commit; see docs/orch-manual.md)
 
 
 # ===================================================================
 # MCP PR merge opt-in
 # ===================================================================
 automation:
+  maxAttempts: 3                        # remedy rounds after the first cycle; default: 3
+  humanWaitHours: 24                     # bounded wait for a human reply; default: 24
   mcpMayMerge: false                    # true = MCP orch_pr may request --until merged; default: false
-  detachLogDir: .orch/logs              # detached-run log directory; default: .orch/logs
-
-
-# ===================================================================
-# Main mirror PR (integrationBranch -> baseBranch)
-# ===================================================================
-main:
-  autoMerge: false                      # true = merge the persistent integration PR once checks are green; default: false
-  conflictResolution: manual            # manual | propose | auto; default: manual
-  # conflictResolutionResolvers:        # default: null — role specs; rotate/fail over per conflict
-  #   - claude
-  autoResolveConflicts: false           # deprecated alias: true = conflictResolution: auto
-  autoResolveConflictPaths:
+  remedies: null                        # ordered subset of rebase, rotate, reauthor, ask; default: fallback order
+  rotateModels: {}                      # optional agent -> model-list escalation ladders
+  pollSeconds: 30                       # readiness poll interval; default: 30
+  ciWaitMinutes: 30                     # readiness wait window; default: 30
+  conflictResolvers: null               # role specs for integration conflict repair
+  conflictAutoPaths:
     - CHANGELOG.md
     - docs/index.html
     - package-lock.json
     - package.json
+  detachLogDir: .orch/logs              # detached-run log directory; default: .orch/logs
+
+
+# main.autoMerge, github.autoMergePr, main.conflictResolution, and the
+# other v0.4 main.* spellings remain supported with warnings until P12.
+
+
+# ===================================================================
+# Adapter environment additions (optional)
+# ===================================================================
+env:
+  passthrough: []                        # extra adapter env keys; credentials are rejected
 
 
 # ===================================================================
@@ -1369,6 +1375,32 @@ export function raiseExitCode(code) {
   if ((EXIT_CODE_PRIORITY[code] || 0) > (EXIT_CODE_PRIORITY[current] || 0)) process.exitCode = code;
 }
 
+function configValue(cfg, path) {
+  return path.split(".").reduce((value, key) => value?.[key], cfg);
+}
+
+function printConfigReport(report, json) {
+  if (json) {
+    console.log(JSON.stringify({ command: "config", ...report }, null, 2));
+    return report;
+  }
+  console.log(`orch config: ${report.ok ? "ok" : "invalid"}`);
+  if (report.config) {
+    for (const [path, source] of Object.entries(report.sources).sort(([a], [b]) => a.localeCompare(b))) {
+      console.log(`${path}: ${JSON.stringify(configValue(report.config, path))} [${source}]`);
+    }
+  }
+  if (report.warnings.length) {
+    console.log("Warnings:");
+    for (const warning of report.warnings) console.log(`- ${warning}`);
+  }
+  if (report.problems.length) {
+    console.log("Problems:");
+    for (const problem of report.problems) console.log(`- ${problem}`);
+  }
+  return report;
+}
+
 // Register before a cycle starts so the cap counts this run as well. The caller
 // owns the exceeded-cap action because task fan-out skips while single runs throw.
 export function registerWithConcurrencyCap(orchDir, sid, meta, cfg, { onExceeded = () => {} } = {}) {
@@ -1844,6 +1876,15 @@ export async function main(argv, deps = {}) {
   // commands use below, so ORCH_DRYRUN=1 is honored identically.
   const dryRun = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
 
+  // Config inspection is deliberately before update checks, app auth, and
+  // preflight: it is a local, non-interactive diagnostic command.
+  if (command === "config" && !dryRun && (flags.check || flags.json)) {
+    const report = configReport(repo, flags["config-file"]);
+    printConfigReport(report, Boolean(flags.json));
+    process.exitCode = report.ok ? 0 : 1;
+    return report;
+  }
+
   if (!dryRun && command && command !== "completion") {
     const notifyFn = deps.maybeNotifyUpdate || maybeNotifyUpdate;
     notifyFn({ current: VERSION, json: Boolean(flags.json) }).catch(() => {});
@@ -1913,9 +1954,8 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "config") {
-    // --dry isn't a legal flag on `config` (see schema.js's comment on why),
-    // but ORCH_DRYRUN=1 still applies here like every other write command —
-    // it used to launch the interactive wizard and write orch.yml regardless.
+    // Without --check/--json, retain the interactive wizard until the P12
+    // cutover. ORCH_DRYRUN=1 still plans that write without opening a TTY.
     if (dryRun) {
       console.log(`orch (dry): would run the interactive config wizard and write ${flags["config-file"] || join(orchDir, "orch.yml")}`);
       return;

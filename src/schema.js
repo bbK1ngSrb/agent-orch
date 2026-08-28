@@ -34,7 +34,7 @@ export const FLAGS = {
     type: "enum", values: ["once", "ready", "merged"], arg: "<mode>",
     help: "once (default); ready waits on PR; merged: readiness.",
   },
-  check: { type: "boolean", help: "With upgrade, check latest version without installing." },
+  check: { type: "boolean", help: "With config, validate; with upgrade, check latest." },
   link: { type: "boolean", help: "With init, link .orch/ORCH.md from agent docs." },
   build: { type: "boolean", help: "With agent add, build the adapter without asking." },
   "no-banner": { type: "boolean", help: "Hide the run banner." },
@@ -84,13 +84,12 @@ export const COMMANDS = {
     mutates: true, flags: ["config-file", "dry", "link"],
     rows: [["init", "Scaffold .orch/orch.yml and .orch/ORCH.md."]],
   },
-  // Mutating: runConfigWizard creates .orch/ and writes orch.yml. cli.js
-  // already has a --dry handler for it (prints what it would write instead of
-  // running the wizard) — --dry belongs in this command's own flags so that
-  // handler is reachable instead of being rejected before it ever runs.
+  // Mutating: runConfigWizard creates .orch/ and writes orch.yml. `--check`
+  // and `--json` select the non-interactive report path; with neither flag,
+  // cli.js keeps the legacy wizard until the v0.5 cutover.
   config: {
-    mutates: true, flags: ["config-file", "dry"],
-    rows: [["config", "Interactively create or edit an orch YAML config."]],
+    mutates: true, flags: ["config-file", "dry", "check", "json"],
+    rows: [["config", "Check config or interactively edit an orch YAML config."]],
   },
   agent: {
     mutates: true, flags: [...new Set([...SUBCOMMAND_FLAGS["agent add"], ...SUBCOMMAND_FLAGS["agent build"]])],

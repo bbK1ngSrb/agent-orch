@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { parse, stringify } from "yaml";
-import { DEFAULTS, mergeConfig, normalizeMainConfig, validate } from "./config.js";
+import { DEFAULTS, mergeConfig, normalizeMainConfig, normalizeV2Config, validate } from "./config.js";
 import { start as startInput } from "./tui/input.js";
 import { box, C, colorEnabled } from "./tui/theme.js";
 
@@ -215,6 +215,9 @@ export function loadTarget(target) {
     delete cfg.reviseCap; // never write the alias back out
     // Same userMain tracking as load() so alias-only files map to conflictResolution: auto
     // instead of DEFAULTS' manual mode winning as "explicit".
+    // Keep canonical landing/gateTimeout and automation aliases in sync with
+    // the runtime loader while the wizard still exposes its legacy controls.
+    normalizeV2Config(cfg, user, {});
     normalizeMainConfig(cfg, user.main || {}, {});
     validate(cfg, aliasOnly ? "reviseCap" : "roundCap");
     return cfg;
