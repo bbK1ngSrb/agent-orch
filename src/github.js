@@ -469,6 +469,7 @@ async function pushAndCreatePr(ctx, deps, title, body, headSha = null) {
 // locally (keep the branch + write DECISION.md). Never pushes straight to main.
 export async function demote(ctx, deps) {
   const { repo, orchDir, branch, reviewedSha = null, reason, closes, cfg } = ctx;
+  const v2Until = ctx.until && ctx.until !== "once";
   const { git, gh, notify, log = () => {} } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate(orchDir, branch,
@@ -482,7 +483,7 @@ export async function demote(ctx, deps) {
   const url = await pushAndCreatePr(ctx, deps, `orch: ${branch}`, fallbackPrBody(reason, closes, mergeMethod), reviewedSha);
   const prNumber = prNumberFromUrl(url);
   refreshFallbackPrBody(gh, prNumber, fallbackPrBody(reason, closes, mergeMethod, prNumber || "<PR-number>"));
-  if (cfg?.github?.autoMergePr) {
+  if (cfg?.github?.autoMergePr && !v2Until) {
     tryMergeDirect(gh, prNumber || branch, mergeMethod, reviewedSha, log);
   }
   return { prUrl: url };
@@ -495,6 +496,7 @@ export async function demote(ctx, deps) {
 // leaving the audit trail a PR provides. Never pushes straight to main.
 export async function openPr(ctx, deps) {
   const { repo, orchDir, branch, reviewedSha = null, cfg, closes } = ctx;
+  const v2Until = ctx.until && ctx.until !== "once";
   const { git, gh, notify, log = () => {} } = deps;
   if (!hasRemote(repo, git) || !ghAvailable(gh)) {
     notify.escalate(orchDir, branch,
@@ -508,7 +510,7 @@ export async function openPr(ctx, deps) {
   // The PR is already open at this point — a failure enabling GitHub's native
   // auto-merge (branch protection off, no merge queue, etc.) must not be
   // reported as a cycle failure; log it and hand back the PR we did open.
-  if (cfg?.github?.autoMergePr) {
+  if (cfg?.github?.autoMergePr && !v2Until) {
     try {
       const args = ["pr", "merge", branch, "--auto", `--${cfg.github.mergeMethod}`];
       if (reviewedSha) args.push("--match-head-commit", reviewedSha);
@@ -536,6 +538,7 @@ export async function openPr(ctx, deps) {
 // it to main; GitHub owns the final main update.
 export async function openIntegrationPr(ctx, deps) {
   const { repo, orchDir, cfg, integrationSha = null } = ctx;
+  const v2Until = ctx.until && ctx.until !== "once";
   const branch = cfg.integrationBranch || "orch/integration";
   const base = cfg.baseBranch || "main";
   const { git, gh, notify, log = () => {}, resolveIntegrationConflict } = deps;
@@ -627,7 +630,7 @@ export async function openIntegrationPr(ctx, deps) {
     mergeState = null;
     log(`could not update-branch integration PR #${prRef} (non-fatal): ${e.message}`);
   }
-  if (cfg?.github?.autoMergePr) {
+  if (cfg?.github?.autoMergePr && !v2Until) {
     mergeState = null;
     try {
       // The persistent integration branch must stay in main's ancestry. Squash
@@ -675,7 +678,7 @@ export async function openIntegrationPr(ctx, deps) {
   // swallowed by tryMergeDirect. The merge is pinned to tipSha so this cycle only
   // lands the commit it verified; if a concurrent cycle advanced the tip, a 409
   // is logged once and that newer cycle owns the merge.
-  if (cfg?.main?.autoMerge) {
+  if (cfg?.main?.autoMerge && !v2Until) {
     try {
       if (checksForPrMerge(prRef, base, deps).state === "green") tryMergeDirect(gh, prRef, "merge", tipSha, log);
     } catch (e) {

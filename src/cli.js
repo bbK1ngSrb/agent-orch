@@ -8,6 +8,7 @@ import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh, findPrByHead } from "./github.js";
+import { mergeStanding } from "./landing.js";
 import { runUntil } from "./run-controller.js";
 import { createRebaseRemedy, createRotateRemedy } from "./remedies.js";
 import { createReauthorRemedy } from "./remedies/reauthor.js";
@@ -1001,11 +1002,52 @@ function resolveLanded(cycle, run, cfg, ghDeps, repo) {
   const baseBranch = cfg.baseBranch || "main";
   if (cycle.status === "pr" || cycle.status === "approved") {
     const pr = findPrByHeadSafe(run.branch, baseBranch, ghDeps, cycle.prUrl);
-    return { pr, expectedHead: git.git(["rev-parse", run.branch], repo), landing: "pr", branch: run.branch };
+    return { pr, expectedHead: git.git(["rev-parse", run.branch], repo), landing: "pr", branch: run.branch, paths: cycle.paths || [] };
   }
   const integrationBranch = cfg.integrationBranch || "orch/integration";
+  if (integrationBranch === baseBranch) {
+    return { pr: null, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "base", branch: integrationBranch, paths: cycle.paths || [] };
+  }
   const pr = findPrByHeadSafe(integrationBranch, baseBranch, ghDeps, cycle.prUrl);
-  return { pr, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "standing", branch: integrationBranch };
+  return { pr, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "standing", branch: integrationBranch, paths: cycle.paths || [] };
+}
+
+export function mergeForRun({ record, land, readiness }, run, cfg, ghDeps, emit) {
+  return mergeStanding({
+    record: { ...record, runId: run.sid, repo: run.repo, orchDir: run.orchDir },
+    cfg,
+    land,
+    readiness,
+  }, {
+    gh: ghDeps.gh,
+    git,
+    gate,
+    lock: { acquireBlocking, releaseLock },
+    repo: run.repo,
+    orchDir: run.orchDir,
+    log: ghDeps.log,
+    onMergeRequest: ({ pr, head, method }) => emit({ event: "merge.request", runId: run.sid, pr, head, method }),
+  });
+}
+
+function mergeVerifiedEvent(runId, controller, cfg) {
+  if (!controller?.mergeCommit) return null;
+  return {
+    event: "merge.verified",
+    runId,
+    pr: controller.land?.pr?.number || null,
+    head: controller.headSha || null,
+    method: controller.merge?.requests?.at(-1)?.method
+      || (controller.land?.landing === "standing" ? "merge" : cfg.github?.mergeMethod || "squash"),
+    mergeCommit: controller.mergeCommit,
+    base: cfg.baseBranch || "main",
+    ancestor: true,
+  };
+}
+
+function outputResult(result, controller) {
+  if (controller?.state !== "MERGED" || result?.status === "merged") return result;
+  return { ...result, status: "merged", reason: "head-bound merge verified", mergeCommit: controller.mergeCommit };
 }
 
 function reviewersForAuthor(authorName, reviewerSpecs, { allowSelf = false } = {}) {
@@ -1835,6 +1877,7 @@ export async function main(argv, deps = {}) {
         const reviewerList = reviewersForRun(authorName);
         return {
           mode, task, authorPrompt, workOrder, allowLargeScope: Boolean(flags["allow-large-scope"]),
+          until,
           closes, branch, sid, resume, authorName, author: authorSpec,
           reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
           reviewers: reviewerList, excludedAgents: exclusions,
@@ -1855,7 +1898,7 @@ export async function main(argv, deps = {}) {
       task = null;
       const sid = newSid();
       runs = [{
-        mode, task, allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
+        mode, task, until, allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
         reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
         reviewers,
         cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
@@ -2086,18 +2129,22 @@ export async function main(argv, deps = {}) {
                 }),
               },
               resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
+              mergeStanding: (args) => mergeForRun(args, activeRun, cfg, ghDeps, emit),
               gh: ghDeps.gh, git, repo,
               sleep: deps.sleep,
             });
             outcome = controller.outcome;
             exit = controller.exit;
             state = controller.state;
-            if (controller.land) pr = { number: controller.land.pr.number, url: controller.land.pr.url, kind: controller.land.landing === "standing" ? "standing" : "per-cycle" };
+            if (controller.land?.pr?.number) {
+              pr = { number: controller.land.pr.number, url: controller.land.pr.url, kind: controller.land.landing === "standing" ? "standing" : "per-cycle" };
+            }
             raiseExitCode(exit);
           }
           const cycleResults = controller?.cycleResults || [result];
           for (const retryResult of cycleResults.slice(1)) results.push(retryResult);
-          finalResult = cycleResults[cycleResults.length - 1];
+          finalResult = outputResult(cycleResults[cycleResults.length - 1], controller);
+          results[results.length - 1] = finalResult;
           if (finalResult.prUrl && !controller?.land) {
             pr = { number: null, url: finalResult.prUrl, kind: finalResult.status === "merged" ? "standing" : "per-cycle" };
           }
@@ -2124,6 +2171,7 @@ export async function main(argv, deps = {}) {
             pr,
             ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
             ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
+            ...(controller?.merge ? { merge: controller.merge } : {}),
             excludedAgents: controller?.excludedAgents || activeRun.excludedAgents || priorRecord?.excludedAgents || [],
             policy: controller?.policy || runPolicy,
             ...(controller?.human ? { human: controller.human } : {}),
@@ -2145,6 +2193,8 @@ export async function main(argv, deps = {}) {
               })),
             ],
           });
+          const mergeEvent = mergeVerifiedEvent(run.sid, controller, cfg);
+          if (mergeEvent) emit(mergeEvent);
           emit({
             event: "run.end", runId: run.sid, outcome, exit, usage,
             ...(controller?.failure ? { failureClass: controller.failure.class } : {}),
@@ -2362,6 +2412,7 @@ export async function main(argv, deps = {}) {
       // fallback for their changelog label. Author-stage resumes fail above
       // unless they have the original work order and can execute it safely.
       mode: "task", task, authorPrompt, workOrder,
+      until: flags.until || priorRun?.policy?.until || "once",
       allowLargeScope, branch, sid: resumeSid, resume: true, closes,
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
@@ -2576,9 +2627,11 @@ export async function main(argv, deps = {}) {
             }),
           },
           resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
+          mergeStanding: (args) => mergeForRun(args, activeRun, cfg, ghDeps, emit),
           gh: ghDeps.gh, git, repo, sleep: deps.sleep,
         });
         finalResult = controller.cycleResults?.at(-1) || result;
+        finalResult = outputResult(finalResult, controller);
         // The arrays are needed by the durable lineage update below. Keep them
         // on the controller result without changing run-controller's contract.
         controller.cycleSids = cycleSids;
@@ -2608,6 +2661,7 @@ export async function main(argv, deps = {}) {
             ...(controller?.resumeCommand ? { resumeCommand: controller.resumeCommand } : {}),
             ...(controller?.retries ? { retries: controller.retries } : {}),
             ...(controller?.failures ? { failures: controller.failures } : {}),
+            ...(controller?.merge ? { merge: controller.merge } : {}),
             cycles: [...priorRun.cycles, ...cycleResults.map((cycleResult, index) => ({
               sid: controller?.cycleSids?.[index] || resumeSid,
               attempt,
@@ -2626,6 +2680,7 @@ export async function main(argv, deps = {}) {
             attempt,
             branch: activeRun.branch,
             excludedAgents: run.excludedAgents,
+            ...(controller?.merge ? { merge: controller.merge } : {}),
             cycles: [{ sid: resumeSid, attempt, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
           });
         }
@@ -2662,6 +2717,8 @@ export async function main(argv, deps = {}) {
         if (!controller) raiseExitCode(2);
         if (!dry) commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps);
       }
+      const mergeEvent = mergeVerifiedEvent(runId, controller, cfg);
+      if (mergeEvent) emit(mergeEvent);
       emit({
         event: "run.end", runId, outcome, exit,
         usage: finalResult.usage || {},

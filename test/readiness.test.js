@@ -119,6 +119,32 @@ test("inspect: PR merged by someone else, our commit NOT on base -> not ready", 
   assert.equal(result.class, "REMOTE_PR_CLOSED");
 });
 
+test("inspect: merged per-cycle PR checks its merge commit is on base", () => {
+  const mergeCommit = "d".repeat(40);
+  const calls = [];
+  const deps = makeDeps({ state: "MERGED", mergeCommit: { oid: mergeCommit } });
+  deps.git.git = (a) => {
+    calls.push(a);
+    if (a[0] === "merge-base" && a[2] === mergeCommit) return "";
+    throw new Error("unexpected git call");
+  };
+  const result = inspect({ ...args, landing: "pr" }, deps);
+
+  assert.equal(result.ready, true);
+  assert.equal(result.mergedBy, "external");
+  assert.deepEqual(result.mergeCommit, { oid: mergeCommit });
+  assert.ok(calls.some((a) => a[0] === "merge-base" && a[2] === mergeCommit));
+});
+
+test("inspect: merged per-cycle PR not on base is not ready", () => {
+  const deps = makeDeps({ state: "MERGED", mergeCommit: { oid: "d".repeat(40) } });
+  deps.git.git = () => { throw new Error("not an ancestor"); };
+  const result = inspect({ ...args, landing: "pr" }, deps);
+
+  assert.equal(result.ready, false);
+  assert.equal(result.class, "REMOTE_PR_CLOSED");
+});
+
 test("inspect: head moved but still an ancestor at the integration tip -> re-pins (standing only)", () => {
   const newHead = "c".repeat(40);
   const deps = makeDeps({ headRefOid: newHead }, { requiredContexts: [] });
