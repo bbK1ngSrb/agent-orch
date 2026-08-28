@@ -314,7 +314,7 @@ test("orch tsk --detach refuses an uninitialized repository", () => {
     { cwd: repo, encoding: "utf8" },
   );
   assert.equal(result.status, 64, result.stderr);
-  assert.match(result.stderr, /orch init/);
+  assert.equal(result.stderr, "orch: detached runs require .orch — run `orch init` first\n");
   assert.deepEqual(readdirSync(repo), []);
 });
 
