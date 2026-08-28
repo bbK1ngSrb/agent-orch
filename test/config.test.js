@@ -371,6 +371,20 @@ test("automation.mcpMayMerge defaults to false and validates booleans", () => {
   assert.throws(() => load(bad), /automation.mcpMayMerge must be a boolean/);
 });
 
+test("automation.rotateModels defaults to empty and validates model ladders", () => {
+  assert.deepEqual(load(tmp()).automation.rotateModels, {});
+
+  const configured = tmp();
+  writeFileSync(join(configured, "orch.yml"), "automation:\n  rotateModels:\n    claude: [sonnet-4, opus-4]\n");
+  assert.deepEqual(load(configured).automation.rotateModels, { claude: ["sonnet-4", "opus-4"] });
+
+  for (const value of ["yes", "[]", "{claude: []}", "{claude: [sonnet-4, sonnet-4]}", "{claude: [null]}"]) {
+    const bad = tmp();
+    writeFileSync(join(bad, "orch.yml"), `automation:\n  rotateModels: ${value}\n`);
+    assert.throws(() => load(bad), /automation\.rotateModels must map/);
+  }
+});
+
 test("main.autoMerge defaults to false; non-boolean throws", () => {
   assert.equal(load(tmp()).main.autoMerge, false);
   const d = tmp();

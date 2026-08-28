@@ -2913,7 +2913,8 @@ test("agent build scaffolds quota detection and environment fields", async () =>
     },
   });
   assert.match(prompt, /limitPattern/);
-  assert.match(prompt, /envKeys/);
+  assert.match(prompt, /declares env for the environment it needs/);
+  assert.doesNotMatch(prompt, /envKeys/);
 });
 
 test("agent build --pr routes the cycle through merge: pr instead of a local-only branch", async () => {

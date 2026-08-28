@@ -301,6 +301,7 @@ export async function rotateRemedy({ failure, record, cycle, run, deps = {}, run
       const replacementReviewers = reviewers
         .filter((reviewer) => reviewer.agent !== replacement?.agent && !selectionExcluded.has(reviewer.agent));
       if (replacement && replacementReviewers.length) {
+        excluded.delete(replacement.agent);
         nextAuthor = replacement;
         nextReviewers = replacementReviewers;
       }
@@ -310,6 +311,7 @@ export async function rotateRemedy({ failure, record, cycle, run, deps = {}, run
         : failedAgents.length === 0 ? reviewers[0] : null;
       const replacement = nextModelRole(failedReviewer, run, deps);
       if (replacement && nextAuthor) {
+        excluded.delete(replacement.agent);
         nextReviewers = reviewers.map((reviewer) => reviewer.agent === replacement.agent ? replacement : reviewer)
           .filter((reviewer) => reviewer.agent !== nextAuthor.agent
             && (reviewer.agent === replacement.agent || !selectionExcluded.has(reviewer.agent)));

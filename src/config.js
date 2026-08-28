@@ -225,9 +225,11 @@ export function validate(cfg, roundCapKey = "roundCap", landingKey = cfg?.landin
   if (typeof cfg.automation.mcpMayMerge !== "boolean")
     throw new Error("orch.yml: automation.mcpMayMerge must be a boolean");
   if (!isObject(cfg.automation.rotateModels)
-    || Object.values(cfg.automation.rotateModels).some((models) => !Array.isArray(models)
-      || models.length < 1 || !models.every((model) => typeof model === "string" && model.trim())))
-    throw new Error("orch.yml: automation.rotateModels must map agents to non-empty lists of model strings");
+    || Object.entries(cfg.automation.rotateModels).some(([agent, models]) => !/^\S+$/.test(agent)
+      || !Array.isArray(models) || models.length < 1
+      || new Set(models).size !== models.length
+      || !models.every((model) => typeof model === "string" && model.trim())))
+    throw new Error("orch.yml: automation.rotateModels must map agents to non-empty, duplicate-free lists of model strings");
   const remedyNames = new Set(["rebase", "rotate", "reauthor", "ask"]);
   if (cfg.automation.remedies !== null && (!Array.isArray(cfg.automation.remedies)
     || new Set(cfg.automation.remedies).size !== cfg.automation.remedies.length
