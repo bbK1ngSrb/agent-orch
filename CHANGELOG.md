@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.355 — 2026-08-28
+- cli: --detach runs a cycle in the background and shows it in the dashboard
+
 ## v0.4.354 — 2026-08-28
 - fix(mcp): default PR reviews to once (closes [#594](https://github.com/bbk1ng/agent-orch/issues/594))
 
