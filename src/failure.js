@@ -194,7 +194,8 @@ export function chooseRemedy(failure, record = {}, policy = {}) {
       .filter((r) => r !== undefined);
   }
 
-  const pendingAsk = Boolean(record.human?.askCommentId && !record.human.replies?.length);
+  const pendingAsk = Boolean(record.human?.askCommentId
+    && !record.human.replies?.some((reply) => Number(reply.id) > Number(record.human.askCommentId)));
 
   // Convergence (design §7): two consecutive equal fingerprints skip the
   // remedy that produced the second; three equal fingerprints go to `ask` (or
@@ -204,7 +205,7 @@ export function chooseRemedy(failure, record = {}, policy = {}) {
   }
   if (streak === 2) {
     const lastRemedy = history[history.length - 1]?.remedy;
-    if (!pendingAsk) allowed = allowed.filter((r) => r !== lastRemedy);
+    if (!(pendingAsk && allowed.includes("ask"))) allowed = allowed.filter((r) => r !== lastRemedy);
   }
 
   if (row.freeRetry) {

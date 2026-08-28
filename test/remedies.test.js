@@ -2214,7 +2214,7 @@ test("ask reuses an unanswered question after a resumed attempt advances", async
       human: {
         channel: "issue", target: 9, askCommentId: 20,
         askedAt: "1970-01-01T00:00:00.000Z", deadline: "1970-01-01T01:00:00.000Z",
-        attempt: 0, replies: [],
+        attempt: 0, replies: [{ id: 15, command: "retry" }],
       },
     },
     deps: { gh, now: () => now, sleep: async () => { now = 4_000_000; } },

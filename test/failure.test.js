@@ -168,7 +168,7 @@ test("chooseRemedy(): a timed-out ask stays eligible when the same failure resum
   const pending = {
     attempt: 1,
     failures: [{ fingerprint: failure.fingerprint, remedy: "ask" }],
-    human: { askCommentId: 7, attempt: 0, replies: [] },
+    human: { askCommentId: 7, attempt: 0, replies: [{ id: 6, command: "retry" }] },
   };
   assert.deepEqual(chooseRemedy(failure, pending, policy), { decision: "ask" });
   assert.deepEqual(
@@ -176,6 +176,17 @@ test("chooseRemedy(): a timed-out ask stays eligible when the same failure resum
     { decision: "terminal", outcome: "STOPPED_AT_CAP" },
     "a completed ask on an earlier attempt must still converge normally",
   );
+});
+
+test("chooseRemedy(): pending ask only skips a repeated remedy when ask is available", () => {
+  const failure = failureFor("LAND_OVERLAP", "same overlap");
+  const policy = { maxAttempts: 3, remedies: ["rebase"] };
+  const record = {
+    attempt: 1, retries: { LAND_OVERLAP: 1 },
+    failures: [{ fingerprint: failure.fingerprint, remedy: "rebase" }],
+    human: { askCommentId: 7, replies: [] },
+  };
+  assert.deepEqual(chooseRemedy(failure, record, policy), { decision: "terminal", outcome: "STOPPED_AT_CAP" });
 });
 
 test("chooseRemedy(): three consecutive equal fingerprints -> ask", () => {

@@ -171,7 +171,8 @@ export async function askRemedy({ failure, record = {}, policy = {}, run, deps =
   // A timed-out question remains the reply cursor even if a resumed attempt
   // advanced the counter. Once a reply is journaled, start a new question so
   // the old `orch: retry`/`abandon` command cannot be consumed twice.
-  const existing = previousHuman && !(previousHuman.replies?.length)
+  const existing = previousHuman
+    && !previousHuman.replies?.some((reply) => Number(reply.id) > Number(previousHuman.askCommentId))
     ? previousHuman
     : null;
   const askedAt = existing?.askedAt || new Date(clock).toISOString();
