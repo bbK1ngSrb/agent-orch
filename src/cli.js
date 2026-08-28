@@ -1045,6 +1045,7 @@ export function resolvePrTarget({ target, repo, orchDir, baseBranch = "main", un
   }
 
   let pr = null;
+  let prLookupFailed = false;
   let branch = value;
   let ephemeral = false;
   const runGit = (args) => typeof gitDep === "function" ? gitDep(args, repo) : gitDep.git(args, repo);
@@ -1071,7 +1072,10 @@ export function resolvePrTarget({ target, repo, orchDir, baseBranch = "main", un
       try {
         const found = findPrByHead(branch, baseBranch, { includeDraft: true }, { gh });
         if (found?.number) pr = prView(found.number, PR_VIEW_FIELDS, { gh });
-      } catch { /* a local-only review remains valid without a readable remote */ }
+      } catch {
+        prLookupFailed = true;
+        /* a local-only review remains valid without a readable remote */
+      }
     }
   }
 
@@ -1094,7 +1098,8 @@ export function resolvePrTarget({ target, repo, orchDir, baseBranch = "main", un
     baseBranch: pr?.baseRefName || baseBranch,
     ephemeral,
     originalNumber: pr?.number ? Number(pr.number) : null,
-    needsRepairBranch: Boolean(pr?.number && until !== "once" && !pr.canPushHead),
+    ...(prLookupFailed && until !== "once" ? { canPushHead: false } : {}),
+    needsRepairBranch: Boolean((prLookupFailed || pr?.number) && until !== "once" && !pr?.canPushHead),
   };
 }
 
@@ -1126,7 +1131,11 @@ export function resolveLanded(cycle, run, cfg, ghDeps, repo) {
 
 export function preparePrRepairRun(run, cfg, ghDeps) {
   const target = run.prTarget;
-  const repairBranch = `pr/repair/${target.number}-${run.sid}`;
+  const repairKey = target.originalNumber || target.number || slugify(target.sourceBranch || run.branch);
+  const repairLabel = target.originalNumber || target.number
+    ? `PR #${target.originalNumber || target.number}`
+    : `branch ${target.sourceBranch || run.branch}`;
+  const repairBranch = `pr/repair/${repairKey}-${run.sid}`;
   if (!git.branchExists(run.repo, repairBranch)) {
     git.git(["branch", repairBranch, run.branch], run.repo);
   }
@@ -1137,10 +1146,10 @@ export function preparePrRepairRun(run, cfg, ghDeps) {
   const repairPr = createPr({
     head: repairBranch,
     base: target.baseBranch || cfg.baseBranch || "main",
-    title: `orch: repair PR #${target.originalNumber || target.number}`,
-    body: `Repair branch for PR #${target.originalNumber || target.number}.`,
+    title: `orch: repair ${repairLabel}`,
+    body: `Repair branch for ${repairLabel}.`,
   }, ghDeps);
-  if (!repairPr.number) throw new Error(`could not open repair PR for #${target.originalNumber || target.number}`);
+  if (!repairPr.number) throw new Error(`could not open repair PR for ${repairLabel}`);
   return {
     ...run,
     branch: repairBranch,
