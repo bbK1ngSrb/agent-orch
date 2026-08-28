@@ -199,6 +199,19 @@ test("mergeStanding supports per-cycle PR landing with its configured merge meth
   assert.ok(mergeCall.includes("merge_method=squash"));
 });
 
+test("mergeStanding does not bypass a per-cycle PR when integration and base match", async () => {
+  const deps = fakeDeps({ required: [] });
+  const result = await mergeStanding({
+    record: {},
+    cfg: { ...CFG, integrationBranch: "main", baseBranch: "main" },
+    land: { ...LAND, landing: "pr" },
+    readiness: { headSha: HEAD, required: { known: true, contexts: [] } },
+  }, deps);
+
+  assert.equal(result.result, "merged");
+  assert.equal(deps.calls.filter((args) => args.some((arg) => String(arg).includes("/pulls/9/merge"))).length, 1);
+});
+
 test("two racing merge controllers submit only one merge request", async () => {
   const deps = fakeDeps({ required: [] });
   deps.orchDir = mkdtempSync(join(tmpdir(), "orch-landing-race-"));

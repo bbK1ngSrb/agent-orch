@@ -47,12 +47,16 @@ export function inspect({ pr, expectedHead, landing, cfg = {}, required } = {}, 
   }
 
   if (data.state === "MERGED") {
-    if (landing === "pr") {
-      return { ready: true, headSha: data.headRefOid, mergedBy: "external", mergeCommit: data.mergeCommit, warnings: [] };
-    }
+    const mergedCommit = landing === "pr" ? data.mergeCommit?.oid : expectedHead;
     const base = `origin/${cfg.baseBranch || "main"}`;
-    if (isAncestor(deps, expectedHead, base)) {
-      return { ready: true, headSha: data.headRefOid, mergedBy: "external", warnings: [] };
+    if (mergedCommit && isAncestor(deps, mergedCommit, base)) {
+      return {
+        ready: true,
+        headSha: data.headRefOid,
+        mergedBy: "external",
+        ...(landing === "pr" ? { mergeCommit: data.mergeCommit } : {}),
+        warnings: [],
+      };
     }
     return { ready: false, class: "REMOTE_PR_CLOSED", summary: "PR was merged, but our commit is not reachable from base" };
   }

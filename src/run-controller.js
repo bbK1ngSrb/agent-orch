@@ -122,6 +122,8 @@ export async function runUntil(policy, record = {}, deps) {
   };
   let cycle = await deps.runCycle();
   const cycleResults = [cycle];
+  let repinnedHead = null;
+  let repinPending = false;
   // A remedy that changed nothing (integration-repair losing its lock to a
   // peer) hands the SAME cycle back so the loop re-polls readiness. Recording
   // it again would write one phantom cycle result per contention round into the
@@ -130,10 +132,9 @@ export async function runUntil(policy, record = {}, deps) {
     if (next === cycle) return;
     cycle = next;
     cycleResults.push(next);
+    repinnedHead = null;
+    repinPending = false;
   };
-
-  let repinnedHead = null;
-  let repinPending = false;
   for (let loop = 0; loop < MAX_REMEDY_LOOPS; loop += 1) {
     // "approved" (engine.js's noMerge path) is a success terminal exactly
     // like "merged"/"pr".

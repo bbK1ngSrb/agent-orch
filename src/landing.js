@@ -260,7 +260,7 @@ export async function mergeStanding({ record = {}, cfg = {}, land, readiness } =
   const landing = land?.landing || record.landing || cfg.landing || (cfg.merge === "pr" ? "pr" : integration === base ? "base" : "standing");
   const paths = land?.paths || record.paths || [];
 
-  if (integration === base) return { result: "merged", headSha: expectedHead, mergedBy: "orch" };
+  if (integration === base && landing === "base") return { result: "merged", headSha: expectedHead, mergedBy: "orch" };
   if (!pr || !expectedHead) return rejected(failure("REMOTE_UNKNOWN", "landed PR or exact head is missing"));
   if (!deps.repo || !deps.orchDir || !deps.git || !deps.gh) {
     return rejected(failure("REMOTE_UNKNOWN", "merge-phase dependencies are unavailable"));

@@ -295,6 +295,54 @@ test("runUntil: a head-bound 409 rechecks readiness and merges the repinned head
   assert.equal(mergeCalls, 2);
 });
 
+test("runUntil: a fresh re-landing remedy discards an earlier standing-PR repin", async () => {
+  const repinned = "b".repeat(40);
+  const newHead = "c".repeat(40);
+  let currentHead = repinned;
+  let cycleCalls = 0;
+  let landCalls = 0;
+  const mergeHeads = [];
+  const deps = baseDeps({
+    runCycle: async () => ({ status: "merged" }),
+    resolveLanded: () => {
+      landCalls += 1;
+      currentHead = landCalls === 1 ? repinned : newHead;
+      return { ...LAND, expectedHead: landCalls === 1 ? HEAD : newHead };
+    },
+    gh: (a) => {
+      if (a[0] === "pr" && a[1] === "view") {
+        return JSON.stringify({
+          number: 9, state: "OPEN", isDraft: false, headRefOid: currentHead, baseRefName: "main",
+          mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+        });
+      }
+      if (a[0] === "api") return "[]";
+      throw new Error(`unexpected gh call: ${a.join(" ")}`);
+    },
+    git: { git: (a) => {
+      if (a[0] === "rev-parse") return currentHead;
+      if (a[0] === "merge-base" && a[2] === HEAD && a[3] === repinned) return "";
+      throw new Error("not an ancestor");
+    } },
+    mergeStanding: async ({ land }) => {
+      mergeHeads.push(land.expectedHead);
+      if (mergeHeads.length === 1) {
+        return { result: "rejected", failure: { class: "LAND_DIRTY_MERGE", summary: "re-land" } };
+      }
+      return { result: "merged", headSha: land.expectedHead, mergeCommit: "d".repeat(40) };
+    },
+    remedies: {
+      rebase: async () => ({ cycle: { status: "merged", cycle: ++cycleCalls } }),
+    },
+  });
+
+  const result = await runUntil({ ...POLICY, until: "merged" }, {}, deps);
+
+  assert.equal(result.state, "MERGED");
+  assert.deepEqual(mergeHeads, [repinned, newHead]);
+  assert.equal(cycleCalls, 1);
+});
+
 // Regression: `--until merged` must actually reach readiness before stopping
 // short of the merge — not skip the wait entirely and always claim "merge
 // ships in P8" regardless of whether the PR is even mergeable yet.
