@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, delimiter } from "node:path";
@@ -95,6 +96,89 @@ test("spawnDocsTask closes the parent docs log fd when spawn throws", () => {
     closeSync: (fd) => closed.push(fd),
   }, "/tmp/orch"), /spawn failed/);
   assert.deepEqual(closed, [43]);
+});
+
+test("--detach waits for the child run record and reports its handle", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-detach-"));
+  const child = new EventEmitter();
+  child.pid = 424242;
+  child.unref = () => {};
+  let spawnArgs;
+  const logs = [];
+  const previousLog = console.log;
+  const previousCwd = cwd();
+  chdir(repo);
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    const event = await main(["task", "detached work", "--detach", "--json"], {
+      spawn: (...args) => {
+        spawnArgs = args;
+        setImmediate(() => {
+          const rawLog = args[2].env.ORCH_DETACH_LOG;
+          const childLog = rawLog.replace(/-\d+\.log$/, "-424242.log");
+          runRecordDep.create(join(repo, ".orch"), {
+            runId: "526-0",
+            command: "task",
+            argv: ["task", "detached work"],
+            detached: { pid: child.pid, log: existsSync(childLog) ? childLog : rawLog, runId: "526-0" },
+          });
+        });
+        return child;
+      },
+      detachPollMs: 1,
+      detachWaitMs: 100,
+    });
+    assert.deepEqual(event, {
+      event: "run.detached",
+      pid: child.pid,
+      log: event.log,
+      runId: "526-0",
+    });
+    assert.equal(spawnArgs[1].includes("--detach"), false);
+    assert.equal(spawnArgs[2].detached, true);
+    assert.equal(spawnArgs[2].env.ORCH_DETACHED, "1");
+    assert.match(spawnArgs[2].env.ORCH_DETACH_LOG, /\d{8}-\d{6}-\d+\.log$/);
+    assert.equal(JSON.parse(logs[0]).runId, "526-0");
+  } finally {
+    console.log = previousLog;
+    chdir(previousCwd);
+  }
+});
+
+test("--detach propagates an early child exit and prints the log tail", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-detach-early-"));
+  const child = new EventEmitter();
+  child.pid = 424243;
+  child.unref = () => {};
+  let stderr = "";
+  const previousWrite = process.stderr.write;
+  const previousCwd = cwd();
+  chdir(repo);
+  process.stderr.write = (chunk) => { stderr += String(chunk); return true; };
+  try {
+    await assert.rejects(
+      () => main(["tsk", "detached work", "--detach"], {
+        spawn: (...args) => {
+          setImmediate(() => {
+            const rawLog = args[2].env.ORCH_DETACH_LOG;
+            const childLog = rawLog.replace(/-\d+\.log$/, "-424243.log");
+            const log = existsSync(childLog) ? childLog : rawLog;
+            writeFileSync(log, `${Array.from({ length: 21 }, (_, i) => `line-${i + 1}`).join("\n")}\n`);
+            child.emit("exit", 64, null);
+          });
+          return child;
+        },
+        detachPollMs: 1,
+        detachWaitMs: 100,
+      }),
+      (error) => error.exit === 64 && /line-21/.test(error.message),
+    );
+    assert.match(stderr, /line-21/);
+    assert.doesNotMatch(stderr, /line-1\n/);
+  } finally {
+    process.stderr.write = previousWrite;
+    chdir(previousCwd);
+  }
 });
 
 test("--config-file layers a custom yml onto orch.yml for the run (F: config override)", async () => {

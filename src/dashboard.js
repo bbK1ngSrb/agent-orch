@@ -56,6 +56,7 @@ export function liveCycles(orchDir) {
         stage: ck ? (STAGE_LABELS[ck.stage] || ck.stage) : "authoring",
         round: ck?.round ?? null,
         lastUpdate: ck?.ts || e.ts,
+        ...(e.detached ? { detached: true, log: e.log || null, runId: e.runId || e.sid } : {}),
       };
     })
     .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
@@ -238,7 +239,7 @@ export function snapshot(orchDir, { historyLimit = 10, repo = null, checkHistory
   const interrupted = interruptedCycles(orchDir, live, repo);
   const entries = readJsonl(join(orchDir, "runs.jsonl"));
   return {
-    live: live.map((c) => ({ ...c, log: latestLog(orchDir, c.branch) })),
+    live: live.map((c) => ({ ...c, log: c.log || latestLog(orchDir, c.branch) })),
     interrupted,
     history: runHistory(orchDir, historyLimit, { repo, checkHistory, entries }),
     metrics: metrics(orchDir, { entries }),
@@ -258,7 +259,11 @@ export function render(orchDir, opts = {}) {
     for (const c of live) {
       const round = c.round != null ? ` round ${c.round}` : "";
       lines.push(`  ${c.branch}  [${stageText(c.stage)}${round}]  sid=${c.sid}  pid=${c.pid}  since ${formatTimestamp(c.startedAt)}`);
-      if (c.log) lines.push(`    log (${c.log.file}): ${c.log.tail.split("\n").pop()}`);
+      if (c.log) {
+        const logFile = typeof c.log === "string" ? c.log : c.log.file;
+        const logTail = typeof c.log === "string" ? "" : c.log.tail.split("\n").pop();
+        lines.push(`    log (${logFile})${logTail ? `: ${logTail}` : ""}`);
+      }
     }
   }
   lines.push("");

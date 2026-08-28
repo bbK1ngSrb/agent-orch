@@ -39,6 +39,7 @@ export const FLAGS = {
   build: { type: "boolean", help: "With agent add, build the adapter without asking." },
   "no-banner": { type: "boolean", help: "Hide the run banner." },
   "no-tidy": { type: "boolean", help: "Leave task branches and checkouts after merge." },
+  detach: { type: "boolean", help: "Run in the background and print its handle." },
   json: { type: "boolean", help: "Print JSON events (dashboard: a snapshot)." },
   limit: { type: "int", arg: "<n>", help: "With dashboard, limit history rows." },
   "check-history": { type: "boolean", help: "Dashboard: show stale red rows resolved (view only)." },
@@ -56,7 +57,7 @@ export const GLOBAL_FLAGS = ["help", "version"];
 
 // Flags shared by the commands that run an author/review/test cycle.
 const RUN_FLAGS = [
-  "config-file", "dry", "no-tidy", "no-banner", "until",
+  "config-file", "dry", "no-tidy", "no-banner", "detach", "until",
   "allow-large-scope", "author", "authors", "reviewer", "reviewers",
 ];
 
@@ -132,7 +133,7 @@ export const COMMANDS = {
   // `--until once|ready|merged` is handled by the unified PR path in cli.js;
   // `--merge` remains a compatibility alias until the P12 clean break.
   pr: {
-    mutates: true, flags: ["config-file", "dry", "merge", "until", "allow-large-scope", "reviewer", "reviewers", "json"],
+    mutates: true, flags: ["config-file", "dry", "merge", "until", "detach", "allow-large-scope", "reviewer", "reviewers", "json"],
     rows: [["pr <number|branch>", "Review a PR/branch; --until controls readiness."]],
   },
   release: {
@@ -253,7 +254,7 @@ function validateValue(name, raw) {
 // --help` would otherwise print usage and exit 0 having merged nothing.
 // Commands with no schema entry (unknown input, which falls through to usage)
 // are not validated here — main()'s fall-through rejects them.
-export function validate(command, flags) {
+export function validate(command, flags, { detachedChild = false } = {}) {
   const effective = flags.help ? "help" : flags.version ? "version" : command;
   const spec = COMMANDS[effective] || INTERNAL_COMMANDS[effective];
   if (!spec) {
@@ -299,7 +300,12 @@ export function validate(command, flags) {
   // through the controller's event stream (P5); on the bare/`once` path
   // there is nothing to stream, so accepting it would be another silent no-op.
   if (flags.json && ["task", "issue", "review", "pr"].includes(effective) && (!flags.until || flags.until === "once")) {
-    throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged) — the once path has no event stream to print`);
+    if (!flags.detach && !detachedChild) {
+      throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged) — the once path has no event stream to print`);
+    }
+  }
+  if (flags.detach && flags.dry) {
+    throw usageError("--detach cannot be combined with --dry");
   }
   // `--cheap` picks cfg.cheap.role for both roles; combined with an explicit
   // --author/--reviewer it's ambiguous which one wins. cli.js's

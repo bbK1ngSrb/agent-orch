@@ -59,6 +59,7 @@ const DEFAULTS = {
     remedies: null, // null uses the failure table order; operators may override the priority
     pollSeconds: 30, // initial readiness poll interval; backs off 2x per attempt, capped at 10 min
     ciWaitMinutes: 30, // bound on one readiness wait window before it counts as an attempt (REMOTE_CI_TIMEOUT)
+    detachLogDir: ".orch/logs",
   },
 };
 
@@ -137,6 +138,8 @@ export function validate(cfg, roundCapKey = "roundCap") {
     throw new Error("orch.yml: automation.pollSeconds must be a positive integer");
   if (!Number.isInteger(cfg.automation.ciWaitMinutes) || cfg.automation.ciWaitMinutes < 1)
     throw new Error("orch.yml: automation.ciWaitMinutes must be a positive integer");
+  if (typeof cfg.automation.detachLogDir !== "string" || !cfg.automation.detachLogDir.trim())
+    throw new Error("orch.yml: automation.detachLogDir must be a non-empty string");
 }
 
 // A role spec is "<agent> [model] [effort]" — whitespace-separated fields.

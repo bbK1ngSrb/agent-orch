@@ -26,7 +26,7 @@ function save(orchDir, runId, record) {
 
 // `policy` is opaque here (design §4's RunPolicy, wired by the run-controller
 // slice) — this store only persists whatever the caller passes.
-export function create(orchDir, { runId, command, argv, policy = null, prTarget = null }) {
+export function create(orchDir, { runId, command, argv, policy = null, prTarget = null, detached = null }) {
   if (!safeSid(runId)) return null;
   const now = new Date().toISOString();
   return save(orchDir, runId, {
@@ -54,10 +54,19 @@ export function create(orchDir, { runId, command, argv, policy = null, prTarget 
     readiness: null,
     merge: null,
     human: null,
-    detached: null,
+    detached,
     interrupted: null,
     lastError: null,
   });
+}
+
+// The parent of a detached run has only the child PID while it waits for the
+// child's durable run identity to appear.
+export function findDetached(orchDir, pid) {
+  for (const { record } of scanDir(dir(orchDir))) {
+    if (record.detached?.pid === pid) return record;
+  }
+  return null;
 }
 
 // Shallow merge + updatedAt, atomic. Returns null if no record exists yet.

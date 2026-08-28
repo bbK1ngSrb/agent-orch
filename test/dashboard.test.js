@@ -41,6 +41,23 @@ test("liveCycles reports authoring stage before any checkpoint", () => {
   assert.equal(c.round, null);
 });
 
+test("dashboard preserves detached run metadata in its live snapshot", () => {
+  const d = freshDir();
+  inflight.register(d, "sid-detached", {
+    branch: "b1",
+    pid: process.pid,
+    baseSha: "abc",
+    detached: true,
+    log: "/tmp/detached.log",
+    runId: "run-1",
+  });
+  const [cycle] = dashboard.snapshot(d).live;
+  assert.equal(cycle.detached, true);
+  assert.equal(cycle.log, "/tmp/detached.log");
+  assert.equal(cycle.runId, "run-1");
+  assert.match(dashboard.render(d), /\/tmp\/detached\.log/);
+});
+
 test("liveCycles reflects the latest checkpoint stage", () => {
   const d = freshDir();
   inflight.register(d, "sid-1", { branch: "b1", pid: process.pid, baseSha: "abc" });

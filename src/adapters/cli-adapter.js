@@ -15,6 +15,14 @@ export const MAX_AGENT_OUTPUT_CHARS = 1024 * 1024;
 const OUTPUT_COMPACT_THRESHOLD = Math.floor(MAX_AGENT_OUTPUT_CHARS * 1.5);
 const OUTPUT_TRUNCATED = `[orch: output truncated to last ${MAX_AGENT_OUTPUT_CHARS} chars]\n`;
 const liveChildren = new Set();
+let processSignalCleanup = null;
+
+// The CLI installs a synchronous run-record/lock cleanup callback for a
+// detached run. Keep it here so signal ordering is deterministic: cleanup
+// happens before the existing child-tree kill and signal re-raise below.
+export function setProcessSignalCleanup(cleanup) {
+  processSignalCleanup = typeof cleanup === "function" ? cleanup : null;
+}
 
 // Adapter subprocesses run UNTRUSTED code: scanDiff inspects the diff an agent
 // *writes*, never what it can *read* from its own environment. So the child gets
@@ -74,6 +82,7 @@ function killLiveChildren() {
 process.once("exit", killLiveChildren);
 for (const signal of ["SIGINT", "SIGTERM", ...(IS_WINDOWS ? [] : ["SIGHUP"])]) {
   process.once(signal, () => {
+    try { processSignalCleanup?.(signal); } catch { /* signal cleanup must not block re-raise */ }
     killLiveChildren();
     process.kill(process.pid, signal);
   });
