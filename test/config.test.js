@@ -72,6 +72,7 @@ test("empty dir yields defaults", () => {
   assert.deepEqual(c.agents, ["claude", "codex"]);
   assert.equal(c.roundCap, 3);
   assert.equal(c.merge, "no-ff");
+  assert.equal(c.automation.remedies, null);
   assert.equal(c.scope.maxLines, 0);
 });
 

@@ -54,6 +54,8 @@ const DEFAULTS = {
   },
   automation: {
     maxAttempts: 3, // design §4 RunPolicy.maxAttempts — `--until ready|merged` run-controller cap (P5)
+    humanWaitHours: 24, // bounded wait for an `ask` reply; continue resumes it later
+    remedies: null, // null uses the failure table order; operators may override the priority
     pollSeconds: 30, // initial readiness poll interval; backs off 2x per attempt, capped at 10 min
     ciWaitMinutes: 30, // bound on one readiness wait window before it counts as an attempt (REMOTE_CI_TIMEOUT)
   },
@@ -120,6 +122,14 @@ export function validate(cfg, roundCapKey = "roundCap") {
     throw new Error("orch.yml: release.autoBump must be a boolean");
   if (!Number.isInteger(cfg.automation.maxAttempts) || cfg.automation.maxAttempts < 0)
     throw new Error("orch.yml: automation.maxAttempts must be a non-negative integer");
+  if (typeof cfg.automation.humanWaitHours !== "number" || !Number.isFinite(cfg.automation.humanWaitHours)
+    || cfg.automation.humanWaitHours <= 0 || cfg.automation.humanWaitHours > 720)
+    throw new Error("orch.yml: automation.humanWaitHours must be a number greater than 0 and at most 720");
+  const remedyNames = new Set(["rebase", "rotate", "reauthor", "ask"]);
+  if (cfg.automation.remedies !== null && (!Array.isArray(cfg.automation.remedies)
+    || new Set(cfg.automation.remedies).size !== cfg.automation.remedies.length
+    || !cfg.automation.remedies.every((remedy) => remedyNames.has(remedy))))
+    throw new Error("orch.yml: automation.remedies must be a duplicate-free subset of rebase, rotate, reauthor, ask");
   if (!Number.isInteger(cfg.automation.pollSeconds) || cfg.automation.pollSeconds < 1)
     throw new Error("orch.yml: automation.pollSeconds must be a positive integer");
   if (!Number.isInteger(cfg.automation.ciWaitMinutes) || cfg.automation.ciWaitMinutes < 1)

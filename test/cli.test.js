@@ -891,6 +891,7 @@ test("orch issue posts a gh issue comment on escalation", async () => {
     assert.equal(process.exitCode, 2);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].args[2], "52");
+    assert.match(calls[0].input, /<!-- orch:result -->/);
     assert.match(calls[0].input, /ESCALATED/);
     assert.match(calls[0].input, /stalemate after cap/);
   } finally {
@@ -1094,6 +1095,390 @@ test("orch task wires the rebase remedy with the active run context", async () =
   }
 });
 
+test("orch continue re-runs a fresh cycle for a free retry", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-continue-fresh-cycle-");
+  const sid = "freshcycle";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  gitDep.git(["branch", "orch/integration"], repo);
+
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid, command: "task", argv: [], policy: { until: "ready", maxAttempts: 3 },
+  });
+
+  let finalizeCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async () => ++finalizeCalls === 1
+      ? { status: "escalated", class: "REMOTE_AUTH", fingerprint: "auth-fp", reason: "temporary auth failure" }
+      : { status: "merged", reason: "fixed", sha: "abc" },
+  };
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    await runMainInRepo(repo, ["continue", sid, "--no-tidy"], {
+      cycleDeps,
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      sleep: async () => {},
+    });
+    assert.equal(finalizeCalls, 2, "a free retry must invoke the fresh cycle callback");
+    assert.equal(process.exitCode || 0, 0);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch continue wires the rebase remedy", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-continue-rebase-wiring-");
+  const sid = "contrebase";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  gitDep.git(["branch", "orch/integration"], repo);
+
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid, command: "task", argv: [], policy: { until: "ready", maxAttempts: 3 },
+  });
+
+  let finalizeCalls = 0;
+  let repairAuthorCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author(_prompt, worktree) {
+          repairAuthorCalls += 1;
+          writeFileSync(join(worktree, "repair.txt"), "repaired\n");
+          gitDep.git(["add", "repair.txt"], worktree);
+          gitDep.git(["commit", "-m", "repair rebase"], worktree);
+          return { usage: {} };
+        },
+        async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+    finalize: async () => ++finalizeCalls === 1
+      ? { status: "escalated", class: "TEST_RED", fingerprint: "red-fp", reason: "tests are red" }
+      : { status: "merged", reason: "fixed", sha: "abc" },
+  };
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    await runMainInRepo(repo, ["continue", sid, "--no-tidy"], {
+      cycleDeps,
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      sleep: async () => {},
+    });
+    assert.equal(finalizeCalls, 2, "the rebase remedy must run a fresh cycle");
+    assert.equal(repairAuthorCalls, 1, "continue must register and execute rebase");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch continue wires the rotate remedy", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-continue-rotate-wiring-");
+  const sid = "controrotate";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  gitDep.git(["branch", "orch/integration"], repo);
+
+  const orchDir = join(repo, ".orch");
+  mkdirSync(orchDir, { recursive: true });
+  writeFileSync(join(orchDir, "orch.yml"), "agents: [claude, codex, gemini]\n");
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid, command: "task", argv: [], policy: { until: "ready", maxAttempts: 3 },
+  });
+
+  const audits = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { return { usage: {} }; },
+        async audit() {
+          audits.push(name);
+          return name === "codex"
+            ? { decision: "DISAGREE", reason: "quota", raw: "", agentError: true, quota: true }
+            : { decision: "AGREE", reason: "ok", raw: "", usage: {} };
+        },
+      }),
+    },
+  };
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    await runMainInRepo(repo, ["continue", sid, "--no-tidy"], {
+      cycleDeps,
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      sleep: async () => {},
+    });
+    assert.deepEqual(audits, ["codex", "gemini"], "rotate must re-seat the failed reviewer and run a fresh cycle");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch task --until ready reauthors a classified failure on a fresh branch", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-reauthor-wiring-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  let cycles = 0;
+  try {
+    await runMainInRepo(repo, ["task", "reauthor wiring", "--until", "ready", "--no-tidy"], {
+      cycleDeps: {
+        ...fakeCycleDeps(),
+        finalize: async () => ++cycles === 1
+          ? { status: "escalated", class: "SCOPE_EXCEEDED", fingerprint: "scope-fp", reason: "scope exceeded" }
+          : { status: "merged", reason: "fixed", sha: "abc" },
+      },
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      sleep: async () => {},
+    });
+    assert.equal(cycles, 2);
+    const dir = join(repo, ".orch", "run-records");
+    const record = JSON.parse(readFileSync(join(dir, readdirSync(dir)[0]), "utf8"));
+    assert.equal(record.cycles.length, 2);
+    assert.notEqual(record.cycles[0].branch, record.cycles[1].branch);
+    assert.equal(record.outcome, "reached");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch continue registers a fresh reauthor cycle as authoring", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-continue-reauthor-stage-");
+  const sid = "contre-author-stage";
+  const branch = `pr/claude/reauthor-stage-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  gitDep.git(["branch", "orch/integration"], repo);
+
+  const orchDir = join(repo, ".orch");
+  const workOrder = { title: "reauthor stage", problem: "repair it", repro_steps: [], suspected_paths: [], acceptance_criteria: [] };
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }], task: "reauthor stage",
+    authorPrompt: "reauthor stage", workOrder,
+  });
+  inflight.register(orchDir, sid, {
+    branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo),
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }], rotationStage: "authored",
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid, command: "task", argv: [], policy: { until: "ready", maxAttempts: 3 },
+  });
+
+  let seen = null;
+  let finalizeCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author(_prompt, worktree) {
+          const [file] = readdirSync(join(orchDir, "inflight"));
+          seen = JSON.parse(readFileSync(join(orchDir, "inflight", file), "utf8"));
+          writeFileSync(join(worktree, "reauthor.txt"), "reauthor\n");
+          gitDep.git(["add", "reauthor.txt"], worktree);
+          gitDep.git(["commit", "-m", "reauthor fix"], worktree);
+          return { usage: {} };
+        },
+        async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+    finalize: async () => ++finalizeCalls === 1
+      ? { status: "escalated", class: "SCOPE_EXCEEDED", fingerprint: "scope-fp", reason: "scope exceeded" }
+      : { status: "merged", reason: "fixed", sha: "abc" },
+  };
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    await runMainInRepo(repo, ["continue", sid, "--no-tidy"], {
+      cycleDeps,
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      sleep: async () => {},
+    });
+    assert.equal(finalizeCalls, 2);
+    assert.equal(seen.rotationStage, "started", "a fresh reauthor must be recoverable as an authoring cycle");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch task --until ready keeps the ask window open for a late retry", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-ask-timeout-");
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "automation:\n  humanWaitHours: 0.000001\n");
+  gitDep.git(["branch", "orch/integration"], repo);
+  const calls = [];
+  let now = 0;
+  const questionBodies = [];
+  let cycleCalls = 0;
+  const gh = (args, input) => {
+    calls.push({ args, input });
+    if (args[0] === "pr" && args[1] === "list") {
+      return args.includes("orch/integration")
+        ? JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo) }])
+        : "[]";
+    }
+    if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/12\n";
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({
+      number: 9, state: cycleCalls >= 3 ? "OPEN" : "CLOSED", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo),
+      baseRefName: "main", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+      reviewDecision: null, statusCheckRollup: [],
+    });
+    if (args[0] === "api" && args.includes("-X") && args.includes("POST")) {
+      if (String(input || "").includes("orch needs a decision")) questionBodies.push(String(input));
+      return JSON.stringify({ id: 20 });
+    }
+    if (args[0] === "api" && args[1]?.includes("comments") && args.includes("--paginate")) {
+      return cycleCalls >= 2 ? JSON.stringify([{ id: 21, body: "orch: retry", created_at: "1970-01-01T00:00:01.000Z", user: { login: "maintainer", type: "User" } }]) : "[]";
+    }
+    if (args[0] === "api" && args[1]?.includes("collaborators")) return JSON.stringify({ permission: "write" });
+    if (args[0] === "api") return "[]";
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async () => ++cycleCalls === 1
+      ? { status: "escalated", class: "TEST_MISSING", fingerprint: "test-missing", reason: "no test" }
+      : cycleCalls === 2
+        ? { status: "escalated", class: "TEST_MISSING", fingerprint: "test-missing", reason: "no test" }
+        : { status: "merged", reason: "test", sha: "abc" },
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "ask timeout", "--until", "ready", "--no-tidy", "--json"], {
+      cycleDeps: { ...cycleDeps, checkpoint: checkpointDep },
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      now: () => now,
+      sleep: async () => { now = 10_000; },
+    });
+    const end = JSON.parse(logs[logs.length - 1]);
+    assert.equal(end.exit, 4, logs.join("\n"));
+    assert.equal(end.outcome, "wait-timeout");
+    assert.match(end.resumeCommand, /orch continue /);
+    assert.ok(calls.some(({ input }) => String(input || "").includes("orch:")));
+    assert.ok(calls.some(({ input }) => String(input || "").includes("late reply will still be checked")));
+    const dir = join(repo, ".orch", "run-records");
+    const record = JSON.parse(readFileSync(join(dir, readdirSync(dir)[0]), "utf8"));
+    assert.equal(record.outcome, "wait-timeout");
+    assert.equal(record.state, "WAIT_TIMEOUT");
+    assert.equal(record.exit, 4);
+    assert.equal(record.human.askCommentId, 20);
+
+    process.exitCode = 0;
+    const resumeLogs = await runMainInRepo(repo, ["continue", record.runId, "--no-tidy", "--json"], {
+      cycleDeps,
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      now: () => now,
+      sleep: async () => { now += 10_000; },
+    });
+    const resumeEvents = resumeLogs.map((line) => JSON.parse(line));
+    assert.deepEqual(resumeEvents.map((event) => event.event), ["run.start", "run.resume", "run.end"]);
+    assert.equal(resumeEvents[1].previousOutcome, "wait-timeout");
+    assert.equal(resumeEvents[2].outcome, "reached");
+    assert.equal(resumeEvents[2].exit, 0);
+    assert.equal(cycleCalls, 3, "the late retry must start a fresh cycle");
+    assert.equal(questionBodies.length, 1, "continue must keep the original question");
+    const resumed = JSON.parse(readFileSync(join(dir, `${record.runId}.json`), "utf8"));
+    assert.equal(resumed.outcome, "reached");
+    assert.equal(resumed.state, "READY");
+    assert.equal(resumed.exit, 0);
+    assert.ok(new Date(resumed.human.deadline) > new Date(record.human.deadline), "continue must renew an expired ask window");
+    assert.equal(process.exitCode, 0, "continue must apply the retry's reached exit code");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch task --until ready lets a write-permissioned user abandon the run", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-ask-abandon-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  const gh = (args) => {
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({
+      number: 9, state: "CLOSED", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo),
+      baseRefName: "main", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+      reviewDecision: null, statusCheckRollup: [],
+    });
+    if (args[0] === "api" && args.includes("-X") && args.includes("POST")) return JSON.stringify({ id: 20 });
+    if (args[0] === "api" && args[1]?.includes("comments") && args.includes("--paginate")) {
+      return JSON.stringify([{ id: 21, body: "orch: abandon", user: { login: "maintainer", type: "User" } }]);
+    }
+    if (args[0] === "api" && args[1]?.includes("collaborators")) return JSON.stringify({ permission: "write" });
+    if (args[0] === "api") return "[]";
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "ask abandon", "--until", "ready", "--no-tidy", "--json"], {
+      cycleDeps: { ...fakeCycleDeps(), finalize: async () => ({ status: "merged", reason: "test", sha: "abc" }) },
+      githubDeps: () => ({ gh, git: gitDep.git }),
+    });
+    const end = JSON.parse(logs[logs.length - 1]);
+    assert.equal(end.outcome, "blocked");
+    assert.equal(end.exit, 3);
+    assert.equal(end.blockedReason, "human-abandon");
+    const dir = join(repo, ".orch", "run-records");
+    const record = JSON.parse(readFileSync(join(dir, readdirSync(dir)[0]), "utf8"));
+    assert.equal(record.state, "BLOCKED");
+    assert.equal(record.outcome, "blocked");
+    assert.equal(record.exit, 3);
+    assert.equal(process.exitCode, 3);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 test("orch task --until ready re-runs a non-landed free retry cycle", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo();
@@ -1134,10 +1519,9 @@ test("orch task --until ready re-runs a non-landed free retry cycle", async () =
 });
 
 // findPrByHead's `gh pr list` throws on any nonzero exit (no GitHub remote,
-// bad auth, network hiccup) — that must resolve to REMOTE_UNKNOWN/exit 2
-// with a full --json stream, not an uncaught throw that skips run-controller's
-// own error handling and truncates the stream after run.start.
-test("orch task --until ready --json exits 2 with failureClass REMOTE_UNKNOWN when gh pr list throws", async () => {
+// bad auth, network hiccup) — the human channel cannot be established, so the
+// ask remedy must fail closed as BLOCKED/exit 3 with a full --json stream.
+test("orch task --until ready --json exits 3 when the ask channel cannot be created", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo();
   gitDep.git(["branch", "orch/integration"], repo);
@@ -1153,9 +1537,10 @@ test("orch task --until ready --json exits 2 with failureClass REMOTE_UNKNOWN wh
     for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
     const last = JSON.parse(logs[logs.length - 1]);
     assert.equal(last.event, "run.end");
-    assert.equal(last.exit, 2);
+    assert.equal(last.exit, 3);
     assert.equal(last.failureClass, "REMOTE_UNKNOWN");
-    assert.equal(process.exitCode, 2);
+    assert.equal(last.blockedReason, "no-channel");
+    assert.equal(process.exitCode, 3);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -1605,6 +1990,74 @@ test("orch continue preserves a reviewer rotation if killed before its checkpoin
   assert.equal(authorCalls, 0);
   assert.equal(auditCalls, 1);
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("orch continue persists a rotated reviewer before a crash", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-continue-rotate-crash-");
+  const orchDir = join(repo, ".orch");
+  const sid = "rotatecrash";
+  const branch = `pr/claude/rotate-crash-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex, gemini]\n");
+  checkpointDep.record(orchDir, sid, {
+    branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid, command: "task", argv: [], policy: { until: "ready", maxAttempts: 3 },
+  });
+
+  const audits = [];
+  let attachCalls = 0;
+  const baseCycleDeps = fakeCycleDeps();
+  const cycleDeps = {
+    ...baseCycleDeps,
+    git: {
+      ...baseCycleDeps.git,
+      attachExistingBranch(...args) {
+        attachCalls += 1;
+        if (attachCalls === 2) throw new Error("crash after rotated cycle");
+        return gitDep.attachExistingBranch(...args);
+      },
+    },
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { throw new Error("reviewer rotation must not re-author"); },
+        async audit() {
+          audits.push(name);
+          return name === "codex"
+            ? { decision: "DISAGREE", reason: "quota", raw: "", agentError: true, quota: true }
+            : { decision: "AGREE", reason: "ok", raw: "", usage: {} };
+        },
+      }),
+    },
+    finalize: async () => { throw new Error("crash after rotated cycle"); },
+  };
+  try {
+    await assert.rejects(
+      () => runMainInRepo(repo, ["continue", sid, "--no-tidy"], { cycleDeps }),
+      /crash after rotated cycle/,
+    );
+    const checkpoint = checkpointDep.lookup(orchDir, sid);
+    assert.equal(checkpoint.stage, "authored");
+    assert.equal(checkpoint.reviewers[0].agent, "gemini");
+    assert.deepEqual(checkpoint.excludedAgents.map((entry) => entry.name), ["codex"]);
+
+    audits.length = 0;
+    await assert.rejects(
+      () => runMainInRepo(repo, ["continue", sid, "--no-tidy"], { cycleDeps }),
+      /crash after rotated cycle/,
+    );
+    assert.deepEqual(audits, ["gemini"], "a later continue must not re-seat the excluded reviewer");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
 });
 
 test("a rotated author keeps the partial-WIP guard active", { skip: IS_WINDOWS && "POSIX fixture scripts are not executable on Windows" }, async () => {
@@ -4509,6 +4962,7 @@ test("orch continue posts a gh issue comment on escalation, using the restored c
     assert.equal(process.exitCode, 2);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].args[2], "52");
+    assert.match(calls[0].input, /<!-- orch:result -->/);
     assert.match(calls[0].input, /ESCALATED/);
   } finally {
     process.exitCode = savedExitCode;
@@ -5286,13 +5740,14 @@ test("orch continue on a resumable stopped-at-cap record honors a stored maxAtte
   writeFileSync(join(repo, "a.txt"), "2\n");
   gitDep.git(["commit", "-am", "authored fix"], repo);
   gitDep.git(["checkout", "main"], repo);
+  gitDep.git(["branch", "orch/integration"], repo);
   checkpointDep.record(join(repo, ".orch"), sid,
     { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
 
   const dir = join(repo, ".orch", "run-records");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${sid}.json`), JSON.stringify({
-    schemaVersion: 1, runId: sid, command: "task", argv: [], policy: { maxAttempts: 0 },
+    schemaVersion: 1, runId: sid, command: "task", argv: [], policy: { until: "ready", maxAttempts: 0 },
     state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2, attempt: 1, retries: {}, headMovedRepins: 0,
     cycles: [{ sid, attempt: 0, branch, author: "claude", reviewers: ["codex"], status: "escalated", reason: null }],
   }));
@@ -5301,7 +5756,19 @@ test("orch continue on a resumable stopped-at-cap record honors a stored maxAtte
     ...fakeCycleDeps(),
     adapters: { get: (name) => ({ name, async author() { return { usage: {} }; }, async audit() { return { decision: "AGREE", reason: "still good", raw: "", usage: {} }; } }) },
   };
-  await runMainInRepo(repo, ["continue", sid], { cycleDeps, finishRun: async () => {} });
+  const integrationHead = gitDep.git(["rev-parse", "orch/integration"], repo);
+  let readinessReads = 0;
+  const baseGh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: integrationHead, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  const gh = (args, input) => {
+    if (args[0] === "pr" && args[1] === "view") readinessReads += 1;
+    return baseGh(args, input);
+  };
+  await runMainInRepo(repo, ["continue", sid], {
+    cycleDeps, finishRun: async () => {}, githubDeps: () => ({ gh, git: gitDep.git }),
+  });
 
   const record = JSON.parse(readFileSync(join(dir, `${sid}.json`), "utf8"));
   assert.equal(record.policy.maxAttempts, 1); // 1 (prior attempt) + 0 (maxAttempts:0), not 2
@@ -5311,6 +5778,7 @@ test("orch continue on a resumable stopped-at-cap record honors a stored maxAtte
   // left `cycles` one step behind `attempt` and corrupted the attempt-keyed lineage.
   assert.equal(record.cycles.length, 2);
   assert.equal(record.cycles[1].attempt, 2);
+  assert.ok(readinessReads > 0, "continue must reach the run controller");
 });
 
 // Regression: `orch task` resuming a quota-aborted sid (resolveTaskBranch's

@@ -12,6 +12,8 @@ import { chooseRemedy } from "../src/failure.js";
 import { runUntil } from "../src/run-controller.js";
 import { inspect } from "../src/readiness.js";
 import { createRebaseRemedy, rotateRemedy } from "../src/remedies.js";
+import { buildReauthorPrompt, failureHistory, reauthorRemedy } from "../src/remedies/reauthor.js";
+import { askRemedy, canWrite, parseReply } from "../src/remedies/ask.js";
 import { runCycle as executeCycle } from "../src/engine.js";
 import { nextAuthor } from "../src/cli.js";
 import { integrationRepairRemedy, createIntegrationRepairRemedy } from "../src/integration-repair.js";
@@ -2100,4 +2102,188 @@ test("integration repair: an exhausted contention cap leaves no convergence entr
   // and REMOTE_BEHIND falls to `ask`.
   const retained = { ...resumed, failures: record.failures };
   assert.equal(chooseRemedy(failure, retained, {}).decision, "ask");
+});
+
+test("reauthor rewrites the same work order with only the latest three failures", async () => {
+  const run = {
+    task: "narrow fix", sid: "old-cycle", branch: "pr/codex/narrow-fix-old",
+    author: { agent: "codex" },
+    workOrder: {
+      title: "narrow fix", problem: "make the failing behavior correct",
+      repro_steps: ["run the failing case"], suspected_paths: ["src/bug.js"],
+      acceptance_criteria: ["the case passes"],
+    },
+  };
+  const record = {
+    failures: [
+      { class: "TEST_RED", summary: "one", fingerprint: "one" },
+      { class: "TEST_RED", summary: "two", fingerprint: "two" },
+      { class: "TEST_RED", summary: "three", fingerprint: "three" },
+      { class: "SCOPE_EXCEEDED", summary: "four", fingerprint: "four" },
+    ],
+  };
+  let options;
+  const result = await reauthorRemedy({
+    run, record, failure: { class: "SCOPE_EXCEEDED", summary: "too broad", fingerprint: "five" },
+    createCycle: async (next) => { options = next; return { status: "escalated" }; },
+  });
+  assert.deepEqual(failureHistory(record, { class: "SCOPE_EXCEEDED", summary: "too broad", fingerprint: "five" }).map((entry) => entry.fingerprint), ["three", "four", "five"]);
+  assert.notEqual(options.sid, run.sid);
+  assert.match(options.branch, /^pr\/codex\/narrow-fix-/);
+  assert.equal(options.resume, false);
+  assert.equal(options.freshAuthor, true);
+  assert.match(options.workOrder.problem, /smallest change/);
+  assert.match(options.workOrder.problem, /What failed before/);
+  assert.match(options.authorPrompt, /BEGIN UNTRUSTED REFERENCE/);
+  assert.equal(result.record.reauthorizedFrom, run.branch);
+});
+
+test("reauthor applies a human addendum in place", async () => {
+  const run = {
+    task: "fix", sid: "same-cycle", branch: "pr/codex/fix-same",
+    author: { agent: "codex" },
+    workOrder: { title: "fix", problem: "repair it", repro_steps: [], suspected_paths: [], acceptance_criteria: [] },
+  };
+  let options;
+  await reauthorRemedy({
+    run, record: { policy: { source: { text: "original" } } },
+    failure: { class: "REMOTE_CHANGES_REQUESTED", summary: "address review" },
+    addendum: "also cover the empty input", revise: true,
+    createCycle: async (next) => { options = next; return { status: "merged" }; },
+  });
+  assert.equal(options.sid, run.sid);
+  assert.equal(options.branch, run.branch);
+  assert.equal(options.resume, true);
+  assert.match(options.workOrder.problem, /also cover the empty input/);
+});
+
+test("ask accepts a write permission with role_name and grants the requested fresh budget", async () => {
+  const calls = [];
+  const run = { sid: "ask-run", task: "ask task", branch: "pr/codex/ask-task", cfg: { baseBranch: "main" } };
+  const policy = { until: "ready", maxAttempts: 3, baseMaxAttempts: 3, pollSeconds: 1, humanWaitHours: 1 };
+  const gh = (args, input) => {
+    calls.push({ args, input });
+    if (args[0] === "pr" && args[1] === "list") return "[]";
+    if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/12\n";
+    if (args[0] === "api" && args[1]?.includes("comments") && args.includes("--paginate")) {
+      return args.some((arg) => arg.startsWith("since=")) ? JSON.stringify([
+        { id: 10, body: "<!-- orch:result -->\nESCALATED", user: { login: "orch-bot", type: "User" } },
+        { id: 11, body: "orch: retry 2", user: { login: "maintainer", type: "User" } },
+      ]) : "[]";
+    }
+    if (args[0] === "api" && args[1]?.includes("collaborators")) return JSON.stringify({ permission: "write", role_name: "maintain" });
+    if (args[0] === "api" && args.includes("-X") && args.includes("POST")) return JSON.stringify({ id: 10 });
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const result = await askRemedy({
+    run, policy, failure: { class: "REVIEW_STALEMATE", summary: "no agreement" },
+    record: { runId: run.sid, attempt: 1, failures: [{ class: "REVIEW_STALEMATE", remedy: "rotate" }] },
+    deps: { gh, now: () => 0, sleep: async () => {} },
+    runCycle: async () => ({ status: "merged" }),
+  });
+  assert.equal(result.cycle.status, "merged");
+  assert.equal(result.record.policy.maxAttempts, 5);
+  assert.equal(result.record.policy.grantedExtra, 2);
+  assert.ok(calls.some(({ input }) => String(input || "").includes("orch:ask-run:ask:1")));
+  assert.deepEqual(parseReply("note\nOrch: RETRY 9"), { command: "retry", count: 3 });
+  assert.equal(canWrite({ permission: "write", roleName: "read" }), true);
+  assert.equal(canWrite({ ok: false, permission: "write", roleName: "write" }), false);
+  assert.equal(canWrite({ ok: true, permission: "none", roleName: "maintain" }), false);
+});
+
+test("ask reuses an unanswered question after a resumed attempt advances", async () => {
+  let now = 0;
+  let posts = 0;
+  const gh = (args) => {
+    if (args[0] === "api" && args[1]?.includes("comments") && args.includes("--paginate")) return JSON.stringify([
+      { id: 21, body: "orch: abandon", user: { login: "maintainer", type: "User" } },
+    ]);
+    if (args[0] === "api" && args.includes("-X") && args.includes("POST")) {
+      posts += 1;
+      return JSON.stringify({ id: 30 });
+    }
+    if (args[0] === "api" && args[1]?.includes("collaborators")) return JSON.stringify({ permission: "write" });
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const result = await askRemedy({
+    run: { sid: "resumed-ask", task: "wait", branch: "pr/codex/wait" },
+    policy: { until: "ready", maxAttempts: 3, pollSeconds: 1, humanWaitHours: 1 },
+    failure: { class: "TEST_MISSING", summary: "no test" },
+    record: {
+      attempt: 1,
+      human: {
+        channel: "issue", target: 9, askCommentId: 20,
+        askedAt: "1970-01-01T00:00:00.000Z", deadline: "1970-01-01T01:00:00.000Z",
+        attempt: 0, replies: [],
+      },
+    },
+    deps: { gh, now: () => now, sleep: async () => { now = 4_000_000; } },
+  });
+  assert.equal(result.result.blockedReason, "human-abandon");
+  assert.equal(posts, 0);
+});
+
+test("ask times out with exit 4 and a continuation command", async () => {
+  let now = 0;
+  const gh = (args) => {
+    if (args[0] === "api" && args[1]?.includes("comments") && args.includes("--paginate")) return "[]";
+    if (args[0] === "api" && args.includes("-X") && args.includes("POST")) return JSON.stringify({ id: 20 });
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const result = await askRemedy({
+    run: { sid: "timeout-run", task: "wait", branch: "pr/codex/wait", closes: 8 },
+    policy: { until: "ready", maxAttempts: 3, pollSeconds: 1, humanWaitHours: 0.000001 },
+    failure: { class: "TEST_MISSING", summary: "no test" }, record: { attempt: 0 },
+    deps: { gh, now: () => now, sleep: async () => { now = 10_000; } },
+  });
+  assert.equal(result.result.exit, 4);
+  assert.equal(result.result.outcome, "wait-timeout");
+  assert.match(result.result.resumeCommand, /orch continue timeout-run/);
+  assert.equal(result.record.human.askCommentId, 20);
+});
+
+test("ask resumes with its saved human deadline and times out without a reply", async () => {
+  let now = 0;
+  const deadline = new Date(100).toISOString();
+  const gh = (args) => {
+    if (args[0] === "api" && args[1]?.includes("comments") && args.includes("--paginate")) return "[]";
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const result = await askRemedy({
+    run: { sid: "resumed-timeout", task: "wait", branch: "pr/codex/wait" },
+    policy: { until: "ready", maxAttempts: 3, pollSeconds: 1, humanWaitHours: 24 },
+    failure: { class: "TEST_MISSING", summary: "no test" },
+    record: {
+      attempt: 1,
+      human: {
+        channel: "issue", target: 9, askCommentId: 20,
+        askedAt: "1970-01-01T00:00:00.000Z", deadline,
+        attempt: 0, replies: [],
+      },
+    },
+    deps: { gh, now: () => now, sleep: async (ms) => { now = ms; } },
+  });
+  assert.equal(result.result.exit, 4);
+  assert.equal(result.result.outcome, "wait-timeout");
+  assert.equal(result.record.human.deadline, deadline, "resume must not extend an unanswered question");
+});
+
+test("ask skips an unverifiable commenter and accepts a later permitted reply", async () => {
+  const gh = (args) => {
+    if (args[0] === "api" && args[1]?.includes("comments") && args.includes("--paginate")) return JSON.stringify([
+      { id: 31, body: "orch: retry", user: { login: "unknown" } },
+      { id: 32, body: "orch: retry", user: { login: "maintainer" } },
+    ]);
+    if (args[0] === "api" && args.includes("-X") && args.includes("POST")) return JSON.stringify({ id: 30 });
+    if (args[0] === "api" && args[1]?.includes("collaborators/unknown")) throw new Error("HTTP 403");
+    if (args[0] === "api" && args[1]?.includes("collaborators/maintainer")) return JSON.stringify({ permission: "write" });
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const result = await askRemedy({
+    run: { sid: "auth-run", task: "auth", branch: "pr/codex/auth", closes: 9 },
+    policy: { until: "ready", maxAttempts: 3, pollSeconds: 1, humanWaitHours: 1 },
+    failure: { class: "TEST_MISSING" }, record: {}, deps: { gh, now: () => 0 },
+    runCycle: async () => ({ status: "merged" }),
+  });
+  assert.equal(result.cycle.status, "merged");
 });
