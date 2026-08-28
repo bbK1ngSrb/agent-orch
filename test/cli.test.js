@@ -3251,6 +3251,48 @@ test("pr target resolution keeps colleague branches off the push path", () => {
   assert.equal(calls.filter((args) => args[0] === "api").length, 1);
 });
 
+test("failed PR lookup prepares and pushes an owned repair branch", () => {
+  const repo = initGitRepo("orch-pr-lookup-failure-");
+  const { remote } = addOriginWithPeer(repo);
+  const sourceBranch = "feature/colleague";
+  gitDep.git(["checkout", "-b", sourceBranch], repo);
+  writeFileSync(join(repo, "pr.txt"), "PR head\n");
+  gitDep.git(["add", "pr.txt"], repo);
+  gitDep.git(["commit", "-m", "PR head"], repo);
+  gitDep.git(["push", "origin", sourceBranch], repo);
+  gitDep.git(["checkout", "main"], repo);
+  const original = gitDep.git(["rev-parse", sourceBranch], remote);
+  const calls = [];
+  const gh = (args) => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "list") {
+      if (args.includes(sourceBranch)) throw new Error("HTTP 401: Bad credentials");
+      return "[]";
+    }
+    if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/42\n";
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const target = resolvePrTarget({
+    target: sourceBranch, repo, orchDir: join(repo, ".orch"), baseBranch: "main", until: "ready", gh,
+  });
+
+  assert.equal(target.canPushHead, false);
+  assert.equal(target.needsRepairBranch, true);
+  const repair = preparePrRepairRun({
+    repo,
+    orchDir: join(repo, ".orch"),
+    sid: "lookup-failed",
+    branch: sourceBranch,
+    prTarget: target,
+  }, { baseBranch: "main" }, { gh });
+
+  const repairBranch = "pr/repair/feature-colleague-lookup-failed";
+  assert.equal(repair.branch, repairBranch);
+  assert.equal(gitDep.git(["rev-parse", repairBranch], remote), original);
+  assert.equal(gitDep.git(["rev-parse", sourceBranch], remote), original, "the contributor branch must remain untouched");
+  assert.ok(calls.some((args) => args[0] === "pr" && args[1] === "create" && args.includes(repairBranch)));
+});
+
 test("PR landing derives changed paths when the review cycle omits them", () => {
   const repo = initGitRepo("orch-pr-paths-");
   gitDep.git(["checkout", "-b", "pr-17"], repo);
