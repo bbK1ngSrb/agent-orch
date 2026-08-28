@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.356 — 2026-08-28
+- fix: orch pr rejects a missing branch as a usage error before probing the environment
+
 ## v0.4.355 — 2026-08-28
 - cli: --detach runs a cycle in the background and shows it in the dashboard
 
