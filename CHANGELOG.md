@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.350 — 2026-08-28
+- fix: honor retry budgets before pending asks (closes [#523](https://github.com/bbk1ng/agent-orch/issues/523))
+
 ## v0.4.349 — 2026-08-27
 - fix(repair): preserve proposed resolutions (closes [#578](https://github.com/bbk1ng/agent-orch/issues/578))
 
