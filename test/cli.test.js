@@ -6,7 +6,7 @@ import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -980,6 +980,44 @@ test("orch task --until ready --json exits 0 on a green standing PR", async () =
   } finally {
     process.exitCode = savedExitCode;
   }
+});
+
+test("mergeForRun forwards cfg, GitHub deps, and the run identity to the landing phase", async () => {
+  const repo = initGitRepo("orch-merge-for-run-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  gitDep.git(["push", "-u", "origin", "orch/integration"], repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const run = { sid: "merge-for-run", repo, orchDir: join(repo, ".orch") };
+  const cfg = { baseBranch: "main", integrationBranch: "orch/integration", test: "true" };
+  const events = [];
+  const calls = [];
+  let merged = false;
+  const gh = (args) => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({
+      number: 9, state: merged ? "MERGED" : "OPEN", isDraft: false, headRefOid: head,
+      baseRefName: "main", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+      reviewDecision: null, statusCheckRollup: [],
+      ...(merged ? { mergeCommit: { oid: head } } : {}),
+    });
+    if (args[0] === "api" && String(args[1]).includes("/rules/")) return "[]";
+    if (args[0] === "api" && args.some((arg) => String(arg).includes("/pulls/9/merge"))) {
+      merged = true;
+      return JSON.stringify({ sha: head });
+    }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+
+  const result = await mergeForRun({
+    record: {},
+    land: { pr: { number: 9 }, expectedHead: head, landing: "standing" },
+    readiness: { headSha: head, required: { known: true, contexts: [] } },
+  }, run, cfg, { gh, log() {} }, (event) => events.push(event));
+
+  assert.equal(result.result, "merged");
+  assert.deepEqual(events, [{ event: "merge.request", runId: run.sid, pr: 9, head, method: "merge" }]);
+  assert.equal(calls.filter((args) => args.some((arg) => String(arg).includes("/pulls/9/merge"))).length, 1);
 });
 
 test("orch task --until ready --json exits 2 with failureClass REMOTE_BEHIND on a BEHIND standing PR", async () => {

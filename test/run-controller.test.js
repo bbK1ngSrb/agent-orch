@@ -57,6 +57,24 @@ test("runUntil: landed cycle with status 'approved' (noMerge) reads readiness ->
   assert.equal(result.exit, 0);
 });
 
+test("runUntil: only an explicit base landing may succeed without a PR", async () => {
+  const policy = { ...POLICY, until: "merged", integrationBranch: "main", baseBranch: "main" };
+  let mergeCalls = 0;
+  const standing = await runUntil(policy, {}, baseDeps({
+    resolveLanded: () => ({ ...LAND, pr: null, landing: "standing" }),
+    mergeStanding: async () => { mergeCalls += 1; return { result: "merged" }; },
+  }));
+  assert.equal(standing.state, "STOPPED_AT_CAP");
+  assert.equal(standing.failureClass, "REMOTE_UNKNOWN");
+  assert.equal(mergeCalls, 0);
+
+  const base = await runUntil(policy, {}, baseDeps({
+    resolveLanded: () => ({ ...LAND, pr: null, landing: "base" }),
+  }));
+  assert.equal(base.state, "MERGED");
+  assert.equal(base.exit, 0);
+});
+
 test("runUntil: landed cycle, BEHIND standing PR -> STOPPED_AT_CAP, exit 2, failureClass REMOTE_BEHIND (acceptance criterion)", async () => {
   const deps = baseDeps({
     gh: ghFake({

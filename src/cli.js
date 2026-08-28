@@ -1012,7 +1012,7 @@ function resolveLanded(cycle, run, cfg, ghDeps, repo) {
   return { pr, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "standing", branch: integrationBranch, paths: cycle.paths || [] };
 }
 
-function mergeForRun({ record, land, readiness }, run, cfg, ghDeps, emit) {
+export function mergeForRun({ record, land, readiness }, run, cfg, ghDeps, emit) {
   return mergeStanding({
     record: { ...record, runId: run.sid, repo: run.repo, orchDir: run.orchDir },
     cfg,

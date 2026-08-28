@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as git from "../src/git.js";
+import * as lock from "../src/lock.js";
 import { mergeStanding } from "../src/landing.js";
 
 const HEAD = "a".repeat(40);
@@ -28,6 +29,7 @@ function fakeDeps({ required = ["ci"], reviewDecision = null, mergeResponse = "m
         number: 9, state, isDraft: false, headRefOid: HEAD, baseRefName: "main",
         mergeable: "MERGEABLE", mergeStateStatus: reviewDecision ? "BLOCKED" : "CLEAN",
         reviewDecision, statusCheckRollup: required.map((context) => ({ context, state: "SUCCESS" })),
+        ...(state === "MERGED" ? { mergeCommit: { oid: MERGE } } : {}),
       });
     }
     if (args[0] === "api" && String(args[1]).includes("/rules/")) {
@@ -114,7 +116,13 @@ test("mergeStanding sends the exact head and verifies ancestry in a bare remote"
 
 test("mergeStanding gates the exact integration head when no checks are required", async () => {
   const seen = [];
-  const deps = fakeDeps({ required: [], gate: { detect: () => "true", run: (cmd, path) => { seen.push([cmd, path]); return { pass: true }; } } });
+  const order = [];
+  const deps = fakeDeps({ required: [], gate: { detect: () => "true", run: (cmd, path) => { seen.push([cmd, path]); order.push("gate"); return { pass: true }; } } });
+  const gh = deps.gh;
+  deps.gh = (args) => {
+    if (args.some((arg) => String(arg).includes("/pulls/9/merge"))) order.push("merge");
+    return gh(args);
+  };
   const result = await mergeStanding({ record: {}, cfg: CFG, land: LAND, readiness: { headSha: HEAD, required: { known: true, contexts: [] } } }, deps);
 
   assert.equal(result.result, "merged");
@@ -125,6 +133,27 @@ test("mergeStanding gates the exact integration head when no checks are required
   ]);
   assert.equal(deps.calls.filter((args) => String(args[1]).includes("/rules/")).length, 0);
   assert.ok(deps.calls.findIndex((a) => a.some((arg) => String(arg).includes("/pulls/9/merge"))) > -1);
+  assert.deepEqual(order, ["gate", "merge"]);
+});
+
+test("mergeStanding never sends PUT /merge when the exact-head gate is red", async () => {
+  const order = [];
+  const deps = fakeDeps({ required: [], gate: {
+    detect: () => "false",
+    run: () => { order.push("gate"); return { pass: false }; },
+  } });
+  const gh = deps.gh;
+  deps.gh = (args) => {
+    if (args.some((arg) => String(arg).includes("/pulls/9/merge"))) order.push("merge");
+    return gh(args);
+  };
+
+  const result = await mergeStanding({ record: {}, cfg: { ...CFG, test: "false" }, land: LAND, readiness: { headSha: HEAD, required: { known: true, contexts: [] } } }, deps);
+
+  assert.equal(result.result, "rejected");
+  assert.equal(result.failure.class, "LAND_INTEGRATION_TEST");
+  assert.deepEqual(order, ["gate"]);
+  assert.equal(deps.calls.some((args) => args.some((arg) => String(arg).includes("/pulls/9/merge"))), false);
 });
 
 test("mergeStanding discards the no-checks gate when the integration tip advanced", async () => {
@@ -168,4 +197,20 @@ test("mergeStanding supports per-cycle PR landing with its configured merge meth
   assert.equal(result.result, "merged");
   const mergeCall = deps.calls.find((args) => args.some((arg) => String(arg).includes("/pulls/9/merge")));
   assert.ok(mergeCall.includes("merge_method=squash"));
+});
+
+test("two racing merge controllers submit only one merge request", async () => {
+  const deps = fakeDeps({ required: [] });
+  deps.orchDir = mkdtempSync(join(tmpdir(), "orch-landing-race-"));
+  deps.lock = lock;
+  const input = { record: {}, cfg: CFG, land: LAND, readiness: { headSha: HEAD, required: { known: true, contexts: [] } } };
+
+  const [first, second] = await Promise.all([
+    mergeStanding(input, deps),
+    mergeStanding(input, deps),
+  ]);
+
+  const mergeRequests = deps.calls.filter((args) => args.some((arg) => String(arg).includes("/pulls/9/merge")));
+  assert.equal(mergeRequests.length, 1);
+  assert.deepEqual([first.result, second.result].sort(), ["merged", "merged"]);
 });

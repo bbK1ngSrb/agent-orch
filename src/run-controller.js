@@ -157,7 +157,7 @@ export async function runUntil(policy, record = {}, deps) {
 
     let land = deps.resolveLanded(cycle);
     if (repinnedHead && land.landing === "standing") land = { ...land, expectedHead: repinnedHead };
-    if (!land.pr?.number && policy.integrationBranch && policy.integrationBranch === policy.baseBranch) {
+    if (land.landing === "base") {
       return withRecord({
         state: policy.until === "merged" ? "MERGED" : "READY", outcome: "reached", exit: 0,
         headSha: land.expectedHead, cycle, land,
