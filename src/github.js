@@ -556,7 +556,12 @@ export async function openIntegrationPr(ctx, deps) {
     `agent-orch: local integration passed. This persistent PR gates ${branch} into ${base}; ${base} is a GitHub mirror and is not advanced locally.`,
   ) + closingLinesFromIntegration(git, repo, base, branch);
   const refspec = tipSha ? `${tipSha}:refs/heads/${branch}` : branch;
-  git(["push", "-u", "origin", refspec], repo);
+  try {
+    git(["push", "-u", "origin", refspec], repo);
+  } catch (e) {
+    log(`PR bridge push failed for ${branch}: ${e.message}; run \`git push origin ${branch}\` manually`);
+    throw e;
+  }
   const open = JSON.parse(gh([
     "pr", "list",
     "--head", branch,

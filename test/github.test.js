@@ -587,6 +587,25 @@ test("openIntegrationPr creates the default integration PR and enables auto-merg
   assert.ok(!calls.some((c) => c[0] === "gh" && c[1] === "api" && c.some((a) => a.endsWith("/merge"))), "direct main merge needs main.autoMerge");
 });
 
+test("openIntegrationPr logs the manual branch push after a bridge push failure", async () => {
+  const logs = [];
+  const gh = (args) => args[0] === "--version" ? "gh 2" : "";
+  const git = (args) => {
+    if (args[0] === "remote") return "origin\n";
+    if (args[0] === "push") throw new Error("Authentication failed");
+    return "";
+  };
+
+  await assert.rejects(
+    () => openIntegrationPr(
+      { repo: "/r", orchDir: "/r/.orch", cfg: { integrationBranch: "orch/integration" } },
+      { gh, git, notify: { escalate() {} }, log: (message) => logs.push(message) },
+    ),
+    /Authentication failed/,
+  );
+  assert.ok(logs.some((message) => message.includes("git push origin orch/integration")));
+});
+
 test("openIntegrationPr puts pending issue closes on the bridge PR body", async () => {
   const calls = [];
   const gh = (args) => {

@@ -23,7 +23,7 @@ import * as gate from "./gate.js";
 import * as scope from "./scope.js";
 import { globToRegExp } from "./scope.js";
 import * as notify from "./notify.js";
-import { releaseLock, acquireBlocking, isPaused, LOCK_NAMES } from "./lock.js";
+import { releaseLock, acquireBlocking, isPaused, LOCK_NAMES, sleepSync } from "./lock.js";
 import { slugify } from "./slug.js";
 import { serve } from "./mcp.js";
 import { PARSE_OPTIONS, COMMAND_FLAGS, COMMANDS, renderHelp, usageError, validate as validateFlags, validatePositionals } from "./schema.js";
@@ -59,8 +59,31 @@ export { slugify };
 export { resolveAgentBin };
 export { visWidth };
 
-function ghShell(args, input) {
-  return execFileSync("gh", args, { input, encoding: "utf8" }).toString();
+const GH_AUTH_RETRY_DELAY_MS = 100;
+
+function isGhAuthFailure(error) {
+  const text = [error?.stderr, error?.stdout, error?.message]
+    .filter((part) => part != null)
+    .map(String)
+    .join("\n");
+  return Number(error?.status) === 401
+    || /\bHTTP 401\b|\b401 Unauthorized\b|bad credentials|invalid username or token|not logged in|authentication failed/i.test(text);
+}
+
+export function ghShell(args, input, { exec = execFileSync, sleep = sleepSync } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const options = {
+        encoding: "utf8",
+        stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      };
+      if (input !== undefined) options.input = input;
+      return exec("gh", args, options).toString();
+    } catch (error) {
+      if (attempt >= 1 || !isGhAuthFailure(error)) throw error;
+      sleep(GH_AUTH_RETRY_DELAY_MS);
+    }
+  }
 }
 
 // Fire-and-forget a detached `orch task <prompt>` after a successful merge.
@@ -1529,13 +1552,20 @@ export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDi
   return event;
 }
 
-function commentOnIssue(result, branch, closes, githubDepsFn) {
+function commentOnIssue(result, branch, closes, githubDepsFn, orchDir, sid) {
   if (!closes) return;
+  const body = redact(`<!-- orch:result -->\n${buildIssueComment(result, branch)}`);
   try {
-    const body = redact(`<!-- orch:result -->\n${buildIssueComment(result, branch)}`);
     githubDepsFn().gh(["issue", "comment", String(closes), "--body-file", "-"], body);
   } catch (e) {
-    console.error(`orch: could not comment on issue #${closes}: ${e.message}`);
+    const savedPath = join(orchDir, `issue-${closes}-comment-${sid}.md`);
+    try {
+      mkdirSync(orchDir, { recursive: true });
+      writeFileSync(savedPath, body);
+      console.error(`orch: could not comment on issue #${closes}: ${e.message}; comment saved to ${savedPath}`);
+    } catch (saveError) {
+      console.error(`orch: could not comment on issue #${closes}: ${e.message}; could not save comment to ${savedPath}: ${saveError.message}`);
+    }
   }
 }
 
@@ -2637,7 +2667,7 @@ export async function main(argv, deps = {}) {
           if (until === "once") raiseExitCode(2);
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
-          if (!dry) commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps);
+          if (!dry) commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
         }
       } catch (err) {
         if (!dry) {
@@ -3178,7 +3208,7 @@ export async function main(argv, deps = {}) {
       }
       if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
         if (!controller) raiseExitCode(2);
-        if (!dry) commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps);
+        if (!dry) commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
       }
       const mergeEvent = mergeVerifiedEvent(runId, controller, cfg);
       if (mergeEvent) emit(mergeEvent);
