@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runUntil } from "../src/run-controller.js";
+import { runCycle } from "../src/engine.js";
 import { rotateRemedy } from "../src/remedies.js";
 import { nextAuthor } from "../src/cli.js";
 import { tmpdir } from "node:os";
@@ -254,6 +255,94 @@ test("runUntil: rotate carries the excluded seat into the fresh cycle", async ()
   assert.equal(result.state, "READY");
   assert.equal(picked.author.agent, "c");
   assert.deepEqual(result.excludedAgents.map((entry) => entry.name), ["a"]);
+});
+
+test("runUntil: REVIEW_STALEMATE rotates into a fresh cycle with three review rounds", async () => {
+  const audits = [];
+  const freshRuns = [];
+  let checkpointState;
+  const cycleDeps = {
+    adapters: {
+      get(name) {
+        return {
+          name,
+          async author() {},
+          async audit(_branch, _worktree, options) {
+            audits.push({ agent: name, round: options.round });
+            return {
+              decision: options.round === 3 ? "AGREE" : "DISAGREE",
+              reason: "persistent disagreement",
+              raw: "",
+            };
+          },
+        };
+      },
+    },
+    git: {
+      createTaskBranch() {},
+      attachExistingBranch() {},
+      pruneWorktree() {},
+      git(args) {
+        if (args[0] === "diff") return "";
+        return HEAD;
+      },
+      changedFiles() { return ["src/change.js"]; },
+    },
+    gate: { detect: () => "echo", run: () => ({ pass: true, log: "" }) },
+    scope: { count: () => 0 },
+    notify: {
+      phase() {}, writeRound() {}, writeRoundRaw() {},
+      buildDecisionBrief: () => "brief", escalate() {}, recordRun() {},
+    },
+    reviewLog: { record() {} },
+    inflight: { setPaths() {} },
+    checkpoint: {
+      lookup: () => checkpointState,
+      record(_dir, _sid, data) { checkpointState = data; },
+      clear() { checkpointState = null; },
+    },
+    finalize: async () => ({ status: "merged" }),
+  };
+  const run = {
+    mode: "task", task: "do x", authorPrompt: "do x", branch: "orch/review-stalemate",
+    sid: "review-stalemate", authorName: "a", author: { agent: "a" },
+    reviewerName: "b", reviewerNames: ["b"], reviewers: [{ agent: "b" }],
+    cfg: {
+      agents: ["a", "b", "c"], roundCap: 3, baseBranch: "main", integrationBranch: "main",
+      merge: "ff-only", test: "auto", stageTimeout: 0,
+      scope: { maxLines: 0, ignore: [] }, docs: { paths: [] }, security: { ignore: [] },
+    },
+    orchDir: mkdtempSync(join(tmpdir(), "orch-controller-stalemate-")),
+    repo: "/repo", worktree: "/repo/worktree", noMerge: true,
+  };
+  checkpointState = { branch: run.branch, round: 3, stage: "reviewed", decision: "DISAGREE" };
+  const freshCycle = async (picks) => {
+    freshRuns.push(picks);
+    checkpointState = { branch: run.branch, round: 1, stage: "authored" };
+    return runCycle({ ...run, ...picks, resume: true, reviewerOverride: true }, cycleDeps);
+  };
+  const result = await runUntil(POLICY, {}, {
+    ...baseDeps({
+      runCycle: async () => ({
+        status: "escalated", class: "REVIEW_STALEMATE", fingerprint: "stalemate-fp",
+        reason: "stalemate after cap",
+      }),
+    }),
+    remedies: {
+      rotate: (context) => rotateRemedy({
+        ...context, run, selectRoles: nextAuthor, runCycle: freshCycle,
+      }),
+    },
+  });
+
+  assert.equal(result.state, "READY");
+  assert.equal(freshRuns.length, 1);
+  assert.deepEqual(freshRuns[0].reviewerNames, ["c"]);
+  assert.equal(freshRuns[0].reviewerOverride, true);
+  assert.deepEqual(
+    audits.filter(({ agent }) => agent === "c").map(({ round }) => round),
+    [1, 2, 3],
+  );
 });
 
 test("runUntil: cycle escalated on a BLOCKED-terminal class (protected path) -> exit 3 with blockedReason", async () => {
