@@ -1496,16 +1496,16 @@ test("integration repair: a red gate after update-branch still advances the loca
   assert.equal(git.git(["rev-parse", "feature"], repo), originSha(remote, "feature"));
 });
 
-test("integration repair: the REMOTE_BEHIND gate carries the stageTimeout watchdog (#56/#58)", async () => {
+test("integration repair: the REMOTE_BEHIND gate carries gateTimeout (#56/#58)", async () => {
   const { repo, remote } = repairFixture();
   const timeouts = [];
   const gate = { detect: () => "true", run: (_cmd, _cwd, timeoutMs) => { timeouts.push(timeoutMs); return { pass: true, log: "" }; } };
 
-  await runRepair(repo, { gh: peerUpdateBranch(remote, "orch/integration"), gate });
+  await runRepair(repo, { cfg: repairCfg({ gateTimeout: 11 }), gh: peerUpdateBranch(remote, "orch/integration"), gate });
 
-  // Hand-computed from `repairCfg`'s `stageTimeout: 7` — 7 * 60_000. An
+  // Hand-computed from the explicit `gateTimeout: 11` — 11 * 60_000. An
   // uncapped run would hold `integration-repair.lock` forever.
-  assert.deepEqual(timeouts, [420_000]);
+  assert.deepEqual(timeouts, [660_000]);
 });
 
 // --- landRepairedTip: the shared landing sequence (§10A) -------------------
@@ -2030,19 +2030,19 @@ test("integration repair: the lock-contention cap outlasts every stage a peer ru
 
 test("integration repair: lock contention stops at the retry cap instead of spinning the controller", async () => {
   const { repo } = repairFixture();
+  const cfg = repairCfg({ gateTimeout: 11 });
   const orchDir = join(repo, ".orch");
   mkdirSync(orchDir, { recursive: true });
   writeFileSync(join(orchDir, LOCK_NAMES.INTEGRATION_REPAIR), String(process.pid));
   const slept = [];
 
   // Hand-computed from the requirement, not read off the code: the peer can
-  // hold the lock across four stages — the resolver `author()`, the gate run
-  // on the resolution, the reviewer `audit()`, and the re-gate on the merged
-  // tree — each capped at `repairCfg()`'s `stageTimeout: 7` minutes, plus the
-  // 5-minute `merge.lock` wait in the middle (src/lock.js:117): 4*7 + 5 = 33
-  // minutes, one round per LOCK_RETRY_MS (60s), plus one explicit slack round
-  // before the final poll, so 34 rounds.
-  const cap = 34;
+  // hold the lock across two agent stages at `stageTimeout: 7`, two gates at
+  // `gateTimeout: 11`, plus the 5-minute `merge.lock` wait in the middle
+  // (src/lock.js:117): 2*7 + 2*11 + 5 = 41 minutes, one round per
+  // LOCK_RETRY_MS (60s), plus one explicit slack round before the final poll,
+  // so 42 rounds.
+  const cap = 42;
   let lockPolls = 0;
   const lock = {
     acquireLock: () => { lockPolls += 1; return false; },
@@ -2052,6 +2052,7 @@ test("integration repair: lock contention stops at the retry cap instead of spin
 
   // The last round under the cap: still handed back, and the wait is counted.
   const last = await runRepair(repo, {
+    cfg,
     record: { attempt: 1, failures: [], retries: { "repair-lock-wait": cap - 1 } },
     sleep: async (ms) => slept.push(ms),
     lock,
@@ -2064,6 +2065,7 @@ test("integration repair: lock contention stops at the retry cap instead of spin
   // One past it: terminal, naming the peer — not another refund that leaves
   // run-controller.js to burn its 32 loops on contention alone.
   const past = await runRepair(repo, {
+    cfg,
     record: { attempt: 1, failures: [], retries: { "repair-lock-wait": cap } },
     sleep: async (ms) => slept.push(ms),
     lock,

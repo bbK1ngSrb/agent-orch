@@ -160,8 +160,8 @@ author branch ──(AGREE + green tests)──▶ orch/integration ──▶ [p
    `main` for you (the "Update branch" button, no conflict to resolve), so a
    headless run never freezes on a stale-but-clean PR. A *conflicting* PR is
    left to the conflict resolver, not blindly updated.
-4. If `github.autoMergePr: true`, that PR auto-merges once its own CI checks
-   pass. Otherwise a human merges it on GitHub whenever they're ready.
+4. With `--until merged`, orch merges that PR once its own CI checks pass.
+   Otherwise a human merges it on GitHub whenever they're ready.
 5. Local `main` only advances afterward, by fetching and fast-forwarding.
 
 **What `merged` means on this default path.** The claim is local and
@@ -180,8 +180,8 @@ immediate local usability *and* a deliberate one-PR lag before it's public.
 
 > **Professor's note.** A lot of first-time confusion comes from expecting
 > `orch task` to merge straight to `main`. It deliberately doesn't. If you
-> want that, you have two options, covered next: turn on
-> `github.autoMergePr`, or switch to `merge: pr` entirely (Part 3).
+> want that, run it with `--until merged`, or switch to `merge: pr` entirely
+> (Part 3).
 
 ---
 
@@ -954,27 +954,25 @@ persistent PR.
 
 ```yaml
 merge: pr
-github:
-  autoMergePr: true   # optional: let GitHub auto-merge once that PR's own checks pass
 ```
 
 ```bash
-orch task "add rate-limit header"   # → opens (or updates) its own PR to main
+orch task "add rate-limit header" --until merged   # → opens and merges its PR when green
 ```
 
 This needs a git remote and the `gh` CLI. Without them, the cycle escalates
 locally the same way ordinary `merge-deferred` does (§3.4) — it does not silently
 merge somewhere else.
 
-If `github.autoMergePr: true` and enabling auto-merge fails (e.g. branch
-protection isn't set up for it), the PR itself still stands — only the
-auto-merge step is skipped, never the PR. When enabling it succeeds, orch also
-makes one immediate REST merge attempt, using the numeric PR number parsed from
-the creation URL and pinned to the exact reviewed commit OID. This covers an
-already-green PR whose review requirement is satisfied by a ruleset bypass but
-whose native auto-merge remains `BLOCKED`. If the direct attempt is not ready,
-orch swallows that failure and leaves the PR plus native auto-merge in place;
-it does not poll or retry this one-shot direct path.
+Existing pre-P12 configs with `github.autoMergePr: true` continue to work with
+a deprecation warning. If enabling native auto-merge fails (for example because
+branch protection is not set up for it), the PR itself still stands. When
+enabling it succeeds, orch also makes one immediate REST merge attempt, using
+the numeric PR number parsed from the creation URL and pinned to the exact reviewed commit OID.
+If that one-shot direct path is not ready, orch leaves the
+PR plus native auto-merge in place; it does not poll or retry it. New runs
+should use `--until merged`, which waits for the PR and completes its merge
+without relying on the deprecated key.
 
 **Consequence you should know:** `merge: pr` does not run orch's
 `release.autoBump` or CHANGELOG behavior described in §4.1 — those only apply
@@ -1089,7 +1087,7 @@ path instead of the fallback.
 | Fast local iteration, single shared PR gate to `main`, concurrent cycles land without fighting each other | `merge: no-ff` (default) — do nothing |
 | Same as above, but a strictly linear `orch/integration` history (no merge commits), and can tolerate more frequent `merge-deferred` outcomes | `merge: ff-only` |
 | Every cycle becomes its own PR straight to `main`, no shared integration branch, no two-speed lag, branch protection satisfied every time | `merge: pr` |
-| Cycles that land locally to still eventually reach `main` without you clicking merge each time | add `github.autoMergePr: true` (works with any mode that opens a PR) |
+| Cycles that land locally to still eventually reach `main` without you clicking merge each time | run with `--until merged` |
 
 ---
 
@@ -1410,11 +1408,11 @@ release:
   always uses a merge commit, the repo must have "Allow merge commits"
   enabled in its GitHub merge-button settings — if a repo only allows
   squash/rebase, this PR can never be merged (by orch or by hand).
-- **`github.autoMergePr`** — enables GitHub's *native* auto-merge on PRs orch
-  opens or updates, so they merge themselves once their own required checks
-  pass, with no further orch involvement. If GitHub rejects the auto-merge
-  request (e.g. branch protection isn't configured to allow it), the PR
-  itself is unaffected — only auto-merge silently doesn't get enabled.
+- **Legacy `github.autoMergePr`** — accepted for pre-P12 compatibility with a
+  warning, but new runs should use `--until merged`. In older configs it
+  enables GitHub's *native* auto-merge on PRs orch opens or updates, so they
+  merge themselves once their own required checks pass, with no further orch
+  involvement. If GitHub rejects the request, the PR itself is unaffected.
   Caveat: if the branch's review requirement is satisfied only via a GitHub
   ruleset `bypass_actors` grant (rather than a real human approval), GitHub's
   native auto-merge does not reliably fire — it can stay enabled with
@@ -1512,18 +1510,16 @@ ceremony."**
 orch task "fix the flaky login test"
 ```
 Default `merge: no-ff`. Lands on `orch/integration` immediately, opens/updates
-the persistent PR to `main`. Merge that PR on GitHub whenever convenient (or
-set `github.autoMergePr: true` once, so you never have to).
+the persistent PR to `main`. Merge that PR on GitHub whenever convenient, or
+run the task with `--until merged`.
 
 **"Compliance/branch-protection requires every single change to be its own
 reviewable PR into `main` — no exceptions, no shared integration branch."**
 ```yaml
 merge: pr
-github:
-  autoMergePr: true
 ```
 ```bash
-orch task "add rate-limit header"
+orch task "add rate-limit header" --until merged
 ```
 
 **"I want to run five unrelated fixes in parallel tonight and have them all
@@ -1561,12 +1557,11 @@ orch review my-branch --reviewer "codex, claude high"
 
 - **"`orch task` merged, but I don't see it on `main`."** Correct, by design
   under the default `no-ff` mode — it merged into `orch/integration` and
-  opened/updated a PR to `main`. Check that PR, or set
-  `github.autoMergePr: true` if you want it fully automatic.
+  opened/updated a PR to `main`. Check that PR, or run it with
+  `--until merged` if orch should complete the remote merge.
 - **"I set `merge: pr` but nothing got merged."** `merge: pr` opens a PR *per
   cycle* — it still needs either a human to click merge on GitHub, or
-  `github.autoMergePr: true` plus passing CI checks on that PR, to actually
-  land on `main`.
+  `--until merged` to have orch wait for passing CI and merge it.
 - **"Two cycles I ran at once both ended `merge-deferred` instead of
   merging locally."** Check whether their changed files overlapped
   (`overlap` trigger). If so, **usually you do nothing**: once the blocking

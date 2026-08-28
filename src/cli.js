@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
-import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
+import { gateTimeoutMs, load, configPath, configReport, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import {
@@ -23,7 +23,7 @@ import * as gate from "./gate.js";
 import * as scope from "./scope.js";
 import { globToRegExp } from "./scope.js";
 import * as notify from "./notify.js";
-import { releaseLock, acquireBlocking, isPaused, LOCK_NAMES } from "./lock.js";
+import { releaseLock, acquireBlocking, isPaused, LOCK_NAMES, sleepSync } from "./lock.js";
 import { slugify } from "./slug.js";
 import { serve } from "./mcp.js";
 import { PARSE_OPTIONS, COMMAND_FLAGS, COMMANDS, renderHelp, usageError, validate as validateFlags, validatePositionals } from "./schema.js";
@@ -59,8 +59,31 @@ export { slugify };
 export { resolveAgentBin };
 export { visWidth };
 
-function ghShell(args, input) {
-  return execFileSync("gh", args, { input, encoding: "utf8" }).toString();
+const GH_AUTH_RETRY_DELAY_MS = 100;
+
+function isGhAuthFailure(error) {
+  const text = [error?.stderr, error?.stdout, error?.message]
+    .filter((part) => part != null)
+    .map(String)
+    .join("\n");
+  return Number(error?.status) === 401
+    || /\bHTTP 401\b|\b401 Unauthorized\b|bad credentials|invalid username or token|not logged in|authentication failed/i.test(text);
+}
+
+export function ghShell(args, input, { exec = execFileSync, sleep = sleepSync } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const options = {
+        encoding: "utf8",
+        stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      };
+      if (input !== undefined) options.input = input;
+      return exec("gh", args, options).toString();
+    } catch (error) {
+      if (attempt >= 1 || !isGhAuthFailure(error)) throw error;
+      sleep(GH_AUTH_RETRY_DELAY_MS);
+    }
+  }
 }
 
 // Fire-and-forget a detached `orch task <prompt>` after a successful merge.
@@ -238,13 +261,14 @@ agents:
 test: auto                              # "auto" detects the test command, or set one, e.g. "pytest -q"
 roundCap: 3                             # max review rounds incl. the first, before escalation (positive int); default: 3
                                         # (reviseCap is the deprecated alias for this key)
-stageTimeout: 25                        # wall-clock cap in minutes for each agent stage AND the test gate;
+stageTimeout: 25                        # wall-clock cap in minutes for each agent stage;
                                         # 0 disables; default: 25
+gateTimeout: 25                        # wall-clock cap in minutes for the test gate; defaults to stageTimeout
 concurrency: 4                          # max concurrent cycles per repo dir; over-cap launches exit; default: 4
 baseBranch: main                        # trunk orch reads/diffs/PRs against (e.g. dev if main is deploy-only); default: main
 integrationBranch: orch/integration     # local merge target for no-ff/ff-only; default: orch/integration
-merge: no-ff                            # into integrationBranch: ff-only | no-ff | pr; default: no-ff
-                                        # (pr = skip local integration, open a per-cycle branch PR)
+landing: no-ff                          # into integrationBranch: ff-only | no-ff | pr; default: no-ff
+                                        # (pr = skip local integration, open a per-cycle branch PR; was merge:)
 
 
 # ===================================================================
@@ -291,33 +315,30 @@ scope:
 # ===================================================================
 github:
   mergeMethod: squash                   # gh pr merge strategy for non-integration PRs; default: squash
-  autoMergePr: false                    # enable GitHub native auto-merge on PRs orch opens/updates; default: false
-                                        # (needs "Allow merge commits" on for the integration PR; see
-                                        # docs/orch-manual.md for the ruleset bypass_actors caveat)
+                                        # (the standing integration PR always uses a merge commit; see docs/orch-manual.md)
 
 
 # ===================================================================
 # MCP PR merge opt-in
 # ===================================================================
 automation:
+  maxAttempts: 3                        # remedy rounds after the first cycle; default: 3
+  humanWaitHours: 24                     # bounded wait for a human reply; default: 24
   mcpMayMerge: false                    # true = MCP orch_pr may request --until merged; default: false
-  detachLogDir: .orch/logs              # detached-run log directory; default: .orch/logs
-
-
-# ===================================================================
-# Main mirror PR (integrationBranch -> baseBranch)
-# ===================================================================
-main:
-  autoMerge: false                      # true = merge the persistent integration PR once checks are green; default: false
-  conflictResolution: manual            # manual | propose | auto; default: manual
-  # conflictResolutionResolvers:        # default: null — role specs; rotate/fail over per conflict
-  #   - claude
-  autoResolveConflicts: false           # deprecated alias: true = conflictResolution: auto
-  autoResolveConflictPaths:
+  remedies: null                        # ordered subset of rebase, rotate, reauthor, ask; default: fallback order
+  pollSeconds: 30                       # readiness poll interval; default: 30
+  ciWaitMinutes: 30                     # readiness wait window; default: 30
+  conflictResolvers: null               # role specs for integration conflict repair
+  conflictAutoPaths:
     - CHANGELOG.md
     - docs/index.html
     - package-lock.json
     - package.json
+  detachLogDir: .orch/logs              # detached-run log directory; default: .orch/logs
+
+
+# main.autoMerge, github.autoMergePr, main.conflictResolution, and the
+# other v0.4 main.* spellings remain supported with warnings until P12.
 
 
 # ===================================================================
@@ -874,7 +895,7 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
   try {
     let merge = gitDep.gitTry(["merge", "--no-edit", target], integration);
     if (merge.ok) {
-      const result = gateDep.run(testCmd, integration);
+      const result = gateDep.run(testCmd, integration, gateTimeoutMs(cfg));
       if (!result.pass) return fail("merged tree failed the test gate");
       gitDep.git(["push", "origin", branch], integration);
       return { ok: true, summary: `merged origin/${base} cleanly` };
@@ -884,7 +905,7 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
       resetMergeAttempt(gitDep, integration, preSha);
       merge = gitDep.gitTry(["merge", "--no-edit", target], integration);
       if (merge.ok) {
-        const result = gateDep.run(testCmd, integration);
+        const result = gateDep.run(testCmd, integration, gateTimeoutMs(cfg));
         if (!result.pass) continue;
         gitDep.git(["push", "origin", branch], integration);
         return { ok: true, summary: `merged origin/${base} cleanly` };
@@ -929,7 +950,7 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
         return fail(mode === "auto" ? `conflict resolution demoted to propose: ${verdict.reason || "reviewer was not confident"}` : "conflict resolution proposed for human approval", comment);
       }
 
-      const result = gateDep.run(testCmd, integration);
+      const result = gateDep.run(testCmd, integration, gateTimeoutMs(cfg));
       if (!result.pass) continue;
       const effectiveMode = metaOnly ? mode : "propose";
       if (effectiveMode === "propose") {
@@ -978,7 +999,7 @@ export function realDeps({ closes = null } = {}) {
   const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify: notifyDep });
   return { adapters, git, gate, scope, notify: notifyDep, inflight, finalize: finalizeDep, checkpoint, reviewLog };
 }
-function dryDeps() {
+function dryDeps({ noTestGate = false } = {}) {
   const verdict = { decision: "AGREE", reason: "(dry-run: assumed agree)", raw: "" };
   return {
     adapters: { get: (n) => ({ name: n, async author() {}, async audit() { return verdict; } }) },
@@ -987,7 +1008,7 @@ function dryDeps() {
       git() { return "(dry-run)"; },
       changedFiles() { return ["(dry-run)"]; },
     },
-    gate: { detect: () => "true", run: () => ({ pass: true, log: "(dry-run)" }) },
+    gate: { detect: () => noTestGate ? null : "true", run: () => ({ pass: true, log: "(dry-run)" }) },
     scope: { count: () => 0 },
     inflight: { setPaths() {} },
     finalize: async () => ({ status: "merged", reason: "dry-run", sha: "dry" }),
@@ -1369,6 +1390,32 @@ export function raiseExitCode(code) {
   if ((EXIT_CODE_PRIORITY[code] || 0) > (EXIT_CODE_PRIORITY[current] || 0)) process.exitCode = code;
 }
 
+function configValue(cfg, path) {
+  return path.split(".").reduce((value, key) => value?.[key], cfg);
+}
+
+function printConfigReport(report, json) {
+  if (json) {
+    console.log(JSON.stringify({ command: "config", ...report }, null, 2));
+    return report;
+  }
+  console.log(`orch config: ${report.ok ? "ok" : "invalid"}`);
+  if (report.config) {
+    for (const [path, source] of Object.entries(report.sources).sort(([a], [b]) => a.localeCompare(b))) {
+      console.log(`${path}: ${JSON.stringify(configValue(report.config, path))} [${source}]`);
+    }
+  }
+  if (report.warnings.length) {
+    console.log("Warnings:");
+    for (const warning of report.warnings) console.log(`- ${warning}`);
+  }
+  if (report.problems.length) {
+    console.log("Problems:");
+    for (const problem of report.problems) console.log(`- ${problem}`);
+  }
+  return report;
+}
+
 // Register before a cycle starts so the cap counts this run as well. The caller
 // owns the exceeded-cap action because task fan-out skips while single runs throw.
 export function registerWithConcurrencyCap(orchDir, sid, meta, cfg, { onExceeded = () => {} } = {}) {
@@ -1505,13 +1552,20 @@ export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDi
   return event;
 }
 
-function commentOnIssue(result, branch, closes, githubDepsFn) {
+function commentOnIssue(result, branch, closes, githubDepsFn, orchDir, sid) {
   if (!closes) return;
+  const body = redact(`<!-- orch:result -->\n${buildIssueComment(result, branch)}`);
   try {
-    const body = redact(`<!-- orch:result -->\n${buildIssueComment(result, branch)}`);
     githubDepsFn().gh(["issue", "comment", String(closes), "--body-file", "-"], body);
   } catch (e) {
-    console.error(`orch: could not comment on issue #${closes}: ${e.message}`);
+    const savedPath = join(orchDir, `issue-${closes}-comment-${sid}.md`);
+    try {
+      mkdirSync(orchDir, { recursive: true });
+      writeFileSync(savedPath, body);
+      console.error(`orch: could not comment on issue #${closes}: ${e.message}; comment saved to ${savedPath}`);
+    } catch (saveError) {
+      console.error(`orch: could not comment on issue #${closes}: ${e.message}; could not save comment to ${savedPath}: ${saveError.message}`);
+    }
   }
 }
 
@@ -1844,6 +1898,15 @@ export async function main(argv, deps = {}) {
   // commands use below, so ORCH_DRYRUN=1 is honored identically.
   const dryRun = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
 
+  // Config inspection is deliberately before update checks, app auth, and
+  // preflight: it is a local, non-interactive diagnostic command.
+  if (command === "config" && (flags.check || flags.json)) {
+    const report = configReport(repo, flags["config-file"]);
+    printConfigReport(report, Boolean(flags.json));
+    process.exitCode = report.ok ? 0 : 1;
+    return report;
+  }
+
   if (!dryRun && command && command !== "completion") {
     const notifyFn = deps.maybeNotifyUpdate || maybeNotifyUpdate;
     notifyFn({ current: VERSION, json: Boolean(flags.json) }).catch(() => {});
@@ -1913,9 +1976,8 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "config") {
-    // --dry isn't a legal flag on `config` (see schema.js's comment on why),
-    // but ORCH_DRYRUN=1 still applies here like every other write command —
-    // it used to launch the interactive wizard and write orch.yml regardless.
+    // Without --check/--json, retain the interactive wizard until the P12
+    // cutover. ORCH_DRYRUN=1 still plans that write without opening a TTY.
     if (dryRun) {
       console.log(`orch (dry): would run the interactive config wizard and write ${flags["config-file"] || join(orchDir, "orch.yml")}`);
       return;
@@ -2312,7 +2374,7 @@ export async function main(argv, deps = {}) {
       }
       emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
-        const cycleDeps = dry ? dryDeps() : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes }));
+        const cycleDeps = dry ? dryDeps({ noTestGate: deps.dryNoTestGate }) : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes }));
         const result = await runCycle(run, cycleDeps);
         results.push(result);
         let finalResult = result;
@@ -2605,7 +2667,7 @@ export async function main(argv, deps = {}) {
           if (until === "once") raiseExitCode(2);
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
-          if (!dry) commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps);
+          if (!dry) commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
         }
       } catch (err) {
         if (!dry) {
@@ -3146,7 +3208,7 @@ export async function main(argv, deps = {}) {
       }
       if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
         if (!controller) raiseExitCode(2);
-        if (!dry) commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps);
+        if (!dry) commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
       }
       const mergeEvent = mergeVerifiedEvent(runId, controller, cfg);
       if (mergeEvent) emit(mergeEvent);

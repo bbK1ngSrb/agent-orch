@@ -12,6 +12,7 @@ import * as deferredDefault from "./deferred.js";
 import { totalUsage } from "./usage.js";
 import { classify, fingerprint, TRIGGERS } from "./failure.js";
 import { LOCK_NAMES } from "./lock.js";
+import { gateTimeoutMs } from "./config.js";
 
 // design §6: trigger id -> failure class, for the demote()/landIntoIntegration
 // callers below. Kept here (not failure.js) because "lock"/"sync"/"overlap"/
@@ -245,9 +246,9 @@ async function landIntoIntegration(ctx, deps, { integration, integrationBranch, 
   }
 
   // Guard 2: re-run the test gate against integrated branch state. This runs
-  // under merge.lock, so the gate gets the same wall-clock cap as an agent
-  // stage (#505) — a hung test command must not hold the lock forever.
-  const { pass } = gate.run(testCmd, integration, cfg.stageTimeout > 0 ? cfg.stageTimeout * 60_000 : 0);
+  // under merge.lock, so its configured gate watchdog (#505) must ensure a
+  // hung test command does not hold the lock forever.
+  const { pass } = gate.run(testCmd, integration, gateTimeoutMs(cfg));
   if (!pass) {
     git.git(["reset", "--hard", preSha], integration); // roll integration back
     if (quietFail) {

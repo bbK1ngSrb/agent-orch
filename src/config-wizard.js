@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { parse, stringify } from "yaml";
-import { DEFAULTS, mergeConfig, normalizeMainConfig, validate } from "./config.js";
+import { DEFAULTS, mergeConfig, normalizeMainConfig, normalizeV2Config, validate } from "./config.js";
 import { start as startInput } from "./tui/input.js";
 import { box, C, colorEnabled } from "./tui/theme.js";
 
@@ -18,7 +18,7 @@ export const OPTION_CATALOG = [
   { keys: ["authors", "reviewers"], label: "authors / reviewers", widget: LIST, pair: true, nullableList: true, explain: "Plural roles run multiple author branches and audit them with the reviewer list. Leave both blank unless you want parallel fixed-role fanout." },
   { keys: ["test"], label: "test command", widget: TEXT, explain: "Use auto to let orch detect the repo test command. Set a command when the project needs a specific gate." },
   { keys: ["roundCap"], label: "round cap", widget: NUMBER, min: 1, explain: "Maximum review rounds including the first (author revisions = this minus one) before escalation. Higher values spend more time trying to self-heal; lower values fail faster. (reviseCap is the deprecated alias.)" },
-  { keys: ["stageTimeout"], label: "stage timeout", widget: NUMBER, min: 0, explain: "Per-stage timeout in minutes. Zero disables the watchdog; a positive value prevents a stuck agent stage — or a hung test command — from hanging forever. Raise it above your suite's runtime, or the test gate is killed and reported as red." },
+  { keys: ["stageTimeout"], label: "stage timeout", widget: NUMBER, min: 0, explain: "Per-agent-stage timeout in minutes. Zero disables the stage watchdog. The test gate has its own gateTimeout setting, which defaults to this value." },
   { keys: ["baseBranch"], label: "base branch", widget: TEXT, explain: "The trunk branch orch bases task work on and eventually targets. Most repos use main; set this to your real integration trunk." },
   { keys: ["integrationBranch"], label: "integration branch", widget: TEXT, explain: "The local branch where green cycles land before main. Keeping it separate makes orch's accumulated work easy to inspect." },
   { keys: ["merge"], label: "merge strategy", widget: ENUM, choices: ["ff-only", "no-ff", "pr"], explain: "How each green cycle lands on the integration branch.", choiceExplain: {
@@ -178,11 +178,15 @@ export function validateCatalog(catalog = OPTION_CATALOG, defaults = DEFAULTS) {
 
 export function configToYaml(cfg) {
   const out = cloneConfig(cfg);
+  // Keep the wizard's legacy merge control and the runtime alias in sync before
+  // writing the canonical landing key.
+  normalizeV2Config(out, { landing: out.merge ?? out.landing }, {});
   // Preserve the in-memory mode as explicit so serialization cannot flip propose/auto
   // back through the deprecated alias (Codex #3 / A4).
   normalizeMainConfig(out, { conflictResolution: out.main.conflictResolution }, {});
   validate(out);
   const main = { ...out.main };
+  delete out.merge;
   // Canonical field only — writing both alias + mode is what inverted behavior on reload.
   delete main.autoResolveConflicts;
   if (main.conflictResolutionResolvers != null) {
@@ -215,7 +219,13 @@ export function loadTarget(target) {
     delete cfg.reviseCap; // never write the alias back out
     // Same userMain tracking as load() so alias-only files map to conflictResolution: auto
     // instead of DEFAULTS' manual mode winning as "explicit".
+    // Keep canonical landing/gateTimeout and automation aliases in sync with
+    // the runtime loader while the wizard still exposes its legacy controls.
+    normalizeV2Config(cfg, user, {});
     normalizeMainConfig(cfg, user.main || {}, {});
+    // The wizard is also the repair path for an incomplete test setting.
+    // Runtime loading still rejects it; use the documented default only here.
+    if (typeof cfg.test !== "string" || !cfg.test.trim()) cfg.test = DEFAULTS.test;
     validate(cfg, aliasOnly ? "reviseCap" : "roundCap");
     return cfg;
   }

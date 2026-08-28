@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.360 — 2026-08-28
+- CLI v2 P11 config keys in warn mode, config --check/--json, gateTimeout; retry wrapper for orch's own gh calls with escalation spill-to-file
+
 ## v0.4.359 — 2026-08-28
 - REVIEW_STALEMATE 'three fresh rounds' acceptance criterion unreachable on the default two-agent pool, untested at pool>=3 (closes [#550](https://github.com/bbk1ng/agent-orch/issues/550))
 
