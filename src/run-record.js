@@ -26,7 +26,7 @@ function save(orchDir, runId, record) {
 
 // `policy` is opaque here (design §4's RunPolicy, wired by the run-controller
 // slice) — this store only persists whatever the caller passes.
-export function create(orchDir, { runId, command, argv, policy = null }) {
+export function create(orchDir, { runId, command, argv, policy = null, prTarget = null }) {
   if (!safeSid(runId)) return null;
   const now = new Date().toISOString();
   return save(orchDir, runId, {
@@ -48,6 +48,7 @@ export function create(orchDir, { runId, command, argv, policy = null }) {
     remedies: [],
     excludedAgents: [],
     branch: null,
+    prTarget,
     pr: null,
     integration: null,
     readiness: null,

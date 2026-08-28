@@ -120,6 +120,13 @@ github:
 
 
 # ===================================================================
+# MCP PR merge opt-in
+# ===================================================================
+automation:
+  mcpMayMerge: false                    # true = MCP orch_pr may request --until merged; default: false
+
+
+# ===================================================================
 # Main mirror PR (integrationBranch -> baseBranch)
 # ===================================================================
 main:

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
@@ -7,7 +7,10 @@ import { execFileSync, spawn } from "node:child_process";
 import { load, configPath, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
-import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh, findPrByHead } from "./github.js";
+import {
+  demote, openPr, openIntegrationPr, buildIssueComment, buildComment, commentOnce,
+  createPr, hasRemote, ghAvailable, requireGh, findPrByHead, prView, viewerPermission,
+} from "./github.js";
 import { mergeStanding } from "./landing.js";
 import { runUntil } from "./run-controller.js";
 import { createRebaseRemedy, createRotateRemedy } from "./remedies.js";
@@ -20,7 +23,7 @@ import * as gate from "./gate.js";
 import * as scope from "./scope.js";
 import { globToRegExp } from "./scope.js";
 import * as notify from "./notify.js";
-import { acquireLock, releaseLock, acquireBlocking, isPaused, LOCK_NAMES } from "./lock.js";
+import { releaseLock, acquireBlocking, isPaused, LOCK_NAMES } from "./lock.js";
 import { slugify } from "./slug.js";
 import { serve } from "./mcp.js";
 import { PARSE_OPTIONS, COMMAND_FLAGS, COMMANDS, renderHelp, usageError, validate as validateFlags, validatePositionals } from "./schema.js";
@@ -41,7 +44,7 @@ import { findProtectedMentions } from "./intake/allowlist.js";
 import { appCredsFromEnv, installationToken, parseRepoSlug } from "./github-app.js";
 import { finishRun } from "./complete.js";
 import { detectAgents, formatDetection } from "./detect.js";
-import { redact } from "./redact.js";
+import { redact, publicSummary } from "./redact.js";
 import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dashboard.js";
 import { FALLBACK_BIN_DIRS, resolveAgentBin } from "./agent-bin.js";
 import { BASH_COMPLETION, installCompletion } from "./completion.js";
@@ -290,6 +293,13 @@ github:
 
 
 # ===================================================================
+# MCP PR merge opt-in
+# ===================================================================
+automation:
+  mcpMayMerge: false                    # true = MCP orch_pr may request --until merged; default: false
+
+
+# ===================================================================
 # Main mirror PR (integrationBranch -> baseBranch)
 # ===================================================================
 main:
@@ -349,11 +359,11 @@ test-gate is the governing review.
 - \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\`
 - \`orch review <branch>\`           audit an existing branch (no author)
 - \`orch continue <sid>\`            resume an interrupted/stalled cycle from its checkpoint
-- \`orch pr <number> [--merge]\`     review (and optionally merge) a GitHub PR
+- \`orch pr <number|branch> [--merge|--until once|ready|merged]\` review (and optionally merge) a PR
 - \`orch release "<entry>"\`         run the version bump + CHANGELOG write by hand; only needed
                                     in repos that set \`release.autoBump: true\` (default \`false\`)
 - \`orch mcp\`                       serve orch's cycle commands over MCP on stdio, for an AI
-                                    client to drive (no merge authority is exposed)
+                                    client to drive; \`orch_pr\` merge needs automation.mcpMayMerge
 - \`orch agent add <name>\`          add an agent to the rotation pool
 - \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
 - \`orch dashboard [--json] [--limit <n>] [--check-history]\`
@@ -368,6 +378,11 @@ A role is a spec \`"<agent> [model] [effort]"\`, e.g.
 set \`cheap.paths\` to auto-route matching \`--file\`/\`orch issue\` work orders.
 \`--config-file <path.yml>\` layers a custom YAML file on top of \`orch.yml\` for one run.
 Config and every option live in \`.orch/orch.yml\`.
+
+The MCP \`orch_pr\` tool accepts a PR number or branch and \`once\`, \`ready\`, or
+\`merged\`. The \`merged\` mode is refused unless \`automation.mcpMayMerge: true\`
+is explicitly enabled in this repo; when enabled, it uses the same head-bound,
+CI-checked merge path as \`orch pr --merge\`.
 
 A \`task\`/\`issue\` whose work order text names a protected path (orch's own
 guardrail denylist in \`src/intake/allowlist.js\`) is refused at intake, before any
@@ -980,11 +995,9 @@ function dryDeps() {
 // result to the PR readiness is read against. "merged" landed on the standing
 // integration→base PR (design §0 glossary); "pr" (cfg.merge === "pr") opened
 // a PR straight from the cycle's own branch. "approved" (engine.js's noMerge
-// path — today only ever set by `runPr()`, github.js:337, which doesn't call
-// `runUntil`) has no per-cycle PR of its own either, so it's mapped the same
-// way here for whenever a future caller routes a noMerge cycle through this
-// path — findPrByHead re-reads rather than trusting `cycle.prUrl`'s number
-// (design §5.4 query-before-write).
+// path — used by `pr`, the review-mode CLI entry) is mapped the same way;
+// findPrByHead re-reads rather than trusting `cycle.prUrl`'s number (design
+// §5.4 query-before-write).
 function findPrByHeadSafe(branch, baseBranch, ghDeps, fallbackUrl) {
   // gh (findPrByHead -> deps.gh -> execFileSync) throws on any nonzero exit —
   // no GitHub remote, no auth, network hiccup. That must resolve to "no PR
@@ -998,18 +1011,149 @@ function findPrByHeadSafe(branch, baseBranch, ghDeps, fallbackUrl) {
   }
 }
 
-function resolveLanded(cycle, run, cfg, ghDeps, repo) {
+const PR_VIEW_FIELDS = "number,state,headRefName,headRefOid,headRepositoryOwner,baseRefName,isCrossRepository,maintainerCanModify,isDraft,url";
+
+function runRecordOwnsBranch(orchDir, branch) {
+  const recordsDir = join(orchDir, "run-records");
+  let files;
+  try { files = readdirSync(recordsDir); } catch { return false; }
+  return files.some((file) => {
+    if (!file.endsWith(".json")) return false;
+    try { return JSON.parse(readFileSync(join(recordsDir, file), "utf8")).branch === branch; }
+    catch { return false; }
+  });
+}
+
+// `pr/*` is orch's task-branch namespace. A durable run record is also an
+// ownership proof for a branch created under another configured namespace.
+// Ownership is deliberately separate from GitHub's maintainerCanModify bit:
+// that permission is not authority to rewrite a colleague's branch.
+export function orchOwnsBranch(branch, orchDir) {
+  return /^pr\//.test(branch) || runRecordOwnsBranch(orchDir, branch);
+}
+
+export function resolvePrTarget({ target, repo, orchDir, baseBranch = "main", until = "once", gh, git: gitDep = git } = {}) {
+  const value = String(target || "").trim();
+  if (!value) throw usageError("usage: orch pr <number|branch>");
+  if (!/^\d+$/.test(value) && !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value)) {
+    throw usageError("usage: orch pr <number|branch>");
+  }
+
+  let pr = null;
+  let branch = value;
+  let ephemeral = false;
+  const runGit = (args) => typeof gitDep === "function" ? gitDep(args, repo) : gitDep.git(args, repo);
+  const tryGit = (args) => {
+    if (typeof gitDep?.gitTry === "function") return gitDep.gitTry(args, repo);
+    try { return { ok: Boolean(runGit(args)) }; } catch { return { ok: false }; }
+  };
+  if (/^\d+$/.test(value)) {
+    pr = prView(value, PR_VIEW_FIELDS, { gh });
+    if (!pr.number) throw new Error(`orch pr #${value}: GitHub returned no PR`);
+    if (pr.state && pr.state !== "OPEN") throw new Error(`PR #${pr.number} is ${pr.state}, not open`);
+    branch = `pr-${pr.number}`;
+    runGit(["fetch", "origin", `+pull/${pr.number}/head:${branch}`]);
+    ephemeral = true;
+  } else {
+    if (!tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).ok) {
+      if (remoteBranchRefExists(repo, branch)) {
+        runGit(["branch", branch, `origin/${branch}`]);
+      } else {
+        throw usageError(`usage: orch pr <number> or <branch> [--until once|ready|merged]\norch pr ${branch}: branch does not exist locally or as origin/${branch}`);
+      }
+    }
+    if (typeof gh === "function") {
+      try {
+        const found = findPrByHead(branch, baseBranch, { includeDraft: true }, { gh });
+        if (found?.number) pr = prView(found.number, PR_VIEW_FIELDS, { gh });
+      } catch { /* a local-only review remains valid without a readable remote */ }
+    }
+  }
+
+  if (pr && until !== "once") {
+    let viewerPush = false;
+    try { viewerPush = viewerPermission({ gh }).push; } catch { /* fail closed */ }
+    pr.viewerPush = viewerPush;
+    pr.ownedBranch = orchOwnsBranch(pr.headRefName || branch, orchDir);
+    pr.canPushHead = pr.isCrossRepository === false && pr.ownedBranch && viewerPush;
+  }
+  return {
+    ...pr,
+    number: pr?.number ? Number(pr.number) : null,
+    url: pr?.url || null,
+    branch,
+    remoteBranch: pr?.headRefName || branch,
+    sourceBranch: branch,
+    headRefName: pr?.headRefName || branch,
+    headRefOid: pr?.headRefOid || null,
+    baseBranch: pr?.baseRefName || baseBranch,
+    ephemeral,
+    originalNumber: pr?.number ? Number(pr.number) : null,
+    needsRepairBranch: Boolean(pr?.number && until !== "once" && !pr.canPushHead),
+  };
+}
+
+export function resolveLanded(cycle, run, cfg, ghDeps, repo) {
   const baseBranch = cfg.baseBranch || "main";
+  const pathsFor = (branch) => cycle.paths ?? git.changedFiles(repo, branch, baseBranch);
+  if (run.prTarget?.number) {
+    const target = run.prTarget;
+    const branch = target.branch || run.branch;
+    return {
+      pr: { number: target.number, url: target.url || null },
+      expectedHead: git.git(["rev-parse", branch], repo),
+      landing: "pr",
+      branch,
+      paths: pathsFor(branch),
+    };
+  }
   if (cycle.status === "pr" || cycle.status === "approved") {
     const pr = findPrByHeadSafe(run.branch, baseBranch, ghDeps, cycle.prUrl);
-    return { pr, expectedHead: git.git(["rev-parse", run.branch], repo), landing: "pr", branch: run.branch, paths: cycle.paths || [] };
+    return { pr, expectedHead: git.git(["rev-parse", run.branch], repo), landing: "pr", branch: run.branch, paths: pathsFor(run.branch) };
   }
   const integrationBranch = cfg.integrationBranch || "orch/integration";
   if (integrationBranch === baseBranch) {
-    return { pr: null, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "base", branch: integrationBranch, paths: cycle.paths || [] };
+    return { pr: null, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "base", branch: integrationBranch, paths: pathsFor(integrationBranch) };
   }
   const pr = findPrByHeadSafe(integrationBranch, baseBranch, ghDeps, cycle.prUrl);
-  return { pr, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "standing", branch: integrationBranch, paths: cycle.paths || [] };
+  return { pr, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "standing", branch: integrationBranch, paths: pathsFor(integrationBranch) };
+}
+
+export function preparePrRepairRun(run, cfg, ghDeps) {
+  const target = run.prTarget;
+  const repairBranch = `pr/repair/${target.number}-${run.sid}`;
+  if (!git.branchExists(run.repo, repairBranch)) {
+    git.git(["branch", repairBranch, run.branch], run.repo);
+  }
+  const head = git.git(["rev-parse", repairBranch], run.repo);
+  // This is the only publication allowed for a foreign or colleague-owned
+  // head: the original ref is never rewritten.
+  git.git(["push", "-u", "origin", `${head}:refs/heads/${repairBranch}`], run.repo);
+  const repairPr = createPr({
+    head: repairBranch,
+    base: target.baseBranch || cfg.baseBranch || "main",
+    title: `orch: repair PR #${target.originalNumber || target.number}`,
+    body: `Repair branch for PR #${target.originalNumber || target.number}.`,
+  }, ghDeps);
+  if (!repairPr.number) throw new Error(`could not open repair PR for #${target.originalNumber || target.number}`);
+  return {
+    ...run,
+    branch: repairBranch,
+    worktree: join(run.orchDir, "wt", repairBranch.replace(/\//g, "_")),
+    prTarget: {
+      ...target,
+      number: repairPr.number,
+      url: repairPr.url || null,
+      repairNumber: repairPr.number,
+      repairUrl: repairPr.url || null,
+      branch: repairBranch,
+      remoteBranch: repairBranch,
+      headRefName: repairBranch,
+      headRefOid: head,
+      canPushHead: true,
+      needsRepairBranch: false,
+    },
+  };
 }
 
 export function mergeForRun({ record, land, readiness }, run, cfg, ghDeps, emit) {
@@ -1231,6 +1375,27 @@ function commentOnIssue(result, branch, closes, githubDepsFn) {
     githubDepsFn().gh(["issue", "comment", String(closes), "--body-file", "-"], body);
   } catch (e) {
     console.error(`orch: could not comment on issue #${closes}: ${e.message}`);
+  }
+}
+
+function commentOnPr(result, run, githubDepsFn) {
+  const target = run.prTarget;
+  if (!target?.originalNumber) return;
+  try {
+    const approved = result.status === "approved" || result.status === "merged";
+    const summary = publicSummary({
+      decision: approved ? "AGREE" : "DISAGREE",
+      green: approved,
+      branch: run.branch,
+      rounds: result.rounds,
+    });
+    const body = [
+      buildComment({ ...result, status: approved ? "approved" : result.status }, summary),
+      target.repairUrl ? `\nRepair PR: ${target.repairUrl}` : "",
+    ].join("");
+    commentOnce({ kind: "pr", target: target.originalNumber, body: redact(body), marker: "verdict" }, githubDepsFn());
+  } catch (e) {
+    console.error(`orch: could not comment on PR #${target.originalNumber}: ${e.message}`);
   }
 }
 
@@ -1687,7 +1852,7 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "task" || command === "review" || command === "issue") {
+  if (command === "task" || command === "review" || command === "issue" || command === "pr") {
     // D2: reviewer-only is meaningful for task/issue too ("rotate author, force this
     // reviewer"), matching review/continue/pr and the printUsage example.
     let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
@@ -1695,9 +1860,16 @@ export async function main(argv, deps = {}) {
     // design §4/§6 (P5): the run controller only drives ready/merged — `once`
     // (the default) is today's single implicit cycle, byte-for-byte unchanged
     // below. schema.js already refuses --json without --until ready|merged.
-    const until = flags.until || "once";
+    const until = flags.until || (command === "pr" && flags.merge ? "merged" : "once");
     const jsonMode = Boolean(flags.json);
     const emit = (event) => { if (jsonMode) console.log(JSON.stringify(event)); };
+    if (command === "pr" && dry) {
+      if (!/^\d+$/.test(rest[0]) && !git.branchExists(repo, rest[0]) && !remoteBranchRefExists(repo, rest[0])) {
+        throw usageError("usage: orch pr <number> or <branch> [--until once|ready|merged]");
+      }
+      console.log(`orch (dry): would review ${/^\d+$/.test(rest[0]) ? `PR #${rest[0]}` : `branch ${rest[0]}`}${until === "merged" ? " and merge it if approved" : ""}`);
+      return;
+    }
     // design §3/§4: resolve the run policy once so every `run.start` emission
     // (including the concurrency-cap skip path) carries the same object given
     // to the controller for that run.
@@ -1713,13 +1885,14 @@ export async function main(argv, deps = {}) {
       integrationBranch: cfg.integrationBranch,
     };
 
-    // F3: operator kill switch + one-cycle-at-a-time lock.
+    // F3: operator kill switch. Cycle admission is serialized by the
+    // concurrency cap and inflight registry below.
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
 
     // `issue` is a task whose work order is fetched from a GitHub issue; it runs
     // the identical author→audit→test→merge cycle, plus `Closes #N` on the merge.
-    const mode = command === "issue" ? "task" : command; // "task" | "review"
-    let task, authorPrompt, reviewBranch, closes = null, workOrder = null;
+    const mode = command === "task" || command === "issue" ? "task" : "review";
+    let task, authorPrompt, reviewBranch, closes = null, workOrder = null, prTarget = null;
     if (command === "issue") {
       const n = rest[0];
       if (!/^\d+$/.test(String(n || ""))) throw usageError("usage: orch issue <number> [--author ... --reviewer ...]");
@@ -1758,7 +1931,7 @@ export async function main(argv, deps = {}) {
       };
     } else {
       reviewBranch = rest[0];
-      if (!reviewBranch) throw usageError("usage: orch review <branch>");
+      if (!reviewBranch) throw usageError(command === "pr" ? "usage: orch pr <number|branch>" : "usage: orch review <branch>");
     }
 
     // §3c intake scan (#394): a task whose text names a protected path almost
@@ -1820,7 +1993,23 @@ export async function main(argv, deps = {}) {
     // PR bridge intended) isn't forced to have a gh session at all.
     if (!dry) {
       const { gh, git: ghGit } = (deps.githubDeps || githubDeps)();
-      if (hasRemote(repo, ghGit) && ghAvailable(gh)) requireGhAuth(gh);
+      const remote = hasRemote(repo, ghGit || git.git);
+      if (remote && ghAvailable(gh)) requireGhAuth(gh);
+      if (command === "pr") {
+        if (/^\d+$/.test(String(reviewBranch)) && !remote) {
+          throw new Error(`orch pr #${reviewBranch}: repository has no origin remote`);
+        }
+        prTarget = resolvePrTarget({
+          target: reviewBranch,
+          repo,
+          orchDir,
+          baseBranch: cfg.baseBranch,
+          until,
+          gh: remote ? gh : null,
+          git: ghGit || git,
+        });
+        reviewBranch = prTarget.branch;
+      }
     }
 
     // Main is a GitHub mirror; task mode fast-forwards it from origin before
@@ -1898,7 +2087,8 @@ export async function main(argv, deps = {}) {
       task = null;
       const sid = newSid();
       runs = [{
-        mode, task, until, allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
+        mode, task, until, noMerge: command === "pr", prTarget,
+        allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
         reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
         reviewers,
         cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
@@ -1913,6 +2103,7 @@ export async function main(argv, deps = {}) {
     const prUrls = [];
     for (const run of runs) {
       let activeRun = run;
+      let resumable = false;
       const registeredSids = new Set([run.sid]);
       const cycleRoles = [{ authorName: run.authorName, reviewerNames: run.reviewerNames }];
       // A resumed run (run.resume) reuses the ORIGINAL run's sid as its runId —
@@ -1948,7 +2139,7 @@ export async function main(argv, deps = {}) {
         }
         // runId == this cycle's sid (design §5.1/§5.3) until the run-controller
         // (P5) can extend a run across more than one cycle. `--dry` writes none.
-        if (!priorRecord) runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact), policy: runPolicy });
+        if (!priorRecord) runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact), policy: runPolicy, prTarget: run.prTarget || null });
       }
       emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
@@ -2093,6 +2284,33 @@ export async function main(argv, deps = {}) {
               deps: cycleDeps,
               createCycle: freshCycle,
             });
+            const integrationRepair = async (context) => {
+              let repairRun = activeRun;
+              if (repairRun.prTarget?.needsRepairBranch) {
+                try {
+                  repairRun = preparePrRepairRun(repairRun, cfg, ghDeps);
+                  activeRun = repairRun;
+                } catch (error) {
+                  return {
+                    result: {
+                      state: "STOPPED_AT_CAP",
+                      outcome: "stopped-at-cap",
+                      exit: 2,
+                      failureClass: context.failure?.class,
+                      failure: context.failure,
+                      reason: `could not create PR repair branch: ${error.message || error}`,
+                    },
+                    record: context.record,
+                  };
+                }
+              }
+              return createIntegrationRepairRemedy({
+                run: repairRun,
+                deps: { ...cycleDeps, sleep: deps.sleep },
+                gh: ghDeps.gh,
+                resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
+              })(context);
+            };
             controller = await runUntil(runPolicy, record, {
               runCycle: async ({ fresh } = {}) => fresh
                 ? freshCycle()
@@ -2106,14 +2324,7 @@ export async function main(argv, deps = {}) {
                 // #551: without this key the lookup in run-controller.js
                 // misses and every REMOTE_BEHIND/CONFLICTING/CI_RED run ends
                 // as a terminal failure instead of repairing (design §10A).
-                "integration-repair": createIntegrationRepairRemedy({
-                  run: activeRun,
-                  // `sleep` so the lock-contention backoff is injectable the
-                  // same way the controller's own backoffs are.
-                  deps: { ...cycleDeps, sleep: deps.sleep },
-                  gh: ghDeps.gh,
-                  resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
-                }),
+                "integration-repair": integrationRepair,
                 rotate: createRotateRemedy({
                   getRun: () => activeRun,
                   deps: cycleDeps,
@@ -2151,7 +2362,7 @@ export async function main(argv, deps = {}) {
           // A cap or human wait is deliberately resumable. Other terminal
           // outcomes are complete (or blocked) and can release their resume
           // state. A throw skips this line, leaving state for `continue`.
-          const resumable = until !== "once" && (outcome === "stopped-at-cap" || outcome === "wait-timeout");
+          resumable = until !== "once" && (outcome === "stopped-at-cap" || outcome === "wait-timeout");
           if (run.mode === "task" && activeRun.branch !== run.branch) resume.clearForBranch(orchDir, run.branch);
           if (!resumable) {
             if (run.mode === "task") resume.clearForBranch(orchDir, activeRun.branch);
@@ -2168,6 +2379,7 @@ export async function main(argv, deps = {}) {
             attempt: persistedAttempt,
             ...(controller?.retries ? { retries: controller.retries } : {}),
             branch: activeRun.branch,
+            prTarget: activeRun.prTarget || run.prTarget || null,
             pr,
             ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
             ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
@@ -2213,6 +2425,9 @@ export async function main(argv, deps = {}) {
         if (!jsonMode) console.log(summaryLine(finalResult, activeRun.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (finalResult.status === "merged" && run.mode === "task") mergedBranches.push(activeRun.branch);
         if (finalResult.prUrl) prUrls.push(finalResult.prUrl);
+        if (run.mode === "review" && activeRun.prTarget) {
+          commentOnPr(finalResult, activeRun, deps.githubDeps || githubDeps);
+        }
         if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
           // Under `ready`/`merged` the exit code already came from the run
           // controller above (STOPPED_AT_CAP=2 or BLOCKED=3 per design §6) —
@@ -2229,6 +2444,7 @@ export async function main(argv, deps = {}) {
             state: "ERROR",
             outcome: "error",
             exit: 1,
+            prTarget: activeRun.prTarget || run.prTarget || null,
             lastError: toLastError(err),
           });
         }
@@ -2242,6 +2458,10 @@ export async function main(argv, deps = {}) {
         throw err;
       } finally {
         if (!dry) for (const cycleSid of registeredSids) inflight.deregister(orchDir, cycleSid);
+        if (!dry && !resumable && run.prTarget?.ephemeral
+          && orchOwnsBranch(run.prTarget.sourceBranch, orchDir)) {
+          git.gitTry(["branch", "-D", "--", run.prTarget.sourceBranch], repo);
+        }
       }
     }
     // After the cycles: the detached docs-update runs `orch task`, so spawn it
@@ -2341,7 +2561,8 @@ export async function main(argv, deps = {}) {
     // role outside that pool (e.g. `author: qwen3-coder-30b` with
     // `agents: [claude, codex]`), which existing config/tests already allow.
     // The real validity check is whether the name has a registered adapter.
-    if (!branchAuthor) throw new Error(`orch: cannot determine an author from branch ${branch}`);
+    // Numeric PR checkouts use the synthetic `pr-<number>` branch name, so
+    // their persisted checkpoint/run target supplies the author instead.
     // The original run persisted its resolved author/reviewer role specs (agent
     // + model + effort, not just names) into the checkpoint/inflight record —
     // reuse those by default so a resume picks up the same models the original
@@ -2351,6 +2572,9 @@ export async function main(argv, deps = {}) {
     // it never rewrites the persisted record. --author is not overridable here:
     // the branch's commits were already authored by a specific agent.
     const persistedAuthor = inf?.author || ck?.author;
+    if (!branchAuthor && !persistedAuthor?.agent && !priorRun?.prTarget) {
+      throw new Error(`orch: cannot determine an author from branch ${branch}`);
+    }
     const rotationStage = inf?.rotationStage || null;
     const persistedExclusions = [
       ...(priorRun?.excludedAgents || []),
@@ -2363,14 +2587,14 @@ export async function main(argv, deps = {}) {
       if (entry && !exclusions.has(entry.name)) exclusions.set(entry.name, entry);
     }
     const excludedNames = new Set(exclusions.keys());
-    const selectedRoles = nextAuthor(cfg, orchDir, persistedAuthor?.agent || branchAuthor, true, {
+    const selectedRoles = nextAuthor(cfg, orchDir, persistedAuthor?.agent || branchAuthor || cfg.agents?.[0], true, {
       exclude: [...excludedNames],
       persist: false,
     });
     const authorSpec = persistedAuthor?.agent && !excludedNames.has(persistedAuthor.agent)
       ? persistedAuthor
       : selectedRoles.authors?.[0]
-        || (!excludedNames.has(branchAuthor) ? { agent: branchAuthor, model: null, effort: null } : null);
+        || (branchAuthor && !excludedNames.has(branchAuthor) ? { agent: branchAuthor, model: null, effort: null } : null);
     if (!authorSpec) throw noEligibleRole("author", { exclude: [...excludedNames], agents: cfg.agents || [] });
     const authorName = authorSpec.agent;
     try { adapters.get(authorName); }
@@ -2407,13 +2631,16 @@ export async function main(argv, deps = {}) {
     }
 
     const allowLargeScope = Boolean(flags["allow-large-scope"]);
+    const isPrResume = priorRun?.command === "pr";
+    const prTarget = priorRun?.prTarget || null;
     const run = {
       // Older completed-author checkpoints carry no task, so retain the branch
       // fallback for their changelog label. Author-stage resumes fail above
       // unless they have the original work order and can execute it safely.
-      mode: "task", task, authorPrompt, workOrder,
+      mode: isPrResume ? "review" : "task", task, authorPrompt, workOrder,
       until: flags.until || priorRun?.policy?.until || "once",
       allowLargeScope, branch, sid: resumeSid, resume: true, closes,
+      noMerge: isPrResume, prTarget,
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers,
@@ -2593,6 +2820,33 @@ export async function main(argv, deps = {}) {
           return runCycle(cycleRun, cycleDepsForRun);
         };
         const ghDeps = { gh: (deps.githubDeps || githubDeps)().gh };
+        const integrationRepair = async (context) => {
+          let repairRun = activeRun;
+          if (repairRun.prTarget?.needsRepairBranch) {
+            try {
+              repairRun = preparePrRepairRun(repairRun, cfg, ghDeps);
+              activeRun = repairRun;
+            } catch (error) {
+              return {
+                result: {
+                  state: "STOPPED_AT_CAP",
+                  outcome: "stopped-at-cap",
+                  exit: 2,
+                  failureClass: context.failure?.class,
+                  failure: context.failure,
+                  reason: `could not create PR repair branch: ${error.message || error}`,
+                },
+                record: context.record,
+              };
+            }
+          }
+          return createIntegrationRepairRemedy({
+            run: repairRun,
+            deps: { ...continueDeps, sleep: deps.sleep },
+            gh: ghDeps.gh,
+            resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
+          })(context);
+        };
         const reauthor = createReauthorRemedy({ getRun: () => activeRun, createCycle: freshCycle });
         controller = await runUntil(controllerPolicy, {
           ...(resumedRecord || priorRun),
@@ -2619,12 +2873,7 @@ export async function main(argv, deps = {}) {
               runCycle: freshCycle,
               reauthor,
             }),
-            "integration-repair": createIntegrationRepairRemedy({
-              run: activeRun,
-              deps: { ...continueDeps, sleep: deps.sleep },
-              gh: ghDeps.gh,
-              resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
-            }),
+            "integration-repair": integrationRepair,
           },
           resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
           mergeStanding: (args) => mergeForRun(args, activeRun, cfg, ghDeps, emit),
@@ -2655,6 +2904,7 @@ export async function main(argv, deps = {}) {
             exit,
             attempt,
             branch: activeRun.branch,
+            prTarget: activeRun.prTarget || run.prTarget || null,
             excludedAgents: controller?.excludedAgents || run.excludedAgents,
             ...(controller?.policy ? { policy: controller.policy } : {}),
             ...(controller?.human ? { human: controller.human } : {}),
@@ -2679,6 +2929,7 @@ export async function main(argv, deps = {}) {
             exit,
             attempt,
             branch: activeRun.branch,
+            prTarget: activeRun.prTarget || run.prTarget || null,
             excludedAgents: run.excludedAgents,
             ...(controller?.merge ? { merge: controller.merge } : {}),
             cycles: [{ sid: resumeSid, attempt, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
@@ -2727,38 +2978,15 @@ export async function main(argv, deps = {}) {
         ...(controller?.resumeCommand ? { resumeCommand: controller.resumeCommand } : {}),
       });
     } catch (err) {
-      if (!dry) runRecord.update(orchDir, runId, { state: "ERROR", outcome: "error", exit: 1, lastError: toLastError(err) });
+      if (!dry) runRecord.update(orchDir, runId, {
+        state: "ERROR", outcome: "error", exit: 1,
+        prTarget: activeRun.prTarget || run.prTarget || null,
+        lastError: toLastError(err),
+      });
       emit({ event: "run.end", runId, outcome: "error", exit: 1, usage: {} });
       throw err;
     } finally {
       if (!dry) for (const cycleSid of registeredSids) inflight.deregister(orchDir, cycleSid);
-    }
-    return;
-  }
-
-  if (command === "pr") {
-    const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
-    const n = rest[0];
-    if (!/^\d+$/.test(String(n || ""))) throw usageError("usage: orch pr <number> [--merge]");
-    if (dryRun) {
-      console.log(`orch (dry): would review PR #${n}${flags.merge ? " and merge it if approved" : ""}`);
-      return;
-    }
-    preflightFn(cfg, orchDir);
-    requireGhAuth((deps.githubDeps || githubDeps)().gh);
-    if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
-    if (!acquireLock(orchDir, LOCK_NAMES.CYCLE)) throw new Error(".orch/lock held — another cycle is running");
-    resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, undefined, { base: cfg.baseBranch })); // clear orphans from a crashed prior cycle
-    try {
-      const result = await runPr(
-        { n, repo, orchDir, cfg, merge: Boolean(flags.merge), allowLargeScope: Boolean(flags["allow-large-scope"]) },
-        githubDeps(),
-      );
-      console.log(`orch pr #${n}: ${result.status} (${result.reason}) after ${result.rounds} round(s)${costSuffix(result)}`);
-      if (result.mergeHold) console.log(`orch pr #${n}: NOT merged — ${result.mergeHold}`);
-      if (result.status !== "approved") process.exitCode = 2;
-    } finally {
-      releaseLock(orchDir, LOCK_NAMES.CYCLE);
     }
     return;
   }
@@ -2868,7 +3096,7 @@ function costSuffix(result) {
 
 // Real collaborators for the GitHub PR bridge. gh/git shell out; cycle binds
 // the engine to its real deps. §3f: the public PR comment is a machine summary
-// only (built in github.runPr), so no reviewer prose is read back here.
+// only (built in commentOnPr), so no reviewer prose is read back here.
 function githubDeps() {
   return {
     gh: ghShell,

@@ -865,15 +865,16 @@ everywhere else:**
 
 | Lock | File | Guards | Held for | Timeout |
 |---|---|---|---|---|
-| `.orch/lock` (existing) | `.orch/lock` | the coarse "one cycle per checkout" guard, and the **outermost** lock: taken for the whole of `orch pr <n>` (`acquireLock(orchDir)`, `cli.js:1728`, released `cli.js:1738`) — so a `pr <standing-pr-number> --until merged` (§11) holds it while it runs §10.2–10.5. `task`/`issue` runs do **not** take it; they are serialised by the `concurrency` cap and the inflight registry (`cli.js:1489-1493`) | the whole command, agent stages included | none (non-blocking `acquireLock`; already held → "another cycle is running"); stale-pid steal as `lock.js:18-33` |
+| `.orch/lock` (existing, not currently acquired) | `.orch/lock` | no current CLI path; cycle admission for `task`/`issue`/`review`/`pr` is serialized by the `concurrency` cap and inflight registry (`registerWithConcurrencyCap`, `cli.js:1360-1369`) | not held | — |
 | `merge.lock` (existing) | `.orch/merge.lock` | **every mutation of the integration worktree/branch**: `finalize` landing (`finalize.js:83-171`), Guard 2, push, and v2's ff/push step of integration repair (§10A) | seconds–minutes (git + one gate run; **never** an agent stage) | `acquireBlocking` 300 s (`lock.js:58`); waiter that times out → `LAND_LOCK` |
 | `standing-pr.lock` (new) | `.orch/standing-pr.lock` | **only the GitHub merge phase** of the standing PR: final readiness read, the no-required-checks local gate, `PUT …/merge`, post-merge verify (§10.4–10.5) | seconds, or one gate run when the repo has no required checks | `acquireBlocking` `gateTimeout + 5 min`; timeout → `LAND_LOCK` free retry, then `ask` |
 | `integration-repair.lock` (new) | `.orch/integration-repair.lock` | starting **any** §10A repair of the integration branch, resolver-driven or not (`REMOTE_BEHIND`'s `updateBranch` + gate included) — **non-blocking** `acquireLock`; a loser polls readiness instead | one whole repair: the agent stage **and** the ff/push that follows it, the latter under nested `merge.lock` (§10A) — the lock is released only after that push | none (non-blocking); stale-pid steal as `lock.js:18-33` |
 | (none) | — | agent work: conflict resolution, repair authoring, reviews — always in a **scratch worktree** (`git worktree add <tmp> origin/<integration>`) or the task branch worktree | minutes | `stageTimeout` |
 
-Rules: there is one **total acquisition order**, and it is a legality
-constraint — a lock may be taken while holding any lock to its left, never one
-to its right:
+Rules: the active locks have one **total acquisition order**, and it is a
+legality constraint — a lock may be taken while holding any lock to its left,
+never one to its right. `.orch/lock` remains in the reserved name order but has
+no current producer:
 
 **`.orch/lock` → `standing-pr.lock` → `integration-repair.lock` → `merge.lock`**
 
@@ -890,11 +891,9 @@ unused: §10.4 releases `standing-pr.lock` before classifying into §10A
 reverse of any edge — nothing holding an inner lock ever waits for an outer
 one, and `finalize`'s landing (`finalize.js:83-171`) holds only `merge.lock`.
 No lock is held across an agent stage except `integration-repair.lock` (that is
-its purpose) and the coarse `.orch/lock`; every lock above is released in
-`finally` on every exit path (including the SIGTERM handler, §13); readiness
-polling and CI waiting hold **no** lock (the coarse `.orch/lock` excepted: under
-`orch pr` it spans the command, waits included, which is why nothing else may
-block on it); a `head-moved` (409) releases
+its purpose); every acquired lock above is released in `finally` on every exit
+path (including the SIGTERM handler, §13); readiness polling and CI waiting
+hold **no** lock; a `head-moved` (409) releases
 `standing-pr.lock` before re-checking so a peer that *can* merge is not
 starved. `releaseLock` re-reads the lock file and removes it only if `pid ==
 process.pid` (engine H5, `lock.js:50-52`); `gate.run` gains `timeoutMs =

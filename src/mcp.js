@@ -11,16 +11,10 @@
 //   * no caller-supplied flags — free text is passed after `--` and rejected if
 //     it starts with `-`, so a task string cannot smuggle in `--allow-protected`
 //     or `--config-file`;
-//   * no tool can emit `--merge`, and `orch pr` is not exposed at all. `--merge`
-//     is orch's only PR-merge path, so no MCP client can merge a pull request
-//     itself. The server therefore grants no merge authority beyond what a
-//     hand-typed `orch` in the same repo already has — that is a property of the
-//     tool table, not of a policy layer (see the test). Where a cycle lands is
-//     still the repo's own choice: with the default config it lands on
-//     `orch/integration` and the standing integration PR is a human checkpoint,
-//     but a repo that points `integrationBranch` at `baseBranch`, or sets
-//     `main.autoMerge: true`, has already chosen to let *any* green cycle
-//     advance `main` — MCP-started or not.
+//   * `orch_pr` is exposed with a fixed target and `--until` enum. Its merged
+//     mode is additionally gated by the repo's explicit
+//     `automation.mcpMayMerge` setting; the child still uses the same
+//     head-bound, CI-checked merge path as a hand-typed CLI invocation.
 //
 // Security, protected-path, test-gate, worktree, checkpoint and concurrency
 // controls all live in the cycle the child process runs, so they apply to an
@@ -32,6 +26,7 @@ import { spawn } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { load } from "./config.js";
 
 const VERSION = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -71,6 +66,19 @@ function requireIssueNumber(value) {
   const n = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
   if (!Number.isInteger(n) || n <= 0) throw new Error("number must be a positive integer");
   return String(n);
+}
+
+function requireUntil(value) {
+  const until = value == null ? "ready" : value;
+  if (!["once", "ready", "merged"].includes(until)) throw new Error("until must be one of: once, ready, merged");
+  return until;
+}
+
+function requirePrTarget(args) {
+  const hasNumber = args.number != null;
+  const hasBranch = args.branch != null;
+  if (hasNumber === hasBranch) throw new Error("provide exactly one of number or branch");
+  return hasNumber ? requireIssueNumber(args.number) : requireBranch(args.branch);
 }
 
 const TEXT_ARG = { type: "string", description: "What the cycle should change, in plain English." };
@@ -134,6 +142,21 @@ export const TOOLS = [
     argv: (a) => ["review", requireBranch(a.branch)],
   },
   {
+    name: "orch_pr",
+    description: "Audit, repair, or merge a GitHub PR or local branch; merge requests require explicit repository opt-in.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        number: { type: "integer", description: "GitHub PR number." },
+        branch: { type: "string", description: "Local or origin branch name." },
+        until: { type: "string", enum: ["once", "ready", "merged"], default: "ready" },
+      },
+      additionalProperties: false,
+      oneOf: [{ required: ["number"] }, { required: ["branch"] }],
+    },
+    argv: (a) => ["pr", requirePrTarget(a), "--until", requireUntil(a.until)],
+  },
+  {
     name: "orch_continue",
     description: "Resume an interrupted or stalled cycle from its checkpoint, by cycle id (sid).",
     inputSchema: {
@@ -191,6 +214,9 @@ function readNewRuns(path, offset, filter = {}) {
 export function runTool(tool, args, ctx) {
   const { repo, spawnFn = spawn } = ctx;
   const argv = tool.argv(args); // throws on invalid arguments — caller reports it
+  if (tool.name === "orch_pr" && argv.at(-1) === "merged" && !load(repo).automation.mcpMayMerge) {
+    throw new Error("until: merged requires automation.mcpMayMerge: true");
+  }
   const orchDir = join(repo, ".orch");
   const runsLog = join(orchDir, "runs.jsonl");
   const offset = fileSize(runsLog);

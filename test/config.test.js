@@ -196,6 +196,16 @@ test("github.autoMergePr defaults to false; non-boolean throws", () => {
   assert.throws(() => load(bad), /github.autoMergePr must be a boolean/);
 });
 
+test("automation.mcpMayMerge defaults to false and validates booleans", () => {
+  assert.equal(load(tmp()).automation.mcpMayMerge, false);
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "automation:\n  mcpMayMerge: true\n");
+  assert.equal(load(d).automation.mcpMayMerge, true);
+  const bad = tmp();
+  writeFileSync(join(bad, "orch.yml"), "automation:\n  mcpMayMerge: yes\n");
+  assert.throws(() => load(bad), /automation.mcpMayMerge must be a boolean/);
+});
+
 test("main.autoMerge defaults to false; non-boolean throws", () => {
   assert.equal(load(tmp()).main.autoMerge, false);
   const d = tmp();
