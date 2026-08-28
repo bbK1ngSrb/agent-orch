@@ -499,6 +499,56 @@ test("openPr still returns the opened PR when enabling auto-merge fails", async 
   assert.match(logs.join("\n"), /could not enable auto-merge/);
 });
 
+test("v2 until modes never arm or directly perform PR auto-merges", async () => {
+  const cases = [
+    {
+      name: "demote",
+      run: (deps) => demote({
+        repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reviewedSha: "1".repeat(40),
+        reason: "overlap", until: "ready", cfg: { github: { mergeMethod: "squash", autoMergePr: true } },
+      }, deps),
+    },
+    {
+      name: "openPr",
+      run: (deps) => openPr({
+        repo: "/r", orchDir: "/o", branch: "pr/claude/x-1", reviewedSha: "2".repeat(40), until: "merged",
+        cfg: { github: { mergeMethod: "squash", autoMergePr: true } },
+      }, deps),
+    },
+    {
+      name: "openIntegrationPr",
+      run: (deps) => openIntegrationPr({
+        repo: "/r", orchDir: "/o", integrationSha: "3".repeat(40), until: "ready",
+        cfg: {
+          integrationBranch: "orch/integration", github: { autoMergePr: true }, main: { autoMerge: true },
+        },
+      }, deps),
+    },
+  ];
+
+  for (const { name, run } of cases) {
+    const calls = [];
+    const gh = (args) => {
+      calls.push(args);
+      if (args[0] === "--version") return "gh 2";
+      if (args[0] === "pr" && args[1] === "list") return "[]";
+      if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/12\n";
+      if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [{ state: "SUCCESS" }] });
+      return "";
+    };
+    const git = (args) => (args[0] === "remote" ? "origin\n" : "");
+
+    await run({ gh, git, notify: { escalate() {} } });
+
+    assert.equal(
+      calls.some((args) => (args[0] === "pr" && args[1] === "merge")
+        || (args[0] === "api" && args.some((arg) => String(arg).endsWith("/merge")))),
+      false,
+      `${name} must not auto-merge while --until is active`,
+    );
+  }
+});
+
 test("openPr escalates locally when there is no remote", async () => {
   let escalated = null;
   const gh = () => "gh 2";

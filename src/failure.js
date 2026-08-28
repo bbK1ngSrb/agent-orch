@@ -194,6 +194,9 @@ export function chooseRemedy(failure, record = {}, policy = {}) {
       .filter((r) => r !== undefined);
   }
 
+  const pendingAsk = Boolean(record.human?.askCommentId
+    && !record.human.replies?.some((reply) => Number(reply.id) > Number(record.human.askCommentId)));
+
   // Convergence (design §7): two consecutive equal fingerprints skip the
   // remedy that produced the second; three equal fingerprints go to `ask` (or
   // the row's terminal outcome when `ask` isn't offered).
@@ -202,7 +205,7 @@ export function chooseRemedy(failure, record = {}, policy = {}) {
   }
   if (streak === 2) {
     const lastRemedy = history[history.length - 1]?.remedy;
-    allowed = allowed.filter((r) => r !== lastRemedy);
+    if (!(pendingAsk && allowed.includes("ask"))) allowed = allowed.filter((r) => r !== lastRemedy);
   }
 
   if (row.freeRetry) {
@@ -215,6 +218,12 @@ export function chooseRemedy(failure, record = {}, policy = {}) {
       };
     }
   }
+
+  // An unanswered question is not a completed remedy. Resume must poll its
+  // saved comment before convergence can choose another remedy, or a late
+  // human reply can be lost. Free retries are checked first so they cannot
+  // consume a reply while the saved question remains pending.
+  if (pendingAsk && allowed.includes("ask")) return { decision: "ask" };
 
   if (!allowed.length) return terminalDecision(row);
 

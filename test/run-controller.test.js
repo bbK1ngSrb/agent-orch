@@ -57,6 +57,24 @@ test("runUntil: landed cycle with status 'approved' (noMerge) reads readiness ->
   assert.equal(result.exit, 0);
 });
 
+test("runUntil: only an explicit base landing may succeed without a PR", async () => {
+  const policy = { ...POLICY, until: "merged", integrationBranch: "main", baseBranch: "main" };
+  let mergeCalls = 0;
+  const standing = await runUntil(policy, {}, baseDeps({
+    resolveLanded: () => ({ ...LAND, pr: null, landing: "standing" }),
+    mergeStanding: async () => { mergeCalls += 1; return { result: "merged" }; },
+  }));
+  assert.equal(standing.state, "STOPPED_AT_CAP");
+  assert.equal(standing.failureClass, "REMOTE_UNKNOWN");
+  assert.equal(mergeCalls, 0);
+
+  const base = await runUntil(policy, {}, baseDeps({
+    resolveLanded: () => ({ ...LAND, pr: null, landing: "base" }),
+  }));
+  assert.equal(base.state, "MERGED");
+  assert.equal(base.exit, 0);
+});
+
 test("runUntil: landed cycle, BEHIND standing PR -> STOPPED_AT_CAP, exit 2, failureClass REMOTE_BEHIND (acceptance criterion)", async () => {
   const deps = baseDeps({
     gh: ghFake({
@@ -248,12 +266,81 @@ test("runUntil: cycle escalated on a BLOCKED-terminal class (protected path) -> 
   assert.equal(result.blockedReason, "guardrail-path");
 });
 
-test("runUntil: --until merged stops at readiness (exit 2) — merge phase ships in P8", async () => {
-  const deps = baseDeps();
+test("runUntil: --until merged calls the head-bound merge phase and reaches MERGED", async () => {
+  let seen;
+  const deps = baseDeps({
+    mergeStanding: async (args) => {
+      seen = args;
+      return { result: "merged", headSha: HEAD, mergeCommit: "b".repeat(40), merge: { requests: [] } };
+    },
+  });
   const result = await runUntil({ ...POLICY, until: "merged" }, {}, deps);
-  assert.equal(result.exit, 2);
-  assert.equal(result.state, "STOPPED_AT_CAP");
-  assert.equal(result.note, "merge phase ships in P8");
+  assert.equal(result.exit, 0);
+  assert.equal(result.state, "MERGED");
+  assert.equal(result.mergeCommit, "b".repeat(40));
+  assert.equal(seen.land.expectedHead, HEAD);
+});
+
+test("runUntil: a head-bound 409 rechecks readiness and merges the repinned head", async () => {
+  let mergeCalls = 0;
+  const result = await runUntil({ ...POLICY, until: "merged" }, {}, baseDeps({
+    mergeStanding: async () => (++mergeCalls === 1
+      ? { result: "head-moved" }
+      : { result: "merged", headSha: HEAD, mergeCommit: "b".repeat(40), merge: { requests: [] } }),
+  }));
+
+  assert.equal(result.state, "MERGED");
+  assert.equal(result.exit, 0);
+  assert.equal(result.headMovedRepins, 1);
+  assert.equal(mergeCalls, 2);
+});
+
+test("runUntil: a fresh re-landing remedy discards an earlier standing-PR repin", async () => {
+  const repinned = "b".repeat(40);
+  const newHead = "c".repeat(40);
+  let currentHead = repinned;
+  let cycleCalls = 0;
+  let landCalls = 0;
+  const mergeHeads = [];
+  const deps = baseDeps({
+    runCycle: async () => ({ status: "merged" }),
+    resolveLanded: () => {
+      landCalls += 1;
+      currentHead = landCalls === 1 ? repinned : newHead;
+      return { ...LAND, expectedHead: landCalls === 1 ? HEAD : newHead };
+    },
+    gh: (a) => {
+      if (a[0] === "pr" && a[1] === "view") {
+        return JSON.stringify({
+          number: 9, state: "OPEN", isDraft: false, headRefOid: currentHead, baseRefName: "main",
+          mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+        });
+      }
+      if (a[0] === "api") return "[]";
+      throw new Error(`unexpected gh call: ${a.join(" ")}`);
+    },
+    git: { git: (a) => {
+      if (a[0] === "rev-parse") return currentHead;
+      if (a[0] === "merge-base" && a[2] === HEAD && a[3] === repinned) return "";
+      throw new Error("not an ancestor");
+    } },
+    mergeStanding: async ({ land }) => {
+      mergeHeads.push(land.expectedHead);
+      if (mergeHeads.length === 1) {
+        return { result: "rejected", failure: { class: "LAND_DIRTY_MERGE", summary: "re-land" } };
+      }
+      return { result: "merged", headSha: land.expectedHead, mergeCommit: "d".repeat(40) };
+    },
+    remedies: {
+      rebase: async () => ({ cycle: { status: "merged", cycle: ++cycleCalls } }),
+    },
+  });
+
+  const result = await runUntil({ ...POLICY, until: "merged" }, {}, deps);
+
+  assert.equal(result.state, "MERGED");
+  assert.deepEqual(mergeHeads, [repinned, newHead]);
+  assert.equal(cycleCalls, 1);
 });
 
 // Regression: `--until merged` must actually reach readiness before stopping
