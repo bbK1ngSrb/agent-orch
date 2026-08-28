@@ -239,7 +239,7 @@ export function snapshot(orchDir, { historyLimit = 10, repo = null, checkHistory
   const interrupted = interruptedCycles(orchDir, live, repo);
   const entries = readJsonl(join(orchDir, "runs.jsonl"));
   return {
-    live: live.map((c) => ({ ...c, log: c.log || latestLog(orchDir, c.branch) })),
+    live: live.map((c) => ({ ...c, log: latestLog(orchDir, c.branch) })),
     interrupted,
     history: runHistory(orchDir, historyLimit, { repo, checkHistory, entries }),
     metrics: metrics(orchDir, { entries }),

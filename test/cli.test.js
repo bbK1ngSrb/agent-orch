@@ -115,12 +115,11 @@ test("--detach waits for the child run record and reports its handle", async () 
         spawnArgs = args;
         setImmediate(() => {
           const rawLog = args[2].env.ORCH_DETACH_LOG;
-          const childLog = rawLog.replace(/-\d+\.log$/, "-424242.log");
           runRecordDep.create(join(repo, ".orch"), {
             runId: "526-0",
             command: "task",
             argv: ["task", "detached work"],
-            detached: { pid: child.pid, detachedLog: existsSync(childLog) ? childLog : rawLog, runId: "526-0" },
+            detached: { pid: child.pid, detachedLog: rawLog, startedAt: new Date().toISOString(), runId: "526-0" },
           });
         });
         return child;
@@ -145,8 +144,14 @@ test("--detach waits for the child run record and reports its handle", async () 
   }
 });
 
-test("--detach returns a successful handle while the child is still starting", async () => {
+test("--detach ignores a stale recycled-PID record while the child is still starting", async () => {
   const repo = mkdtempSync(join(tmpdir(), "orch-detach-starting-"));
+  runRecordDep.create(join(repo, ".orch"), {
+    runId: "stale-526-0",
+    command: "task",
+    argv: ["task", "old detached work"],
+    detached: { pid: 424244, detachedLog: "stale.log", startedAt: "2000-01-01T00:00:00.000Z", runId: "stale-526-0" },
+  });
   const child = new EventEmitter();
   child.pid = 424244;
   child.unref = () => {};
@@ -188,9 +193,7 @@ test("--detach propagates an early child exit and prints the log tail", async ()
         spawn: (...args) => {
           setImmediate(() => {
             const rawLog = args[2].env.ORCH_DETACH_LOG;
-            const childLog = rawLog.replace(/-\d+\.log$/, "-424243.log");
-            const log = existsSync(childLog) ? childLog : rawLog;
-            writeFileSync(log, `${Array.from({ length: 21 }, (_, i) => `line-${i + 1}`).join("\n")}\n`);
+            writeFileSync(rawLog, `${Array.from({ length: 21 }, (_, i) => `line-${i + 1}`).join("\n")}\n`);
             child.emit("exit", 64, null);
           });
           return child;

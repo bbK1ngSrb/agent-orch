@@ -1411,7 +1411,7 @@ export function installDetachedSignalCleanup(orchDir, runId, info) {
   return () => setProcessSignalCleanup(null);
 }
 
-async function waitForDetached(orchDir, pid, child, { waitMs = DETACH_WAIT_MS, pollMs = DETACH_POLL_MS } = {}) {
+async function waitForDetached(orchDir, pid, child, { waitMs = DETACH_WAIT_MS, pollMs = DETACH_POLL_MS, startedAt = "" } = {}) {
   let exited = null;
   const onExit = (code, signal) => { exited = { code, signal }; };
   if (typeof child?.once === "function") child.once("exit", onExit);
@@ -1420,7 +1420,7 @@ async function waitForDetached(orchDir, pid, child, { waitMs = DETACH_WAIT_MS, p
   const deadline = Date.now() + waitMs;
   try {
     for (;;) {
-      const record = runRecord.findDetached(orchDir, pid);
+      const record = runRecord.findDetached(orchDir, pid, startedAt);
       if (record) return { record };
       if (exited) return { exited };
       const remaining = deadline - Date.now();
@@ -1447,8 +1447,9 @@ export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDi
   const close = deps.closeSync || closeSync;
   const spawnFn = deps.spawn || spawn;
   const fd = open(logPath, "w");
+  const startedAt = new Date().toISOString();
   let child;
-  let finalLog = logPath;
+  const finalLog = logPath;
   try {
     const childArgv = argv.filter((arg) => arg !== "--detach");
     const script = deps.script || process.argv[1] || new URL("../bin/orch.js", import.meta.url).pathname;
@@ -1467,6 +1468,7 @@ export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDi
   const waited = await waitForDetached(orchDir, pid, child, {
     waitMs: deps.detachWaitMs ?? DETACH_WAIT_MS,
     pollMs: deps.detachPollMs ?? DETACH_POLL_MS,
+    startedAt,
   });
   if (waited.record) {
     const event = {

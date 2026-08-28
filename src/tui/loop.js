@@ -168,9 +168,7 @@ function buildStructuredFrame(orchDir, snap, state, { color, columns, rows }) {
       seg(`${c.branch}  [${stageText(c.stage)}${round}]  ${mmss(c.startedAt, now)}  sid=${c.sid}`),
     ];
     if (c.log) {
-      const logFile = typeof c.log === "string" ? c.log : c.log.file;
-      const logTail = typeof c.log === "string" ? "" : String(c.log.tail).split("\n").pop();
-      out.push(seg(`log ${logFile}${logTail ? `: ${logTail}` : ""}`, C.muted));
+      out.push(seg(`log ${c.log.file}: ${String(c.log.tail).split("\n").pop()}`, C.muted));
     } else if (c.detachedLog) {
       out.push(seg(`log ${c.detachedLog}`, C.muted));
     }

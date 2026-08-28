@@ -60,11 +60,11 @@ export function create(orchDir, { runId, command, argv, policy = null, prTarget 
   });
 }
 
-// The parent of a detached run has only the child PID while it waits for the
-// child's durable run identity to appear.
-export function findDetached(orchDir, pid) {
+// The parent of a detached run has only the child PID and launch timestamp
+// while it waits for the child's durable run identity to appear.
+export function findDetached(orchDir, pid, startedAt = "") {
   for (const { record } of scanDir(dir(orchDir))) {
-    if (record.detached?.pid === pid) return record;
+    if (record.detached?.pid === pid && record.detached?.startedAt >= startedAt) return record;
   }
   return null;
 }
