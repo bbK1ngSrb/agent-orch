@@ -98,8 +98,28 @@ test("spawnDocsTask closes the parent docs log fd when spawn throws", () => {
   assert.deepEqual(closed, [43]);
 });
 
+test("--detach refuses an uninitialized repository before logging or spawning", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-detach-uninitialized-"));
+  const previousCwd = cwd();
+  let spawnCalls = 0;
+  chdir(repo);
+  try {
+    await assert.rejects(
+      () => main(["task", "detached work", "--detach"], {
+        spawn: () => { spawnCalls += 1; },
+      }),
+      (error) => error.exit === 64 && /orch init/.test(error.message),
+    );
+    assert.equal(spawnCalls, 0);
+    assert.deepEqual(readdirSync(repo), []);
+  } finally {
+    chdir(previousCwd);
+  }
+});
+
 test("--detach waits for the child run record and reports its handle", async () => {
   const repo = mkdtempSync(join(tmpdir(), "orch-detach-"));
+  mkdirSync(join(repo, ".orch"));
   const child = new EventEmitter();
   child.pid = 424242;
   child.unref = () => {};
@@ -146,6 +166,7 @@ test("--detach waits for the child run record and reports its handle", async () 
 
 test("--detach child registers a live run visible to dashboard JSON", async () => {
   const repo = mkdtempSync(join(tmpdir(), "orch-detach-e2e-"));
+  mkdirSync(join(repo, ".orch"));
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
   execFileSync("git", ["-c", "user.name=orch-test", "-c", "user.email=orch-test@example.invalid", "commit", "--allow-empty", "-m", "test"], { cwd: repo, stdio: "ignore" });
   const cliUrl = new URL("../src/cli.js", import.meta.url).href;
@@ -244,10 +265,12 @@ test("--detach ignores a stale recycled-PID record while the child is still star
 
 test("--detach propagates an early child exit and prints the log tail", async () => {
   const repo = mkdtempSync(join(tmpdir(), "orch-detach-early-"));
+  mkdirSync(join(repo, ".orch"));
   const child = new EventEmitter();
   child.pid = 424243;
   child.unref = () => {};
   let stderr = "";
+  let spawned = false;
   const previousWrite = process.stderr.write;
   const previousCwd = cwd();
   chdir(repo);
@@ -257,6 +280,7 @@ test("--detach propagates an early child exit and prints the log tail", async ()
     await assert.rejects(
       () => main(["tsk", "detached work", "--detach"], {
         spawn: (...args) => {
+          spawned = true;
           setImmediate(() => {
             const rawLog = args[2].env.ORCH_DETACH_LOG;
             writeFileSync(rawLog, `${Array.from({ length: 21 }, (_, i) => `line-${i + 1}`).join("\n")}\n`);
@@ -272,6 +296,7 @@ test("--detach propagates an early child exit and prints the log tail", async ()
       }),
       (error) => error.exit === 64 && /line-21/.test(error.message),
     );
+    assert.equal(spawned, true);
     assert.equal((error.message.match(/line-21/g) || []).length, 1);
     assert.doesNotMatch(stderr, /line-21/);
     assert.doesNotMatch(stderr, /line-1\n/);
@@ -281,7 +306,7 @@ test("--detach propagates an early child exit and prints the log tail", async ()
   }
 });
 
-test("orch tsk --detach returns the real child's usage exit 64", () => {
+test("orch tsk --detach refuses an uninitialized repository", () => {
   const repo = mkdtempSync(join(tmpdir(), "orch-detach-usage-"));
   const result = spawnSync(
     process.execPath,
@@ -289,7 +314,8 @@ test("orch tsk --detach returns the real child's usage exit 64", () => {
     { cwd: repo, encoding: "utf8" },
   );
   assert.equal(result.status, 64, result.stderr);
-  assert.match(result.stderr, /detached child exited with code 64/);
+  assert.equal(result.stderr, "orch: detached runs require .orch — run `orch init` first\n");
+  assert.deepEqual(readdirSync(repo), []);
 });
 
 test("SIGTERM marks a detached run interrupted and releases its lock", { skip: process.platform === "win32" }, async () => {
