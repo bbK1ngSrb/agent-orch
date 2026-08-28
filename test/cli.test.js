@@ -30,8 +30,8 @@ test("ghShell retries one authentication failure and keeps stdin non-interactive
       calls.push({ args, options });
       attempts++;
       if (attempts === 1) {
-        const error = new Error("HTTP 401: Bad credentials");
-        error.status = 401;
+        const error = new Error("Command failed: gh auth status");
+        error.stderr = "gh: Bad credentials (HTTP 401)\n";
         throw error;
       }
       return "Logged in";
@@ -1192,7 +1192,6 @@ test("orch issue posts a gh issue comment on escalation", async () => {
 test("orch issue saves an escalation comment when GitHub rejects both attempts", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-issue-comment-fallback-");
-  const commentPath = join(repo, ".orch", "issue-52-comment.md");
   let commentAttempts = 0;
   let stderr = "";
   const previousWrite = process.stderr.write;
@@ -1205,8 +1204,8 @@ test("orch issue saves an escalation comment when GitHub rejects both attempts",
     }
     if (args[0] === "issue" && args[1] === "comment") {
       commentAttempts++;
-      const error = new Error("HTTP 401: Bad credentials");
-      error.status = 401;
+      const error = new Error("Command failed: gh issue comment 52");
+      error.stderr = "gh: Bad credentials (HTTP 401)\n";
       throw error;
     }
     throw new Error(`unexpected gh call: ${args.join(" ")}`);
@@ -1216,9 +1215,21 @@ test("orch issue saves an escalation comment when GitHub rejects both attempts",
   try {
     await runMainInRepo(repo, ["issue", "52"], { cycleDeps: escalating, githubDeps: () => ({ gh }) });
     assert.equal(commentAttempts, 2);
-    assert.ok(existsSync(commentPath));
-    assert.match(readFileSync(commentPath, "utf8"), /<!-- orch:result -->[\s\S]*ESCALATED[\s\S]*stalemate after cap/);
-    assert.match(stderr, new RegExp(`comment saved to ${commentPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    const commentFiles = () => readdirSync(join(repo, ".orch"))
+      .filter((name) => /^issue-52-comment-[^/]+\.md$/.test(name));
+    const firstFiles = commentFiles();
+    assert.equal(firstFiles.length, 1);
+    assert.match(readFileSync(join(repo, ".orch", firstFiles[0]), "utf8"), /<!-- orch:result -->[\s\S]*ESCALATED[\s\S]*stalemate after cap/);
+
+    await runMainInRepo(repo, ["issue", "52"], { cycleDeps: escalating, githubDeps: () => ({ gh }) });
+    assert.equal(commentAttempts, 4);
+    const secondFiles = commentFiles();
+    assert.equal(secondFiles.length, 2);
+    assert.notEqual(secondFiles[0], secondFiles[1]);
+    for (const name of secondFiles) {
+      assert.match(readFileSync(join(repo, ".orch", name), "utf8"), /<!-- orch:result -->[\s\S]*ESCALATED[\s\S]*stalemate after cap/);
+    }
+    assert.match(stderr, /comment saved to .*issue-52-comment-[^/]+\.md/);
   } finally {
     process.stderr.write = previousWrite;
     process.exitCode = savedExitCode;

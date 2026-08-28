@@ -1528,13 +1528,13 @@ export async function detachRun(argv, { flags = {}, repo = process.cwd(), orchDi
   return event;
 }
 
-function commentOnIssue(result, branch, closes, githubDepsFn, orchDir) {
+function commentOnIssue(result, branch, closes, githubDepsFn, orchDir, sid) {
   if (!closes) return;
   const body = redact(`<!-- orch:result -->\n${buildIssueComment(result, branch)}`);
   try {
     githubDepsFn().gh(["issue", "comment", String(closes), "--body-file", "-"], body);
   } catch (e) {
-    const savedPath = join(orchDir, `issue-${closes}-comment.md`);
+    const savedPath = join(orchDir, `issue-${closes}-comment-${sid}.md`);
     try {
       mkdirSync(orchDir, { recursive: true });
       writeFileSync(savedPath, body);
@@ -2635,7 +2635,7 @@ export async function main(argv, deps = {}) {
           if (until === "once") raiseExitCode(2);
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
-          if (!dry) commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps, orchDir);
+          if (!dry) commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
         }
       } catch (err) {
         if (!dry) {
@@ -3176,7 +3176,7 @@ export async function main(argv, deps = {}) {
       }
       if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
         if (!controller) raiseExitCode(2);
-        if (!dry) commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps, orchDir);
+        if (!dry) commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
       }
       const mergeEvent = mergeVerifiedEvent(runId, controller, cfg);
       if (mergeEvent) emit(mergeEvent);
