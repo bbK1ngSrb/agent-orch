@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.353 — 2026-08-28
+- fix(security): fence untrusted CI failure text out of the integration-repair resolver prompt (closes #577)
+
 ## v0.4.352 — 2026-08-28
 - fix(pr): persist resume push authority (closes [#525](https://github.com/bbk1ng/agent-orch/issues/525))
 
