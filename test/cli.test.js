@@ -1389,6 +1389,18 @@ test("orch task --until ready keeps the ask window open for a late retry", async
   };
   const cycleDeps = {
     ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author(_prompt, worktree) {
+          writeFileSync(join(worktree, "a.txt"), "2\n");
+          gitDep.git(["add", "a.txt"], worktree);
+          gitDep.git(["commit", "-m", "test change"], worktree);
+          return { usage: { model: "gpt-test-author", tokens: 40 } };
+        },
+        async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
     finalize: async () => ++cycleCalls === 1
       ? { status: "escalated", class: "TEST_MISSING", fingerprint: "test-missing", reason: "no test" }
       : cycleCalls === 2
@@ -1416,25 +1428,25 @@ test("orch task --until ready keeps the ask window open for a late retry", async
     assert.equal(record.human.askCommentId, 20);
 
     process.exitCode = 0;
-    const resumeLogs = await runMainInRepo(repo, ["continue", record.runId, "--no-tidy", "--json"], {
+    const resumeLogs = await runMainInRepo(repo, ["task", "ask timeout", "--until", "ready", "--no-tidy", "--json"], {
       cycleDeps,
       githubDeps: () => ({ gh, git: gitDep.git }),
       now: () => now,
       sleep: async () => { now += 10_000; },
     });
     const resumeEvents = resumeLogs.map((line) => JSON.parse(line));
-    assert.deepEqual(resumeEvents.map((event) => event.event), ["run.start", "run.resume", "run.end"]);
-    assert.equal(resumeEvents[1].previousOutcome, "wait-timeout");
-    assert.equal(resumeEvents[2].outcome, "reached");
-    assert.equal(resumeEvents[2].exit, 0);
+    assert.deepEqual(resumeEvents.map((event) => event.event), ["run.start", "run.end"]);
+    assert.equal(resumeEvents[1].outcome, "reached");
+    assert.equal(resumeEvents[1].exit, 0);
     assert.equal(cycleCalls, 3, "the late retry must start a fresh cycle");
-    assert.equal(questionBodies.length, 1, "continue must keep the original question");
+    assert.equal(questionBodies.length, 1, "same-task retry must keep the original question");
     const resumed = JSON.parse(readFileSync(join(dir, `${record.runId}.json`), "utf8"));
     assert.equal(resumed.outcome, "reached");
     assert.equal(resumed.state, "READY");
     assert.equal(resumed.exit, 0);
-    assert.ok(new Date(resumed.human.deadline) > new Date(record.human.deadline), "continue must renew an expired ask window");
-    assert.equal(process.exitCode, 0, "continue must apply the retry's reached exit code");
+    assert.equal(resumed.human.askCommentId, 20, "same-task retry must preserve the original question ID");
+    assert.ok(new Date(resumed.human.deadline) > new Date(record.human.deadline), "same-task retry must renew an expired ask window");
+    assert.equal(process.exitCode, 0, "same-task retry must apply the retry's reached exit code");
   } finally {
     process.exitCode = savedExitCode;
   }

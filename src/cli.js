@@ -1936,6 +1936,7 @@ export async function main(argv, deps = {}) {
               excludedAgents: run.excludedAgents || priorRecord?.excludedAgents || [],
               headMovedRepins: priorRecord?.headMovedRepins || 0,
               policy: { ...runPolicy },
+              ...(priorRecord?.human ? { human: priorRecord.human } : {}),
             };
             // Same `deps.githubDeps` override point every other gh call in this
             // file uses (real git access stays direct — these tests run against
