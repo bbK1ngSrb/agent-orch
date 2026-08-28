@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.358 — 2026-08-28
+- fix(cli): require .orch for detach (closes [#596](https://github.com/bbk1ng/agent-orch/issues/596))
+
 ## v0.4.357 — 2026-08-28
 - fix(pr): fail closed on lookup errors (closes [#593](https://github.com/bbk1ng/agent-orch/issues/593))
 
