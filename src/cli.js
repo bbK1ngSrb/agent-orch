@@ -1705,6 +1705,8 @@ function buildAdapterWorkOrder(name) {
     suspected_paths: [`src/adapters/${name}.js`, "src/adapters/index.js", "test/adapters.test.js"],
     acceptance_criteria: [
       `src/adapters/${name}.js exports an adapter matching the claude.js/codex.js shape`,
+      `src/adapters/${name}.js declares a limitPattern for its CLI's quota wording`,
+      `src/adapters/${name}.js declares envKeys for the environment it needs`,
       `src/adapters/index.js REGISTRY registers "${name}"`,
       `adapters.get("${name}") no longer throws`,
       "tests cover the new adapter",

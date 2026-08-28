@@ -2896,6 +2896,26 @@ test("agent build feeds an adapter work order through the task pipeline (noMerge
   );
 });
 
+test("agent build scaffolds quota detection and environment fields", async () => {
+  const d = initGitRepo("orch-agentbuild-fields-");
+  let prompt = "";
+  await runMainInRepo(d, ["agent", "build", "widget"], {
+    resolveAgentBin: () => "/usr/bin/widget",
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      adapters: {
+        get: (name) => ({
+          name,
+          async author(task) { prompt = task; return { usage: {} }; },
+          async audit() { return { decision: "AGREE", reason: "ok", raw: "" }; },
+        }),
+      },
+    },
+  });
+  assert.match(prompt, /limitPattern/);
+  assert.match(prompt, /envKeys/);
+});
+
 test("agent build --pr routes the cycle through merge: pr instead of a local-only branch", async () => {
   const d = initGitRepo("orch-agentbuild-pr-");
   let seenMerge = null;

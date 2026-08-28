@@ -163,6 +163,21 @@ function currentRoles(run) {
   return { author, reviewers };
 }
 
+function nextModelRole(role, run, deps) {
+  const models = run?.cfg?.automation?.rotateModels?.[role?.agent];
+  if (!role?.agent || !Array.isArray(models)) return null;
+  let adapter;
+  try { adapter = deps.adapters?.get?.(role.agent); } catch { return null; }
+  if (!adapter?.capabilities?.model) return null;
+
+  const current = role.model || null;
+  const currentIndex = current == null ? -1 : models.indexOf(current);
+  if (current != null && currentIndex === -1) return null;
+  const model = models.slice(currentIndex + 1)
+    .find((candidate) => typeof candidate === "string" && candidate.trim() && candidate !== current);
+  return model ? { ...role, model } : null;
+}
+
 function exclusionEntry(value, fallbackReason = "error") {
   const name = agentName(value);
   if (!name) return null;
@@ -273,9 +288,35 @@ export async function rotateRemedy({ failure, record, cycle, run, deps = {}, run
     blockedAuthors,
   });
   const selectedAuthor = selected?.authors?.[0];
-  const nextAuthor = selectedAuthor?.agent === author.agent ? author : selectedAuthor;
-  const nextReviewers = (selected?.reviewers || [])
+  let nextAuthor = selectedAuthor?.agent === author.agent ? author : selectedAuthor;
+  let nextReviewers = (selected?.reviewers || [])
     .filter((reviewer) => reviewer.agent !== nextAuthor?.agent && !selectionExcluded.has(reviewer.agent));
+
+  // With no spare adapter seat, keep the failed role but advance its model
+  // ladder. The failed adapter remains in excludedAgents so a later exhausted
+  // ladder still follows the normal degraded terminal path.
+  if (!nextAuthor || !nextReviewers.length) {
+    if (failedRole === "author") {
+      const replacement = nextModelRole(author, run, deps);
+      const replacementReviewers = reviewers
+        .filter((reviewer) => reviewer.agent !== replacement?.agent && !selectionExcluded.has(reviewer.agent));
+      if (replacement && replacementReviewers.length) {
+        nextAuthor = replacement;
+        nextReviewers = replacementReviewers;
+      }
+    } else {
+      const failedReviewer = failedAgents.length === 1
+        ? reviewers.find((reviewer) => reviewer.agent === failedAgents[0])
+        : failedAgents.length === 0 ? reviewers[0] : null;
+      const replacement = nextModelRole(failedReviewer, run, deps);
+      if (replacement && nextAuthor) {
+        nextReviewers = reviewers.map((reviewer) => reviewer.agent === replacement.agent ? replacement : reviewer)
+          .filter((reviewer) => reviewer.agent !== nextAuthor.agent
+            && (reviewer.agent === replacement.agent || !selectionExcluded.has(reviewer.agent)));
+      }
+    }
+  }
+
   if (!nextAuthor) {
     return rotateTerminal(failure, `no diverse author candidate remains — ${selectionDetail({
       excluded: [...selectionExcluded], blockedAuthors, agents: run.cfg?.agents || [],

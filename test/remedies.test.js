@@ -230,6 +230,63 @@ test("two-agent author rotation reports the blocked reviewer seat", async () => 
   assert.match(result.result.reason, /excluded a/);
 });
 
+test("two-agent author rotation uses the failed seat's next configured model", async () => {
+  let usedModel;
+  const run = {
+    mode: "task", task: "rotate model", branch: "pr/a/rotate-model", authorName: "a",
+    author: { agent: "a" }, reviewerName: "b", reviewerNames: ["b"], reviewers: [{ agent: "b" }],
+    cfg: {
+      agents: ["a", "b"], automation: { rotateModels: { a: ["model-a"] } },
+      roundCap: 1, baseBranch: "main", integrationBranch: "main", test: "auto",
+      scope: { maxLines: 0, ignore: [] }, docs: { paths: [] }, security: { ignore: [] },
+    },
+    orchDir: "/orch", repo: "/repo", worktree: "/wt", noMerge: true,
+  };
+  const deps = {
+    adapters: { get: (name) => ({
+      name, capabilities: { model: true },
+      async author(_task, _worktree, options) { usedModel = options.model; return { usage: {} }; },
+      async audit() { return { decision: "AGREE", reason: "ok", raw: "" }; },
+    }) },
+    git: {
+      createTaskBranch() {}, attachExistingBranch() {}, pruneWorktree() {},
+      changedFiles: () => ["src/change.js"],
+      git: (args) => args[0] === "rev-parse" ? HEAD : "",
+    },
+    gate: { detect: () => "true", run: () => ({ pass: true }) },
+    scope: { count: () => 0 },
+    notify: { phase() {}, writeRound() {}, writeRoundRaw() {}, recordRun() {} },
+  };
+  const result = await rotateRemedy({
+    failure: { class: "AGENT_QUOTA" },
+    cycle: { failedRole: "author", failedAgents: [{ agent: "a", quota: true }] },
+    record: { attempt: 1, excludedAgents: [] }, run, deps, selectRoles: nextAuthor,
+    runCycle: (cycle) => executeCycle({ ...run, ...cycle }, deps),
+  });
+  assert.equal(usedModel, "model-a");
+  assert.equal(result.cycle.status, "approved");
+});
+
+test("two-agent author rotation degrades when the model ladder is exhausted", async () => {
+  const result = await rotateRemedy({
+    failure: { class: "AGENT_QUOTA" },
+    cycle: { failedRole: "author", failedAgents: [{ agent: "a", quota: true }] },
+    record: { attempt: 1, excludedAgents: [] },
+    run: {
+      author: { agent: "a", model: "model-a" }, reviewers: [{ agent: "b" }],
+      cfg: { agents: ["a", "b"], automation: { rotateModels: { a: ["model-a"] } },
+        roundCap: 1 },
+      orchDir: mkdtempSync(join(tmpdir(), "orch-rotate-model-exhausted-")),
+    },
+    deps: { adapters: { get: () => ({ capabilities: { model: true } }) } },
+    selectRoles: nextAuthor,
+    runCycle: async () => assert.fail("an exhausted model ladder must not start a cycle"),
+  });
+  assert.equal(result.result.state, "STOPPED_AT_CAP");
+  assert.equal(result.result.outcome, "stopped-at-cap");
+  assert.equal(result.result.exit, 2);
+});
+
 test("rebase remedy uses the real integration branch and returns a fresh cycle", async () => {
   const repo = newRepo();
   git.git(["switch", "-c", "feature"], repo);
