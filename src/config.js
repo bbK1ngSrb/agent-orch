@@ -55,9 +55,11 @@ const DEFAULTS = {
   automation: {
     maxAttempts: 3, // design §4 RunPolicy.maxAttempts — `--until ready|merged` run-controller cap (P5)
     humanWaitHours: 24, // bounded wait for an `ask` reply; continue resumes it later
+    mcpMayMerge: false, // MCP may request `--until merged` only when explicitly enabled
     remedies: null, // null uses the failure table order; operators may override the priority
     pollSeconds: 30, // initial readiness poll interval; backs off 2x per attempt, capped at 10 min
     ciWaitMinutes: 30, // bound on one readiness wait window before it counts as an attempt (REMOTE_CI_TIMEOUT)
+    detachLogDir: ".orch/logs",
   },
 };
 
@@ -125,6 +127,8 @@ export function validate(cfg, roundCapKey = "roundCap") {
   if (typeof cfg.automation.humanWaitHours !== "number" || !Number.isFinite(cfg.automation.humanWaitHours)
     || cfg.automation.humanWaitHours <= 0 || cfg.automation.humanWaitHours > 720)
     throw new Error("orch.yml: automation.humanWaitHours must be a number greater than 0 and at most 720");
+  if (typeof cfg.automation.mcpMayMerge !== "boolean")
+    throw new Error("orch.yml: automation.mcpMayMerge must be a boolean");
   const remedyNames = new Set(["rebase", "rotate", "reauthor", "ask"]);
   if (cfg.automation.remedies !== null && (!Array.isArray(cfg.automation.remedies)
     || new Set(cfg.automation.remedies).size !== cfg.automation.remedies.length
@@ -134,6 +138,8 @@ export function validate(cfg, roundCapKey = "roundCap") {
     throw new Error("orch.yml: automation.pollSeconds must be a positive integer");
   if (!Number.isInteger(cfg.automation.ciWaitMinutes) || cfg.automation.ciWaitMinutes < 1)
     throw new Error("orch.yml: automation.ciWaitMinutes must be a positive integer");
+  if (typeof cfg.automation.detachLogDir !== "string" || !cfg.automation.detachLogDir.trim())
+    throw new Error("orch.yml: automation.detachLogDir must be a non-empty string");
 }
 
 // A role spec is "<agent> [model] [effort]" — whitespace-separated fields.

@@ -28,6 +28,7 @@ import * as lockDefault from "./lock.js";
 import { LOCK_NAMES } from "./lock.js";
 import { updateBranch } from "./github.js";
 import { redact } from "./redact.js";
+import { frameUntrustedReference, neutralizeFence } from "./intake/workorder.js";
 
 const DEFAULT_RESOLVERS = [{ agent: "claude", model: null, effort: null }];
 
@@ -109,16 +110,21 @@ function conflictedPathsIn(git, wd) {
   return listed.ok ? listed.out.split("\0").filter(Boolean) : [];
 }
 
-function resolverPrompt({ branch, base, cls, failure, conflicts }) {
-  return [
+export function resolverPrompt({ branch, base, cls, failure, conflicts }) {
+  const ref = [
     conflicts.length
-      ? `Integration repair on ${branch}: merging origin/${base} produced a merge conflict.`
-      : `Integration repair on ${branch}: red checks after merging origin/${base}.`,
+      ? `Integration repair on ${neutralizeFence(branch)}: merging origin/${neutralizeFence(base)} produced a merge conflict.`
+      : `Integration repair on ${neutralizeFence(branch)}: red checks after merging origin/${neutralizeFence(base)}.`,
     "",
-    `Failure class: ${cls}`,
-    failure?.summary ? `Details: ${failure.summary}` : null,
-    conflicts.length ? `Conflicted files: ${conflicts.join(", ")}` : null,
-    "",
+    `Failure class: ${neutralizeFence(cls)}`,
+    failure?.summary ? `Details: ${neutralizeFence(failure.summary)}` : null,
+    conflicts.length
+      ? `Conflicted files: ${conflicts.map((path) => neutralizeFence(path)).join(", ")}`
+      : null,
+  ].filter((line) => line !== null).join("\n");
+
+  return [
+    frameUntrustedReference(ref),
     conflicts.length
       ? "Act as a neutral third party; reconstruct both parents' intent. Preserve behavior from both sides unless truly incompatible."
       : "Fix only the named failing check(s); do not widen scope.",
@@ -201,7 +207,7 @@ function dropScratch(git, repo, path, branchName) {
 // resolver keeps it. A persistently lost race is bounded by run-controller.js's
 // MAX_REMEDY_LOOPS, so no counter is needed here.
 async function landRepairedTip(ctx, deps, { sha }) {
-  const { orchDir, repo, branch, base, cfg } = ctx;
+  const { orchDir, repo, branch, remoteBranch = branch, base, cfg } = ctx;
   const { git, gate } = deps;
   const lock = deps.lock || lockDefault;
   if (!(await lock.acquireBlocking(orchDir, LOCK_NAMES.MERGE))) {
@@ -306,7 +312,7 @@ async function landRepairedTip(ctx, deps, { sha }) {
     // A plain (non-force) push IS the "integration moved during repair"
     // check, and the server does it atomically: git rejects the ref update
     // unless `pushSha` fast-forwards whatever origin holds right now.
-    const pushed = git.gitTry(["push", "origin", `${pushSha}:refs/heads/${branch}`], repo);
+    const pushed = git.gitTry(["push", "origin", `${pushSha}:refs/heads/${remoteBranch}`], repo);
     if (!pushed.ok) {
       rollback?.();
       // Only a non-fast-forward rejection is the race this path means by
@@ -331,7 +337,7 @@ async function landRepairedTip(ctx, deps, { sha }) {
 // that merge result was never tested anywhere. Re-run the gate on the new tip
 // before readiness is re-read. No agent runs anywhere on this path.
 async function repairBehind(ctx, deps) {
-  const { orchDir, repo, branch, cfg, prNumber, scratchBranch } = ctx;
+  const { orchDir, repo, branch, remoteBranch = branch, cfg, prNumber, scratchBranch } = ctx;
   const { git, gate, gh } = deps;
   if (!prNumber) return { ok: false, precondition: true, reason: "no PR number to update" };
   const updated = updateBranch(prNumber, { gh });
@@ -341,13 +347,13 @@ async function repairBehind(ctx, deps) {
   try {
     // Force only the remote-tracking ref — it mirrors origin by definition, so
     // a force-pushed origin lands here as data rather than as a fetch error.
-    const fetched = git.gitTry(["fetch", "origin", `+${branch}:refs/remotes/origin/${branch}`], repo);
-    if (!fetched.ok) return { ok: false, reason: `could not fetch origin/${branch}: ${fetched.out.trim()}` };
+    const fetched = git.gitTry(["fetch", "origin", `+${remoteBranch}:refs/remotes/origin/${remoteBranch}`], repo);
+    if (!fetched.ok) return { ok: false, reason: `could not fetch origin/${remoteBranch}: ${fetched.out.trim()}` };
     // `updateBranch` merged base in server-side, so the repaired tip is
     // whatever the fetch above put in the remote-tracking ref. Read it before
     // deriving anything from it.
-    const repaired = git.gitTry(["rev-parse", `refs/remotes/origin/${branch}`], repo);
-    if (!repaired.ok) return { ok: false, reason: `could not read the updated origin/${branch}` };
+    const repaired = git.gitTry(["rev-parse", `refs/remotes/origin/${remoteBranch}`], repo);
+    if (!repaired.ok) return { ok: false, reason: `could not read the updated origin/${remoteBranch}` };
     // `updateBranch` already moved ORIGIN, so from here on the local ref is
     // stale no matter how this repair ends. Sync it now rather than only on the
     // way out: `resolveLanded` reads `refs/heads/<branch>` for readiness's
@@ -357,7 +363,7 @@ async function repairBehind(ctx, deps) {
     // irreversibly, so a diverged local here is only reportable, not preventable.
     const synced = syncLocalBranch(git, repo, ctx, repaired.out.trim());
     if (!synced.ok) return synced;
-    scratch = addScratch(git, repo, orchDir, `origin/${branch}`, scratchBranch);
+    scratch = addScratch(git, repo, orchDir, `origin/${remoteBranch}`, scratchBranch);
     if (!scratch) return { ok: false, reason: "could not create the repair worktree" };
     const testCmd = cfg.test === "auto" ? gate.detect(scratch) : cfg.test;
     // Same #56/#58 watchdog as the agent stages: `gate.run(cmd, cwd, timeoutMs)`
@@ -382,7 +388,7 @@ async function repairBehind(ctx, deps) {
 // run has told us nothing, and nothing is not permission to push to a branch
 // other cycles depend on.
 async function repairConflictOrRed(ctx, deps) {
-  const { orchDir, repo, branch, base, cfg, class: cls, failure, prNumber, scratchBranch } = ctx;
+  const { orchDir, repo, branch, remoteBranch = branch, base, cfg, class: cls, failure, prNumber, scratchBranch } = ctx;
   const { git, gate, gh, adapters } = deps;
   const mode = modeOf(cfg);
   const timeoutMs = stageTimeoutMs(cfg);
@@ -391,12 +397,12 @@ async function repairConflictOrRed(ctx, deps) {
   // earlier fetch left behind. Force only the remote-tracking ref — it mirrors
   // origin by definition, so a force-pushed origin lands here as data rather
   // than as a fetch error.
-  const fetched = git.gitTry(["fetch", "origin", `+${branch}:refs/remotes/origin/${branch}`], repo);
-  if (!fetched.ok) return { ok: false, reason: `could not fetch origin/${branch}: ${fetched.out.trim()}` };
+  const fetched = git.gitTry(["fetch", "origin", `+${remoteBranch}:refs/remotes/origin/${remoteBranch}`], repo);
+  if (!fetched.ok) return { ok: false, reason: `could not fetch origin/${remoteBranch}: ${fetched.out.trim()}` };
   if (!git.gitTry(["fetch", "origin", base], repo).ok) {
     return { ok: false, reason: `could not fetch origin/${base}` };
   }
-  const scratch = addScratch(git, repo, orchDir, `origin/${branch}`, scratchBranch);
+  const scratch = addScratch(git, repo, orchDir, `origin/${remoteBranch}`, scratchBranch);
   if (!scratch) return { ok: false, reason: "could not create the repair worktree" };
   let preserveScratch = false;
   let preserveRecovery = false;
@@ -911,6 +917,7 @@ export async function integrationRepairRemedy({ failure, record, cycle, name, po
     orchDir: run.orchDir,
     cfg,
     branch,
+    remoteBranch: run?.prTarget?.remoteBranch || branch,
     integrationBranch,
     base: cfg.baseBranch || "main",
     class: failure?.class,

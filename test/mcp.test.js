@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, appendFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, appendFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,7 +72,7 @@ test("notifications get no response at all", async () => {
 test("tools/list exposes every tool with a name, description and schema", async () => {
   const res = await handle({ jsonrpc: "2.0", id: 3, method: "tools/list" }, {});
   const names = res.result.tools.map((t) => t.name);
-  assert.deepEqual(names, ["orch_status", "orch_plan", "orch_task", "orch_issue", "orch_review", "orch_continue"]);
+  assert.deepEqual(names, ["orch_status", "orch_plan", "orch_task", "orch_issue", "orch_review", "orch_pr", "orch_continue"]);
   for (const tool of res.result.tools) {
     assert.ok(tool.description, `${tool.name} has no description`);
     assert.equal(tool.inputSchema.type, "object");
@@ -86,25 +86,26 @@ test("an unknown method is a protocol error, an unknown tool is an invalid-param
   assert.equal(res.error.code, -32602);
 });
 
-test("no tool can merge a PR: --merge and `pr` are unreachable", async () => {
-  // orch's ONLY PR-merge path is `orch pr <n> --merge`, and no argv builder can
-  // produce either token, for any input. So an MCP client cannot merge a pull
-  // request itself — it gets no merge authority a hand-typed `orch` in the same
-  // repo lacks. Where a green cycle lands is a separate, config-owned question
-  // (`integrationBranch`, `main.autoMerge`) that this test does not speak to.
-  const probes = [
-    { task: "--merge" }, { task: "pr 1 --merge" }, { branch: "merge" }, { sid: "merge" },
-    { number: 1 }, { limit: 1 }, {},
-  ];
-  for (const tool of TOOLS) {
-    assert.ok(!TOOLS.some((t) => t.name === "orch_pr"), "orch pr must not be exposed");
-    for (const probe of probes) {
-      let argv;
-      try { argv = tool.argv(probe); } catch { continue; } // rejected input can't reach the child
-      assert.ok(!argv.includes("--merge"), `${tool.name} produced --merge`);
-      assert.notEqual(argv[0], "pr", `${tool.name} produced an 'orch pr' invocation`);
-    }
-  }
+test("orch_pr fixes its target and gates merged mode by repository config", async () => {
+  const tool = TOOLS.find((candidate) => candidate.name === "orch_pr");
+  assert.deepEqual(tool.argv({ number: 7 }), ["pr", "7", "--until", "once"]);
+  assert.deepEqual(tool.argv({ number: 7, until: "once" }), ["pr", "7", "--until", "once"]);
+  assert.deepEqual(tool.argv({ branch: "feature/x", until: "ready" }), ["pr", "feature/x", "--until", "ready"]);
+  assert.throws(() => tool.argv({ number: 7, branch: "feature/x" }), /exactly one/);
+  assert.throws(() => tool.argv({ number: 7, until: "later" }), /until must be one of/);
+
+  const deniedSpawn = fakeSpawn();
+  const denied = await handle(call(16, "orch_pr", { number: 7, until: "merged" }), { repo: "/tmp", spawnFn: deniedSpawn });
+  assert.equal(denied.result.isError, true);
+  assert.match(payload(denied).error, /automation\.mcpMayMerge: true/);
+  assert.equal(deniedSpawn.calls.length, 0);
+
+  const repo = mkdtempSync(join(tmpdir(), "orch-mcp-pr-opt-in-"));
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "automation:\n  mcpMayMerge: true\n");
+  const allowedSpawn = fakeSpawn();
+  await handle(call(17, "orch_pr", { number: 7, until: "merged" }), { repo, spawnFn: allowedSpawn });
+  assert.deepEqual(allowedSpawn.calls[0].argv, [ORCH_BIN, "pr", "7", "--until", "merged"]);
 });
 
 test("free text cannot smuggle flags into the child's argv", async () => {

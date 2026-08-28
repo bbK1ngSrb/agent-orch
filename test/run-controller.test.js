@@ -358,6 +358,24 @@ test("runUntil: --until merged still classifies a real readiness failure (waitRe
   assert.notEqual(result.note, "merge phase ships in P8");
 });
 
+test("runUntil: --until merged does not call merge while a required check is pending", async () => {
+  let mergeCalls = 0;
+  const result = await runUntil(
+    { ...POLICY, until: "merged", ciWaitMinutes: 0 },
+    {},
+    baseDeps({
+      gh: ghFake({
+        number: 9, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+        mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null,
+        statusCheckRollup: [{ context: "test", state: "PENDING" }],
+      }),
+      mergeStanding: async () => { mergeCalls += 1; return { result: "merged" }; },
+    }),
+  );
+  assert.equal(result.failureClass, "REMOTE_CI_TIMEOUT");
+  assert.equal(mergeCalls, 0);
+});
+
 test("runUntil: merge-deferred (demoted) cycle is treated the same as escalated", async () => {
   const deps = baseDeps({
     runCycle: async () => ({ status: "merge-deferred", trigger: "dirty-merge", class: "LAND_DIRTY_MERGE", fingerprint: "fp3" }),

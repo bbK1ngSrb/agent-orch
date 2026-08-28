@@ -39,6 +39,7 @@ export const FLAGS = {
   build: { type: "boolean", help: "With agent add, build the adapter without asking." },
   "no-banner": { type: "boolean", help: "Hide the run banner." },
   "no-tidy": { type: "boolean", help: "Leave task branches and checkouts after merge." },
+  detach: { type: "boolean", help: "Run in the background and print its handle." },
   json: { type: "boolean", help: "Print JSON events (dashboard: a snapshot)." },
   limit: { type: "int", arg: "<n>", help: "With dashboard, limit history rows." },
   "check-history": { type: "boolean", help: "Dashboard: show stale red rows resolved (view only)." },
@@ -56,7 +57,7 @@ export const GLOBAL_FLAGS = ["help", "version"];
 
 // Flags shared by the commands that run an author/review/test cycle.
 const RUN_FLAGS = [
-  "config-file", "dry", "no-tidy", "no-banner", "until",
+  "config-file", "dry", "no-tidy", "no-banner", "detach", "until",
   "allow-large-scope", "author", "authors", "reviewer", "reviewers",
 ];
 
@@ -125,17 +126,15 @@ export const COMMANDS = {
     mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-banner", "author", "authors"].includes(f)), "json"],
     rows: [["continue <sid>", "Resume an interrupted/stalled cycle from its checkpoint."]],
   },
-  // No --author/--authors: runPr only ever reads --reviewer(s) (it audits an
-  // existing PR's author, it never assigns one) — applyRoleOverrides is
-  // called with allowReviewerOnly, so a passed --author was silently ignored
-  // while runPr assigned the reviewer as authorName. Accepting the flag was
+  // No --author/--authors: pr audits an existing PR/branch, it never assigns
+  // an author. applyRoleOverrides is called with allowReviewerOnly, so a
+  // passed --author would be silently ignored. Accepting the flag would be
   // the exact "nobody read your flag" lie this schema exists to remove.
-  // `--until once` remains valid for the existing one-shot PR audit. The
-  // ready/merged controller is not wired into runPr yet (#525), so validate()
-  // rejects those modes instead of silently treating them as once.
+  // `--until once|ready|merged` is handled by the unified PR path in cli.js;
+  // `--merge` remains a compatibility alias until the P12 clean break.
   pr: {
-    mutates: true, flags: ["config-file", "dry", "merge", "until", "allow-large-scope", "reviewer", "reviewers"],
-    rows: [["pr <number>", "Review a GitHub PR; add --merge to merge if approved."]],
+    mutates: true, flags: ["config-file", "dry", "merge", "until", "detach", "allow-large-scope", "reviewer", "reviewers", "json"],
+    rows: [["pr <number|branch>", "Review a PR/branch; --until controls readiness."]],
   },
   release: {
     mutates: true, flags: ["dry"],
@@ -255,7 +254,7 @@ function validateValue(name, raw) {
 // --help` would otherwise print usage and exit 0 having merged nothing.
 // Commands with no schema entry (unknown input, which falls through to usage)
 // are not validated here — main()'s fall-through rejects them.
-export function validate(command, flags) {
+export function validate(command, flags, { detachedChild = false } = {}) {
   const effective = flags.help ? "help" : flags.version ? "version" : command;
   const spec = COMMANDS[effective] || INTERNAL_COMMANDS[effective];
   if (!spec) {
@@ -289,20 +288,24 @@ export function validate(command, flags) {
     );
   }
   // --until ready|merged (design docs/cli-v2-design.md §6/§9) drives the run
-  // controller added in P5 — wired for task/issue/review, which share one run
-  // loop in cli.js. `continue` and `pr` don't run through that loop yet (their
-  // own run-controller wiring is a later slice); accepting the flag there and
-  // quietly behaving like `once` would be exactly the silently-ignored-flag
-  // lie this schema exists to prevent, so it stays a usage error until they're
-  // wired too.
-  if (flags.until && flags.until !== "once" && (effective === "continue" || effective === "pr")) {
+  // controller. `continue` is still on the legacy path; PRs now share the
+  // controller with task/issue/review.
+  if (flags.until && flags.until !== "once" && effective === "continue") {
     throw usageError(`--until ${flags.until} is not yet available with 'orch ${effective}' — only --until once (the default)`);
+  }
+  if (effective === "pr" && flags.merge && flags.until && flags.until !== "merged") {
+    throw usageError(`--merge is an alias for --until merged and cannot be combined with --until ${flags.until}`);
   }
   // --json on a run command only makes sense once `--until` puts the run
   // through the controller's event stream (P5); on the bare/`once` path
   // there is nothing to stream, so accepting it would be another silent no-op.
-  if (flags.json && ["task", "issue", "review"].includes(effective) && (!flags.until || flags.until === "once")) {
-    throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged) — the once path has no event stream to print`);
+  if (flags.json && ["task", "issue", "review", "pr"].includes(effective) && (!flags.until || flags.until === "once")) {
+    if (!flags.detach && !detachedChild) {
+      throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged) — the once path has no event stream to print`);
+    }
+  }
+  if (flags.detach && flags.dry) {
+    throw usageError("--detach cannot be combined with --dry");
   }
   // `--cheap` picks cfg.cheap.role for both roles; combined with an explicit
   // --author/--reviewer it's ambiguous which one wins. cli.js's
@@ -371,7 +374,7 @@ const POSITIONAL_ARITY = {
   issue: [1, 1, "usage: orch issue <number> [--author ... --reviewer ...]"],
   review: [1, 1, "usage: orch review <branch>"],
   continue: [1, 1, "usage: orch continue <sid>"],
-  pr: [1, 1, "usage: orch pr <number> [--merge]"],
+  pr: [1, 1, "usage: orch pr <number> or <branch> [--until once|ready|merged]"],
   release: [1, Infinity, 'usage: orch release "<changelog entry>"'],
   // Internal re-exec target, never typed by a user (see cli.js) — but it still
   // only reads rest[0] (current version) and rest[1] (cache dir); a stray
@@ -421,7 +424,7 @@ export function validatePositionals(command, rest, flags) {
   // and minted a GitHub App token — so `orch issue abc` phoned home and
   // authed before being refused. Checking it here, alongside arity, rejects
   // it before any of that runs.
-  if ((command === "issue" || command === "pr") && !/^\d+$/.test(String(rest[0]))) {
+  if (command === "issue" && !/^\d+$/.test(String(rest[0]))) {
     throw usageError(usage);
   }
   // `task --file` plus a positional is ambiguous (two task sources) and used

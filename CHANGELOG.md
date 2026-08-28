@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.4.356 — 2026-08-28
+- fix: orch pr rejects a missing branch as a usage error before probing the environment
+
+## v0.4.355 — 2026-08-28
+- cli: --detach runs a cycle in the background and shows it in the dashboard
+
+## v0.4.354 — 2026-08-28
+- fix(mcp): default PR reviews to once (closes [#594](https://github.com/bbk1ng/agent-orch/issues/594))
+
+## v0.4.353 — 2026-08-28
+- fix(security): fence untrusted CI failure text out of the integration-repair resolver prompt (closes #577)
+
+## v0.4.352 — 2026-08-28
+- fix(pr): persist resume push authority (closes [#525](https://github.com/bbk1ng/agent-orch/issues/525))
+
 ## v0.4.351 — 2026-08-28
 - feat: add head-bound merged landing (closes [#524](https://github.com/bbk1ng/agent-orch/issues/524))
 

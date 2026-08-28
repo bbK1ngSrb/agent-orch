@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, readdirSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -95,6 +96,228 @@ test("spawnDocsTask closes the parent docs log fd when spawn throws", () => {
     closeSync: (fd) => closed.push(fd),
   }, "/tmp/orch"), /spawn failed/);
   assert.deepEqual(closed, [43]);
+});
+
+test("--detach waits for the child run record and reports its handle", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-detach-"));
+  const child = new EventEmitter();
+  child.pid = 424242;
+  child.unref = () => {};
+  let spawnArgs;
+  const logs = [];
+  const previousLog = console.log;
+  const previousCwd = cwd();
+  chdir(repo);
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    const event = await main(["task", "detached work", "--detach", "--json"], {
+      spawn: (...args) => {
+        spawnArgs = args;
+        setImmediate(() => {
+          const rawLog = args[2].env.ORCH_DETACH_LOG;
+          runRecordDep.create(join(repo, ".orch"), {
+            runId: "526-0",
+            command: "task",
+            argv: ["task", "detached work"],
+            detached: { pid: child.pid, detachedLog: rawLog, startedAt: new Date().toISOString(), runId: "526-0" },
+          });
+        });
+        return child;
+      },
+      detachPollMs: 1,
+      detachWaitMs: 100,
+    });
+    assert.deepEqual(event, {
+      event: "run.detached",
+      pid: child.pid,
+      log: event.log,
+      runId: "526-0",
+    });
+    assert.equal(spawnArgs[1].includes("--detach"), false);
+    assert.equal(spawnArgs[2].detached, true);
+    assert.equal(spawnArgs[2].env.ORCH_DETACHED, "1");
+    assert.match(spawnArgs[2].env.ORCH_DETACH_LOG, /\d{8}-\d{6}-\d+\.log$/);
+    assert.equal(JSON.parse(logs[0]).runId, "526-0");
+  } finally {
+    console.log = previousLog;
+    chdir(previousCwd);
+  }
+});
+
+test("--detach child registers a live run visible to dashboard JSON", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-detach-e2e-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+  execFileSync("git", ["-c", "user.name=orch-test", "-c", "user.email=orch-test@example.invalid", "commit", "--allow-empty", "-m", "test"], { cwd: repo, stdio: "ignore" });
+  const cliUrl = new URL("../src/cli.js", import.meta.url).href;
+  const script = join(repo, "detached-child.mjs");
+  writeFileSync(script, [
+    `import { main } from ${JSON.stringify(cliUrl)};`,
+    "const wait = new Promise(() => {});",
+    "setInterval(() => {}, 1000);",
+    "await main(process.argv.slice(2), {",
+    "  preflight: () => {},",
+    "  maybeNotifyUpdate: () => Promise.resolve(),",
+    "  cycleDeps: {",
+    "    adapters: { get: () => ({ audit: async () => wait }) },",
+    "    git: { git: () => \"base\", attachExistingBranch() {}, changedFiles() { return []; } },",
+    "    gate: { detect: () => \"true\" },",
+    "    notify: { phase() {} },",
+    "  },",
+    "});",
+  ].join("\n"));
+  let childProcess;
+  const parentLogs = [];
+  const previousLog = console.log;
+  const previousCwd = cwd();
+  chdir(repo);
+  console.log = (...args) => parentLogs.push(args.map(String).join(" "));
+  try {
+    const event = await main(["review", "main", "--detach"], {
+      script,
+      spawn: (...args) => {
+        childProcess = spawn(...args);
+        return childProcess;
+      },
+      detachPollMs: 1,
+      detachWaitMs: 1000,
+    });
+    assert.equal(event.event, "run.detached");
+    const record = inflight.lookup(join(repo, ".orch"), event.runId);
+    assert.equal(record.detached, true);
+    assert.equal(record.detachedLog, event.log);
+    assert.equal(record.runId, event.runId);
+
+    const dashboardLogs = [];
+    console.log = (...args) => dashboardLogs.push(args.map(String).join(" "));
+    await main(["dashboard", "--once", "--json"], { maybeNotifyUpdate: () => Promise.resolve() });
+    const snapshot = JSON.parse(dashboardLogs[0]);
+    const live = snapshot.live.find((entry) => entry.runId === event.runId);
+    assert.ok(live);
+    assert.equal(live.detached, true);
+    assert.equal(live.detachedLog, event.log);
+    assert.equal(live.runId, event.runId);
+    assert.equal(parentLogs.length, 1);
+  } finally {
+    if (childProcess && childProcess.exitCode === null && childProcess.signalCode === null) {
+      await new Promise((resolve) => {
+        childProcess.once("exit", resolve);
+        childProcess.kill("SIGTERM");
+      });
+    }
+    console.log = previousLog;
+    chdir(previousCwd);
+  }
+});
+
+test("--detach ignores a stale recycled-PID record while the child is still starting", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-detach-starting-"));
+  runRecordDep.create(join(repo, ".orch"), {
+    runId: "stale-526-0",
+    command: "task",
+    argv: ["task", "old detached work"],
+    detached: { pid: 424244, detachedLog: "stale.log", startedAt: "2000-01-01T00:00:00.000Z", runId: "stale-526-0" },
+  });
+  const child = new EventEmitter();
+  child.pid = 424244;
+  child.unref = () => {};
+  let rawLog;
+  const previousLog = console.log;
+  const previousCwd = cwd();
+  chdir(repo);
+  console.log = () => {};
+  try {
+    const event = await main(["task", "slow detached work", "--detach"], {
+      spawn: (...args) => {
+        rawLog = args[2].env.ORCH_DETACH_LOG;
+        return child;
+      },
+      detachPollMs: 1,
+      detachWaitMs: 5,
+    });
+    assert.deepEqual(event, { event: "run.detached", pid: child.pid, log: rawLog, runId: null, starting: true });
+    assert.equal(existsSync(rawLog), true);
+  } finally {
+    console.log = previousLog;
+    chdir(previousCwd);
+  }
+});
+
+test("--detach propagates an early child exit and prints the log tail", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-detach-early-"));
+  const child = new EventEmitter();
+  child.pid = 424243;
+  child.unref = () => {};
+  let stderr = "";
+  const previousWrite = process.stderr.write;
+  const previousCwd = cwd();
+  chdir(repo);
+  process.stderr.write = (chunk) => { stderr += String(chunk); return true; };
+  try {
+    let error;
+    await assert.rejects(
+      () => main(["tsk", "detached work", "--detach"], {
+        spawn: (...args) => {
+          setImmediate(() => {
+            const rawLog = args[2].env.ORCH_DETACH_LOG;
+            writeFileSync(rawLog, `${Array.from({ length: 21 }, (_, i) => `line-${i + 1}`).join("\n")}\n`);
+            child.emit("exit", 64, null);
+          });
+          return child;
+        },
+        detachPollMs: 1,
+        detachWaitMs: 100,
+      }).catch((caught) => {
+        error = caught;
+        throw caught;
+      }),
+      (error) => error.exit === 64 && /line-21/.test(error.message),
+    );
+    assert.equal((error.message.match(/line-21/g) || []).length, 1);
+    assert.doesNotMatch(stderr, /line-21/);
+    assert.doesNotMatch(stderr, /line-1\n/);
+  } finally {
+    process.stderr.write = previousWrite;
+    chdir(previousCwd);
+  }
+});
+
+test("orch tsk --detach returns the real child's usage exit 64", () => {
+  const repo = mkdtempSync(join(tmpdir(), "orch-detach-usage-"));
+  const result = spawnSync(
+    process.execPath,
+    [new URL("../bin/orch.js", import.meta.url).pathname, "tsk", "detached work", "--detach"],
+    { cwd: repo, encoding: "utf8" },
+  );
+  assert.equal(result.status, 64, result.stderr);
+  assert.match(result.stderr, /detached child exited with code 64/);
+});
+
+test("SIGTERM marks a detached run interrupted and releases its lock", { skip: process.platform === "win32" }, async () => {
+  const orchDir = join(mkdtempSync(join(tmpdir(), "orch-detach-signal-")), ".orch");
+  const cliUrl = new URL("../src/cli.js", import.meta.url).href;
+  const lockUrl = new URL("../src/lock.js", import.meta.url).href;
+  const recordUrl = new URL("../src/run-record.js", import.meta.url).href;
+  const script = [
+    "import { installDetachedSignalCleanup } from " + JSON.stringify(cliUrl),
+    "import { acquireLock } from " + JSON.stringify(lockUrl),
+    "import { create } from " + JSON.stringify(recordUrl),
+    "const orchDir = " + JSON.stringify(orchDir),
+    "create(orchDir, { runId: \"signal-run\", command: \"task\", argv: [], detached: { pid: process.pid, detachedLog: \"run.log\" } })",
+    "acquireLock(orchDir, \"lock\")",
+    "installDetachedSignalCleanup(orchDir, \"signal-run\", { pid: process.pid, detachedLog: \"run.log\" })",
+    "if (process.send) process.send(\"ready\")",
+    "setInterval(() => {}, 1000)",
+  ].join("\n");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  await new Promise((resolve) => child.once("message", resolve));
+  child.kill("SIGTERM");
+  const result = await new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+  assert.equal(result.signal, "SIGTERM");
+  const record = runRecordDep.lookup(orchDir, "signal-run");
+  assert.equal(record.state, "ERROR");
+  assert.equal(record.outcome, "error");
+  assert.equal(record.interrupted.signal, "SIGTERM");
+  assert.equal(existsSync(join(orchDir, "lock")), false);
 });
 
 test("--config-file layers a custom yml onto orch.yml for the run (F: config override)", async () => {
@@ -2994,9 +3217,242 @@ test("CLI role overrides replace orch.yml fixed roles", () => {
   assert.deepEqual(overridden.reviewers, ["codex", "claude"]);
 });
 
-test("pr rejects a non-numeric PR number", async () => {
-  await assert.rejects(() => runMainCapture(["pr", "abc"]), /usage: orch pr <number>/);
+test("pr accepts a branch target and rejects a missing branch", async () => {
+  const repo = initGitRepo("orch-pr-branch-target-");
+  gitDep.git(["branch", "feature/x"], repo);
+  assert.doesNotThrow(() => resolvePrTarget({
+    target: "feature/x", repo, orchDir: join(repo, ".orch"),
+  }));
+  await assert.rejects(() => runMainCapture(["pr", "abc"]), /branch does not exist/);
   await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
+});
+
+test("pr target resolution keeps colleague branches off the push path", () => {
+  const repo = initGitRepo("orch-pr-authority-");
+  gitDep.git(["branch", "feature/colleague"], repo);
+  const calls = [];
+  const pr = {
+    number: 17, state: "OPEN", headRefName: "feature/colleague", headRefOid: "head17",
+    baseRefName: "main", isCrossRepository: false, maintainerCanModify: true, isDraft: false,
+    url: "https://example.invalid/pull/17",
+  };
+  const gh = (args) => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 17, url: pr.url, isDraft: false, headRefOid: pr.headRefOid }]);
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify(pr);
+    if (args[0] === "api") return JSON.stringify({ permissions: { push: true } });
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const target = resolvePrTarget({
+    target: pr.headRefName, repo, orchDir: join(repo, ".orch"), baseBranch: "main", until: "ready", gh,
+  });
+  assert.equal(target.canPushHead, false);
+  assert.equal(target.needsRepairBranch, true);
+  assert.equal(calls.filter((args) => args[0] === "api").length, 1);
+});
+
+test("PR landing derives changed paths when the review cycle omits them", () => {
+  const repo = initGitRepo("orch-pr-paths-");
+  gitDep.git(["checkout", "-b", "pr-17"], repo);
+  writeFileSync(join(repo, "pr.txt"), "PR head\n");
+  gitDep.git(["add", "pr.txt"], repo);
+  gitDep.git(["commit", "-m", "PR head"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const landed = resolveLanded(
+    { status: "approved" },
+    { branch: "pr-17", prTarget: { number: 17, branch: "pr-17" } },
+    { baseBranch: "main" },
+    {},
+    repo,
+  );
+  assert.deepEqual(landed.paths, ["pr.txt"]);
+});
+
+test("PR repair preparation publishes an owned repair branch, not the original head", () => {
+  const repo = initGitRepo("orch-pr-repair-");
+  const { remote } = addOriginWithPeer(repo);
+  gitDep.git(["checkout", "-b", "pr-17"], repo);
+  writeFileSync(join(repo, "pr.txt"), "PR head\n");
+  gitDep.git(["add", "pr.txt"], repo);
+  gitDep.git(["commit", "-m", "PR head"], repo);
+  gitDep.git(["branch", "feature/colleague"], repo);
+  gitDep.git(["push", "origin", "feature/colleague"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const original = gitDep.git(["rev-parse", "feature/colleague"], remote);
+  const calls = [];
+  const repairPr = preparePrRepairRun({
+    repo,
+    orchDir: join(repo, ".orch"),
+    sid: "repair-sid",
+    branch: "pr-17",
+    worktree: join(repo, ".orch", "wt", "pr-17"),
+    prTarget: { number: 17, originalNumber: 17, baseBranch: "main" },
+  }, { baseBranch: "main" }, {
+    gh(args) {
+      calls.push(args);
+      if (args[0] === "pr" && args[1] === "list") return "[]";
+      if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/42\n";
+      throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    },
+  });
+
+  const repairBranch = "pr/repair/17-repair-sid";
+  assert.equal(repairPr.branch, repairBranch);
+  assert.equal(repairPr.prTarget.number, 42);
+  assert.equal(gitDep.git(["rev-parse", repairBranch], remote), gitDep.git(["rev-parse", "pr-17"], repo));
+  assert.equal(gitDep.git(["rev-parse", "feature/colleague"], remote), original);
+  assert.ok(calls.some((args) => args[0] === "pr" && args[1] === "create" && args.includes(repairBranch)));
+});
+
+test("orch continue restores PR push authority and pushes the owned repair branch", async () => {
+  const repo = initGitRepo("orch-pr-continue-authority-");
+  const { remote } = addOriginWithPeer(repo);
+  const sid = "prresume";
+  const sourceBranch = "pr-9";
+  const remoteBranch = "feature/colleague";
+  gitDep.git(["checkout", "-b", sourceBranch], repo);
+  writeFileSync(join(repo, "pr.txt"), "PR head\n");
+  gitDep.git(["add", "pr.txt"], repo);
+  gitDep.git(["commit", "-m", "PR head"], repo);
+  gitDep.git(["push", "origin", `${sourceBranch}:refs/heads/${remoteBranch}`], repo);
+  gitDep.git(["checkout", "main"], repo);
+  const head = gitDep.git(["rev-parse", sourceBranch], repo);
+  const orchDir = join(repo, ".orch");
+  const prTarget = {
+    number: 9,
+    originalNumber: 9,
+    branch: sourceBranch,
+    sourceBranch,
+    remoteBranch,
+    headRefName: remoteBranch,
+    headRefOid: head,
+    baseBranch: "main",
+    canPushHead: false,
+    needsRepairBranch: true,
+    ephemeral: true,
+  };
+  checkpointDep.record(orchDir, sid, {
+    branch: sourceBranch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
+    author: { agent: "claude" }, reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid, command: "pr", argv: ["pr", "9", "--until", "ready"],
+    policy: { until: "ready", maxAttempts: 1 }, prTarget,
+  });
+
+  const repairBranch = `pr/repair/9-${sid}`;
+  const pushes = [];
+  let repaired = false;
+  const baseCycleDeps = fakeCycleDeps();
+  const cycleDeps = {
+    ...baseCycleDeps,
+    git: {
+      ...baseCycleDeps.git,
+      gitTry(args, cwd) {
+        if (args[0] === "push") pushes.push({ args, cwd });
+        return gitDep.gitTry(args, cwd);
+      },
+    },
+  };
+  const gh = (args) => {
+    if (args[0] === "pr" && args[1] === "view") {
+      const number = String(args[2]);
+      return JSON.stringify({
+        number: Number(number), state: "OPEN", isDraft: false, headRefOid: head,
+        baseRefName: "main", mergeable: "MERGEABLE", mergeStateStatus: number === "9" && !repaired ? "BEHIND" : "CLEAN",
+        reviewDecision: null, statusCheckRollup: [],
+      });
+    }
+    if (args[0] === "pr" && args[1] === "list") return "[]";
+    if (args[0] === "pr" && args[1] === "create") return "https://github.com/o/r/pull/42\n";
+    if (args[0] === "api" && args.some((arg) => String(arg).endsWith("/update-branch"))) {
+      repaired = true;
+      return "{}";
+    }
+    if (args[0] === "api") return "[]";
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+
+  await runMainInRepo(repo, ["continue", sid, "--no-tidy"], {
+    cycleDeps,
+    githubDeps: () => ({ gh, git: gitDep.git }),
+    sleep: async () => {},
+  });
+
+  const pushedRefs = pushes.map(({ args }) => args[args.indexOf("origin") + 1].split(":").at(-1));
+  assert.ok(pushedRefs.includes(`refs/heads/${repairBranch}`), "resume must push the owned repair branch");
+  assert.ok(!pushedRefs.includes(`refs/heads/${remoteBranch}`), "resume must not push the contributor branch");
+  assert.equal(gitDep.git(["rev-parse", remoteBranch], remote), head, "the contributor branch must remain untouched");
+  const record = JSON.parse(readFileSync(join(orchDir, "run-records", `${sid}.json`), "utf8"));
+  assert.equal(record.prTarget.remoteBranch, repairBranch, "the persisted target must follow the repair branch");
+});
+
+test("resumable numeric PR runs keep their ephemeral source branch for continue", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-pr-resumable-branch-");
+  const { remote } = addOriginWithPeer(repo);
+  const sourceBranch = "feature/colleague";
+  gitDep.git(["checkout", "-b", sourceBranch], repo);
+  writeFileSync(join(repo, "pr.txt"), "PR head\n");
+  gitDep.git(["add", "pr.txt"], repo);
+  gitDep.git(["commit", "-m", "PR head"], repo);
+  gitDep.git(["push", "origin", sourceBranch], repo);
+  const head = gitDep.git(["rev-parse", sourceBranch], repo);
+  gitDep.git(["update-ref", "refs/pull/123/head", head], remote);
+  gitDep.git(["checkout", "main"], repo);
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "automation:\n  remedies: [ask]\n  humanWaitHours: 0.000001\n");
+
+  let secondRun = false;
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({
+      number: 123, state: "OPEN", headRefName: sourceBranch, headRefOid: head,
+      baseRefName: "main", isCrossRepository: false, maintainerCanModify: true,
+      isDraft: false, url: "https://github.com/o/r/pull/123",
+    });
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{
+      number: 123, url: "https://github.com/o/r/pull/123", isDraft: false, headRefOid: head,
+    }]);
+    if (args[0] === "api" && args[1] === "repos/{owner}/{repo}") return JSON.stringify({ permissions: { push: true } });
+    if (args[0] === "api" && String(args[1]).includes("collaborators/")) return JSON.stringify({ permission: "write" });
+    if (args[0] === "api" && args.some((arg) => String(arg).includes("/comments"))) {
+      if (args.includes("-X") && args.includes("POST")) return JSON.stringify({ id: 1 });
+      return secondRun ? JSON.stringify([{ id: 2, body: "orch: abandon", user: { login: "maintainer", type: "User" } }]) : "[]";
+    }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: { get: (name) => ({ name, async audit() { return { decision: "DISAGREE", reason: "needs work", raw: "" }; } }) },
+  };
+  let nowCalls = 0;
+  const deps = {
+    cycleDeps,
+    githubDeps: () => ({ gh, git: gitDep.git }),
+    sleep: async () => {},
+    now: () => (nowCalls++ === 0 ? 0 : 1_000_000),
+  };
+
+  try {
+    const logs = await runMainInRepo(repo, ["pr", "123", "--until", "ready", "--json"], deps);
+    const recordDir = join(repo, ".orch", "run-records");
+    const record = JSON.parse(readFileSync(join(recordDir, readdirSync(recordDir)[0]), "utf8"));
+    assert.equal(record.outcome, "wait-timeout");
+    assert.equal(record.prTarget.remoteBranch, sourceBranch, "the PR target must be persisted for continue");
+    assert.ok(gitDep.branchExists(repo, "pr-123"), "a resumable run must keep its ephemeral source branch");
+    assert.match(logs.join("\n"), new RegExp(`orch continue ${record.runId}`));
+
+    secondRun = true;
+    const resumedLogs = await runMainInRepo(repo, ["continue", record.runId, "--no-tidy"], deps);
+    assert.match(resumedLogs.join("\n"), /escalated/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
 });
 
 test("a flag not read by the command is rejected", async () => {
@@ -3046,6 +3502,10 @@ test("a flag not read by the command is rejected", async () => {
       argv.join(" "),
     );
   }
+  await assert.rejects(
+    () => runMainCapture(["pr", "42", "--merge", "--until", "ready", "--dry"]),
+    (e) => e.exit === 64 && /--merge is an alias for --until merged/.test(e.message),
+  );
   // The message points at where the flag IS legal.
   await assert.rejects(() => runMainCapture(["issue", "42", "--merge"]), /only with: orch pr/);
   // ...and a flag stays legal where it is actually consumed: `pr` gets past the
@@ -5441,7 +5901,12 @@ test("missing required positional exits 64 like every other usage error", async 
   await assert.rejects(() => main(["task"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["review"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["continue"], { preflight() {} }), (e) => e.exit === 64);
-  await assert.rejects(() => main(["pr", "abc"], { preflight() {} }), (e) => e.exit === 64);
+  // This deliberately uses no probe stub: a missing branch is answerable from
+  // local git and must remain a usage error in a bare environment.
+  await assert.rejects(
+    () => runMainCapture(["pr", "abc"]),
+    (e) => e.exit === 64 && /branch does not exist/.test(e.message),
+  );
   await assert.rejects(() => main(["agent", "add"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["agent", "build"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(

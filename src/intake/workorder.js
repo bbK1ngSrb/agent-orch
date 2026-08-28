@@ -73,7 +73,7 @@ export function validateWorkOrder(obj) {
 // spellings of a marker inside the attacker text. Non-whitespace joins (e.g.
 // zero-width characters or punctuation splicing a marker word) are NOT
 // defanged. They are quoted verbatim, and the nonce is what keeps them harmless.
-function neutralizeFence(s) {
+export function neutralizeFence(s) {
   // Defang fence-marker near-misses (case/whitespace variants). A model may
   // honour near-miss spellings as terminators, so over-matching is correct.
   // Regex is inline so a shared /g lastIndex cannot leak across calls.
@@ -83,7 +83,7 @@ function neutralizeFence(s) {
   );
 }
 
-function frameUntrustedReference(ref) {
+export function frameUntrustedReference(ref) {
   const nonce = randomBytes(4).toString("hex");
   return [
     `# Trusted goal`,

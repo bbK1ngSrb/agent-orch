@@ -220,6 +220,17 @@ test("structured loop cycles focus with Tab and jumps to interrupted with 2", ()
   handle.shutdown(0);
 });
 
+test("structured live rows render a detached log path without undefined fields", () => {
+  const snap = structuredSnapshot(1);
+  snap.live[0].detachedLog = "/tmp/detached.log";
+  const { screen, handle } = setup({ snapshot: () => snap, rows: 18, columns: 90 });
+  const frame = screen.painted.at(-1);
+
+  assert.match(frame, /log \/tmp\/detached\.log/);
+  assert.doesNotMatch(frame, /log undefined: undefined/);
+  handle.shutdown(0);
+});
+
 test("structured scroll changes only the focused panel", () => {
   const { input, handle } = setup({
     snapshot: () => structuredSnapshot(20),

@@ -88,7 +88,7 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
    not caught, which was equally true of the plain substring match that came
    before it — the floor guards against an accidental read, which is written on
    one line, not against deliberate evasion. This runs on every cycle that reaches AGREE + green, including the
-   `orch pr`/PR-bridge audit-only path (§2.7) where nothing else merges.
+   `orch pr`/PR-bridge path (§2.7), including the optional remote merge.
 5. **Merge** — *only if* every reviewer said `AGREE`, tests passed, **and**
    the security scan found nothing — the branch is merged. How and where it
    merges is the part this manual spends the most time on, because there are
@@ -359,15 +359,17 @@ a verdict *without* any possibility of a local merge, use `orch pr` (§2.7)
 against a GitHub PR instead, which is the audit-only path that never touches
 `orch/integration`.
 
-### 2.7 `orch pr <n> [--merge]`
+### 2.7 `orch pr <number|branch> [--merge|--until once|ready|merged]`
 
-The GitHub PR bridge. Fetches PR `#n`'s head, runs an audit-only cycle
-against it (local `main` is never touched — GitHub owns the actual merge),
-and posts the verdict as a PR comment.
+The GitHub PR bridge. For a number, orch fetches PR `#n`'s head; for a branch,
+it reviews the local branch or creates it from `origin/<branch>`. It runs an
+audit-only cycle against that head, never merges into local `main`, and posts
+the verdict as a PR comment when a PR is available.
 
 ```bash
 orch pr 42            # review only, post a comment
 orch pr 42 --merge     # ...and ask GitHub to merge if agents approve + tests pass
+orch pr feature/x --until ready  # audit a branch and wait for its PR readiness
 ```
 
 That merge request goes to GitHub's REST merge endpoint (`gh api -X PUT
@@ -376,24 +378,24 @@ runs its own client-side "is this mergeable?" precheck, and that precheck is
 blind to ruleset bypasses — it refuses merges the server would actually
 allow.
 
-**When to use it:** reviewing a PR that came from *outside* your orch
-workflow entirely — a human contributor, a different tool, a fork — and you
-want orch's agents to weigh in the same way they would on an internal cycle,
-with the option to let orch actually merge it once approved.
+**When to use it:** reviewing a PR or branch that came from *outside* your
+orch workflow entirely — a human contributor, a different tool, a fork — and
+you want orch's agents to weigh in the same way they would on an internal
+cycle, with the option to let orch actually merge an eligible PR once approved.
 
 Needs `gh` authenticated (`orch` checks this up front and fails fast rather
 than partway through a cycle — see §2.3's note on why `orch task`/`orch
 issue` check this too).
 
-**The security scan (§1.1) still applies, even though nothing merges here.**
-`orch pr` skips the actual merge — GitHub owns that — but not the deterministic
-scan: a risky diff escalates instead of reporting `approved`, regardless of
-what the LLM reviewers concluded.
+**The security scan (§1.1) still applies before any merge.** A risky diff
+escalates instead of reporting `approved`, regardless of what the LLM
+reviewers concluded. Without `--merge` (or `--until merged`), GitHub owns the
+actual merge and orch only posts the verdict.
 
 **The fetched and reviewed head is the only one eligible to merge.** With
-`--merge`, orch resolves the fetched PR head's commit SHA before review and
-pins GitHub's merge request to it. If the PR head moves during review, GitHub
-rejects the pinned request; orch stops and tells you to re-run
+`--merge` (and `--until merged`), orch resolves the fetched PR head's commit
+SHA before review and pins GitHub's merge request to it. If the PR head moves
+during review, GitHub rejects the pinned request; orch stops and tells you to re-run
 `orch pr 42 --merge` so the new head is audited instead of landing code the
 agents never saw.
 
@@ -556,6 +558,7 @@ The tools:
 | `orch_task` | `orch task` | Full cycle from a task description. |
 | `orch_issue` | `orch issue <n>` | Full cycle from a GitHub issue. |
 | `orch_review` | `orch review <branch>` | Audit-only. |
+| `orch_pr` | `orch pr <number|branch> --until <mode>` | Audit a PR/branch; `merged` requires `automation.mcpMayMerge: true`. |
 | `orch_continue` | `orch continue <sid>` | Resume from a checkpoint. |
 
 Every call returns JSON: `ok`, `exitCode`, the `command` that ran, a `cycles`
@@ -577,11 +580,12 @@ a protocol error, so the client can act on it.
 each tool spawns `bin/orch.js` with a fixed argument list, `shell: false`, and no
 caller-supplied flags — free text is passed after `--` and refused outright if it
 starts with `-`, so a task string can't smuggle in `--allow-protected` or
-`--config-file`. There is **no shell tool** and **no `orch pr` tool**, and no
-tool can emit `--merge`. Since `--merge` is orch's only PR-merge path, an MCP
-client cannot merge a pull request itself: the server hands out no merge
-authority that a hand-typed `orch` in the same repo does not already have. That
-much is a property of the tool table, not of a policy setting — see the test.
+`--config-file`. There is **no shell tool** and no caller-supplied flags. The
+`orch_pr` tool exposes only a fixed PR/branch target and a bounded `--until`
+enum; its `merged` mode is refused unless the repository explicitly sets
+`automation.mcpMayMerge: true`. When enabled, it runs the same head-bound,
+CI-checked merge path as a hand-typed `orch pr --merge`; otherwise the MCP
+server has no PR-merge authority. See §5 for the opt-in config key.
 Everything else — the security floor, the protected-path intake
 refusal (§2.14), the test gate, per-cycle worktree isolation, checkpoints and the
 concurrency cap (§4.5) — lives in the cycle the child process runs, so it applies
@@ -629,18 +633,21 @@ got to. `orch_status` and `orch_plan` return immediately.
 - **`--no-tidy`** — skip the post-merge tidy (see §4.5) and leave every
   branch and checkout exactly as the cycle left them.
 - **`--no-banner`** — suppress the startup banner (for scripts and logs).
+- **`--detach`** — run a `task`, `issue`, `review`, `continue`, or `pr` in the
+  background. The parent prints the child PID and log path, plus the run ID
+  once registration is visible; use `orch dashboard` to follow the run.
 - **`--allow-protected`** — run a `task`/`issue` even though the work order text
   names a protected path, instead of being refused at intake. See §2.14.
 - **`--allow-large-scope`** — explicitly sanction a deliberately large review
   slice for this run. A plain `orch continue <sid>` requires the flag again.
 - **`--until <mode>`** — `once` is the default: run one cycle and stop.
-  `task`, `issue`, and `review` also support `ready` (run the bounded
-  readiness loop) and `merged` (run through readiness; the merge phase is not
-  wired yet). `continue` and `pr` currently accept only `--until once`;
-  `ready` and `merged` are refused with exit `64` until their controller
-  wiring lands. `--max-attempts` is not declared yet — nothing reads it, so it
-  stays a usage error rather than a silent no-op until the retry loop that
-  needs it ships.
+  `task`, `issue`, `review`, and `pr` support `ready` (run the bounded
+  readiness loop) and `merged` (run through readiness and the configured merge
+  path). `continue` currently accepts only `--until once`; `ready` and `merged`
+  are refused there with exit `64`. On `pr`, `--merge` remains a compatibility
+  alias for `--until merged`. `--max-attempts` is not declared yet — nothing
+  reads it, so it stays a usage error rather than a silent no-op until the
+  retry loop that needs it ships.
 
 Every flag is now declared per command in `src/schema.js`, and a flag the
 command does not read is refused with exit `64` rather than parsed and dropped.
@@ -1286,6 +1293,11 @@ concurrency: 4                   # max concurrent cycles per repo dir
 baseBranch: main                 # trunk orch reads/diffs/opens PRs against; e.g. dev if main is deploy-only
 integrationBranch: orch/integration
 merge: no-ff                     # ff-only | no-ff | pr
+
+# === MCP PR merge opt-in ===
+automation:
+  mcpMayMerge: false              # true = MCP orch_pr may request --until merged
+  detachLogDir: .orch/logs        # detached-run log directory; default: .orch/logs
 
 # === Cheap-agent dispatch (optional) ===
 # cheap:

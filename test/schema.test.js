@@ -41,7 +41,7 @@ test("every declared flag validates on its command, every other flag is refused"
       // reason unrelated to what this matrix checks.
       const extra = ["task", "issue"].includes(command) && ["author", "authors"].includes(name)
         ? sample("reviewer")
-        : ["task", "issue", "review"].includes(command) && name === "json" ? ["--until", "ready"] : [];
+        : ["task", "issue", "review", "pr"].includes(command) && name === "json" ? ["--until", "ready"] : [];
       const { flags } = parse([command, ...sample(name), ...extra]);
       assert.doesNotThrow(() => validate(command, flags), `orch ${command} --${name}`);
     }
@@ -108,19 +108,16 @@ test("positional grammar is enforced before dispatch, not silently accepted", ()
   }
 });
 
-// `issue`/`pr` take a numeric ID, but that used to be checked deep inside
-// each handler — after main() had already fired the update-check network
-// call and minted a GitHub App token (see cli.js's main()). A non-numeric ID
-// now fails right here, before any of that runs.
-test("issue and pr reject a non-numeric ID before dispatch", () => {
+// `issue` takes a numeric ID, but that used to be checked deep inside its
+// handler — after main() had already fired the update-check network call and
+// minted a GitHub App token (see cli.js's main()). A non-numeric ID now fails
+// right here, before any of that runs. PR accepts either a number or branch.
+test("issue rejects a non-numeric ID and pr accepts a branch", () => {
   assert.throws(
     () => validatePositionals("issue", ["abc"], {}),
     (e) => e.exit === 64 && /usage: orch issue <number>/.test(e.message),
   );
-  assert.throws(
-    () => validatePositionals("pr", ["abc"], {}),
-    (e) => e.exit === 64 && /usage: orch pr <number>/.test(e.message),
-  );
+  assert.doesNotThrow(() => validatePositionals("pr", ["feature/x"], {}));
 });
 
 // `task` and `release` build their free text with `rest.join(" ")` in
@@ -145,7 +142,7 @@ test("--help and --version are legal on every command", () => {
 
 test("--json is scoped to dashboard and run-controller commands, not global", () => {
   assert.doesNotThrow(() => validate("dashboard", { json: true }));
-  const RUN_CONTROLLED = new Set(["task", "issue", "review"]);
+  const RUN_CONTROLLED = new Set(["task", "issue", "review", "pr"]);
   for (const command of Object.keys(COMMANDS).filter((c) => c !== "dashboard")) {
     if (command === "continue") {
       assert.doesNotThrow(() => validate(command, { json: true }), "orch continue --json");
@@ -206,24 +203,18 @@ test("--max-attempts is not declared — it would be a silent no-op, nothing rea
   );
 });
 
-test("--until ready|merged is available on task/issue/review; continue/pr aren't wired yet", () => {
-  for (const command of ["task", "issue", "review"]) {
+test("--until ready|merged is available on task/issue/review/pr; continue is not", () => {
+  for (const command of ["task", "issue", "review", "pr"]) {
     assert.doesNotThrow(() => validate(command, { until: "once" }), `${command} once`);
   }
-  assert.doesNotThrow(() => validate("pr", { until: "once" }), "pr once");
   for (const mode of ["ready", "merged"]) {
-    for (const command of ["task", "issue", "review"]) {
+    for (const command of ["task", "issue", "review", "pr"]) {
       assert.doesNotThrow(() => validate(command, { until: mode }), `${command} ${mode}`);
     }
     assert.throws(
       () => validate("continue", { until: mode }),
       (e) => e.exit === 64 && /is not yet available/.test(e.message),
       `continue ${mode}`,
-    );
-    assert.throws(
-      () => validate("pr", { until: mode }),
-      (e) => e.exit === 64 && /is not yet available with 'orch pr'/.test(e.message),
-      `pr ${mode}`,
     );
   }
   assert.throws(() => validate("task", { until: "forever" }), /--until must be one of: once, ready, merged/);
