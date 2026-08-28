@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.352 — 2026-08-28
+- fix(pr): persist resume push authority (closes [#525](https://github.com/bbk1ng/agent-orch/issues/525))
+
 ## v0.4.351 — 2026-08-28
 - feat: add head-bound merged landing (closes [#524](https://github.com/bbk1ng/agent-orch/issues/524))
 
