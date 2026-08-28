@@ -74,10 +74,14 @@ test("atomic write survives a simulated crash (original record untouched, no par
 test("resumeTerminal clears outcome/exit and grants a fresh attempt budget", () => {
   const d = tmpOrchDir();
   create(d, { runId: "100-0", command: "task", argv: [] });
-  update(d, "100-0", { outcome: "stopped-at-cap", exit: 2, attempt: 3, retries: { conflict: 1 }, headMovedRepins: 2 });
+  update(d, "100-0", {
+    outcome: "stopped-at-cap", exit: 2, attempt: 3, retries: { conflict: 1 }, headMovedRepins: 2,
+    human: { askCommentId: 7, deadline: "2026-08-28T00:00:00.000Z" },
+  });
   const resumed = resumeTerminal(d, "100-0", { maxAttempts: 3 + 5 });
   assert.equal(resumed.outcome, null);
   assert.equal(resumed.exit, null);
+  assert.deepEqual(resumed.human, { askCommentId: 7, deadline: "2026-08-28T00:00:00.000Z" });
   assert.deepEqual(resumed.retries, {});
   assert.equal(resumed.headMovedRepins, 0);
   assert.equal(resumed.policy.maxAttempts, 8);

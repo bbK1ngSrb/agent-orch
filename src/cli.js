@@ -10,6 +10,8 @@ import { runCycle } from "./engine.js";
 import { runPr, demote, openPr, openIntegrationPr, buildIssueComment, hasRemote, ghAvailable, requireGh, findPrByHead } from "./github.js";
 import { runUntil } from "./run-controller.js";
 import { createRebaseRemedy, createRotateRemedy } from "./remedies.js";
+import { createReauthorRemedy } from "./remedies/reauthor.js";
+import { createAskRemedy } from "./remedies/ask.js";
 import { createIntegrationRepairRemedy } from "./integration-repair.js";
 import * as adapters from "./adapters/index.js";
 import * as git from "./git.js";
@@ -120,7 +122,10 @@ function exitForResult(result) {
 // produce today (no run-controller/readiness slice yet) — "reached" success
 // lands as READY, distinct from STOPPED_AT_CAP/ERROR so `continue` (§5.3) can
 // tell them apart.
-const STATE_FOR_OUTCOME = { reached: "READY", "stopped-at-cap": "STOPPED_AT_CAP" };
+const STATE_FOR_OUTCOME = {
+  reached: "READY", "stopped-at-cap": "STOPPED_AT_CAP", blocked: "BLOCKED",
+  "wait-timeout": "WAIT_TIMEOUT", error: "ERROR",
+};
 // Design §5.2: `lastError` is `{ message, stack? } | null`, not a bare string.
 function toLastError(err) {
   const stack = err?.stack ? redact(String(err.stack)) : null;
@@ -1180,7 +1185,7 @@ export function registerWithConcurrencyCap(orchDir, sid, meta, cfg, { onExceeded
 function commentOnIssue(result, branch, closes, githubDepsFn) {
   if (!closes) return;
   try {
-    const body = redact(buildIssueComment(result, branch));
+    const body = redact(`<!-- orch:result -->\n${buildIssueComment(result, branch)}`);
     githubDepsFn().gh(["issue", "comment", String(closes), "--body-file", "-"], body);
   } catch (e) {
     console.error(`orch: could not comment on issue #${closes}: ${e.message}`);
@@ -1651,14 +1656,15 @@ export async function main(argv, deps = {}) {
     const until = flags.until || "once";
     const jsonMode = Boolean(flags.json);
     const emit = (event) => { if (jsonMode) console.log(JSON.stringify(event)); };
-    // design §3/§4: `run.start`'s `policy` field — the subset of RunPolicy this
-    // slice actually resolves before the loop starts (the remedy-ladder/roles/
-    // source fields don't exist yet; P5 ships no remedy executor). Built once so
-    // every `run.start` emission below (including the concurrency-cap skip path)
-    // carries the same object `runUntil` is given per-run.
+    // design §3/§4: resolve the run policy once so every `run.start` emission
+    // (including the concurrency-cap skip path) carries the same object given
+    // to the controller for that run.
     const runPolicy = {
       until,
-      maxAttempts: cfg.automation?.maxAttempts ?? 3,
+      maxAttempts: until === "once" ? 0 : (cfg.automation?.maxAttempts ?? 3),
+      baseMaxAttempts: until === "once" ? 0 : (cfg.automation?.maxAttempts ?? 3),
+      humanWaitHours: cfg.automation?.humanWaitHours ?? 24,
+      remedies: until === "once" ? [] : cfg.automation?.remedies,
       pollSeconds: cfg.automation?.pollSeconds ?? 30,
       ciWaitMinutes: cfg.automation?.ciWaitMinutes ?? 30,
       baseBranch: cfg.baseBranch,
@@ -1703,6 +1709,11 @@ export async function main(argv, deps = {}) {
         authorPrompt = task;
       }
       if (!task || !task.trim()) throw usageError('usage: orch task "describe the change" (or --file work-order.json)');
+      runPolicy.source = {
+        kind: command === "issue" ? "issue" : "task",
+        text: workOrder ? `${workOrder.title}\n${workOrder.problem}` : task,
+        ...(command === "issue" ? { issue: closes } : {}),
+      };
     } else {
       reviewBranch = rest[0];
       if (!reviewBranch) throw usageError("usage: orch review <branch>");
@@ -1859,6 +1870,7 @@ export async function main(argv, deps = {}) {
     const prUrls = [];
     for (const run of runs) {
       let activeRun = run;
+      const registeredSids = new Set([run.sid]);
       const cycleRoles = [{ authorName: run.authorName, reviewerNames: run.reviewerNames }];
       // A resumed run (run.resume) reuses the ORIGINAL run's sid as its runId —
       // look up its existing record so create() below doesn't stomp
@@ -1893,7 +1905,7 @@ export async function main(argv, deps = {}) {
         }
         // runId == this cycle's sid (design §5.1/§5.3) until the run-controller
         // (P5) can extend a run across more than one cycle. `--dry` writes none.
-        if (!priorRecord) runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact) });
+        if (!priorRecord) runRecord.create(orchDir, { runId: run.sid, command, argv: argv.map(redact), policy: runPolicy });
       }
       emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
@@ -1911,6 +1923,8 @@ export async function main(argv, deps = {}) {
           // fresh PR scoped to this cycle's own branch.
           let pr = result.prUrl ? { number: null, url: result.prUrl, kind: result.status === "merged" ? "standing" : "per-cycle" } : null;
           let controller = null;
+          const cycleSids = [run.sid];
+          const cycleBranches = [run.branch];
           // design §6/§9 (P5): once the local cycle lands, `ready`/`merged`
           // also wait on the remote standing PR before this run is done —
           // `once` (bare/default) stops here, unchanged from before P5.
@@ -1921,7 +1935,8 @@ export async function main(argv, deps = {}) {
               failures: priorRecord?.failures || [],
               excludedAgents: run.excludedAgents || priorRecord?.excludedAgents || [],
               headMovedRepins: priorRecord?.headMovedRepins || 0,
-              policy: { maxAttempts: runPolicy.maxAttempts },
+              policy: { ...runPolicy },
+              ...(priorRecord?.human ? { human: priorRecord.human } : {}),
             };
             // Same `deps.githubDeps` override point every other gh call in this
             // file uses (real git access stays direct — these tests run against
@@ -1931,7 +1946,57 @@ export async function main(argv, deps = {}) {
               const picks = options.picks || (options.author || options.reviewers ? options : null);
               let cycleRun = { ...activeRun, resume: true };
               let cycleDepsForRun = cycleDeps;
-              if (picks) {
+              const reauthorCycle = Boolean(options.reauthor || options.revise);
+              if (reauthorCycle) {
+                const previousRun = activeRun;
+                const nextBranch = options.branch || previousRun.branch;
+                const nextSid = options.sid || previousRun.sid;
+                const changedIdentity = nextBranch !== previousRun.branch || nextSid !== previousRun.sid;
+                const nextRun = {
+                  ...previousRun,
+                  author: options.author || previousRun.author,
+                  authorName: options.authorName || previousRun.authorName,
+                  reviewers: options.reviewers || previousRun.reviewers,
+                  reviewerName: options.reviewerName || previousRun.reviewerName,
+                  reviewerNames: options.reviewerNames || previousRun.reviewerNames,
+                  authorPrompt: options.authorPrompt ?? previousRun.authorPrompt,
+                  workOrder: options.workOrder ?? previousRun.workOrder,
+                  branch: nextBranch,
+                  sid: nextSid,
+                  worktree: join(orchDir, "wt", nextBranch.replace(/\//g, "_")),
+                  resume: options.resume ?? Boolean(options.revise),
+                  reviewerOverride: options.reviewerOverride ?? false,
+                  rotationStage: options.revise ? "revising" : "started",
+                };
+                if (!dry && changedIdentity) {
+                  inflight.deregister(orchDir, previousRun.sid);
+                  const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
+                  registerWithConcurrencyCap(
+                    orchDir,
+                    nextSid,
+                    {
+                      branch: nextBranch, pid: process.pid, baseSha,
+                      closes: nextRun.closes || null, author: nextRun.author,
+                      reviewers: nextRun.reviewers, workOrder: nextRun.workOrder,
+                      excludedAgents: nextRun.excludedAgents || [], rotationStage: nextRun.rotationStage,
+                    },
+                    cfg,
+                    { onExceeded: () => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — reauthor cycle cannot start`), { exit: 3 }); } },
+                  );
+                  registeredSids.add(nextSid);
+                }
+                activeRun = nextRun;
+                if (!dry && options.revise) {
+                  checkpoint.record(orchDir, nextSid, {
+                    branch: nextBranch, round: 1, stage: "revising",
+                    reason: options.reason || "human addendum", author: nextRun.author,
+                    reviewers: nextRun.reviewers, task: nextRun.task,
+                    authorPrompt: nextRun.authorPrompt, workOrder: nextRun.workOrder || null,
+                    closes: nextRun.closes || null, excludedAgents: nextRun.excludedAgents || [],
+                  });
+                }
+                cycleRun = { ...nextRun, resume: nextRun.resume };
+              } else if (picks) {
                 const previousAuthor = activeRun.authorName;
                 const { freshAuthor = false, ...rolePicks } = picks;
                 const nextRun = {
@@ -1976,8 +2041,15 @@ export async function main(argv, deps = {}) {
                 cycleRun = { ...activeRun, resume: true, reviewerOverride: true };
               }
               cycleRoles.push({ authorName: cycleRun.authorName, reviewerNames: cycleRun.reviewerNames });
+              cycleSids.push(cycleRun.sid);
+              cycleBranches.push(cycleRun.branch);
               return runCycle(cycleRun, cycleDepsForRun);
             };
+            const reauthor = createReauthorRemedy({
+              getRun: () => activeRun,
+              deps: cycleDeps,
+              createCycle: freshCycle,
+            });
             controller = await runUntil(runPolicy, record, {
               runCycle: async ({ fresh } = {}) => fresh
                 ? freshCycle()
@@ -1992,12 +2064,12 @@ export async function main(argv, deps = {}) {
                 // misses and every REMOTE_BEHIND/CONFLICTING/CI_RED run ends
                 // as a terminal failure instead of repairing (design §10A).
                 "integration-repair": createIntegrationRepairRemedy({
-                  run,
+                  run: activeRun,
                   // `sleep` so the lock-contention backoff is injectable the
                   // same way the controller's own backoffs are.
                   deps: { ...cycleDeps, sleep: deps.sleep },
                   gh: ghDeps.gh,
-                  resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
+                  resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
                 }),
                 rotate: createRotateRemedy({
                   getRun: () => activeRun,
@@ -2005,8 +2077,15 @@ export async function main(argv, deps = {}) {
                   runCycle: freshCycle,
                   selectRoles: nextAuthor,
                 }),
+                reauthor,
+                ask: createAskRemedy({
+                  getRun: () => activeRun,
+                  deps: { ...ghDeps, sleep: deps.sleep, ...(deps.now ? { now: deps.now } : {}) },
+                  runCycle: freshCycle,
+                  reauthor,
+                }),
               },
-              resolveLanded: (cycle) => resolveLanded(cycle, run, cfg, ghDeps, repo),
+              resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
               gh: ghDeps.gh, git, repo,
               sleep: deps.sleep,
             });
@@ -2022,11 +2101,16 @@ export async function main(argv, deps = {}) {
           if (finalResult.prUrl && !controller?.land) {
             pr = { number: null, url: finalResult.prUrl, kind: finalResult.status === "merged" ? "standing" : "per-cycle" };
           }
-          // Cycle returned (including all controller retries) → drop the resume
-          // and checkpoint records. A throw skips this line, leaving both for
-          // the next run to resume (#24).
-          if (run.mode === "task") resume.clearForBranch(orchDir, run.branch);
-          checkpoint.clear(orchDir, run.sid);
+          // A cap or human wait is deliberately resumable. Other terminal
+          // outcomes are complete (or blocked) and can release their resume
+          // state. A throw skips this line, leaving state for `continue`.
+          const resumable = until !== "once" && (outcome === "stopped-at-cap" || outcome === "wait-timeout");
+          if (run.mode === "task" && activeRun.branch !== run.branch) resume.clearForBranch(orchDir, run.branch);
+          if (!resumable) {
+            if (run.mode === "task") resume.clearForBranch(orchDir, activeRun.branch);
+            for (const cycleSid of registeredSids) checkpoint.clear(orchDir, cycleSid);
+          }
+          state = STATE_FOR_OUTCOME[outcome];
           const persistedAttempt = controller?.attempt ?? attempt;
           const cycleRunStats = cycleResults.flatMap((cycleResult) => cycleResult.runStats || []);
           const usage = cycleRunStats.length ? totalUsage(cycleRunStats) : finalResult.usage || {};
@@ -2036,11 +2120,14 @@ export async function main(argv, deps = {}) {
             exit,
             attempt: persistedAttempt,
             ...(controller?.retries ? { retries: controller.retries } : {}),
-            branch: run.branch,
+            branch: activeRun.branch,
             pr,
             ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
             ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
             excludedAgents: controller?.excludedAgents || activeRun.excludedAgents || priorRecord?.excludedAgents || [],
+            policy: controller?.policy || runPolicy,
+            ...(controller?.human ? { human: controller.human } : {}),
+            ...(controller?.resumeCommand ? { resumeCommand: controller.resumeCommand } : {}),
             ...(controller?.failures || controller?.failure ? {
               failures: [
                 ...(controller?.failures || priorRecord?.failures || []),
@@ -2050,7 +2137,8 @@ export async function main(argv, deps = {}) {
             cycles: [
               ...(priorRecord?.cycles || []),
               ...cycleResults.map((cycleResult, index) => ({
-                sid: run.sid, attempt: persistedAttempt, branch: run.branch,
+                sid: cycleSids[index] || run.sid, attempt: persistedAttempt,
+                branch: cycleBranches[index] || activeRun.branch,
                 author: cycleRoles[index]?.authorName || activeRun.authorName,
                 reviewers: cycleRoles[index]?.reviewerNames || activeRun.reviewerNames,
                 status: cycleResult.status, reason: cycleResult.reason || null,
@@ -2063,6 +2151,7 @@ export async function main(argv, deps = {}) {
             ...(controller?.blockedReason ? { blockedReason: controller.blockedReason } : {}),
             ...(controller?.warnings?.length ? { warnings: controller.warnings } : {}),
             ...(controller?.note ? { note: controller.note } : {}),
+            ...(controller?.resumeCommand ? { resumeCommand: controller.resumeCommand } : {}),
             ...(pr?.url ? { prUrl: pr.url } : {}),
           });
         } else {
@@ -2071,8 +2160,8 @@ export async function main(argv, deps = {}) {
           // truncated after run.start.
           emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result), usage: result.usage || {}, dry: true });
         }
-        if (!jsonMode) console.log(summaryLine(finalResult, run.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
-        if (finalResult.status === "merged" && run.mode === "task") mergedBranches.push(run.branch);
+        if (!jsonMode) console.log(summaryLine(finalResult, activeRun.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
+        if (finalResult.status === "merged" && run.mode === "task") mergedBranches.push(activeRun.branch);
         if (finalResult.prUrl) prUrls.push(finalResult.prUrl);
         if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
           // Under `ready`/`merged` the exit code already came from the run
@@ -2082,7 +2171,7 @@ export async function main(argv, deps = {}) {
           if (until === "once") raiseExitCode(2);
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
-          if (!dry) commentOnIssue(finalResult, run.branch, run.closes, deps.githubDeps || githubDeps);
+          if (!dry) commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps);
         }
       } catch (err) {
         if (!dry) {
@@ -2102,7 +2191,7 @@ export async function main(argv, deps = {}) {
         if (jsonMode) emit({ event: "run.end", runId: run.sid, outcome: "error", exit: 1, usage: {} });
         throw err;
       } finally {
-        if (!dry) inflight.deregister(orchDir, run.sid);
+        if (!dry) for (const cycleSid of registeredSids) inflight.deregister(orchDir, cycleSid);
       }
     }
     // After the cycles: the detached docs-update runs `orch task`, so spawn it
@@ -2134,6 +2223,8 @@ export async function main(argv, deps = {}) {
     if (!sid) throw usageError("usage: orch continue <sid>");
     const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
+    const jsonMode = Boolean(flags.json);
+    const emit = (event) => { if (jsonMode) console.log(JSON.stringify(event)); };
     if (isPaused(orchDir)) throw new Error(".orch/pause present — orchestration paused");
     // Run-record lookup (design §5.3): resolves by runId OR by any cycle sid
     // recorded under a run — a pre-v2 sid with no record simply misses here
@@ -2155,8 +2246,9 @@ export async function main(argv, deps = {}) {
     // rotation clears the old checkpoint. Read both BEFORE listLive() below:
     // listLive() prunes any inflight record whose owner pid is dead — exactly
     // the case a died-before-checkpoint resume needs to read (#129).
-    const ck = checkpoint.lookup(orchDir, sid);
-    const inf = inflight.lookup(orchDir, sid);
+    const resumeSid = priorRun?.cycles?.at(-1)?.sid || sid;
+    const ck = checkpoint.lookup(orchDir, resumeSid);
+    const inf = inflight.lookup(orchDir, resumeSid);
 
     if (!dry) {
       const liveEntries = inflight.listLive(orchDir);
@@ -2165,7 +2257,7 @@ export async function main(argv, deps = {}) {
       // a `continue` racing the original `task`/`issue` run) would overwrite that
       // entry's inflight file out from under it and collide on the same worktree
       // path. Refuse rather than clobber.
-      const stillLive = liveEntries.find((e) => e.sid === sid);
+      const stillLive = liveEntries.find((e) => e.sid === resumeSid);
       if (stillLive) throw new Error(`orch: sid ${sid} already has a live run (pid ${stillLive.pid}) — refusing to attach a second`);
       const liveBranches = new Set(liveEntries.map((e) => e.branch));
       resetKpiOnRecovery(orchDir, git.reclaimOrphanWorktrees(repo, orchDir, liveBranches, { base: cfg.baseBranch }));
@@ -2175,8 +2267,8 @@ export async function main(argv, deps = {}) {
     if (!git.branchExists(repo, branch)) {
       if (remoteBranchRefExists(repo, branch)) throw new Error(`orch: branch ${branch} (sid ${sid}) exists only as origin/${branch}; check it out locally before continuing`);
       if (!dry) {
-        if (ck) checkpoint.clear(orchDir, sid);
-        if (inf) inflight.deregister(orchDir, sid);
+        if (ck) checkpoint.clear(orchDir, resumeSid);
+        if (inf) inflight.deregister(orchDir, resumeSid);
         console.log(`orch: branch ${branch} (sid ${sid}) no longer exists; cleared stale resume state`);
         return;
       }
@@ -2190,7 +2282,7 @@ export async function main(argv, deps = {}) {
     if (((inf && !ck) || (ck?.stage === "started" && !ck.task))
       && !rotationRecorded
       && git.changedFiles(repo, branch, cfg.baseBranch).length === 0) {
-      if (!dry && ck) checkpoint.clear(orchDir, sid);
+      if (!dry && ck) checkpoint.clear(orchDir, resumeSid);
       throw new Error(`orch: branch ${branch} (sid ${sid}) has no committed changes — the run died before authoring finished; start a fresh \`orch task\` instead`);
     }
 
@@ -2270,7 +2362,7 @@ export async function main(argv, deps = {}) {
       // fallback for their changelog label. Author-stage resumes fail above
       // unless they have the original work order and can execute it safely.
       mode: "task", task, authorPrompt, workOrder,
-      allowLargeScope, branch, sid, resume: true, closes,
+      allowLargeScope, branch, sid: resumeSid, resume: true, closes,
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers,
@@ -2304,7 +2396,7 @@ export async function main(argv, deps = {}) {
       // inflight-only recovery path instead of the checkpoint path.
       registerWithConcurrencyCap(
         orchDir,
-        sid,
+        resumeSid,
         { branch, pid: process.pid, baseSha, closes, author: authorSpec, reviewers: run.persistReviewers, workOrder, excludedAgents: run.excludedAgents, rotationStage },
         cfg,
         { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
@@ -2315,9 +2407,9 @@ export async function main(argv, deps = {}) {
     // lookup, or every refusal path above (no branch, no committed changes, no
     // registered author) would have already erased outcome/exit/retries on a
     // record that never got resumed.
-    if (priorRun) {
-      runRecord.resumeTerminal(orchDir, priorRun.runId, { maxAttempts: priorRun.attempt + (priorRun.policy?.maxAttempts ?? 1) });
-    }
+    const resumedRecord = priorRun
+      ? runRecord.resumeTerminal(orchDir, priorRun.runId, { maxAttempts: priorRun.attempt + (priorRun.policy?.maxAttempts ?? 1) })
+      : null;
     const runId = priorRun?.runId || sid;
     // Create the record BEFORE runCycle, not after: a pre-v2 sid with no prior
     // record must still leave one behind if runCycle throws, or a crashed
@@ -2325,7 +2417,7 @@ export async function main(argv, deps = {}) {
     // any run a record with `outcome` exists").
     if (!dry && !priorRun) runRecord.create(orchDir, { runId, command, argv: argv.map(redact) });
     if (!dry && rotationRecorded && !ck) {
-      checkpoint.record(orchDir, sid, {
+      checkpoint.record(orchDir, resumeSid, {
         branch,
         round: 1,
         stage: rotationStage || "started",
@@ -2342,30 +2434,199 @@ export async function main(argv, deps = {}) {
     const continueDeps = !dry && rotationRecorded && existsSync(`${run.worktree}.orch-preserve`)
       ? { ...baseContinueDeps, git: { ...baseContinueDeps.git, pruneWorktree() {} } }
       : baseContinueDeps;
+    const controllerPolicy = priorRun?.policy?.until && priorRun.policy.until !== "once"
+      ? {
+        ...priorRun.policy,
+        until: flags.until || priorRun.policy.until,
+        baseMaxAttempts: priorRun.policy.baseMaxAttempts ?? priorRun.policy.maxAttempts ?? 1,
+        maxAttempts: resumedRecord?.policy?.maxAttempts ?? priorRun.attempt + (priorRun.policy.maxAttempts ?? 1),
+      }
+      : null;
+    const resumePolicy = controllerPolicy || resumedRecord?.policy || priorRun?.policy || { until: flags.until || "once" };
+    emit({ event: "run.start", runId, command, until: resumePolicy.until, policy: resumePolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
+    if (priorRun?.outcome === "stopped-at-cap" || priorRun?.outcome === "wait-timeout") {
+      emit({ event: "run.resume", runId, previousOutcome: priorRun.outcome, maxAttempts: resumedRecord?.policy?.maxAttempts });
+    }
+    let activeRun = run;
+    let controller = null;
+    let finalResult;
+    const registeredSids = new Set([resumeSid]);
     try {
       const result = await runCycle(run, dry ? dryDeps() : continueDeps);
+      finalResult = result;
+      if (!dry && controllerPolicy) {
+        const cycleSids = [resumeSid];
+        const cycleBranches = [branch];
+        const cycleRoles = [{ authorName: run.authorName, reviewerNames: run.reviewerNames }];
+        const freshCycle = async (options = {}) => {
+          const picks = options.picks || (options.author || options.reviewers ? options : null);
+          let cycleRun = { ...activeRun, resume: true };
+          let cycleDepsForRun = continueDeps;
+          const reauthorCycle = Boolean(options.reauthor || options.revise);
+          if (reauthorCycle) {
+            const previousRun = activeRun;
+            const nextBranch = options.branch || previousRun.branch;
+            const nextSid = options.sid || previousRun.sid;
+            const changedIdentity = nextBranch !== previousRun.branch || nextSid !== previousRun.sid;
+            activeRun = {
+              ...previousRun, ...options,
+              branch: nextBranch, sid: nextSid,
+              worktree: join(orchDir, "wt", nextBranch.replace(/\//g, "_")),
+              resume: options.resume ?? Boolean(options.revise),
+              rotationStage: options.revise ? "revising" : "started",
+            };
+            if (changedIdentity) {
+              inflight.deregister(orchDir, previousRun.sid);
+              const baseSha = git.git(["rev-parse", cfg.baseBranch], repo);
+              registerWithConcurrencyCap(orchDir, nextSid, {
+                branch: nextBranch, pid: process.pid, baseSha,
+                closes: activeRun.closes || null, author: activeRun.author,
+                reviewers: activeRun.reviewers, workOrder: activeRun.workOrder,
+                excludedAgents: activeRun.excludedAgents || [],
+                rotationStage: activeRun.rotationStage,
+              }, cfg, {
+                onExceeded: () => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — reauthor cycle cannot start`), { exit: 3 }); },
+              });
+              registeredSids.add(nextSid);
+            }
+            if (options.revise) checkpoint.record(orchDir, nextSid, {
+              branch: nextBranch, round: 1, stage: "revising",
+              reason: options.reason || "human addendum", author: activeRun.author,
+              reviewers: activeRun.reviewers, task: activeRun.task,
+              authorPrompt: activeRun.authorPrompt, workOrder: activeRun.workOrder || null,
+              closes: activeRun.closes || null, excludedAgents: activeRun.excludedAgents || [],
+            });
+            cycleRun = { ...activeRun, resume: activeRun.resume };
+          } else if (picks) {
+            const previousAuthor = activeRun.authorName;
+            const { freshAuthor = false, ...rolePicks } = picks;
+            const nextRun = {
+              ...activeRun, ...rolePicks, resume: true,
+              rotationStage: freshAuthor ? "started" : "authored",
+            };
+
+            persistRotationState({
+              orchDir,
+              sid: run.sid,
+              runId: priorRun?.runId || run.sid,
+              run,
+              nextRun,
+              previousAuthor,
+            }, deps.rotationState);
+            activeRun = nextRun;
+
+            const preserved = existsSync(`${activeRun.worktree}.orch-preserve`);
+            cycleDepsForRun = preserved
+              ? { ...continueDeps, git: { ...continueDeps.git, pruneWorktree() {} } }
+              : continueDeps;
+            checkpoint.record(orchDir, run.sid, {
+              branch: activeRun.branch,
+              round: 1,
+              stage: activeRun.rotationStage,
+              author: activeRun.author,
+              reviewers: activeRun.reviewers,
+              task: activeRun.task,
+              authorPrompt: activeRun.authorPrompt,
+              workOrder: activeRun.workOrder || null,
+              closes: activeRun.closes || null,
+              excludedAgents: activeRun.excludedAgents || [],
+            });
+            cycleRun = { ...activeRun, resume: true, reviewerOverride: true };
+          } else {
+            activeRun = { ...activeRun, ...options, resume: options.resume ?? true };
+            cycleRun = activeRun;
+          }
+          cycleSids.push(cycleRun.sid);
+          cycleBranches.push(cycleRun.branch);
+          cycleRoles.push({ authorName: activeRun.authorName, reviewerNames: activeRun.reviewerNames });
+          return runCycle(cycleRun, cycleDepsForRun);
+        };
+        const ghDeps = { gh: (deps.githubDeps || githubDeps)().gh };
+        const reauthor = createReauthorRemedy({ getRun: () => activeRun, createCycle: freshCycle });
+        controller = await runUntil(controllerPolicy, {
+          ...(resumedRecord || priorRun),
+          attempt: priorRun.attempt,
+          policy: controllerPolicy,
+        }, {
+          runCycle: async ({ fresh } = {}) => fresh ? freshCycle() : result,
+          remedies: {
+            rebase: createRebaseRemedy({
+              getRun: () => activeRun,
+              deps: continueDeps,
+              runCycle: () => freshCycle(),
+            }),
+            rotate: createRotateRemedy({
+              getRun: () => activeRun,
+              deps: continueDeps,
+              runCycle: freshCycle,
+              selectRoles: nextAuthor,
+            }),
+            reauthor,
+            ask: createAskRemedy({
+              getRun: () => activeRun,
+              deps: { ...ghDeps, sleep: deps.sleep, ...(deps.now ? { now: deps.now } : {}) },
+              runCycle: freshCycle,
+              reauthor,
+            }),
+            "integration-repair": createIntegrationRepairRemedy({
+              run: activeRun,
+              deps: { ...continueDeps, sleep: deps.sleep },
+              gh: ghDeps.gh,
+              resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
+            }),
+          },
+          resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
+          gh: ghDeps.gh, git, repo, sleep: deps.sleep,
+        });
+        finalResult = controller.cycleResults?.at(-1) || result;
+        // The arrays are needed by the durable lineage update below. Keep them
+        // on the controller result without changing run-controller's contract.
+        controller.cycleSids = cycleSids;
+        controller.cycleBranches = cycleBranches;
+        controller.cycleRoles = cycleRoles;
+      }
+      const outcome = controller?.outcome || outcomeForResult(result);
+      const exit = controller?.exit ?? exitForResult(result);
+      if (controller) raiseExitCode(exit);
       if (!dry) {
-        checkpoint.clear(orchDir, sid);
-        const outcome = outcomeForResult(result);
+        const resumable = Boolean(controller && (outcome === "stopped-at-cap" || outcome === "wait-timeout"));
+        if (!resumable) for (const cycleSid of registeredSids) checkpoint.clear(orchDir, cycleSid);
+        const cycleResults = controller?.cycleResults || [result];
+        const attempt = controller
+          ? Math.max(priorRun.attempt + 1, controller.attempt || 0)
+          : priorRun ? priorRun.attempt + 1 : 0;
         if (priorRun) {
           runRecord.update(orchDir, runId, {
-            state: STATE_FOR_OUTCOME[outcome],
+            state: controller?.state || STATE_FOR_OUTCOME[outcome],
             outcome,
-            exit: exitForResult(result),
-            attempt: priorRun.attempt + 1,
-            branch,
-            excludedAgents: run.excludedAgents,
-            cycles: [...priorRun.cycles, { sid, attempt: priorRun.attempt + 1, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
+            exit,
+            attempt,
+            branch: activeRun.branch,
+            excludedAgents: controller?.excludedAgents || run.excludedAgents,
+            ...(controller?.policy ? { policy: controller.policy } : {}),
+            ...(controller?.human ? { human: controller.human } : {}),
+            ...(controller?.resumeCommand ? { resumeCommand: controller.resumeCommand } : {}),
+            ...(controller?.retries ? { retries: controller.retries } : {}),
+            ...(controller?.failures ? { failures: controller.failures } : {}),
+            cycles: [...priorRun.cycles, ...cycleResults.map((cycleResult, index) => ({
+              sid: controller?.cycleSids?.[index] || resumeSid,
+              attempt,
+              branch: controller?.cycleBranches?.[index] || activeRun.branch,
+              author: controller?.cycleRoles?.[index]?.authorName || activeRun.authorName,
+              reviewers: controller?.cycleRoles?.[index]?.reviewerNames || activeRun.reviewerNames,
+              status: cycleResult.status,
+              reason: cycleResult.reason || null,
+            }))],
           });
         } else {
           runRecord.update(orchDir, runId, {
             state: STATE_FOR_OUTCOME[outcome],
             outcome,
-            exit: exitForResult(result),
-            attempt: 0,
-            branch,
+            exit,
+            attempt,
+            branch: activeRun.branch,
             excludedAgents: run.excludedAgents,
-            cycles: [{ sid, attempt: 0, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
+            cycles: [{ sid: resumeSid, attempt, branch, author: authorName, reviewers: reviewers.map((r) => r.agent), status: result.status, reason: result.reason || null }],
           });
         }
         // Codex review (#125 stalemate): the original `orch task` run that
@@ -2375,33 +2636,45 @@ export async function main(argv, deps = {}) {
         // can't call resume.clear() by key — scan by branch instead, or a later
         // `orch task` with the same text would reattach this already-terminal
         // branch instead of authoring fresh.
-        resume.clearForBranch(orchDir, branch);
+        if (run.mode === "task" && activeRun.branch !== run.branch) resume.clearForBranch(orchDir, run.branch);
+        if (!resumable) resume.clearForBranch(orchDir, activeRun.branch);
       }
-      console.log(summaryLine(result, branch, dry, "", colorEnabled(process.stdout), closes));
+      if (!jsonMode) {
+        console.log(summaryLine(finalResult, activeRun.branch, dry, "", colorEnabled(process.stdout), closes));
+        if (controller?.resumeCommand) console.log(`orch: resume with ${controller.resumeCommand}`);
+      }
       // Codex review (#125 stalemate): `continue` forked its own terminal
       // handling instead of reusing the shared `task`/`issue` tail, and dropped
       // two of its side effects for a resumed cycle — the detached docs-update
       // spawn on a real merge, and the issue-bridge comment (closes is now
       // restored, see above) on escalation/merge-deferred. Both restored here,
       // matching the shared loop at the `task`/`issue` command above.
-      if (!dry) maybeSpawnDocs(result, cfg, { dry, spawn: deps.spawn }, orchDir);
-      if (result.status === "merged" && !dry && !flags["no-tidy"]) {
+      if (!dry) maybeSpawnDocs(finalResult, cfg, { dry, spawn: deps.spawn, quiet: jsonMode }, orchDir);
+      if (finalResult.status === "merged" && !dry && !flags["no-tidy"]) {
         const finishFn = deps.finishRun || finishRun;
-        const io = deps.io || realIo();
+        const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
         await finishFn(
-          { repo, orchDir, task: run.task, merged: [branch], interactive: Boolean(process.stdin.isTTY), runStats: result.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: result.prUrl ? [result.prUrl] : [] },
+          { repo, orchDir, task: run.task, merged: [activeRun.branch], interactive: Boolean(process.stdin.isTTY), runStats: finalResult.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: finalResult.prUrl ? [finalResult.prUrl] : [] },
           { git, io, notify },
         );
       }
-      if (result.status === "escalated" || result.status === "merge-deferred") {
-        process.exitCode = 2;
-        if (!dry) commentOnIssue(result, branch, closes, deps.githubDeps || githubDeps);
+      if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
+        if (!controller) raiseExitCode(2);
+        if (!dry) commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps);
       }
+      emit({
+        event: "run.end", runId, outcome, exit,
+        usage: finalResult.usage || {},
+        ...(controller?.failure ? { failureClass: controller.failure.class } : {}),
+        ...(controller?.blockedReason ? { blockedReason: controller.blockedReason } : {}),
+        ...(controller?.resumeCommand ? { resumeCommand: controller.resumeCommand } : {}),
+      });
     } catch (err) {
       if (!dry) runRecord.update(orchDir, runId, { state: "ERROR", outcome: "error", exit: 1, lastError: toLastError(err) });
+      emit({ event: "run.end", runId, outcome: "error", exit: 1, usage: {} });
       throw err;
     } finally {
-      if (!dry) inflight.deregister(orchDir, sid);
+      if (!dry) for (const cycleSid of registeredSids) inflight.deregister(orchDir, cycleSid);
     }
     return;
   }

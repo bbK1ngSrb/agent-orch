@@ -92,6 +92,11 @@ test("chooseRemedy(): first cycle, no history -> first remedy in the row, in pol
   assert.deepEqual(d, { decision: "remedy", remedy: "rebase", consumesAttempt: true });
 });
 
+test("chooseRemedy(): no remedy policy uses the failure table order", () => {
+  const d = chooseRemedy(failureFor("DIFF_EMPTY"), { attempt: 0, retries: {}, failures: [] }, { maxAttempts: 3 });
+  assert.deepEqual(d, { decision: "remedy", remedy: "reauthor", consumesAttempt: true });
+});
+
 test("chooseRemedy(): policy.remedies filters and reorders candidates", () => {
   const failure = failureFor("TEST_RED");
   const d = chooseRemedy(failure, { attempt: 0, retries: {}, failures: [] }, { maxAttempts: 3, remedies: ["rotate", "ask"] });
@@ -119,6 +124,19 @@ test("chooseRemedy(): free-retry cap — retried while under cap, next remedy on
   assert.deepEqual(exhausted, { decision: "remedy", remedy: "rebase", consumesAttempt: true });
 });
 
+test("chooseRemedy(): a pending ask spends REMOTE_UNKNOWN free retries before asking", () => {
+  const failure = failureFor("REMOTE_UNKNOWN", "no PR found");
+  const policy = { maxAttempts: 3, remedies: ["ask"] };
+  const pending = {
+    attempt: 0, retries: { reread: 0 }, failures: [],
+    human: { askCommentId: 7, replies: [] },
+  };
+  assert.deepEqual(chooseRemedy(failure, pending, policy), {
+    decision: "free-retry", key: "reread", cap: 3, remaining: 2, backoffSeconds: 10,
+  });
+  assert.deepEqual(chooseRemedy(failure, { ...pending, retries: { reread: 3 } }, policy), { decision: "ask" });
+});
+
 test("chooseRemedy(): standing-PR classes share the 'repair-lock' free-retry counter (§10A)", () => {
   const policy = { maxAttempts: 3, remedies: ["ask"] };
   const record = { attempt: 0, retries: { "repair-lock": 2 }, failures: [] };
@@ -142,6 +160,33 @@ test("chooseRemedy(): convergence — two consecutive equal fingerprints skip th
   const d = chooseRemedy(failure, record, policy);
   assert.equal(d.decision, "remedy");
   assert.equal(d.remedy, "reauthor", "rotate produced the repeat, so it is skipped in favor of the next remedy");
+});
+
+test("chooseRemedy(): a timed-out ask stays eligible when the same failure resumes", () => {
+  const failure = failureFor("TEST_MISSING", "no test command");
+  const policy = { maxAttempts: 3, remedies: ["ask"] };
+  const pending = {
+    attempt: 1,
+    failures: [{ fingerprint: failure.fingerprint, remedy: "ask" }],
+    human: { askCommentId: 7, attempt: 0, replies: [{ id: 6, command: "retry" }] },
+  };
+  assert.deepEqual(chooseRemedy(failure, pending, policy), { decision: "ask" });
+  assert.deepEqual(
+    chooseRemedy(failure, { ...pending, human: { ...pending.human, replies: [{ id: 8, command: "retry" }] } }, policy),
+    { decision: "terminal", outcome: "STOPPED_AT_CAP" },
+    "a completed ask on an earlier attempt must still converge normally",
+  );
+});
+
+test("chooseRemedy(): pending ask only skips a repeated remedy when ask is available", () => {
+  const failure = failureFor("LAND_OVERLAP", "same overlap");
+  const policy = { maxAttempts: 3, remedies: ["rebase"] };
+  const record = {
+    attempt: 1, retries: { LAND_OVERLAP: 1 },
+    failures: [{ fingerprint: failure.fingerprint, remedy: "rebase" }],
+    human: { askCommentId: 7, replies: [] },
+  };
+  assert.deepEqual(chooseRemedy(failure, record, policy), { decision: "terminal", outcome: "STOPPED_AT_CAP" });
 });
 
 test("chooseRemedy(): three consecutive equal fingerprints -> ask", () => {

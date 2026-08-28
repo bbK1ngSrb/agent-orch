@@ -54,6 +54,8 @@ function withRecord(result, record, cycleResults) {
     attempt: record.attempt || 0,
     retries: { ...record.retries },
     failures: [...(record.failures || [])],
+    ...(record.policy ? { policy: { ...record.policy } } : {}),
+    ...(record.human ? { human: record.human } : {}),
     ...(record.excludedAgents ? { excludedAgents: [...record.excludedAgents] } : {}),
     ...(cycleResults?.length > 1 ? { cycleResults: [...cycleResults] } : {}),
   };
@@ -75,17 +77,27 @@ async function handleFailure(failure, record, policy, deps, context) {
     return { done: false, record: nextRecord, cycle: await deps.runCycle({ fresh: true }) };
   }
 
-  if (decision.decision === "remedy") {
-    const executor = deps.remedies?.[decision.remedy] || deps.remedy;
+  if (decision.decision === "remedy" || decision.decision === "ask") {
+    const remedy = decision.remedy || "ask";
+    const executor = deps.remedies?.[remedy] || deps.remedy;
     if (typeof executor !== "function") {
       return { done: true, record, result: resolveFailure(failure, record, policy, decision) };
     }
     const nextRecord = {
       ...record,
       attempt: decision.consumesAttempt ? (record.attempt || 0) + 1 : record.attempt || 0,
-      failures: [...(record.failures || []), { fingerprint: failure.fingerprint, remedy: decision.remedy }],
+      failures: [...(record.failures || []), {
+        attempt: (record.attempt || 0) + (decision.consumesAttempt ? 1 : 0),
+        class: failure.class,
+        summary: failure.summary || failure.reason || null,
+        fingerprint: failure.fingerprint,
+        remedy,
+      }],
     };
-    const result = await executor({ name: decision.remedy, failure, record: nextRecord, cycle: context.cycle, policy });
+    // `ask` owns its bounded humanWaitHours poll; it is intentionally outside
+    // the stage watchdog, and persists that deadline so `continue` is bounded
+    // too (or starts a fresh bounded window after a timeout).
+    const result = await executor({ name: remedy, failure, record: nextRecord, cycle: context.cycle, policy });
     if (!result?.cycle) {
       return { done: true, record: result?.record || nextRecord, result: result?.result || resolveFailure(failure, nextRecord, policy, decision) };
     }
@@ -125,7 +137,14 @@ export async function runUntil(policy, record = {}, deps) {
     const landed = cycle.status === "merged" || cycle.status === "pr" || cycle.status === "approved";
 
     if (!landed) {
-      const failure = { class: cycle.class, fingerprint: cycle.fingerprint };
+      const failure = {
+        class: cycle.class,
+        fingerprint: cycle.fingerprint,
+        ...(cycle.reason ? { summary: cycle.reason } : {}),
+        ...(cycle.failedRole ? { failedRole: cycle.failedRole } : {}),
+        ...(cycle.failedAgents ? { failedAgents: cycle.failedAgents } : {}),
+        ...(cycle.meta ? { meta: cycle.meta } : {}),
+      };
       const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle });
       if (outcome.done) return withRecord({ ...outcome.result, cycle }, outcome.record, cycleResults);
       currentRecord = outcome.record;

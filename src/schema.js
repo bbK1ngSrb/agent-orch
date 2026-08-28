@@ -122,7 +122,7 @@ export const COMMANDS = {
     // already, and `continue` resumes that run rather than starting a new one —
     // accepting the flag and ignoring it is the exact lie this schema removes.
     // --reviewer(s) IS honoured (see the `continue` handler in cli.js).
-    mutates: true, flags: RUN_FLAGS.filter((f) => !["no-banner", "author", "authors"].includes(f)),
+    mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-banner", "author", "authors"].includes(f)), "json"],
     rows: [["continue <sid>", "Resume an interrupted/stalled cycle from its checkpoint."]],
   },
   // No --author/--authors: runPr only ever reads --reviewer(s) (it audits an
