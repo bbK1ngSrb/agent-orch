@@ -496,8 +496,12 @@ Rotation algorithm (run controller, not `runCycle`):
    is not the rejected #323 design, see §15). If no candidate differs from the
    failed spec → remedy `skipped` (not diverse).
 5. New cycle on the **same branch**, round 1, cleared checkpoint,
-   `reviewerOverride` set. Acceptance (plan P6): stalemate at `roundCap: 3` →
-   `rotate` → the new cycle performs up to three fresh rounds, not one.
+   `reviewerOverride` set. Acceptance (plan P6): with a pool of three or more,
+   stalemate at `roundCap: 3` → `rotate` → the new cycle performs up to three
+   fresh rounds, not one. With the default two-agent pool, reviewer rotation is
+   deliberately skipped as not diverse (the only alternative reviewer would be
+   the current author), so the run stops at cap; this is a safety property, not
+   a fake audit.
 
 Preflight for `ready|merged` requires ≥ 2 usable agents when `rotate` is
 enabled; otherwise `rotate` is disabled for the run and `config --check` warns.
@@ -1200,7 +1204,7 @@ the fake `gh` saw at most one create/comment/merge per idempotency key):
 | two runs `--until merged` racing | second sees external merge → 0; one merge request total |
 | standing PR `BEHIND` under `--until ready` | integration repair (update-branch + local gate) → ready → 0 |
 | repo has no required checks, `--until merged` | local gate runs on the exact integration tip before merge |
-| stalemate at `roundCap: 3` → `rotate` | new cycle performs up to 3 fresh rounds |
+| stalemate at `roundCap: 3` → `rotate` | pool ≥ 3: new cycle performs up to 3 fresh rounds; default two-agent pool: rotation is skipped as not diverse and the run stops at cap |
 | head moves 4 times during merge phase | re-pin cap → `ask`, no lock held while waiting |
 | `continue <runId>` after exit 2 | fresh attempt budget; run proceeds |
 | gate hangs > `gateTimeout` | `TEST_RED` (timeout), lock released |
