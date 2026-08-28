@@ -1282,7 +1282,7 @@ test("checkpoint.record is called with the round's verdict after each fresh audi
   assert.equal(oidReads, 2, "authored write reads once; reviewed+tested reuse the round's single OID capture");
 });
 
-test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as ms (#56)", async () => {
+test("engine keeps agent and gate timeouts independent (#56/#505)", async () => {
   let authorOpts = null;
   let reviewerOpts = null;
   let gateArgs = null;
@@ -1307,11 +1307,10 @@ test("engine threads cfg.stageTimeout (minutes) into author and reviewer opts as
     inflight: { setPaths() {} },
     finalize: async () => ({ status: "merged", reason: "merged", sha: "x" }),
   };
-  await runCycle({ ...opts, cfg: { ...opts.cfg, stageTimeout: 30 } }, deps);
+  await runCycle({ ...opts, cfg: { ...opts.cfg, stageTimeout: 30, gateTimeout: 7 } }, deps);
   assert.equal(authorOpts.stageTimeoutMs, 30 * 60_000, "author stage gets the configured timeout in ms");
   assert.equal(reviewerOpts.stageTimeoutMs, 30 * 60_000, "reviewer stage gets the configured timeout in ms");
-  // #505: the test gate gets the same wall-clock cap as an agent stage.
-  assert.equal(gateArgs[2], 1_800_000, "gate.run is called with stageTimeout in ms");
+  assert.equal(gateArgs[2], 7 * 60_000, "gate.run uses gateTimeout rather than stageTimeout");
 });
 
 // --- cycle base: branch from orch/integration when it is ahead of main ---

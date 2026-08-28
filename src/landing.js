@@ -8,6 +8,7 @@ import {
 import { originRef } from "./git.js";
 import * as lockDefault from "./lock.js";
 import { LOCK_NAMES } from "./lock.js";
+import { gateTimeoutMs } from "./config.js";
 
 const READ_FIELDS = "number,state,isDraft,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,mergeCommit,url";
 
@@ -26,11 +27,6 @@ function gitDeps(deps, repo) {
 function fetchRefs(deps, repo, base, integration) {
   const refs = [...new Set([integration, base].filter(Boolean))];
   deps.git.git(["fetch", "origin", ...refs], repo);
-}
-
-function gateTimeoutMs(cfg) {
-  const minutes = cfg.gateTimeout ?? cfg.stageTimeout ?? 0;
-  return Number(minutes) > 0 ? Number(minutes) * 60_000 : 0;
 }
 
 function mergeWithRequest(record, headSha, result, method) {

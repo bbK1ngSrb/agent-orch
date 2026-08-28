@@ -15,8 +15,7 @@ const DEFAULTS = {
   stageTimeout: 25, // #56: per-stage wall-clock cap in MINUTES; 0 disables. A stalled
                     // codex/claude stage is killed and the cycle fails (nonzero exit)
                     // instead of hanging forever on an infinite "still running" heartbeat.
-                    // #505: the test gate gets the same cap — it runs under merge.lock,
-                    // so a hung test command would stall every concurrent cycle.
+                    // The test gate uses gateTimeout below, which defaults to this value.
   gateTimeout: 25, // test-gate wall-clock cap in minutes; defaults to stageTimeout
   baseBranch: "main", // trunk orch reads from, diffs against, and opens PRs to
   integrationBranch: "orch/integration", // local merge target; baseBranch is advanced only by GitHub PR + ff-only fetch
@@ -71,8 +70,8 @@ const REMOVED_CONFIG_MESSAGES = new Map([
   ["merge", "orch.yml: 'merge' will be renamed to 'landing' in v0.5.0 (same values). Rename the key."],
   ["main.autoMerge", "orch.yml: 'main.autoMerge' will be removed in v0.5.0; use --until merged for per-run merging."],
   ["github.autoMergePr", "orch.yml: 'github.autoMergePr' will be removed in v0.5.0; use --until merged for per-run merging."],
-  ["main.conflictResolution", "orch.yml: 'main.conflictResolution'/'main.autoResolveConflicts' will be removed in v0.5.0; use the conflict remedy settings under automation."],
-  ["main.autoResolveConflicts", "orch.yml: 'main.conflictResolution'/'main.autoResolveConflicts' will be removed in v0.5.0; use the conflict remedy settings under automation."],
+  ["main.conflictResolution", "orch.yml: 'main.conflictResolution'/'main.autoResolveConflicts' will be removed in v0.5.0. Conflict repair is a loop remedy under --until ready|merged; disable it with automation.remedies."],
+  ["main.autoResolveConflicts", "orch.yml: 'main.conflictResolution'/'main.autoResolveConflicts' will be removed in v0.5.0. Conflict repair is a loop remedy under --until ready|merged; disable it with automation.remedies."],
   ["main.conflictResolutionResolvers", "orch.yml: 'main.conflictResolutionResolvers' will be removed in v0.5.0; use 'automation.conflictResolvers'."],
   ["main.autoResolveConflictPaths", "orch.yml: 'main.autoResolveConflictPaths' will be removed in v0.5.0; use 'automation.conflictAutoPaths'."],
 ]);
@@ -99,6 +98,11 @@ const CONFIG_KEYS = new Set([
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function gateTimeoutMs(cfg = {}) {
+  const minutes = cfg.gateTimeout ?? cfg.stageTimeout ?? 0;
+  return Number(minutes) > 0 ? Number(minutes) * 60_000 : 0;
 }
 
 function collectConfigIssues(source, warnings, problems, prefix = "") {
@@ -425,9 +429,34 @@ export function configReport(dir, overridePath) {
   const roundCapSource = has(override, "roundCap") || has(override, "reviseCap") ? "--config-file"
     : has(user, "roundCap") || has(user, "reviseCap") ? userSource : "default";
   sources.roundCap = roundCapSource;
+  delete sources.reviseCap;
   if (!has(override, "gateTimeout") && !has(user, "gateTimeout")) {
     sources.gateTimeout = sources.stageTimeout;
   }
+  const hasPath = (source, path) => {
+    let current = source;
+    for (const part of path.split(".")) {
+      if (!isObject(current) || !Object.hasOwn(current, part)) return false;
+      current = current[part];
+    }
+    return true;
+  };
+  const sourceFor = (overrideHas, userHas) => overrideHas ? "--config-file" : userHas ? userSource : "default";
+  const normalizedSource = (canonical, legacy) => hasPath(override, canonical) ? "--config-file"
+    : hasPath(user, canonical) ? userSource
+      : sourceFor(hasPath(override, legacy), hasPath(user, legacy));
+  const modeSource = sourceFor(
+    hasPath(override, "main.conflictResolution") || !hasPath(user, "main.conflictResolution") && hasPath(override, "main.autoResolveConflicts"),
+    hasPath(user, "main.conflictResolution") || !hasPath(override, "main.conflictResolution") && hasPath(user, "main.autoResolveConflicts"),
+  );
+  sources["main.conflictResolution"] = modeSource;
+  sources["main.autoResolveConflicts"] = modeSource;
+  sources["main.conflictResolutionResolvers"] = normalizedSource(
+    "automation.conflictResolvers", "main.conflictResolutionResolvers",
+  );
+  sources["main.autoResolveConflictPaths"] = normalizedSource(
+    "automation.conflictAutoPaths", "main.autoResolveConflictPaths",
+  );
   return { config, sources, warnings, problems, ok: problems.length === 0 };
 }
 

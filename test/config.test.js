@@ -173,6 +173,34 @@ test("configReport provenance follows override precedence across renamed keys", 
   assert.equal(report.sources.merge, "--config-file");
 });
 
+test("configReport attributes normalized values to the source that supplied them", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), [
+    "stageTimeout: 5",
+    "main:",
+    "  conflictResolution: auto",
+    "automation:",
+    "  conflictResolvers: [claude, codex]",
+    "  conflictAutoPaths: [CHANGELOG.md]",
+    "",
+  ].join("\n"));
+  const report = configReport(d);
+  assert.equal(report.config.gateTimeout, 5);
+  assert.equal(report.config.main.autoResolveConflicts, true);
+  assert.equal(report.sources.gateTimeout, "orch.yml");
+  assert.equal(report.sources["main.conflictResolution"], "orch.yml");
+  assert.equal(report.sources["main.autoResolveConflicts"], "orch.yml");
+  assert.equal(report.sources["main.conflictResolutionResolvers"], "orch.yml");
+  assert.equal(report.sources["main.autoResolveConflictPaths"], "orch.yml");
+
+  const alias = tmp();
+  writeFileSync(join(alias, "orch.yml"), "main:\n  autoResolveConflicts: true\n");
+  const aliasReport = configReport(alias);
+  assert.equal(aliasReport.config.main.conflictResolution, "auto");
+  assert.equal(aliasReport.sources["main.conflictResolution"], "orch.yml");
+  assert.equal(aliasReport.sources["main.autoResolveConflicts"], "orch.yml");
+});
+
 test("stageTimeout of 0 disables the watchdog; negative/non-integer throws (#56)", () => {
   const off = tmp();
   writeFileSync(join(off, "orch.yml"), "stageTimeout: 0\n");

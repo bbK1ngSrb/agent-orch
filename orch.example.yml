@@ -48,7 +48,7 @@ agents:
 test: auto                              # "auto" detects the test command, or set one, e.g. "pytest -q"
 roundCap: 3                             # max review rounds incl. the first, before escalation (positive int); default: 3
                                         # (reviseCap is the deprecated alias for this key)
-stageTimeout: 25                        # wall-clock cap in minutes for each agent stage AND the test gate;
+stageTimeout: 25                        # wall-clock cap in minutes for each agent stage;
                                         # 0 disables; default: 25
                                         # ORCH_STAGE_TIMEOUT_MS overrides this key entirely (and is in
                                         # MILLISECONDS, not minutes) — see the manual, §5.2

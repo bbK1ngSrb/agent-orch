@@ -22,7 +22,7 @@
 import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { checkPaths } from "./intake/allowlist.js";
-import { parseRoleSpecs } from "./config.js";
+import { gateTimeoutMs, parseRoleSpecs } from "./config.js";
 import { scanDiff, parseRawPaths, SECURITY_DIFF_ARGS, SECURITY_RAW_ARGS } from "./security-review.js";
 import * as lockDefault from "./lock.js";
 import { LOCK_NAMES } from "./lock.js";
@@ -50,10 +50,10 @@ function modeOf(cfg) {
   return cfg.main?.conflictResolution || (cfg.main?.autoResolveConflicts ? "auto" : "manual");
 }
 
-// #56/#58: every stage this file starts must carry the same wall-clock watchdog
-// cli.js passes to the cycle's own stages — a hung resolver here would
-// otherwise stall an unattended `--until` run while holding
-// `integration-repair.lock`. Four call sites today (see LOCKED_STAGES).
+// #56/#58: every agent stage this file starts must carry the same wall-clock
+// watchdog cli.js passes to the cycle's own stages — a hung resolver here
+// would otherwise stall an unattended `--until` run while holding
+// `integration-repair.lock`. The gates use gateTimeoutMs(cfg) below.
 function stageTimeoutMs(cfg) {
   return cfg.stageTimeout > 0 ? cfg.stageTimeout * 60_000 : 0;
 }
@@ -291,7 +291,7 @@ async function landRepairedTip(ctx, deps, { sha }) {
       // the gated tree.
       if (pushSha !== sha) {
         const testCmd = cfg.test === "auto" ? gate.detect(integration) : cfg.test;
-        if (!gate.run(testCmd, integration, stageTimeoutMs(cfg)).pass) {
+        if (!gate.run(testCmd, integration, gateTimeoutMs(cfg)).pass) {
           rollback();
           return { ok: false, reason: `gate red on ${branch} with the repaired tip merged in` };
         }
@@ -366,11 +366,11 @@ async function repairBehind(ctx, deps) {
     scratch = addScratch(git, repo, orchDir, `origin/${remoteBranch}`, scratchBranch);
     if (!scratch) return { ok: false, reason: "could not create the repair worktree" };
     const testCmd = cfg.test === "auto" ? gate.detect(scratch) : cfg.test;
-    // Same #56/#58 watchdog as the agent stages: `gate.run(cmd, cwd, timeoutMs)`
-    // defaults to 0 (wait forever), and this one runs while the repair holds
+    // The gate watchdog (`gateTimeout`, defaulting to `stageTimeout`) defaults
+    // to 0 (wait forever), and this one runs while the repair holds
     // `integration-repair.lock`. Deliberately BEFORE `merge.lock` is taken, so
     // a slow test suite does not hold the shared merge lock for its duration.
-    if (!gate.run(testCmd, scratch, stageTimeoutMs(cfg)).pass) return { ok: false, reason: "gate red on the updated branch tip" };
+    if (!gate.run(testCmd, scratch, gateTimeoutMs(cfg)).pass) return { ok: false, reason: "gate red on the updated branch tip" };
     const landed = await landRepairedTip(ctx, deps, { sha: repaired.out.trim() });
     // Nothing but a gate run was spent here, so a landing that changed nothing
     // (lost push race) costs this repair no attempt: the caller re-polls
@@ -663,9 +663,9 @@ async function repairConflictOrRed(ctx, deps) {
       return { ok: false, terminalClass: "SECURITY_FINDING", reason: "security scan rejected the resolution", security: { ...scanned, findings } };
     }
     const testCmd = cfg.test === "auto" ? gate.detect(scratch) : cfg.test;
-    // Same #56/#58 watchdog as the agent stages, and deliberately BEFORE
-    // `merge.lock` is taken so a slow suite does not hold the shared merge lock.
-    if (!gate.run(testCmd, scratch, timeoutMs).pass) return { ok: false, reason: "gate red on the resolution" };
+    // Use the gate watchdog, deliberately BEFORE `merge.lock` is taken so a
+    // slow suite does not hold the shared merge lock.
+    if (!gate.run(testCmd, scratch, gateTimeoutMs(cfg)).pass) return { ok: false, reason: "gate red on the resolution" };
     // `gate.run` executed the repository's own test command — arbitrary code —
     // in this worktree. Anything it committed is content no scan read.
     const movedByGate = unmoved("gate");
@@ -789,10 +789,10 @@ const LOCK_RETRY_MS = 60_000;
 // Sized against ONE peer repair rather than fixed. The peer holds the lock
 // across, in order (worst path — REMOTE_CONFLICTING/REMOTE_CI_RED):
 //   1. the resolver `author()` stage, in `repairConflictOrRed` — `stageTimeout`
-//   2. the gate run on the resolution, in `repairConflictOrRed` — `stageTimeout`
+//   2. the gate run on the resolution, in `repairConflictOrRed` — `gateTimeout`
 //   3. the reviewer `audit()` stage, in `repairConflictOrRed`  — `stageTimeout`
 //   4. the `merge.lock` acquire, in `landRepairedTip`          — see below
-//   5. the gate re-run on the merged tree, in `landRepairedTip` — `stageTimeout`
+//   5. the gate re-run on the merged tree, in `landRepairedTip` — `gateTimeout`
 // Step 5 exists only when the local merge was a real merge rather than a
 // fast-forward; the cap is deliberately sized for that worst path, since a
 // shorter one would make the loser of a concurrent repair give up mid-peer-
@@ -802,23 +802,24 @@ const LOCK_RETRY_MS = 60_000;
 // The peer's plain git work (fetch, update-branch, reconcile, merge, push) is
 // left unmodelled: it carries no watchdog and no bound worth guessing at, and
 // `MIN_LOCK_RETRIES` is the floor that covers it when `stageTimeout` is small.
-// `stageTimeout: 0` means no watchdog at all and an unbounded peer hold; that
-// floor is the arbitrary compromise there, since waiting forever is not one.
+// `stageTimeout: 0` and `gateTimeout: 0` disable their respective watchdogs;
+// an unbounded peer hold still gets the arbitrary minimum floor.
 const MIN_LOCK_RETRIES = 10;
 // Give the modeled peer one extra polling interval for filesystem/GC and
 // scheduler slack. The poll after that interval is the final attempt before
 // terminalizing, rather than making the modeled hold the exact deadline.
 const LOCK_RETRY_SLACK_ROUNDS = 1;
 // `merge.lock` is taken INSIDE the held `integration-repair.lock`, and its wait
-// carries no `stageTimeout` — it is bounded by `acquireBlocking`'s own default
+// carries no stage/gate watchdog — it is bounded by `acquireBlocking`'s own default
 // (src/lock.js:117, 5 minutes). Counted separately because a peer can spend it
 // on top of both gate runs, and at small `stageTimeout` values the two windows
 // alone already eat the whole cap.
 const MERGE_LOCK_WAIT_MS = 300_000;
 // Every stage the peer can run while holding `integration-repair.lock` — one
-// per `stageTimeoutMs(cfg)` call site under that lock. Bump this with any new
-// one. Four today: resolver, resolution gate, reviewer audit, landing re-gate.
-const LOCKED_STAGES = 4;
+// per agent/gate call site under that lock. Bump this with any new one. Four
+// today: resolver, resolution gate, reviewer audit, landing re-gate.
+const LOCKED_AGENT_STAGES = 2;
+const LOCKED_GATES = 2;
 // Counted under its own key, not the `repair-lock` counter failure.js spends on
 // the free re-polls BEFORE this remedy is ever dispatched — sharing that one
 // would arrive already exhausted and terminate on the first contention.
@@ -834,7 +835,8 @@ const LOCK_RETRY_KEY = "repair-lock-wait";
 // peer; one more poll would at best convert that into a repair that the caller
 // gets anyway on its next readiness round.
 function lockRetryCap(cfg) {
-  return Math.max(MIN_LOCK_RETRIES, Math.ceil((LOCKED_STAGES * stageTimeoutMs(cfg) + MERGE_LOCK_WAIT_MS) / LOCK_RETRY_MS))
+  const modeledMs = LOCKED_AGENT_STAGES * stageTimeoutMs(cfg) + LOCKED_GATES * gateTimeoutMs(cfg);
+  return Math.max(MIN_LOCK_RETRIES, Math.ceil((modeledMs + MERGE_LOCK_WAIT_MS) / LOCK_RETRY_MS))
     + LOCK_RETRY_SLACK_ROUNDS;
 }
 

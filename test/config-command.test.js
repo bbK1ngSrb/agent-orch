@@ -57,3 +57,25 @@ test("config --check returns a non-zero status for invalid config", async () => 
   assert.equal(result.exitCode, 1);
   assert.match(result.output, /test must be a non-empty string/);
 });
+
+test("config inspection is not replaced by the dry-run wizard plan", async () => {
+  const repo = tmp();
+  writeFileSync(join(repo, "orch.yml"), "stageTimeout: 7\n");
+
+  const dry = await runConfig(repo, ["--check", "--dry"]);
+  assert.equal(dry.exitCode, 0);
+  assert.match(dry.output, /^orch config: ok/m);
+  assert.doesNotMatch(dry.output, /would run the interactive config wizard/);
+
+  const previous = process.env.ORCH_DRYRUN;
+  process.env.ORCH_DRYRUN = "1";
+  try {
+    const envDry = await runConfig(repo, ["--check"]);
+    assert.equal(envDry.exitCode, 0);
+    assert.match(envDry.output, /^orch config: ok/m);
+    assert.doesNotMatch(envDry.output, /would run the interactive config wizard/);
+  } finally {
+    if (previous === undefined) delete process.env.ORCH_DRYRUN;
+    else process.env.ORCH_DRYRUN = previous;
+  }
+});

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
-import { load, configPath, configReport, parseRoleSpec, parseRoleSpecs } from "./config.js";
+import { gateTimeoutMs, load, configPath, configReport, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import {
@@ -238,7 +238,7 @@ agents:
 test: auto                              # "auto" detects the test command, or set one, e.g. "pytest -q"
 roundCap: 3                             # max review rounds incl. the first, before escalation (positive int); default: 3
                                         # (reviseCap is the deprecated alias for this key)
-stageTimeout: 25                        # wall-clock cap in minutes for each agent stage AND the test gate;
+stageTimeout: 25                        # wall-clock cap in minutes for each agent stage;
                                         # 0 disables; default: 25
 gateTimeout: 25                        # wall-clock cap in minutes for the test gate; defaults to stageTimeout
 concurrency: 4                          # max concurrent cycles per repo dir; over-cap launches exit; default: 4
@@ -872,7 +872,7 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
   try {
     let merge = gitDep.gitTry(["merge", "--no-edit", target], integration);
     if (merge.ok) {
-      const result = gateDep.run(testCmd, integration);
+      const result = gateDep.run(testCmd, integration, gateTimeoutMs(cfg));
       if (!result.pass) return fail("merged tree failed the test gate");
       gitDep.git(["push", "origin", branch], integration);
       return { ok: true, summary: `merged origin/${base} cleanly` };
@@ -882,7 +882,7 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
       resetMergeAttempt(gitDep, integration, preSha);
       merge = gitDep.gitTry(["merge", "--no-edit", target], integration);
       if (merge.ok) {
-        const result = gateDep.run(testCmd, integration);
+        const result = gateDep.run(testCmd, integration, gateTimeoutMs(cfg));
         if (!result.pass) continue;
         gitDep.git(["push", "origin", branch], integration);
         return { ok: true, summary: `merged origin/${base} cleanly` };
@@ -927,7 +927,7 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
         return fail(mode === "auto" ? `conflict resolution demoted to propose: ${verdict.reason || "reviewer was not confident"}` : "conflict resolution proposed for human approval", comment);
       }
 
-      const result = gateDep.run(testCmd, integration);
+      const result = gateDep.run(testCmd, integration, gateTimeoutMs(cfg));
       if (!result.pass) continue;
       const effectiveMode = metaOnly ? mode : "propose";
       if (effectiveMode === "propose") {
@@ -1870,7 +1870,7 @@ export async function main(argv, deps = {}) {
 
   // Config inspection is deliberately before update checks, app auth, and
   // preflight: it is a local, non-interactive diagnostic command.
-  if (command === "config" && !dryRun && (flags.check || flags.json)) {
+  if (command === "config" && (flags.check || flags.json)) {
     const report = configReport(repo, flags["config-file"]);
     printConfigReport(report, Boolean(flags.json));
     process.exitCode = report.ok ? 0 : 1;
