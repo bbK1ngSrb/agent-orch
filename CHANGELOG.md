@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.354 — 2026-08-28
+- fix(mcp): default PR reviews to once (closes [#594](https://github.com/bbk1ng/agent-orch/issues/594))
+
 ## v0.4.353 — 2026-08-28
 - fix(security): fence untrusted CI failure text out of the integration-repair resolver prompt (closes #577)
 
