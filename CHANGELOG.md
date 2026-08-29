@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.362 — 2026-08-29
+- feat: rotate configured role pools (closes [#532](https://github.com/bbk1ng/agent-orch/issues/532))
+
 ## v0.4.361 — 2026-08-29
 - fix(rotate): use configured model ladders (closes [#567](https://github.com/bbk1ng/agent-orch/issues/567))
 
