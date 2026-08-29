@@ -797,7 +797,10 @@ test("help documents upgrade command and check flag", async () => {
     console.log = prevLog;
   }
   assert.match(out, /upgrade, update/);
-  assert.match(out, /--check\s+With config, validate; with upgrade/);
+  assert.match(out, /Options \(valid on every command\):/);
+  assert.doesNotMatch(out, /\n\s+--check/);
+  const upgrade = await runMainCapture(["upgrade", "--help"]);
+  assert.match(upgrade.join("\n"), /--check\s+Report the latest version; install nothing\./);
 });
 
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -3792,12 +3795,10 @@ test("a flag not read by the command is rejected", async () => {
     [["help", "--merge"], /--merge is not valid with 'orch help'/],
     [["upgrade", "--merge"], /--merge is not valid with 'orch upgrade'/],
     [["update", "--merge"], /--merge is not valid with 'orch update'/],
-    // ...including on `pr` itself: --help/--version short-circuit main() before
-    // runPr, so `orch pr 42 --merge --help` would print usage and exit 0 having
-    // merged nothing. Asking to merge and asking what the tool is are
-    // contradictory requests; neither one silently wins.
-    [["pr", "42", "--merge", "--help"], /--merge is not valid with 'orch help'/],
-    [["pr", "42", "--merge", "-h"], /--merge is not valid with 'orch help'/],
+    // ...including on `pr` itself: asking to merge and asking what the tool is
+    // are contradictory requests; neither one silently wins.
+    [["pr", "42", "--merge", "--help"], /--merge cannot be combined with --help on 'orch pr'/],
+    [["pr", "42", "--merge", "-h"], /--merge cannot be combined with --help on 'orch pr'/],
     [["pr", "42", "--merge", "--version"], /--merge is not valid with 'orch version'/],
     // ...and the same rule for every other flag, not just --merge. `--dry` is
     // legal on `pr`/`release`/`init` (they plan without writing), so the
@@ -4327,17 +4328,38 @@ test("--help / -h print usage and exit cleanly (no unknown-option error)", async
       console.log = orig;
     }
     const usage = logs.join("\n");
-    assert.match(usage, /^orch - Run coding agents in an author, review, test, and merge loop\./);
+    assert.match(usage, /^orch — author, cross-audit, test-gate and land a change with coding agents\./);
     assert.match(usage, /Usage: orch <command> \[options\]/);
-    assert.match(usage, /\nCommands:\n  init\s+Scaffold \.orch\/orch\.yml/);
-    assert.match(usage, /\nOptions:\n  -h, --help\s+Show this help\./);
+    assert.match(usage, /\nSet up a repo:\n  init\s+Write a commented \.orch\/orch\.yml/);
+    assert.match(usage, /\nOptions \(valid on every command\):\n  -h, --help\s+Show this page/);
     assert.match(usage, /\nExamples:\n  orch init --link/);
-    assert.match(usage, /Full docs: see \.orch\/ORCH\.md in initialized repos and the README\./);
+    assert.match(usage, /Full docs: \.orch\/ORCH\.md in an initialized repo, and the README\./);
     assert.doesNotMatch(usage, /\n\s+\(/);
     for (const line of usage.split("\n")) {
       assert.ok(line.length <= 80, `usage line exceeds 80 columns: ${line}`);
     }
   }
+});
+
+test("per-command help and the help alias render the same page", async () => {
+  for (const command of Object.keys(COMMAND_FLAGS)) {
+    const direct = (await runMainCapture([command, "--help"])).join("\n");
+    const alias = (await runMainCapture(["help", command])).join("\n");
+    assert.equal(alias, direct, `help route differs for ${command}`);
+  }
+  const issueHelp = await runMainCapture(["issue", "--help"]);
+  assert.match(issueHelp.join("\n"), /^orch issue —/);
+  assert.equal((await runMainCapture(["--help", "task"])).join("\n"), (await runMainCapture(["task", "--help"])).join("\n"));
+});
+
+test("usage errors show the known command page on stderr", () => {
+  const result = spawnSync(process.execPath, ["bin/orch.js", "dashboard", "--author", "codex"], {
+    cwd: cwd(), encoding: "utf8",
+  });
+  assert.equal(result.status, 64);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /orch: --author is not valid with 'orch dashboard'/);
+  assert.match(result.stderr, /orch dashboard — show live cycle status/);
 });
 
 // Split a help example into argv the same way a shell would for simple quoted tokens.
@@ -6394,7 +6416,7 @@ test("a lopsided --author/--reviewer pair exits 64, not 1", () => {
 // instead of printing and exiting.
 test("orch mcp --help and --version print and return instead of entering MCP dispatch", async () => {
   const logs = await runMainCapture(["mcp", "--help"]);
-  assert.match(logs.join("\n"), /Usage: orch <command>/);
+  assert.match(logs.join("\n"), /Usage: orch mcp/);
   const versionLogs = await runMainCapture(["mcp", "--version"]);
   assert.match(versionLogs.join("\n"), /^v\d/);
 });

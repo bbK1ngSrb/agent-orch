@@ -2015,8 +2015,15 @@ export async function main(argv, deps = {}) {
   // ahead of every command-specific branch — including `mcp`, whose dispatch
   // used to come first and swallow `orch mcp --help`/`--version` into a
   // hanging JSON-RPC stdio server instead of printing and exiting.
-  if (flags.version || command === "version") { console.log(DISPLAY_VERSION); return; }
-  if (flags.help || command === "help") { printUsage(); return; }
+  if (flags.version || (command === "version" && !flags.help)) { console.log(DISPLAY_VERSION); return; }
+  if (flags.help || command === "help") {
+    const target = command === "help" ? (rest[0] || (flags.help ? command : null)) : command;
+    if (target && !COMMANDS[target]) {
+      throw usageError(`unknown command: ${target} (run 'orch help' for usage)`, { showUsage: true });
+    }
+    printUsage(target || null);
+    return;
+  }
 
   if (command === "__update-check-child") {
     // Detached re-exec target (spawnChecker in update-check.js) — it has no
@@ -3487,8 +3494,8 @@ export async function main(argv, deps = {}) {
   printUsage();
 }
 
-function printUsage() {
-  console.log(renderHelp());
+function printUsage(command = null) {
+  console.log(renderHelp(command));
 }
 
 function costSuffix(result) {
