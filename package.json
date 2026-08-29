@@ -16,7 +16,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --require=./test/helpers/temp-cleanup.cjs --test",
     "prepare": "node scripts/install-hooks.js",
     "prepublishOnly": "npm test",
     "postinstall": "node bin/orch.js completion install"
