@@ -93,8 +93,8 @@ test("--dry on 'orch completion' is only legal alongside install", () => {
 test("positional grammar is enforced before dispatch, not silently accepted", () => {
   assert.throws(() => validatePositionals("completion", ["typo"], {}), (e) => e.exit === 64);
   assert.throws(() => validatePositionals("dashboard", ["extra"], {}), (e) => e.exit === 64);
-  assert.throws(() => validatePositionals("help", ["extra"], {}), (e) => e.exit === 64);
   assert.throws(() => validatePositionals("version", ["extra"], {}), (e) => e.exit === 64);
+  assert.doesNotThrow(() => validatePositionals("help", ["task"], {}));
   assert.doesNotThrow(() => validatePositionals("dashboard", [], {}));
   for (const [command, message, validArg] of [
     ["issue", /usage: orch issue <number>/, "42"],
@@ -399,17 +399,41 @@ test("repeating a single-value flag is a usage error", () => {
   assert.doesNotThrow(() => parse(["task", "x", "--dry", "--dry"]));
 });
 
-test("help renders from the schema: every command and every flag", () => {
-  const help = renderHelp();
-  // `update` shares upgrade's row ("upgrade, update"), so match the name inside
-  // the Commands block rather than only at the start of a row.
-  const commandBlock = help.match(/\nCommands:\n([\s\S]*?)\n\n/)[1];
+test("help renders grouped pages from the schema without leaking scoped flags", () => {
+  const global = renderHelp();
   for (const name of Object.keys(COMMANDS)) {
-    assert.match(commandBlock, new RegExp(`\\b${name}\\b`), `help missing command ${name}`);
+    assert.match(global, new RegExp(`\\b${name}\\b`), `global help missing command ${name}`);
+    const page = renderHelp(name);
+    for (const flag of COMMANDS[name].flags) {
+      assert.match(page, new RegExp(`--${flag}(?![\\w-])`), `orch ${name} --help omits --${flag}`);
+    }
   }
-  for (const [name, f] of Object.entries(FLAGS)) {
-    if (!f.help && name !== "plain") continue;
-    assert.match(help, new RegExp(`--${name}(?![\\w-])`), `help missing --${name}`);
+  assert.match(global, /Set up a repo:\n/);
+  assert.match(global, /Run a cycle:\n/);
+  assert.match(global, /Review and land:\n/);
+  assert.match(global, /Operate:\n/);
+  assert.match(global, /Maintain:\n/);
+  const scoped = new Set(Object.values(COMMANDS).flatMap((command) => command.flags));
+  for (const flag of scoped) {
+    if (GLOBAL_FLAGS.includes(flag)) continue;
+    assert.doesNotMatch(global, new RegExp(`^\\s+--${flag}(?![\\w-])`, "m"), `global help lists --${flag}`);
+  }
+});
+
+test("the help option rows stay bidirectionally aligned with command flags", () => {
+  for (const [command, spec] of Object.entries(COMMANDS)) {
+    const page = renderHelp(command);
+    const optionsStart = page.indexOf("\nOptions:");
+    if (optionsStart < 0) continue;
+    const optionsEnd = page.indexOf("\n\nArguments:", optionsStart);
+    const options = page.slice(optionsStart, optionsEnd < 0 ? page.length : optionsEnd);
+    const documented = new Set([...options.matchAll(/--([\w-]+)/g)].map((match) => match[1]));
+    for (const flag of documented) {
+      assert.ok(spec.flags.includes(flag) || GLOBAL_FLAGS.includes(flag), `orch ${command} help has undeclared --${flag}`);
+    }
+    for (const flag of spec.flags) {
+      assert.ok(documented.has(flag), `orch ${command} help omits --${flag}`);
+    }
   }
 });
 

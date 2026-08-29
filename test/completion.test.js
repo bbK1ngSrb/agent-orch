@@ -232,39 +232,34 @@ test("completion finds 'install' and '--build' regardless of where they sit in t
   assert.ok(pr.has("--pr"), "orch agent --build add --pr should offer --pr");
 });
 
-async function usage() {
+async function usage(argv = ["help"]) {
   const logs = [];
   const orig = console.log;
   console.log = (m) => logs.push(m);
   try {
-    await main(["help"], { preflight() {} });
+    await main(argv, { preflight() {} });
   } finally {
     console.log = orig;
   }
   return logs.join("\n");
 }
 
-test("--help documents every flag the parser accepts", async () => {
-  const options = (await usage()).match(/\nOptions:\n([\s\S]*?)\n\n/)[1];
-  for (const name of Object.keys(FLAGS)) {
-    assert.match(options, new RegExp(`--${name}(?![\\w-])`), `Options section missing --${name}`);
+test("each command help page documents its declared flags", async () => {
+  for (const [command, spec] of Object.entries(COMMANDS)) {
+    const page = await usage([command, "--help"]);
+    for (const name of spec.flags) {
+      assert.match(page, new RegExp(`--${name}(?![\\w-])`), `orch ${command} --help omits --${name}`);
+    }
   }
 });
 
 test("completion offers every command listed in --help", BASH_SKIP, async () => {
-  // Names come from the Commands: block of printUsage(); "upgrade, update" is two.
-  const documented = new Set(
-    (await usage()).match(/\nCommands:\n([\s\S]*?)\n\n/)[1]
-      .split("\n")
-      .flatMap((line) => line.trim().split(/\s{2,}/)[0].split(/,\s*/).map((n) => n.split(/\s+/)[0]))
-      .filter(Boolean),
-  );
-  assert.ok(documented.has("config"), "help text no longer documents config — fix the test's parser");
+  const global = await usage();
   const commands = complete(["orch", ""], 1).filter((w) => !w.startsWith("-"));
-  for (const name of documented) assert.ok(commands.includes(name), `completion commands missing ${name}`);
-  // And the reverse: a command offered by tab-completion but absent from --help is
-  // undiscoverable for anyone who reads the help instead of pressing Tab.
-  for (const name of commands) assert.ok(documented.has(name), `--help Commands section missing ${name}`);
+  for (const name of Object.keys(COMMANDS)) {
+    assert.match(global, new RegExp(`\\b${name}\\b`), `--help missing command ${name}`);
+  }
+  for (const name of commands) assert.match(global, new RegExp(`\\b${name}\\b`), `--help missing command ${name}`);
   assert.deepEqual([...commands].sort(), Object.keys(COMMANDS).sort());
 });
 
