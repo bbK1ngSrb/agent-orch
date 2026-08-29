@@ -427,7 +427,20 @@ test("the help option rows stay bidirectionally aligned with command flags", () 
     if (optionsStart < 0) continue;
     const optionsEnd = page.indexOf("\n\nArguments:", optionsStart);
     const options = page.slice(optionsStart, optionsEnd < 0 ? page.length : optionsEnd);
-    const documented = new Set([...options.matchAll(/--([\w-]+)/g)].map((match) => match[1]));
+    // A row starts with exactly a 2-space indent; its label occupies columns
+    // 2-26 (pad() pads to 24) before the description prose begins. Matching
+    // "--flag" anywhere in the blob is fooled by a description that mentions
+    // another flag by name (e.g. --merge's row says "Alias for --until
+    // merged"), which wraps onto its own 26-space-indented continuation line
+    // and would otherwise read as a row for a flag that has none. Restricting
+    // the match to each real row's label zone catches a dropped row even when
+    // another row's prose happens to name the same flag.
+    const documented = new Set(
+      options
+        .split("\n")
+        .filter((line) => /^ {2}--/.test(line))
+        .flatMap((line) => [...line.slice(0, 26).matchAll(/--([\w-]+)/g)].map((match) => match[1])),
+    );
     for (const flag of documented) {
       assert.ok(spec.flags.includes(flag) || GLOBAL_FLAGS.includes(flag), `orch ${command} help has undeclared --${flag}`);
     }
