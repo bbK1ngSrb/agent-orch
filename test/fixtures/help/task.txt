@@ -1,0 +1,51 @@
+orch task — run one change through a cycle.
+
+Usage: orch task "<change>" [options]
+       orch task --file <work-order.json> [options]
+
+One cycle is: an author agent writes the change on its own branch in an
+isolated git worktree (a second checkout of the same repository, so concurrent
+runs never fight over one HEAD), a different agent cross-audits the diff, the
+test gate runs, a deterministic security scan runs, and the reviewed commit
+lands on the integration branch. With --until ready or merged the cycle repeats
+under a remedy ladder — rebase + repair, rotate seats, reauthor, ask a human —
+offering whichever of those the failure calls for, until the goal is reached or
+the attempt cap is spent.
+
+Options:
+  --until <goal>          What this run pursues: once, ready or merged.
+                          once  = a single cycle, then report.
+                          ready = loop until the pull request for this change
+                                  is green and mergeable; never merge it.
+                          merged = also merge the standing PR.
+                          (default: once)
+  --author <spec>         Author seat as "<agent> [model] [effort]".
+  --authors <a,b>         Comma-separated author seats; each gets a branch.
+  --reviewer <spec>       Reviewer seat as "<agent> [model] [effort]".
+  --reviewers <a,b>       Comma-separated reviewer seats.
+  --cheap                 Fill both seats from cheap.role in orch.yml.
+  --file <path>           Read the work order from a JSON file, treating it as
+                          untrusted input; takes no positional text.
+  --allow-protected       Run even though the work order names a guardrail
+                          path. The intake scan is textual, so this is for an
+                          incidental mention; a real guardrail change still
+                          escalates at the security floor.
+  --allow-large-scope     Sanction a deliberately large review slice.
+  --no-tidy               Keep the task branch and worktree after landing.
+  --no-banner             Hide the run banner.
+  --detach                Run in the background; print pid, log and runId.
+  --dry                   Plan only: no agent runs, nothing is written.
+  --json                  Print one JSON event per line; no prose.
+  --config-file <path>    Layer this YAML file over .orch/orch.yml.
+
+Arguments: the change text. Unquoted words are joined with spaces, so `orch
+task add input validation` is the same work order as the quoted form. With
+--file, no positional text is allowed — the file is the work order.
+
+Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
+3 blocked, a human must decide · 4 asked a human, no answer in time ·
+64 usage error.
+
+Examples:
+  orch task "add input validation" --until once
+  orch task --file work-order.json --cheap

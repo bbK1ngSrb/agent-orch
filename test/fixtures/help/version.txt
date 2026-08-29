@@ -1,0 +1,14 @@
+orch version — print the version.
+
+Usage: orch version
+
+Prints the installed version, the same string as `orch --version`.
+
+Options: none.
+
+Arguments: none.
+
+Exit codes: 0 printed · 64 usage error.
+
+Example:
+  orch version
