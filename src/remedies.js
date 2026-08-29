@@ -217,6 +217,13 @@ function agentExcluded(exclusions, name) {
   return [...exclusions.values()].some((entry) => agentName(entry) === name && !hasModel(entry));
 }
 
+function isExcludedRole(role, exclusions) {
+  const name = agentName(role);
+  if (!name) return false;
+  return exclusions.some((entry) => agentName(entry) === name
+    && (!hasModel(entry) || (hasModel(role) && entry.model === role.model)));
+}
+
 function clearAgentExclusion(exclusions, name) {
   for (const [key, entry] of exclusions) {
     if (agentName(entry) === name && !hasModel(entry)) exclusions.delete(key);
@@ -251,7 +258,7 @@ function rotateTerminal(failure, reason, record) {
 
 function selectionDetail({ excluded = [], blockedAuthors = [], agents = [] } = {}) {
   const details = [];
-  if (excluded.length) details.push(`excluded ${[...new Set(excluded)].join(", ")}`);
+  if (excluded.length) details.push(`excluded ${[...new Set(excluded.map(agentName))].join(", ")}`);
   if (blockedAuthors.length) details.push(`author blocked by reviewer ${[...new Set(blockedAuthors)].join(", ")}`);
   if (agents.length < 2) details.push(`rotation pool has ${agents.length} agent${agents.length === 1 ? "" : "s"}`);
   return details.join("; ") || "no independent candidate remains in the rotation pool";
@@ -315,12 +322,9 @@ export async function rotateRemedy({ failure, record, cycle, run, deps = {}, run
 
   // A stalemate has no agent-error metadata. It still vacates the current
   // reviewer for this selection, without permanently burning that agent.
-  const selectionExcluded = new Set(
-    [...excluded.values()].filter((entry) => !hasModel(entry)).map(agentName),
-  );
-  for (const name of failedAgents) selectionExcluded.add(name);
+  const selectionExcluded = [...excluded.values()];
   if (failure?.class === "REVIEW_STALEMATE" && !failedAgents.length && reviewers[0]?.agent)
-    selectionExcluded.add(reviewers[0].agent);
+    selectionExcluded.push({ name: reviewers[0].agent });
 
   const rotateAuthor = failedRole === "author" || agentExcluded(excluded, author.agent);
   const selector = selectRoles || deps.nextAuthor;
@@ -339,7 +343,7 @@ export async function rotateRemedy({ failure, record, cycle, run, deps = {}, run
   const selectedAuthor = selected?.authors?.[0];
   let nextAuthor = selectedAuthor?.agent === author.agent ? author : selectedAuthor;
   let nextReviewers = (selected?.reviewers || [])
-    .filter((reviewer) => reviewer.agent !== nextAuthor?.agent && !selectionExcluded.has(reviewer.agent));
+    .filter((reviewer) => reviewer.agent !== nextAuthor?.agent && !isExcludedRole(reviewer, selectionExcluded));
 
   // With no spare adapter seat, keep the failed role but advance its model
   // ladder. The failed adapter remains in excludedAgents so a later exhausted
@@ -348,7 +352,7 @@ export async function rotateRemedy({ failure, record, cycle, run, deps = {}, run
     if (failedRole === "author") {
       const replacement = nextModelRole(author, run, deps);
       const replacementReviewers = reviewers
-        .filter((reviewer) => reviewer.agent !== replacement?.agent && !selectionExcluded.has(reviewer.agent));
+        .filter((reviewer) => reviewer.agent !== replacement?.agent && !isExcludedRole(reviewer, selectionExcluded));
       if (replacement && replacementReviewers.length) {
         clearAgentExclusion(excluded, replacement.agent);
         nextAuthor = replacement;

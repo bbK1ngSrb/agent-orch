@@ -273,6 +273,32 @@ test("two-agent author rotation uses the failed seat's next configured model", a
   assert.equal(result.cycle.status, "approved");
 });
 
+test("rotation keeps prior model exclusions pair-scoped for the seat selector", async () => {
+  let picked;
+  const result = await rotateRemedy({
+    failure: { class: "AGENT_QUOTA" },
+    cycle: { failedRole: "author", failedAgents: [{ agent: "gemini", quota: true }] },
+    record: {
+      attempt: 1,
+      excludedAgents: [{ name: "claude", model: "model-a", reason: "quota", at: "2026-08-27T00:00:00.000Z" }],
+    },
+    run: {
+      author: { agent: "gemini" }, reviewers: [{ agent: "codex" }],
+      cfg: {
+        agents: ["claude", "codex", "gemini"],
+        authors: ["claude model-a", "claude model-b", "gemini"],
+        reviewers: ["codex"],
+      },
+      orchDir: mkdtempSync(join(tmpdir(), "orch-rotate-pair-exclusion-")),
+    },
+    selectRoles: nextAuthor,
+    runCycle: async (cycle) => { picked = cycle; return { status: "approved" }; },
+  });
+  assert.deepEqual([picked.author.agent, picked.author.model], ["claude", "model-b"]);
+  assert.ok(result.record.excludedAgents.some((entry) =>
+    entry.name === "claude" && entry.model === "model-a"));
+});
+
 test("two-agent reviewer rotation uses the failed seat's next configured model", async () => {
   let usedModel;
   let picked;
