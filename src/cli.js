@@ -61,6 +61,9 @@ export { visWidth };
 
 const GH_AUTH_RETRY_DELAY_MS = 100;
 const CLI_ROLE_OVERRIDES = Symbol("cliRoleOverrides");
+// A reviewer-only CLI override keeps a YAML author pool rotating, but its
+// explicit reviewer list is a panel rather than the pool's one-seat pairing.
+const CLI_REVIEWER_OVERRIDE = Symbol("cliReviewerOverride");
 
 function isGhAuthFailure(error) {
   const text = [error?.stderr, error?.stdout, error?.message]
@@ -514,9 +517,23 @@ function splitNames(value) {
   return names;
 }
 
+function withConfigUpdate(cfg, updates) {
+  const result = { ...cfg, ...updates };
+  for (const marker of [CLI_ROLE_OVERRIDES, CLI_REVIEWER_OVERRIDE]) {
+    if (cfg[marker]) Object.defineProperty(result, marker, { value: true });
+  }
+  return result;
+}
+
 function markCliRoleOverrides(cfg) {
-  const result = { ...cfg };
+  const result = withConfigUpdate(cfg, {});
   Object.defineProperty(result, CLI_ROLE_OVERRIDES, { value: true });
+  return result;
+}
+
+function markCliReviewerOverride(cfg) {
+  const result = withConfigUpdate(cfg, {});
+  Object.defineProperty(result, CLI_REVIEWER_OVERRIDE, { value: true });
   return result;
 }
 
@@ -570,7 +587,11 @@ function noEligibleRole(role, options) {
 
 function rolePool(cfg) {
   if (cfg[CLI_ROLE_OVERRIDES] || !cfg.authors || !cfg.reviewers) return null;
-  return { authors: parseRoleSpecs(cfg.authors), reviewers: parseRoleSpecs(cfg.reviewers) };
+  return {
+    authors: parseRoleSpecs(cfg.authors),
+    reviewers: parseRoleSpecs(cfg.reviewers),
+    reviewerOverride: Boolean(cfg[CLI_REVIEWER_OVERRIDE]),
+  };
 }
 
 function roleIndex(raw, roles) {
@@ -587,6 +608,9 @@ function sameRole(left, right) {
 }
 
 function poolReviewers(pool, authorName, authorIndex, isExcluded) {
+  if (pool.reviewerOverride) {
+    return pool.reviewers.filter((role) => role.agent !== authorName && !isExcluded(role));
+  }
   const start = authorIndex >= 0 ? authorIndex % pool.reviewers.length : 0;
   for (let step = 0; step < pool.reviewers.length; step += 1) {
     const reviewer = pool.reviewers[(start + step) % pool.reviewers.length];
@@ -649,6 +673,8 @@ function nextPoolAuthor(pool, orchDir, pinnedAuthor, dry, options, isExcluded, b
 }
 
 export function applyRoleOverrides(cfg, flags, opts = {}) {
+  // validateFlags() rejects these before main() can run; retain the checks for
+  // direct callers of this exported helper as well.
   // --author + --authors (or --reviewer + --reviewers) together used to pick
   // the plural silently and drop the singular — a value the user typed had no
   // effect and no error told them so. Reject the combination instead.
@@ -666,7 +692,7 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
       reviewer: null,
       reviewers: splitNames(reviewerValue),
     };
-    return cfg.authors ? result : markCliRoleOverrides(result);
+    return cfg.authors ? markCliReviewerOverride(result) : markCliRoleOverrides(result);
   }
   if ((authorValue == null) !== (reviewerValue == null))
     throw usageError("set both --author(s) and --reviewer(s), or neither");
@@ -1871,7 +1897,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   const task = wo.title;
   const authorPrompt = buildAuthorPrompt(wo);
   let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags);
-  if (flags.pr) cfg.merge = "pr";
+  if (flags.pr) cfg = withConfigUpdate(cfg, { merge: "pr" });
   const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
   const preflightFn = deps.preflight || preflight;
   if (!dry) preflightFn(cfg, orchDir);
@@ -2387,7 +2413,8 @@ export async function main(argv, deps = {}) {
       // resolveTaskBranch re-validates below; this only steers author selection.
       const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
       const exclusions = dry ? [] : resumeExclusions(orchDir, task, pinned);
-      const forcedReviewers = cfg[CLI_ROLE_OVERRIDES] || !cfg.authors ? configuredReviewers(cfg) : null;
+      const forcedReviewers = cfg[CLI_ROLE_OVERRIDES] || cfg[CLI_REVIEWER_OVERRIDE] || !cfg.authors
+        ? configuredReviewers(cfg) : null;
       const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned, dry, {
         exclude: exclusions,
         // A reviewer-only override must never leave its requested reviewer

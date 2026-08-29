@@ -4485,6 +4485,35 @@ test("reviewer-only override preserves the configured author model", () => {
   assert.deepEqual(picked.reviewers, [{ agent: "gemini", model: null, effort: null }]);
 });
 
+test("orch task keeps one rotated branch and the full explicit reviewer panel", async () => {
+  const repo = initGitRepo("orch-reviewer-only-main-pool-");
+  writeFileSync(join(repo, "orch.yml"), [
+    "agents: [claude, codex, gemini]",
+    "authors: [claude sonnet-4.6 high, codex opus-4.8 medium, gemini gemini-2]",
+    "reviewers: [codex, gemini, claude]",
+    "",
+  ].join("\n"));
+  const audits = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { return { usage: {} }; },
+        async audit() { audits.push(name); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+
+  await runMainInRepo(repo, ["task", "reviewer panel", "--reviewers", "codex,gemini", "--no-tidy"], { cycleDeps });
+
+  const branches = gitDep.git(["for-each-ref", "--format=%(refname:short)", "refs/heads/pr"], repo)
+    .trim().split("\n").filter(Boolean);
+  assert.equal(branches.length, 1);
+  assert.match(branches[0], /^pr\/claude\//);
+  assert.deepEqual(audits.sort(), ["codex", "gemini"]);
+});
+
 import { resolveTaskBranch } from "../src/cli.js";
 
 function resumeStubs({ record = null, exists = true, changed = ["a"] }) {
@@ -5001,13 +5030,18 @@ test("orch task fans out explicit plural role overrides into two branches", asyn
 
 test("orch review sends explicit plural reviewer overrides to both auditors", async () => {
   const repo = initGitRepo("orch-plural-reviewer-panel-");
-  const branch = "pr/other/plural-reviewers";
+  const branch = "pr/gemini/plural-reviewers";
   gitDep.git(["checkout", "-b", branch], repo);
   writeFileSync(join(repo, "review.txt"), "review me\n");
   gitDep.git(["add", "review.txt"], repo);
   gitDep.git(["commit", "-m", "review fixture"], repo);
   gitDep.git(["checkout", "main"], repo);
-  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex, other]\n");
+  writeFileSync(join(repo, "orch.yml"), [
+    "agents: [claude, codex, gemini]",
+    "authors: [claude, codex, gemini]",
+    "reviewers: [codex, gemini, claude]",
+    "",
+  ].join("\n"));
   const audits = [];
   const cycleDeps = {
     ...fakeCycleDeps(),
@@ -6737,9 +6771,16 @@ test("orch task resuming a sid with an existing run record appends to it instead
   writeFileSync(join(repo, "a.txt"), "2\n");
   gitDep.git(["commit", "-am", "authored fix"], repo);
   gitDep.git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "orch.yml"), [
+    "agents: [claude, codex]",
+    "authors: [claude sonnet-4.6, codex opus-4.8]",
+    "reviewers: [codex, claude]",
+    "",
+  ].join("\n"));
   // The record `resolveTaskBranch` would have written before the original run,
   // and pinnedResumeAuthor reads to pin the same author on resume.
-  resume.record(join(repo, ".orch"), "some task", "claude", { branch, sid });
+  resume.record(join(repo, ".orch"), "some task",
+    { agent: "claude", model: "sonnet-4.6", effort: null }, { branch, sid });
 
   const dir = join(repo, ".orch", "run-records");
   mkdirSync(dir, { recursive: true });
