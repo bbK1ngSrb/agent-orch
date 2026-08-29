@@ -1,5 +1,7 @@
 # `orch --help` specification — v0.5.0
 
+> **Draft — not current documentation.** This document describes agent-orch **v0.5.0**, which has not been released. The behaviour it describes is partly unlanded; passages that are not yet true of any release are marked. For the current release, read `README.md` and `docs/orch-manual.md`. Tracking: #509.
+
 **Status:** implementation spec for P12 (issue #528). Not prose, not a tutorial.
 Every code block below is the **literal text** the named command must print, so a
 test can assert it byte-for-byte. Where a block contains a line that describes
@@ -1424,106 +1426,3 @@ restore the flat block to make them pass:
 
 If either is "fixed" by putting the flags back in the global page, the whole
 change is undone and nothing else will notice.
-
-<!-- WRITER NOTES
-
-Discrepancies found between the recon inventory and the source on 733760b.
-Source won in every case; each is reflected in the text above.
-
-1. recon.help.problems says the flat Options block has "27 rows" and that
-   "12 of 27 rows smuggle scope into prose". The rendered block has 26 rows,
-   measured: `orch --help | awk '/^Options:/{f=1;next}/^$/{f=0}f' | wc -l` → 26.
-   FLAGS has 27 keys; `plain` is hidden by `help: null`. The 12 scoped rows are
-   right; the denominator is not. §1.1 and §1.3 use 26 and say why.
-
-2. The task brief says "the help text is produced in src/cli.js:1863". Recon
-   already corrected this and I confirmed it: cli.js only routes; the text is
-   `renderHelp()` at src/schema.js:521-542. cli.js:3332's `printUsage()` is a
-   one-line wrapper. §6.3 lands the change in both files accordingly.
-
-3. The brief says "~16 commands". COMMANDS has 16 keys today, but P12 removes
-   `review` and `update`, so v0.5 has 14 pages. Stated explicitly in §2 so a
-   reader does not think two pages were dropped by accident.
-
-4. The brief says recon found 5 open decisions; recon.v05.openDecisions actually
-   enumerates 12. Five of them changed bytes in this document, and all five are
-   now settled, so nothing above is left hanging:
-   - `--json` scope and `--dry` on `completion` — settled from source in §6.1.
-     Neither was in recon's list; both are proposal-vs-source contradictions I
-     hit while deriving the flag sets, and in both the source wins.
-   - `--allow-large-scope` (recon #5), the `continue` default goal (#6) and
-     `agent add --build`'s landing (#11) — settled by owner decision, written
-     as prose in §4.4, §4.7 and §4.3 respectively.
-   Recon's #7 (does exit 4 ship in 0.5.0?) was never open: EXIT_FOR_STATE at
-   src/run-controller.js:11 already maps WAIT_TIMEOUT → 4 on this checkout, so
-   it is landed, not designed. Recon's #2 (draft-PR predicate for --until
-   merged) is now answered in §4.6 and is also landed rather than designed —
-   src/readiness.js:63-64 already fails a draft with its own message.
-
-5. Proposal §4.3's per-command matrix disagrees with landed COMMANDS in four
-   places. Source won each time, per the contract:
-   - it lists `--author` and `--no-tidy` on `pr`; landed `COMMANDS.pr.flags` has
-     neither, with an explicit comment (src/schema.js:126-133) that `pr` never
-     assigns an author. §4.6 follows the code and states the rule in the page.
-   - it lists `--json` on `release`, `init` and `upgrade`; landed COMMANDS does
-     not. Resolved in §6.1: command-scoped, per src/schema.js:53-56.
-   - it omits `--allow-large-scope` entirely. The flag survives; §4.4 documents
-     what it actually does.
-   - it lists `completion` as read-only (no `--dry`); landed COMMANDS gives it
-     `--dry` for the `install` form. Resolved in §6.1, following the code.
-
-6. Two behaviours in §5 are specified from `docs/cli-v2-design.md:137` rather
-   than from recon, which does not cover them: `--help` beside an
-   action-implying flag (`--until merged`, `--detach`, `--build`) is exit 64,
-   and `-h` is the only short flag. I verified the *current* behaviour is
-   different and worse — ANY command-scoped flag beside `--help` is exit 64 with
-   a message naming `orch help`, a command the user never typed (§1.5). That
-   asymmetry is not in recon's problem list and is fixed in §5.5.
-
-7. `orch version --help` prints the version today, not help, because
-   `command === "version"` is handled at cli.js:1862 before the help route at
-   :1863. §5.5 specifies the change and separates the `version` command word
-   from the `--version` flag. Not in recon.
-
-8. Defaults verified against source rather than taken from prose:
-   `--limit` default is **10** (src/cli.js:3259), not the 20 that
-   `dashboard.js:164`'s `runHistory(orchDir, limit = 20, …)` signature suggests
-   — cli.js always passes an explicit value. `--refresh-ms` default is 1000
-   (src/cli.js:3269). `automation.maxAttempts` default is 3 (src/cli.js:2099).
-
-9. Re-verified against origin/orch/integration at 39177e8 (v0.4.361), which is
-   ahead of main. `git diff main origin/orch/integration -- src/` touches three
-   files only — cli.js (+100/-…), config.js, remedies.js — and src/schema.js is
-   byte-identical, so every schema-derived claim and every "Not yet landed"
-   marker above still holds on that branch; none of them has quietly landed.
-   The one behaviour integration moved that this document touches is
-   `automation.rotateModels`: it is no longer inert. `nextModelRole`
-   (src/remedies.js:175-188, landed by d8c0c7e) walks the configured ladder,
-   and the DEFAULTS comment changed from "model ladders remain inert until the
-   rotate remedy consumes them" to "optional per-agent model ladders consumed
-   by the rotate remedy" (src/config.js:61). No help row depends on it; the
-   pinned-model interaction it creates is recorded in §4.4's third note.
-
-10. The owner's `--allow-large-scope` decision says the flag "remains on task,
-    issue and agent build". Landed COMMANDS also declares it on `pr` (explicit
-    list, src/schema.js:135) and on `continue` and `review` (via RUN_FLAGS,
-    src/schema.js:59-62), and both surviving commands really read it —
-    src/cli.js:2865 for `continue`, src/github.js:341/:366 for `pr`. The
-    decision's operative clause is "survives unchanged", so the five pages
-    (§4.3–§4.7) stand and the three-command list is treated as an incomplete
-    recollection, per this document's source-wins contract. Flag it to the
-    owner before P12 codes the flag sets: if the intent really is to strip it
-    from `pr` and `continue`, that is a schema change with its own §2.1 row,
-    not a documentation choice.
-
-11. The owner's `automation.remedies` decision says design §15 *and*
-    orch.example.yml both print the literal `[rebase, rotate, reauthor, ask]`
-    as the default. Only design §15 does: docs/cli-v2-design.md:1076 (the key
-    table row) and again at :1122 (its example YAML). orch.example.yml:128
-    already reads `remedies: null   # ordered subset of rebase, rotate,
-    reauthor, ask; default: fallback order` and needs no correction. The
-    RunPolicy sketch at docs/cli-v2-design.md:174 is also fine — that is the
-    *resolved* run policy, not the config default. So exactly one document
-    needs fixing, not two. Neither file edited here, per instruction.
-
--->
