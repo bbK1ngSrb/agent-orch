@@ -4440,17 +4440,49 @@ test("task --reviewer-only does not fan out an inherited YAML role pool", () => 
   const d = mkdtempSync(join(tmpdir(), "orch-reviewer-only-pool-"));
   const cfg = applyRoleOverrides({
     agents: ["claude", "codex", "gemini"],
-    authors: ["claude sonnet-4.6", "codex", "gemini"],
+    authors: ["claude sonnet-4.6 high", "codex opus-4.8 medium", "gemini gemini-2"],
     reviewers: ["codex", "gemini", "claude"],
-  }, { reviewer: "codex" }, { allowReviewerOnly: true });
+  }, { reviewer: "codex reviewer-model low" }, { allowReviewerOnly: true });
 
+  assert.deepEqual(cfg.authors, ["claude sonnet-4.6 high", "codex opus-4.8 medium", "gemini gemini-2"]);
   const options = { blockedAuthors: ["codex"] };
   const first = nextAuthor(cfg, d, null, false, options);
   const second = nextAuthor(cfg, d, null, false, options);
-  assert.deepEqual(first.authorNames, ["claude"]);
-  assert.deepEqual(first.reviewerNames, ["codex"]);
-  assert.deepEqual(second.authorNames, ["gemini"]);
-  assert.deepEqual(second.reviewerNames, ["codex"]);
+  assert.deepEqual(first.authors, [{ agent: "claude", model: "sonnet-4.6", effort: "high" }]);
+  assert.deepEqual(first.reviewers, [{ agent: "codex", model: "reviewer-model", effort: "low" }]);
+  assert.deepEqual(second.authors, [{ agent: "gemini", model: "gemini-2", effort: null }]);
+  assert.deepEqual(second.reviewers, [{ agent: "codex", model: "reviewer-model", effort: "low" }]);
+  assert.equal(readFileSync(join(d, "last-author"), "utf8").trim(), "2");
+});
+
+test("task --reviewer-only rotates a two-entry inherited author pool", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-reviewer-only-two-entry-pool-"));
+  const cfg = applyRoleOverrides({
+    agents: ["claude", "codex", "gemini"],
+    authors: ["claude sonnet-4.6 high", "codex opus-4.8 medium"],
+    reviewers: ["codex", "claude"],
+  }, { reviewer: "gemini reviewer-model" }, { allowReviewerOnly: true });
+
+  const options = { blockedAuthors: ["gemini"] };
+  const first = nextAuthor(cfg, d, null, false, options);
+  const second = nextAuthor(cfg, d, null, false, options);
+  assert.deepEqual(first.authors, [{ agent: "claude", model: "sonnet-4.6", effort: "high" }]);
+  assert.deepEqual(second.authors, [{ agent: "codex", model: "opus-4.8", effort: "medium" }]);
+  assert.deepEqual(first.reviewers, [{ agent: "gemini", model: "reviewer-model", effort: null }]);
+  assert.deepEqual(second.reviewers, [{ agent: "gemini", model: "reviewer-model", effort: null }]);
+});
+
+test("reviewer-only override preserves the configured author model", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-reviewer-only-author-model-"));
+  const cfg = applyRoleOverrides({
+    agents: ["claude", "codex"],
+    authors: ["claude claude-sonnet-5 high", "codex codex-5 medium"],
+    reviewers: ["codex", "claude"],
+  }, { reviewer: "gemini" }, { allowReviewerOnly: true });
+
+  const picked = nextAuthor(cfg, d, null, true);
+  assert.deepEqual(picked.authors, [{ agent: "claude", model: "claude-sonnet-5", effort: "high" }]);
+  assert.deepEqual(picked.reviewers, [{ agent: "gemini", model: null, effort: null }]);
 });
 
 import { resolveTaskBranch } from "../src/cli.js";

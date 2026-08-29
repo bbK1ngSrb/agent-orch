@@ -661,12 +661,12 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
   const authorValue = flags.authors ?? flags.author;
   const reviewerValue = flags.reviewers ?? flags.reviewer;
   if (authorValue == null && reviewerValue != null && opts.allowReviewerOnly) {
-    return markCliRoleOverrides({
+    const result = {
       ...cfg,
-      authors: null,
       reviewer: null,
       reviewers: splitNames(reviewerValue),
-    });
+    };
+    return cfg.authors ? result : markCliRoleOverrides(result);
   }
   if ((authorValue == null) !== (reviewerValue == null))
     throw usageError("set both --author(s) and --reviewer(s), or neither");
