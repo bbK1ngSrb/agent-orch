@@ -403,7 +403,7 @@ automation:
   humanWaitHours: 24        # how long "ask a human" waits before exit 4
   mcpMayMerge: false        # MCP may request --until merged
   remedies: [rebase, rotate, reauthor, ask]   # ordered; remove one to disable it
-  # rotateModels: { claude: [claude-opus-4-8] }   # optional escalation ladder for the model field (not the #323 pool-spec design)
+  # rotateModels: { claude: [claude-opus-4-8] }   # optional escalation ladder for the model field (not rich specs inside agents:)
   pollSeconds: 30           # readiness poll base interval (exponential backoff, cap 10 min)
   ciWaitMinutes: 30         # max wait for pending checks per readiness check
   conflictResolvers: null   # role specs used to repair integration conflicts (was main.conflictResolutionResolvers)
@@ -522,7 +522,7 @@ mechanisms are credited in design §1/§7/§9/§11/§16. Explicit divergences:
 | proposal §8: *"retain `pr --merge` as a warning alias"* | Removed outright (clean break). |
 | design §13.3 exit codes `0/2/1` | Replaced by `0/1/2/3/4/64` (§4.4). |
 | design §15: *"MCP … must not expose merge authority in v1"* | Replaced by opt-in `automation.mcpMayMerge` (default off). |
-| `FUTURE.md:10-14`: *"Model/effort-aware rotation pool — decided against on #323: `agents:` entries stay bare adapter names"* | Not contradicted: `agents:` stays bare names; `automation.rotateModels` is a separate, ordered escalation ladder the `rotate` remedy applies to the author/reviewer *model field* (owner remedy "stronger model", decision 7). Design §15 says so. |
+| `FUTURE.md:10-14`: *"Model/effort-aware rotation pool — decided against on #323: `agents:` entries stay bare adapter names"* | Narrowed by the owner decision: `agents:` still stays bare names, while YAML `authors:`/`reviewers:` accept rich role specs and rotate one cross-agent pair per cycle. CLI plural overrides retain the parallel fan-out/panel behavior; `automation.rotateModels` remains the separate escalation ladder. |
 | design §5/§5.1 execution broker / capability-isolated child | Not adopted in this programme (advisor decision): it is a large subsystem; v2 takes the smaller, verifiable step — an env allowlist for adapter subprocesses (P0) — and keeps controller-only landing. Left as future work. |
 
 Reused with credit: failure taxonomy (design §7.1), bounded remedy pseudocode and

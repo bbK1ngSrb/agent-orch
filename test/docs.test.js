@@ -769,12 +769,13 @@ test("the landing page lede names every built-in adapter (#335)", () => {
   }
 });
 
-test("FUTURE.md records the #323 decision instead of planning the rejected design", () => {
-  // #323 was closed by rejecting rich `agents:` entries at config validation
-  // (a7aea98), the opposite of the rotation-pool design FUTURE.md listed as
-  // the 1-month plan. The roadmap must not promise what validation refuses.
+test("FUTURE.md records the narrowed #323 role-pool decision", () => {
+  // #323 still keeps rich entries out of `agents:`, while the approved narrow
+  // form gives the explicit plural YAML role keys rotation semantics.
   const future = read("FUTURE.md");
   assert.doesNotMatch(future, /parse `agents:` entries as full role specs/);
   assert.match(future, /decided against[\s\S]{0,200}#323/);
   assert.match(future, /bare adapter names/);
+  assert.match(future, /authors.*reviewers.*rotate/s);
+  assert.match(future, /CLI plural overrides retain.*fan-out\/panel/s);
 });

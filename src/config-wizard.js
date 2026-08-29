@@ -13,9 +13,9 @@ const ENUM = "enum";
 const BOOL = "bool";
 
 export const OPTION_CATALOG = [
-  { keys: ["agents"], label: "agents", widget: LIST, explain: "The rotation pool used when no fixed roles are set. Keep at least one registered agent here; two or more lets orch split author and reviewer work." },
+  { keys: ["agents"], label: "agents", widget: LIST, explain: "The rotation pool used when no singular roles or YAML role-spec pools are set. Keep at least one registered agent here; two or more lets orch split author and reviewer work." },
   { keys: ["author", "reviewer"], label: "author / reviewer", widget: TEXT, pair: true, explain: "Fixed roles bypass rotation for every task. Set both sides, or leave both blank so orch chooses from the agents pool." },
-  { keys: ["authors", "reviewers"], label: "authors / reviewers", widget: LIST, pair: true, nullableList: true, explain: "Plural roles run multiple author branches and audit them with the reviewer list. Leave both blank unless you want parallel fixed-role fanout." },
+  { keys: ["authors", "reviewers"], label: "authors / reviewers", widget: LIST, pair: true, nullableList: true, explain: "YAML plural role specs rotate one author/reviewer pair per cycle. Use the CLI --authors/--reviewers flags for parallel fan-out and panel reviews." },
   { keys: ["test"], label: "test command", widget: TEXT, explain: "Use auto to let orch detect the repo test command. Set a command when the project needs a specific gate." },
   { keys: ["roundCap"], label: "round cap", widget: NUMBER, min: 1, explain: "Maximum review rounds including the first (author revisions = this minus one) before escalation. Higher values spend more time trying to self-heal; lower values fail faster. (reviseCap is the deprecated alias.)" },
   { keys: ["stageTimeout"], label: "stage timeout", widget: NUMBER, min: 0, explain: "Per-agent-stage timeout in minutes. Zero disables the stage watchdog. The test gate has its own gateTimeout setting, which defaults to this value." },

@@ -559,6 +559,12 @@ test("plural authors/reviewers must be set together", () => {
   assert.throws(() => load(d), /both authors and reviewers/);
 });
 
+test("plural role pools reject an author with no diverse reviewer", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "authors: [claude]\nreviewers: [claude]\n");
+  assert.throws(() => load(d), /authors\[0\] \(claude\) has no reviewer with a different agent/);
+});
+
 test("cheap defaults to disabled (role null, no paths)", () => {
   const c = load(tmp());
   assert.equal(c.cheap.role, null);

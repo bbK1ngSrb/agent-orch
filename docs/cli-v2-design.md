@@ -489,12 +489,14 @@ Rotation algorithm (run controller, not `runCycle`):
    (`nextAuthor`, `cli.js:494-535`).
 3. Seat to rotate: the seat that failed; for `REVIEW_STALEMATE`, first the
    reviewer, then on the next `rotate` both.
-4. Stronger model: if the failed role spec has no explicit model and the adapter
-   has `capabilities.model`, take the next entry of
+4. Stronger model: an unspecified role model may take the next entry of
    `automation.rotateModels[<agent>]` (an ordered escalation ladder applied to
-   the author/reviewer *model field*; the `agents:` pool stays bare names — this
-   is not the rejected #323 design, see §15). If no candidate differs from the
-   failed spec → remedy `skipped` (not diverse).
+   the author/reviewer *model field*). An explicit model in a YAML role pool is
+   already pinned; it advances only when it appears in that agent's ladder, and
+   an unknown ladder entry leaves the pinned model unchanged. The `agents:` pool
+   still stays bare names, so this remains distinct from the rejected #323
+   design. If no candidate differs from the failed spec → remedy `skipped` (not
+   diverse).
 5. New cycle on the **same branch**, round 1, cleared checkpoint,
    `reviewerOverride` set. Acceptance (plan P6): with a pool of three or more,
    stalemate at `roundCap: 3` → `rotate` → the new cycle performs up to three
@@ -1057,7 +1059,7 @@ Full v2 key table (`DEFAULTS` in `src/config.js`; validation in `validate()`;
 |---|---|---|---|---|
 | `agents` | list(str) | `[claude, codex]` | non-empty, `/^\S+$/` each | — |
 | `author` / `reviewer` | str\|null | null | both or neither; **string** when set (fixes config #2) | `--author/--reviewer` |
-| `authors` / `reviewers` | list\|null | null | non-empty strings | `--authors/--reviewers` |
+| `authors` / `reviewers` | list(role)\|null | null | non-empty role specs; YAML pools pair by index and require a different reviewer agent | `--authors/--reviewers` keeps parallel fan-out/panel |
 | `test` | str | `auto` | **non-empty string** (fixes config #1) | — |
 | `roundCap` | int>0 | 3 | | — |
 | `stageTimeout` | int≥0 (min) | 25 | | env `ORCH_STAGE_TIMEOUT_MS` |

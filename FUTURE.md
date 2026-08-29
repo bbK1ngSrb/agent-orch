@@ -8,10 +8,11 @@ Contributors: more than welcome to pick up anything on this list — see
 ## 1 month (v0.4)
 
 - Model/effort-aware rotation pool — **decided against** on
-  [#323](https://github.com/bbk1ng/agent-orch/issues/323): `agents:` entries
-  stay bare adapter names and rich role specs (`<agent> [model] [effort]`) are
-  rejected at config validation; model/effort belong in the `author`/`reviewer`
-  keys or CLI overrides.
+  [#323](https://github.com/bbk1ng/agent-orch/issues/323) only for the `agents:`
+  key: its entries stay bare adapter names and rich role specs are rejected at
+  config validation. The approved narrow form puts `<agent> [model] [effort]`
+  specs in YAML `authors:`/`reviewers:` pools, which rotate one cross-agent pair
+  per cycle; CLI plural overrides retain their parallel fan-out/panel behavior.
 
 ## 3 months (v0.5)
 
@@ -33,4 +34,3 @@ Contributors: more than welcome to pick up anything on this list — see
   "agent unavailable" with "orch bug".
 
 ## 1 year
-
