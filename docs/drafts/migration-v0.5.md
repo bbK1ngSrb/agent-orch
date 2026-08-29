@@ -16,11 +16,12 @@ cuts the release. So every entry below carries one of two markers:
 - **Already live in v0.4.360.** The behaviour is on your machine today. If your
   scripts have not hit it yet, they are about to, and upgrading to 0.5.0 changes
   nothing further for that row.
-  <br>Where a row says something is live, it was checked against the released
-  v0.4.360 tag **and** against `orch/integration`, the branch the remaining v0.5
-  slices land on, which is ahead of it — it currently carries v0.4.361 and #567's
-  `automation.rotateModels` wiring. The `automation:` row in §3.3 says "this used
-  to be inert and is not any more" for exactly that reason.
+  <br>Where a row says something is live, it was checked against `main` at
+  `4345cb6` (v0.4.361) **and** against `orch/integration` at `4fa3163`, the
+  branch the remaining v0.5 slices land on, which is ahead of it — it currently
+  carries v0.4.362 and #532's role pools. v0.4.361 itself is where #567 wired
+  `automation.rotateModels` up, which is why the `automation:` row in §3.3 says
+  "this used to be inert and is not any more".
 - `> **Not yet landed** (P12, #528).` Designed, agreed, not yet in the binary.
   Read it as "what 0.5.0 will do", not as "what your `orch` does right now".
 
@@ -92,7 +93,7 @@ launched `--until merged` continues toward `merged` rather than quietly dropping
 to a single pass. An explicit `--until` on the `continue` overrides the inherited
 value. That inheritance is not a design promise — it is landed code on both
 `main` and `origin/orch/integration`:
-`src/cli.js:2957` (integration: `src/cli.js:2995`) builds the resume policy as
+`src/cli.js:2995` (integration: `src/cli.js:3115`) builds the resume policy as
 
 ```js
 const controllerPolicy = priorRun?.policy?.until && priorRun.policy.until !== "once"
@@ -142,8 +143,8 @@ below are the operator-orderable ones, and all four are in the binary today
    this means reviewer rotation is refused and the run stops at cap rather than
    staging a fake audit by the model that wrote the code. The model half of the
    remedy is the `automation.rotateModels` ladder, the newest piece of this
-   machinery — inert on the v0.4.360 tag, wired up by #567 on
-   `orch/integration` (§3.3). When no spare *adapter* seat exists, the failed
+   machinery — inert on the v0.4.360 tag, wired up by #567 and live on `main`
+   from v0.4.361 (§3.3). When no spare *adapter* seat exists, the failed
    seat keeps its agent and advances one step down its model ladder instead.
 3. **reauthor** — empty diff, scope exceeded, or two diverse
    attempts converging on the same failing assertion. A fresh branch from the
@@ -577,7 +578,7 @@ code that orch reviews; an adapter produces code that orch will subsequently
 reads back a verdict. A machine-written component that will itself go on to run
 other agents gets a human checkpoint before it is trusted, because a subtly wrong
 adapter does not fail loudly: it fails as a plausible-looking verdict. The code
-says the same thing at `src/cli.js:1779` (integration: `src/cli.js:1816`), where
+says the same thing at `src/cli.js:1816` (integration: `src/cli.js:1935`), where
 the run is constructed with `noMerge: !flags.pr`, and the comment above
 `buildAgent` reads "Default: `noMerge` — the result sits on its local branch only
 … so it can be reviewed before it's trusted".
@@ -970,7 +971,7 @@ its second guard while holding `merge.lock`, so a hung gate pinned that lock for
 every other cycle in the repo.
 
 One key is **accepted, validated, and currently does nothing**: `env.passthrough`
-is validated in `src/config.js:242-245` (it must be a list of legal
+is validated in `src/config.js:248-251` (it must be a list of legal
 environment-variable names, and it rejects GitHub or `ORCH_APP_*` credentials
 outright) but nothing reads it — `allowlistEnv` in
 `src/adapters/cli-adapter.js` builds the child environment from a fixed allowlist
@@ -980,8 +981,8 @@ it starts working — but do not file a bug when it has no effect yet.
 
 **`automation.rotateModels` has started working, and that is a change you can
 trip over.** At the v0.4.360 tag it was accepted, validated and read by nothing.
-On `orch/integration` — the branch the remaining v0.5 slices land on — it is
-live: #567 wired the ladders into the `rotate` remedy (merge `4850610`, with
+On `main` from v0.4.361 (`4345cb6`) onwards it is live:
+#567 wired the ladders into the `rotate` remedy (merge `4850610`, with
 `d8c0c7e` "fix(rotate): use configured model ladders" and five follow-up fixes
 above it). The defaults comment was rewritten in the same change:
 `src/config.js:61` now reads "optional per-agent model ladders consumed by the
@@ -1082,7 +1083,7 @@ case $? in 0) ok;; 2) resumable_retry;; 3) needs_a_human;; 4) answer_the_questio
 
 The example deliberately does not pass `--until once`: the 2/3 split is verified
 for `ready` and `merged` runs, and on v0.4.360 a `once` run still raises a flat 2
-for an escalation or a deferred landing (`cli.js:1726`, `cli.js:2667`). If you
+for an escalation or a deferred landing (`cli.js:1763`, `cli.js:2704`). If you
 script a `once` run, keep handling 2 as "a human should look" until the cutover
 says otherwise.
 
@@ -1768,7 +1769,7 @@ them.
   (`:102`), `issue` (`:109`), `review` (`:117`) and `continue` (`:125`) all
   spread in; `pr` (`:135`) names it explicitly; and `src/schema.js:74` carries it
   in the `agent build` subcommand set (`agent add --build` after the cutover).
-  It is read on each of those paths, not merely accepted — `cli.js:2865` on the
+  It is read on each of those paths, not merely accepted — `cli.js:2903` on the
   `continue` path, `github.js:341,366` on the PR path.
 
   Be clear about what it is, because the name invites the wrong reading: it is

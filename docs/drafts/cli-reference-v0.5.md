@@ -33,9 +33,9 @@ implemented, it carries this marker:
 
 Everything *without* that marker is verified against `src/` and works today.
 "Today" means two branches, and the difference is small but real: `main`
-(v0.4.360, HEAD `733760b`) is where the flag and config tables were dumped from,
-while `orch/integration` (v0.4.361) is ahead of it and carries the
-`automation.rotateModels` wiring described in §6.9. `src/schema.js` is
+(v0.4.361, HEAD `4345cb6`) is where the flag and config tables were dumped from,
+while `orch/integration` (v0.4.362, `4fa3163`) is ahead of it and carries the
+`authors:`/`reviewers:` role-pool pairing described in §2.5. `src/schema.js` is
 byte-identical on both, so every marker that depends on the command/flag schema
 — the removed commands, `--max-attempts`, the `config` wizard, the `--until`
 default flip — holds on either branch. The one place the branches differ is
@@ -138,7 +138,7 @@ orch pr — audit a pull request or a branch, and repair or merge it.
 Flag validation is scoped to that command too, so what happens to the *other*
 flags on the line depends on what they imply:
 
-| Other flags on the line | v0.5 | Today on `733760b` |
+| Other flags on the line | v0.5 | Today on `4345cb6` |
 |---|---|---|
 | all global — `orch pr 42 --help` | prints `pr`'s page, exit 0 | prints the **global** page, exit 0 |
 | an ordinary command flag — `orch task "x" --reviewer "codex" --help` | ignored; prints `task`'s page, exit 0 | exit 64, message names `orch help` |
@@ -174,7 +174,7 @@ and then checks every flag on the line against `COMMANDS[effective].flags`.
 `COMMANDS.help.flags` is the empty array, so today any non-global flag you also
 typed is rejected against `help`. P12 keeps `effective` on the typed command
 when `flags.help` is set, and passes that command word to the renderer
-(`src/cli.js:1863`) instead of discarding it. The `flags.version` half of the
+(`src/cli.js:1900`) instead of discarding it. The `flags.version` half of the
 expression is **not** touched: a non-global flag beside `--version` is still
 checked against `version`. The `version` *command word*, though, stops beating
 `--help` — `orch version --help` prints `version`'s page in v0.5, where today it
@@ -334,8 +334,8 @@ flags conditionally — `if (known || !flags.build)` (`src/schema.js:493`):
   common case, and it is what makes a naive union-derived matrix wrong.
 - But `orch agent add <unregistered> --build --pr` clears validation and reaches
   `buildAgent`, where `--pr` is a live, functional flag: `if (flags.pr) cfg =
-  { ...cfg, merge: "pr" }` (`src/cli.js:1744`) and `noMerge: !flags.pr`
-  (`src/cli.js:1779`). Verified: `orch agent add mistral --build --pr` exits 1
+  { ...cfg, merge: "pr" }` (`src/cli.js:1781`) and `noMerge: !flags.pr`
+  (`src/cli.js:1816`). Verified: `orch agent add mistral --build --pr` exits 1
   with `no CLI named "mistral" found on PATH` — a runtime error from inside the
   build, not a usage error. `orch agent add mistral --pr` (no `--build`) is
   exit 64.
@@ -376,7 +376,7 @@ removed and a flag that no longer exists.
 | `orch update` | `orch upgrade` | Two spellings of one command doubled the schema, help and completion surface. |
 | `orch agent build <name>` | `orch agent add <name> --build` | `agent build` was a specialised `task` with duplicated flag handling (and it silently dropped `--cheap`). |
 | `--merge` (on `pr`) | `--until merged` | The boolean flag `--merge` and the config enum `merge:` shared a name and meant unrelated things. |
-| `--pr` (on `agent build`) | `landing: pr` in `.orch/orch.yml` | The per-run override becomes a config choice. `landing: pr` survives v0.5 partly to keep this row valid (§6.1). One wiring caveat belongs on the record: `--pr` flips **two** things today — `merge: "pr"` (`src/cli.js:1744`) and `noMerge: false` (`src/cli.js:1779`) — and it is the second that makes a build open a PR at all. A `--build` cycle keeps `noMerge` in v0.5 (§3.3), so unless P12 routes `landing: pr` through the build path's `noMerge`, this replacement is inert for builds and the scaffolded adapter stays on its local branch regardless of the config value. |
+| `--pr` (on `agent build`) | `landing: pr` in `.orch/orch.yml` | The per-run override becomes a config choice. `landing: pr` survives v0.5 partly to keep this row valid (§6.1). One wiring caveat belongs on the record: `--pr` flips **two** things today — `merge: "pr"` (`src/cli.js:1781`) and `noMerge: false` (`src/cli.js:1816`) — and it is the second that makes a build open a PR at all. A `--build` cycle keeps `noMerge` in v0.5 (§3.3), so unless P12 routes `landing: pr` through the build path's `noMerge`, this replacement is inert for builds and the scaffolded adapter stays on its local branch regardless of the config value. |
 | `--no-banner` | *(nothing — the banner is deleted)* | A flag that suppresses a banner that no longer prints has nothing to suppress. |
 | MCP tool `orch_review` | MCP tool `orch_pr` with `until: "once"` | The MCP surface mirrors the CLI fold. The removed tool returns JSON-RPC `-32601` naming its replacement. |
 
@@ -408,7 +408,10 @@ agent differs from the author's, and a pool pairing with no diverse reviewer is
 rejected at config load.
 
 > **Not yet landed** (P12, #528; the pairing change is issue #532, which the
-> owner recorded as a prerequisite for P12).
+> owner recorded as a prerequisite for P12). This is the one place the two
+> branches of §0.1 differ: #532 has landed on `orch/integration` (v0.4.362,
+> `4fa3163`, merged as `4cbbd0a`) but **not** on `main` (v0.4.361, `4345cb6`),
+> which is the anchor for every "today" claim in this document.
 
 ---
 
@@ -562,7 +565,7 @@ refused.
 
 The build-only flags are a usage error when the name is already registered, or
 when `--build` is absent. Today's `orch agent build <known>` does acknowledge
-the no-op (`orch: <name> already registered`, `src/cli.js:2002`); the P12 fold
+the no-op (`orch: <name> already registered`, `src/cli.js:2039`); the P12 fold
 into `agent add --build` loses that acknowledgement, since the `add` path stays
 quiet. Worth an owner call alongside the fold.
 
@@ -592,7 +595,7 @@ $ cat .orch/reviews/pr/claude/adapter-mistral/DECISION.md
 #### A build never lands on its own
 
 `orch agent add <name> --build` keeps `buildAgent`'s `noMerge` behaviour
-(`noMerge: !flags.pr` at `src/cli.js:1779`, with `--pr` gone and nothing left to
+(`noMerge: !flags.pr` at `src/cli.js:1816`, with `--pr` gone and nothing left to
 clear it). The cycle runs — author, cross-audit, test gate, security scan — and
 then **stops**. The scaffolded adapter sits on its local `pr/<agent>/adapter-<name>`
 branch, nothing is merged onto `orch/integration`, and no PR is opened. A human
@@ -967,7 +970,7 @@ want it: `orch continue <sid> --until merged`.
 Only half of this is new. **Inheritance already works** on the current
 checkout: a resume of a run whose record carries `policy.until` of `ready` or
 `merged` takes the run-controller path with that goal
-(`src/cli.js:2992-3003`), which is exactly how exit 2 and exit 4 stay
+(`src/cli.js:2995-3003`), which is exactly how exit 2 and exit 4 stay
 resumable. What P12 adds is the *override*:
 
 > **Not yet landed** (P12, #528). `--until ready|merged` typed on `continue` is
@@ -1402,7 +1405,7 @@ below was verified in `src/` on the current checkout.
 
 `COMMANDS.config` declares `mutates: true` and lists `dry` in its flags, so
 `orch config --check --dry` parses cleanly. But the config-report branch
-(`src/cli.js:1903`) returns **before** the `dryRun` variable is ever consulted:
+(`src/cli.js:1940`) returns **before** the `dryRun` variable is ever consulted:
 
 ```js
 if (command === "config" && (flags.check || flags.json)) {
@@ -1565,7 +1568,7 @@ ones.
 
 One invocation can produce several cycles, each with its own outcome. Rather
 than last-write-wins, orch raises the *most actionable* code
-(`raiseExitCode`, `src/cli.js:1387`):
+(`raiseExitCode`, `src/cli.js:1422`):
 
 ```js
 const EXIT_CODE_PRIORITY = { 1: 4, 2: 3, 4: 2, 3: 1 };
@@ -1896,10 +1899,11 @@ rotated by model. And **a pinned model absent from that agent's ladder yields
 nothing**: orch will not guess where in the list you meant to be, so it returns
 no next rung at all. If you pin models, pin ones the ladder contains.
 
-> Landed on `orch/integration`, not on `main`: `d8c0c7e` ("fix(rotate): use
+> Landed on `main` in v0.4.361 (`4345cb6`): `d8c0c7e` ("fix(rotate): use
 > configured model ladders"), merged as `4850610` (Closes #567), plus five
-> follow-up fixes making exclusions model-scoped. On `main` (v0.4.360) the key
-> is still validated and inert.
+> follow-up fixes making exclusions model-scoped. Before that merge the key was
+> validated and inert; on `4345cb6` the `rotate` remedy consumes it, which is
+> why the table above marks it **Live**.
 
 ### 6.10 `env:`
 
@@ -1924,7 +1928,7 @@ orch's own GitHub credentials.
 | `main.autoResolveConflictPaths:` | `automation.conflictAutoPaths:` |
 | the `main:` block | delete it |
 
-The three renames are safe to do **today**: v0.4.360 already carries both
+The three renames are safe to do **today**: v0.4.361 already carries both
 spellings in `DEFAULTS` with identical defaults, and the new spelling already
 wins at load time. Rename now and the 0.5.0 upgrade is a no-op for those keys.
 

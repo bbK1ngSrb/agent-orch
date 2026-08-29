@@ -265,7 +265,7 @@ What each line causes:
 
   - A reviewer that exits **zero** but only echoed the prompt back is returned
     as a `DISAGREE` carrying `agentError: true` and the reason `only echoed the
-    review prompt` (`src/adapters/cli-adapter.js:598-600`). It is the
+    review prompt` (`src/adapters/cli-adapter.js:598-602`). It is the
     `agentError` flag, not the decision, that does the work: it routes the run
     to an escalation and logs `ERROR`, instead of sending the author back to
     revise against a review that never happened.
@@ -528,7 +528,7 @@ landing: "no-ff" [default]
 `--check` validates the file without opening anything interactive, and prints
 the *whole* effective config as it goes: one `key: value [source]` line per
 setting, sorted by key, where the source is `default`, `orch.yml`, or
-`--config-file` (`src/cli.js:1397-1417`) — a few dozen lines in a fresh repo. It
+`--config-file` (`src/cli.js:1432-1452`) — a few dozen lines in a fresh repo. It
 exits 1 if the report's `problems` array is non-empty. `--json` prints the same
 report as a single machine-readable object with `config`, `sources`, `warnings`
 and `problems` — it changes the format, not the content.
@@ -1666,7 +1666,7 @@ env:
   ids, and the `rotate` remedy's **model ladder** (§5.2). It is validated
   strictly at load: keys must name an adapter orch actually has, lists must be
   non-empty, and duplicate models within one list are rejected
-  (`src/config.js:225-236`), because a duplicate would silently stall a ladder
+  (`src/config.js:227-236`), because a duplicate would silently stall a ladder
   on the entry it already tried.
 
 - **`env.passthrough`** — extra environment variable names to forward to agent
@@ -1742,8 +1742,11 @@ name to look up — so existing state survives the upgrade. The reason this cann
 ship as a v0.4 patch: in an unattended `--until ready` loop, the old semantics
 silently multiply spend by the pool size.
 
-> **Not yet landed.** This is issue #532, an explicit prerequisite for the P12
-> cutover. On the current checkout, plural pools still fan out.
+> **Not yet landed on `main`.** This is issue #532, an explicit prerequisite for
+> the P12 cutover. On `main` (`4345cb6`, v0.4.361) plural pools still fan out. It
+> *has* landed on `orch/integration` (`4fa3163`, v0.4.362) — `feat: rotate
+> configured role pools` plus three `fix(cli):` follow-ups — so a checkout of the
+> integration branch already rotates pools by index as described above.
 
 **Reviewer-seat advice, learned the expensive way.** The reviewer is the
 gatekeeper, and the gatekeeper is not where you economise. Pair a fast, cheap

@@ -5,6 +5,10 @@
 # agent-orch
 
 > **Draft — not current documentation.** This document describes agent-orch **v0.5.0**, which has not been released. The behaviour it describes is partly unlanded; passages that are not yet true of any release are marked. For the current release, read `README.md` and `docs/orch-manual.md`. Tracking: #509.
+>
+> Every claim here that is not marked otherwise was verified against `src/` at commit `4345cb6`
+> (v0.4.361). Where a behaviour has landed on `orch/integration` (`4fa3163`, v0.4.362) but not yet
+> on `main`, it says so at the point it is described.
 
 [![npm](https://img.shields.io/npm/v/%40bbk1ng%2Fagent-orch?label=npm&color=cb3837)](https://www.npmjs.com/package/@bbk1ng/agent-orch)
 [![CI](https://github.com/bbk1ng/agent-orch/actions/workflows/ci.yml/badge.svg)](https://github.com/bbk1ng/agent-orch/actions/workflows/ci.yml)
@@ -298,16 +302,16 @@ not every command has both seats to fill. `task` and `issue` take `--author`/`--
 well as `--reviewer`/`--reviewers`; `review`, `continue` and `pr` take only the reviewer
 flags, because none of them assigns an author, and passing `--author` there is a usage error
 (exit `64`) rather than a silently ignored flag. `orch --help` lists every flag,
-and `docs/cli-reference.md` says which command honours which.
+and `docs/drafts/cli-reference-v0.5.md` says which command honours which.
 
 ## Which document do I want
 
 | Document | For |
 | --- | --- |
 | this README | what orch is, and the first ten minutes |
-| [`docs/orch-manual.md`](docs/orch-manual.md) | the mental model, every command in depth, the landing model, the config keys that bite in context, worked scenarios, and the misunderstandings people actually have |
-| [`docs/cli-reference.md`](docs/cli-reference.md) | the lookup table: every command, every flag, every `orch.yml` key, every exit code, and the flag×command matrix |
-| [`docs/migrating-to-v0.5.md`](docs/migrating-to-v0.5.md) | every breaking change from v0.4.x, old/new command pairs, and the config-key renames |
+| [`docs/drafts/orch-manual-v0.5.md`](docs/drafts/orch-manual-v0.5.md) | the mental model, every command in depth, the landing model, the config keys that bite in context, worked scenarios, and the misunderstandings people actually have |
+| [`docs/drafts/cli-reference-v0.5.md`](docs/drafts/cli-reference-v0.5.md) | the lookup table: every command, every flag, every `orch.yml` key, every exit code, and the flag×command matrix |
+| [`docs/drafts/migration-v0.5.md`](docs/drafts/migration-v0.5.md) | every breaking change from v0.4.x, old/new command pairs, and the config-key renames |
 | [`SECURITY.md`](SECURITY.md) | the threat model and how to report a vulnerability privately |
 | `.orch/ORCH.md` (in your repo, after `orch init`) | the short version, written for your coding agent to read |
 
