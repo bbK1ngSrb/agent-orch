@@ -16,12 +16,13 @@ const taskKey = (task) => createHash("sha1").update(task).digest("hex");
 export function record(orchDir, task, author, { branch, sid }) {
   // author + taskHash let lookupForTask find this branch regardless of which agent
   // the rotation pool advanced to on the resuming run (#27).
-  writeRecord(dir(orchDir), key(task, author),
+  const authorName = typeof author === "object" ? author.agent : author;
+  writeRecord(dir(orchDir), key(task, authorName),
     { branch, sid, author, taskHash: taskKey(task) });
 }
 
 export function lookup(orchDir, task, author) {
-  return readRecord(dir(orchDir), key(task, author));
+  return readRecord(dir(orchDir), key(task, typeof author === "object" ? author.agent : author));
 }
 
 // Every record for this task text, across authors — the per-author key can't be
@@ -35,7 +36,7 @@ export function lookupForTask(orchDir, task) {
 }
 
 export function clear(orchDir, task, author) {
-  removeRecord(dir(orchDir), key(task, author));
+  removeRecord(dir(orchDir), key(task, typeof author === "object" ? author.agent : author));
 }
 
 // `orch continue <sid>` resumes a branch without knowing the original task text

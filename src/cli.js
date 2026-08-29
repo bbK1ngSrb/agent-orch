@@ -60,6 +60,7 @@ export { resolveAgentBin };
 export { visWidth };
 
 const GH_AUTH_RETRY_DELAY_MS = 100;
+const CLI_ROLE_OVERRIDES = Symbol("cliRoleOverrides");
 
 function isGhAuthFailure(error) {
   const text = [error?.stderr, error?.stdout, error?.message]
@@ -247,12 +248,13 @@ agents:
 #
 # author: claude claude-opus-4-8 high        # single author spec
 # reviewer: codex                            # single reviewer spec
-# authors:                                   # each writes its own branch
+# authors:                                   # one rotating author per cycle
 #   - claude claude-opus-4-8 high
 #   - codex
-# reviewers:                                 # all audit each branch, except its author
+# reviewers:                                 # one rotating, cross-agent reviewer per cycle
 #   - claude
 #   - codex high
+# CLI --authors/--reviewers keeps the parallel fan-out/panel behavior.
 
 
 # ===================================================================
@@ -512,6 +514,12 @@ function splitNames(value) {
   return names;
 }
 
+function markCliRoleOverrides(cfg) {
+  const result = { ...cfg };
+  Object.defineProperty(result, CLI_ROLE_OVERRIDES, { value: true });
+  return result;
+}
+
 function fixedRoles(cfg) {
   if (cfg.authors && cfg.reviewers) {
     return { authors: parseRoleSpecs(cfg.authors), reviewers: parseRoleSpecs(cfg.reviewers) };
@@ -523,6 +531,7 @@ function fixedRoles(cfg) {
 }
 
 function fixedSelfReview(cfg) {
+  if (!cfg[CLI_ROLE_OVERRIDES] && !(cfg.author && cfg.reviewer)) return false;
   const fixed = fixedRoles(cfg);
   return Boolean(fixed
     && fixed.authors.length === 1
@@ -537,6 +546,7 @@ function configuredReviewers(cfg) {
 }
 
 function configuredSelfReviewer(cfg, authorName) {
+  if (rolePool(cfg)) return false;
   return Boolean(configuredReviewers(cfg)?.some((spec) => spec.agent === authorName));
 }
 
@@ -558,6 +568,82 @@ function noEligibleRole(role, options) {
   return new Error(`orch: no eligible ${role} remains — ${roleSelectionDetail(options)}`);
 }
 
+function rolePool(cfg) {
+  if (cfg[CLI_ROLE_OVERRIDES] || !cfg.authors || !cfg.reviewers) return null;
+  return { authors: parseRoleSpecs(cfg.authors), reviewers: parseRoleSpecs(cfg.reviewers) };
+}
+
+function roleIndex(raw, roles) {
+  if (raw == null || raw === "") return -1;
+  if (/^\d+$/.test(raw)) {
+    const index = Number(raw);
+    return index >= 0 && index < roles.length ? index : -1;
+  }
+  return roles.findIndex((role) => role.agent === raw);
+}
+
+function sameRole(left, right) {
+  return left?.agent === right?.agent && left?.model === right?.model && left?.effort === right?.effort;
+}
+
+function poolReviewers(pool, authorName, authorIndex, isExcluded) {
+  const start = authorIndex >= 0 ? authorIndex % pool.reviewers.length : 0;
+  for (let step = 0; step < pool.reviewers.length; step += 1) {
+    const reviewer = pool.reviewers[(start + step) % pool.reviewers.length];
+    if (reviewer.agent !== authorName && !isExcluded(reviewer)) return [reviewer];
+  }
+  return [];
+}
+
+function poolReviewersForBranch(cfg, branchAuthor) {
+  const pool = rolePool(cfg);
+  if (!pool) return null;
+  const authorIndex = pool.authors.findIndex((role) => role.agent === branchAuthor);
+  const reviewers = poolReviewers(pool, branchAuthor, authorIndex, () => false);
+  if (reviewers.length) return reviewers;
+  return pool.reviewers.filter((role) => role.agent !== branchAuthor).slice(0, 1);
+}
+
+function nextPoolAuthor(pool, orchDir, pinnedAuthor, dry, options, isExcluded, blockedAuthors) {
+  const persist = !dry && options.persist !== false;
+  if (persist) mkdirSync(orchDir, { recursive: true });
+  const f = join(orchDir, "last-author");
+  const pinnedRole = typeof pinnedAuthor === "object" && pinnedAuthor?.agent
+    ? pinnedAuthor : pool.authors.find((role) => role.agent === pinnedAuthor);
+  const pinnedIndex = pinnedRole ? pool.authors.findIndex((role) => sameRole(role, pinnedRole)) : -1;
+  const pinnedName = pinnedRole?.agent;
+  const select = (author, authorIndex) => {
+    const reviewers = author ? poolReviewers(pool, author.agent, authorIndex, isExcluded) : [];
+    return {
+      authorName: author?.agent,
+      reviewerName: reviewers[0]?.agent,
+      authorNames: author ? [author.agent] : [],
+      reviewerNames: reviewers.map((role) => role.agent),
+      authors: author ? [author] : [],
+      reviewers,
+    };
+  };
+
+  if (pinnedRole && !isExcluded(pinnedRole) && !blockedAuthors.has(pinnedName) && !options.forceRotate)
+    return select(pinnedRole, pinnedIndex);
+
+  const last = existsSync(f) ? readFileSync(f, "utf8").trim() : null;
+  const lastIndex = roleIndex(last, pool.authors);
+  const start = options.forceRotate && pinnedIndex >= 0
+    ? (pinnedIndex + 1) % pool.authors.length
+    : (lastIndex >= 0 ? (lastIndex + 1) % pool.authors.length : 0);
+  for (let step = 0; step < pool.authors.length; step += 1) {
+    const index = (start + step) % pool.authors.length;
+    const author = pool.authors[index];
+    if (isExcluded(author) || blockedAuthors.has(author.agent)) continue;
+    const selected = select(author, index);
+    if (!selected.reviewers.length) continue;
+    if (persist) writeFileSync(f, `${index}\n`);
+    return selected;
+  }
+  return select(null, -1);
+}
+
 export function applyRoleOverrides(cfg, flags, opts = {}) {
   // --author + --authors (or --reviewer + --reviewers) together used to pick
   // the plural silently and drop the singular — a value the user typed had no
@@ -571,22 +657,22 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
   const authorValue = flags.authors ?? flags.author;
   const reviewerValue = flags.reviewers ?? flags.reviewer;
   if (authorValue == null && reviewerValue != null && opts.allowReviewerOnly) {
-    return {
+    return markCliRoleOverrides({
       ...cfg,
       reviewer: null,
       reviewers: splitNames(reviewerValue),
-    };
+    });
   }
   if ((authorValue == null) !== (reviewerValue == null))
     throw usageError("set both --author(s) and --reviewer(s), or neither");
   if (authorValue == null) return cfg;
-  return {
+  return markCliRoleOverrides({
     ...cfg,
     author: null,
     reviewer: null,
     authors: splitNames(authorValue),
     reviewers: splitNames(reviewerValue),
-  };
+  });
 }
 
 // --cheap forces author+reviewer to orch.yml's cheap.role (e.g. a local llm),
@@ -600,14 +686,14 @@ export function applyCheapOverride(cfg, flags, workOrder = null) {
   if (flags.cheap) {
     if (explicitRoles) throw usageError("--cheap cannot be combined with --author/--authors/--reviewer/--reviewers");
     if (!cfg.cheap.role) throw new Error("orch.yml: cheap.role must be set to use --cheap");
-    return { ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] };
+    return markCliRoleOverrides({ ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] });
   }
   if (explicitRoles || !cfg.cheap.role || !cfg.cheap.paths.length) return cfg;
   const paths = Array.isArray(workOrder?.suspected_paths) ? workOrder.suspected_paths : [];
   if (!paths.length) return cfg;
   const regexes = cfg.cheap.paths.map(globToRegExp);
   if (!paths.every((p) => regexes.some((re) => re.test(p)))) return cfg;
-  return { ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] };
+  return markCliRoleOverrides({ ...cfg, author: null, reviewer: null, authors: [cfg.cheap.role], reviewers: [cfg.cheap.role] });
 }
 
 function exclusionName(value) {
@@ -678,6 +764,8 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null, dry = false, optio
   const persist = !dry && opts.persist !== false;
   const reviewerCount = opts.reviewerCount == null ? null : Math.max(1, Number(opts.reviewerCount) || 1);
   const forceRotate = Boolean(opts.forceRotate);
+  const pool = rolePool(cfg);
+  if (pool) return nextPoolAuthor(pool, orchDir, pinnedAuthor, dry, opts, isExcluded, blockedAuthors);
   // Explicit fixed roles win over rotation — the trivial "who authors, who audits".
   // Returns role specs ({agent, model, effort}) plus plain name arrays for back-compat.
   const fixed = fixedRoles(cfg);
@@ -1281,7 +1369,7 @@ function persistRotationState({ orchDir, sid, runId, run, nextRun, previousAutho
   });
   if (run.mode === "task" && nextRun.rotationStage === "started") {
     stores.resume.clear(orchDir, run.task, previousAuthor);
-    stores.resume.record(orchDir, run.task, nextRun.authorName, { branch: nextRun.branch, sid });
+    stores.resume.record(orchDir, run.task, nextRun.author, { branch: nextRun.branch, sid });
   }
   stores.checkpoint.clear(orchDir, sid);
 }
@@ -1640,7 +1728,7 @@ function validateLocalPrTarget(repo, target) {
 }
 
 export function resolveTaskBranch(ctx, deps = { git, resume }) {
-  const { repo, orchDir, task, authorName, dry = false, liveBranches = new Set(), baseBranch = "main", roundCap } = ctx;
+  const { repo, orchDir, task, authorName, authorSpec = null, dry = false, liveBranches = new Set(), baseBranch = "main", roundCap } = ctx;
   const { git: g, resume: r } = deps;
   const found = dry ? null : r.lookup(orchDir, task, authorName);
   if (found && !liveBranches.has(found.branch)) {
@@ -1654,7 +1742,7 @@ export function resolveTaskBranch(ctx, deps = { git, resume }) {
   }
   const sid = newSid();
   const branch = `pr/${authorName}/${slugify(task)}-${sid}`;
-  if (!dry) r.record(orchDir, task, authorName, { branch, sid });
+  if (!dry) r.record(orchDir, task, authorSpec || authorName, { branch, sid });
   return { sid, branch, resume: false };
 }
 
@@ -1778,7 +1866,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   const task = wo.title;
   const authorPrompt = buildAuthorPrompt(wo);
   let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags);
-  if (flags.pr) cfg = { ...cfg, merge: "pr" };
+  if (flags.pr) cfg.merge = "pr";
   const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
   const preflightFn = deps.preflight || preflight;
   if (!dry) preflightFn(cfg, orchDir);
@@ -1793,7 +1881,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
 
   const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
   const exclusions = dry ? [] : resumeExclusions(orchDir, task, pinned);
-  const forcedReviewers = configuredReviewers(cfg);
+  const forcedReviewers = cfg[CLI_ROLE_OVERRIDES] || !cfg.authors ? configuredReviewers(cfg) : null;
   const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned, dry, {
     exclude: exclusions,
     blockedAuthors: forcedReviewers?.length === 1 ? forcedReviewers : [],
@@ -1805,7 +1893,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   });
   const authorSpec = authors[0];
   const authorName = authorSpec.agent;
-  const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
+  const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, authorSpec, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
   const reviewerList = reviewersForAuthor(authorName, reviewers, { allowSelf: singleAgentPool(cfg) || fixedSelfReview(cfg) })
     .filter((reviewer) => !isExcludedRole(reviewer, exclusions));
   if (!reviewerList.length) throw noEligibleRole("reviewer", { exclude: exclusions, agents: cfg.agents || [] });
@@ -2294,7 +2382,7 @@ export async function main(argv, deps = {}) {
       // resolveTaskBranch re-validates below; this only steers author selection.
       const pinned = pinnedResumeAuthor({ repo, orchDir, task, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
       const exclusions = dry ? [] : resumeExclusions(orchDir, task, pinned);
-      const forcedReviewers = configuredReviewers(cfg);
+      const forcedReviewers = cfg[CLI_ROLE_OVERRIDES] || !cfg.authors ? configuredReviewers(cfg) : null;
       const { authors, reviewers } = nextAuthor(cfg, orchDir, pinned, dry, {
         exclude: exclusions,
         // A reviewer-only override must never leave its requested reviewer
@@ -2320,7 +2408,7 @@ export async function main(argv, deps = {}) {
       if (!eligibleAuthors.length) throw noEligibleRole("reviewer", { exclude: exclusions, agents: cfg.agents || [] });
       runs = eligibleAuthors.map((authorSpec) => {
         const authorName = authorSpec.agent;
-        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
+        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, authorSpec, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
         const reviewerList = reviewersForRun(authorName);
         return {
           mode, task, authorPrompt, workOrder, allowLargeScope: Boolean(flags["allow-large-scope"]),
@@ -2335,7 +2423,7 @@ export async function main(argv, deps = {}) {
       const branch = reviewBranch;
       // audit-only: reviewers default to all agents except branch author. authorName unused by engine.
       const branchAuthor = branch.split("/")[1];
-      const configured = configuredReviewers(cfg);
+      const configured = poolReviewersForBranch(cfg, branchAuthor) || configuredReviewers(cfg);
       const reviewers = reviewersForAuthor(branchAuthor, configured || roleSpecsFromAgents(cfg.agents), {
         allowSelf: singleAgentPool(cfg) || fixedSelfReview(cfg) || flags.reviewer != null || flags.reviewers != null
           || configuredSelfReviewer(cfg, branchAuthor),
@@ -2876,7 +2964,7 @@ export async function main(argv, deps = {}) {
       .filter((reviewer) => reviewer?.agent
         && (reviewer.agent !== authorName || singleAgentPool(cfg) || configuredSelfReview)
         && !isExcludedRole(reviewer, exclusionValues));
-    const configured = configuredReviewers(cfg);
+    const configured = rolePool(cfg) ? selectedRoles.reviewers : configuredReviewers(cfg);
     const fallbackReviewers = reviewersForAuthor(authorName, configured || selectedRoles.reviewers || roleSpecsFromAgents(cfg.agents), {
       allowSelf: singleAgentPool(cfg) || reviewerOverride || configuredSelfReview,
     })

@@ -2697,14 +2697,93 @@ test("nextAuthor honors explicit fixed roles over rotation", () => {
   assert.equal(b.authorName, "qwen3-coder-30b");
 });
 
-test("nextAuthor returns plural fixed roles when configured", () => {
+test("nextAuthor rotates configured plural role specs and persists an index", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cli-"));
-  const cfg = { agents: ["claude", "codex"], authors: ["claude", "codex"], reviewers: ["codex", "claude"] };
+  const cfg = {
+    agents: ["claude", "codex"],
+    authors: ["claude opus-4.8 high", "codex gpt-5.1"],
+    reviewers: ["codex gpt-5.1", "claude opus-4.8 low"],
+  };
   const a = nextAuthor(cfg, d);
-  assert.deepEqual(a.authorNames, ["claude", "codex"]);
-  assert.deepEqual(a.reviewerNames, ["codex", "claude"]);
+  assert.deepEqual(a.authors, [{ agent: "claude", model: "opus-4.8", effort: "high" }]);
+  assert.deepEqual(a.reviewers, [{ agent: "codex", model: "gpt-5.1", effort: null }]);
   assert.equal(a.authorName, "claude");
   assert.equal(a.reviewerName, "codex");
+  assert.equal(readFileSync(join(d, "last-author"), "utf8").trim(), "0");
+
+  const b = nextAuthor(cfg, d);
+  assert.deepEqual(b.authors, [{ agent: "codex", model: "gpt-5.1", effort: null }]);
+  assert.deepEqual(b.reviewers, [{ agent: "claude", model: "opus-4.8", effort: "low" }]);
+  const c = nextAuthor(cfg, d);
+  assert.deepEqual(c.authors, [{ agent: "claude", model: "opus-4.8", effort: "high" }]);
+  assert.deepEqual(c.reviewers, [{ agent: "codex", model: "gpt-5.1", effort: null }]);
+});
+
+test("configured role pools read legacy names and integer last-author pointers", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-pool-pointer-"));
+  const cfg = { agents: ["claude", "codex"], authors: ["claude", "codex"], reviewers: ["codex", "claude"] };
+  const f = join(d, "last-author");
+  writeFileSync(f, "codex\n");
+  assert.equal(nextAuthor(cfg, d, null, true).authorName, "claude");
+  writeFileSync(f, "1\n");
+  assert.equal(nextAuthor(cfg, d, null, true).authorName, "claude");
+
+  const duplicateAgents = {
+    agents: ["claude", "codex"],
+    authors: ["claude sonnet-4.6", "claude opus-4.8"],
+    reviewers: ["codex", "codex"],
+  };
+  writeFileSync(f, "claude\n");
+  assert.deepEqual(nextAuthor(duplicateAgents, d, null, true).authors,
+    [{ agent: "claude", model: "opus-4.8", effort: null }]);
+  writeFileSync(f, "0\n");
+  assert.deepEqual(nextAuthor(duplicateAgents, d, null, true).authors,
+    [{ agent: "claude", model: "opus-4.8", effort: null }]);
+});
+
+test("configured role pools advance past a same-agent reviewer at the paired index", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-pool-diversity-"));
+  const cfg = {
+    agents: ["claude", "codex"],
+    authors: ["claude", "codex"],
+    reviewers: ["claude", "claude", "codex"],
+  };
+  const first = nextAuthor(cfg, d);
+  assert.deepEqual(first.reviewerNames, ["codex"]);
+  const second = nextAuthor(cfg, d);
+  assert.deepEqual(second.reviewerNames, ["claude"]);
+});
+
+test("orch task runs one configured role-pool pair with its model and effort", async () => {
+  const repo = initGitRepo("orch-configured-role-pool-");
+  writeFileSync(join(repo, "orch.yml"), [
+    "agents: [claude, codex]",
+    "authors: [claude opus-4.8 high, codex gpt-5.1]",
+    "reviewers: [codex gpt-5.1, claude opus-4.8 low]",
+    "",
+  ].join("\n"));
+  const calls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author(_task, _worktree, opts) {
+          calls.push(["author", name, opts.model, opts.effort]);
+          return { usage: {} };
+        },
+        async audit(_branch, _worktree, opts) {
+          calls.push(["reviewer", name, opts.model, opts.effort]);
+          return { decision: "AGREE", reason: "ok", raw: "", usage: {} };
+        },
+      }),
+    },
+  };
+  await runMainInRepo(repo, ["task", "configured role pool", "--no-tidy"], { cycleDeps });
+  assert.deepEqual(calls, [
+    ["author", "claude", "opus-4.8", "high"],
+    ["reviewer", "codex", "gpt-5.1", null],
+  ]);
 });
 
 test("nextAuthor parses model/effort from fixed role specs", () => {
@@ -4851,11 +4930,11 @@ test("orch review permits an explicitly requested reviewer who authored the bran
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
-test("orch review permits a configured reviewer who authored the branch", async () => {
+test("orch review permits an explicitly configured reviewer who authored the branch", async () => {
   const repo = initGitRepo("orch-configured-self-review-");
   const branch = "pr/codex/review-self";
   gitDep.git(["branch", branch], repo);
-  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\nauthors: [claude]\nreviewers: [codex]\n");
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\nauthor: claude\nreviewer: codex\n");
   const auditCalls = [];
   const cycleDeps = {
     ...fakeCycleDeps(),
@@ -4906,7 +4985,7 @@ test("orch continue permits an explicitly requested branch author as reviewer", 
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
-test("orch continue permits a configured reviewer who authored the branch", async () => {
+test("orch continue permits an explicitly configured reviewer who authored the branch", async () => {
   const repo = initGitRepo("orch-continue-configured-self-");
   const sid = "continue-configured-self";
   const branch = `pr/codex/reviewer-self-${sid}`;
@@ -4914,7 +4993,7 @@ test("orch continue permits a configured reviewer who authored the branch", asyn
   writeFileSync(join(repo, "a.txt"), "2\n");
   gitDep.git(["commit", "-am", "authored fix"], repo);
   gitDep.git(["checkout", "main"], repo);
-  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\nauthors: [claude]\nreviewers: [codex]\n");
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\nauthor: claude\nreviewer: codex\n");
   checkpointDep.record(join(repo, ".orch"), sid, {
     branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good",
     author: { agent: "codex" }, reviewers: [{ agent: "codex" }],

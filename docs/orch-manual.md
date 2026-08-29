@@ -1281,6 +1281,9 @@ agents:                          # rotation pool when no explicit roles set
 # reviewers:
 #   - claude
 #   - codex high
+# YAML authors/reviewers rotate one role-spec pair per cycle; the reviewer is
+# advanced until it names a different agent. CLI --authors/--reviewers keeps
+# the parallel fan-out/panel behavior.
 
 # === Cycle ===
 test: auto                       # or an explicit command, e.g. "pytest -q"
@@ -1357,10 +1360,11 @@ release:
   `ccr` and need `~/.claude-code-router/config.json`'s `local` provider
   configured.
 - **`author`/`reviewer` vs `authors`/`reviewers`** — singular pins one role
-  each; plural runs each author on its own branch, cross-reviewed by every
-  reviewer that didn't write it. Set matching CLI flags
-  (`--author`/`--reviewer` or `--authors`/`--reviewers`) to override per-run
-  without editing the file.
+  each; YAML plural role-spec lists rotate one author/reviewer pair per cycle
+  and preserve each seat's model and effort. The reviewer is always selected
+  from a different agent. CLI `--authors`/`--reviewers` retains the parallel
+  fan-out/panel behavior; matching flags override per-run without editing the
+  file.
 - **`roundCap`** — how many review rounds a cycle gets before it gives up and
   escalates. The *initial* review is round one, so `roundCap: 3` means three
   reviews and at most two author revisions. Raise it if your reviewers tend to
