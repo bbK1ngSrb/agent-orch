@@ -597,8 +597,8 @@ function list(items = []) {
   return items.length ? items.join(", ") : "(none)";
 }
 
-function oneLine(value = "") {
-  return String(value).replace(/\s+/g, " ").trim();
+function oneLine(value) {
+  return value == null ? "" : String(value).replace(/\s+/g, " ").trim();
 }
 
 async function demote(ctx, deps, details) {
