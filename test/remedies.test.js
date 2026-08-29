@@ -273,6 +273,36 @@ test("two-agent author rotation uses the failed seat's next configured model", a
   assert.equal(result.cycle.status, "approved");
 });
 
+test("reviewer rotation preserves an author moved to its next model", async () => {
+  let firstCycle;
+  let secondCycle;
+  const run = {
+    author: { agent: "a" }, reviewers: [{ agent: "b" }],
+    cfg: {
+      agents: ["a", "b"],
+      automation: { rotateModels: { a: ["m1"], b: ["n1"] } },
+    },
+    orchDir: mkdtempSync(join(tmpdir(), "orch-rotate-paired-models-")),
+  };
+  const deps = { adapters: { get: () => ({ capabilities: { model: true } }) } };
+  const first = await rotateRemedy({
+    failure: { class: "AGENT_QUOTA" },
+    cycle: { failedRole: "author", failedAgents: [{ agent: "a", quota: true }] },
+    record: { excludedAgents: [] }, run, deps, selectRoles: nextAuthor,
+    runCycle: async (cycle) => { firstCycle = cycle; return { status: "approved" }; },
+  });
+  const secondRun = { ...run, ...firstCycle };
+  const second = await rotateRemedy({
+    failure: { class: "AGENT_QUOTA" },
+    cycle: { failedRole: "reviewer", failedAgents: [{ agent: "b", quota: true }] },
+    record: first.record, run: secondRun, deps, selectRoles: nextAuthor,
+    runCycle: async (cycle) => { secondCycle = cycle; return { status: "approved" }; },
+  });
+  assert.deepEqual([secondCycle.author.agent, secondCycle.author.model], ["a", "m1"]);
+  assert.deepEqual([secondCycle.reviewers[0].agent, secondCycle.reviewers[0].model], ["b", "n1"]);
+  assert.equal(second.cycle.status, "approved");
+});
+
 test("rotation keeps prior model exclusions pair-scoped for the seat selector", async () => {
   let picked;
   const result = await rotateRemedy({

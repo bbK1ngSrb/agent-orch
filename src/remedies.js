@@ -333,7 +333,7 @@ export async function rotateRemedy({ failure, record, cycle, run, deps = {}, run
     excludedAgents: [...excluded.values()],
   });
   const blockedAuthors = rotateAuthor ? reviewers.map((reviewer) => reviewer.agent) : [];
-  const selected = selector(run.cfg, run.orchDir, author.agent, true, {
+  const selected = selector(run.cfg, run.orchDir, author, true, {
     exclude: [...selectionExcluded],
     persist: false,
     forceRotate: rotateAuthor,
