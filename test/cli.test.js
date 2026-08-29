@@ -4906,6 +4906,61 @@ test("orch task keeps the valid seat from a colliding plural fixed-role fan-out"
   }
 });
 
+test("orch task fans out explicit plural role overrides into two branches", async () => {
+  const repo = initGitRepo("orch-plural-role-fanout-");
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex]\n");
+  const calls = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { calls.push(["author", name]); return { usage: {} }; },
+        async audit() { calls.push(["reviewer", name]); return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+
+  await runMainInRepo(repo, [
+    "task", "plural role fanout", "--authors", "claude,codex", "--reviewers", "gemini,grok", "--no-tidy",
+  ], { cycleDeps });
+
+  const branches = gitDep.git(["for-each-ref", "--format=%(refname:short)", "refs/heads/pr"], repo)
+    .trim().split("\n").filter(Boolean);
+  assert.equal(branches.length, 2);
+  assert.ok(branches.some((branch) => branch.startsWith("pr/claude/")));
+  assert.ok(branches.some((branch) => branch.startsWith("pr/codex/")));
+  assert.deepEqual(calls.filter(([role]) => role === "author").map(([, name]) => name), ["claude", "codex"]);
+});
+
+test("orch review sends explicit plural reviewer overrides to both auditors", async () => {
+  const repo = initGitRepo("orch-plural-reviewer-panel-");
+  const branch = "pr/other/plural-reviewers";
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "orch.yml"), "agents: [claude, codex, other]\n");
+  const audits = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    adapters: {
+      get: (name) => ({
+        name,
+        async author() { assert.fail("review mode must not author"); },
+        async audit() { audits.push(name); return { decision: "AGREE", reason: "ok", raw: "" }; },
+      }),
+    },
+  };
+
+  await runMainInRepo(repo, ["review", branch, "--reviewers", "claude,codex"], {
+    cycleDeps, finishRun: async () => {},
+  });
+
+  assert.deepEqual(audits.sort(), ["claude", "codex"]);
+});
+
 test("orch review permits an explicitly requested reviewer who authored the branch", async () => {
   const repo = initGitRepo("orch-fixed-self-review-");
   const branch = "pr/claude/review-self";
