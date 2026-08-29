@@ -1,0 +1,22 @@
+orch release — write the version bump and CHANGELOG entry by hand.
+
+Usage: orch release "<changelog entry>" [options]
+
+A clean cycle does this bookkeeping itself when it lands, but only in repos
+that set release.autoBump: true. When such a cycle escalates and a human merges
+the branch instead, that step never runs — this command performs it alone, in
+the dedicated integration worktree, on the integration branch. It always bumps
+and never consults release.autoBump. It writes no git tag: tagging is CI's job.
+
+Options:
+  --dry                   Print the bump and the entry; write nothing.
+
+Arguments: the changelog entry text. Unquoted words are joined with spaces.
+
+Exit codes: 0 written ·
+1 the worktree was dirty, on the wrong branch, or the bump failed ·
+64 usage error.
+
+Examples:
+  orch release "hand-landed guardrail fix (closes #123)"
+  orch release "hand-landed guardrail fix" --dry

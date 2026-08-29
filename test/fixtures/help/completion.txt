@@ -1,0 +1,25 @@
+orch completion — print or install the bash completion script.
+
+Usage: orch completion [bash]
+       orch completion install [--dry]
+
+The completion script is generated from the same command schema that drives
+parsing and this help, so tab-completion can never offer a command or flag the
+parser would refuse. `orch completion` (or `orch completion bash`) prints the
+script to stdout; `orch completion install` writes it to
+~/.orch/completion.bash and tells you the line to add to ~/.bashrc. Because the
+plain form only writes to stdout, you can redirect it wherever your shell looks
+for completions — `> /etc/bash_completion.d/orch` for a system-wide install.
+
+Options:
+  --dry                   With `install`: print the path; write nothing.
+                          Refused on the plain form, which never writes.
+
+Arguments: at most one target, `bash` or `install`. Default: bash.
+
+Exit codes: 0 printed or installed · 1 could not write the script ·
+64 usage error.
+
+Examples:
+  orch completion install
+  orch completion bash
