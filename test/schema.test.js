@@ -402,7 +402,6 @@ test("repeating a single-value flag is a usage error", () => {
 test("help renders grouped pages from the schema without leaking scoped flags", () => {
   const global = renderHelp();
   for (const name of Object.keys(COMMANDS)) {
-    assert.match(global, new RegExp(`\\b${name}\\b`), `global help missing command ${name}`);
     const page = renderHelp(name);
     for (const flag of COMMANDS[name].flags) {
       assert.match(page, new RegExp(`--${flag}(?![\\w-])`), `orch ${name} --help omits --${flag}`);
@@ -418,6 +417,29 @@ test("help renders grouped pages from the schema without leaking scoped flags", 
     if (GLOBAL_FLAGS.includes(flag)) continue;
     assert.doesNotMatch(global, new RegExp(`^\\s+--${flag}(?![\\w-])`, "m"), `global help lists --${flag}`);
   }
+});
+
+// §6.4 test 5 — the command axis, bidirectional. A \b substring match (the
+// prior version of this guard) passes even when a command is missing from
+// the global page (its own page's prose can satisfy the regex — e.g. a
+// command named "land" whose title mentions "land") or when a stale row
+// survives for a command deleted from COMMANDS. Extracting the grouped rows
+// and comparing the two command sets directly closes both directions.
+//
+// `update` is COMMANDS' one deliberate exception: it is `upgrade`'s alias
+// and shares upgrade's row ("upgrade, update") instead of getting its own,
+// same as the schema.js comment on COMMANDS.update says.
+test("every command in COMMANDS has exactly one grouped row in the global help, and vice versa", () => {
+  const global = renderHelp();
+  const groupsStart = global.indexOf("Set up a repo:\n");
+  const groupsEnd = global.indexOf("\n\nOptions (valid on every command):");
+  const groups = global.slice(groupsStart, groupsEnd);
+  const listed = groups
+    .split("\n")
+    .filter((line) => /^ {2}\S/.test(line))
+    .map((line) => line.match(/^ {2}(\S+)/)[1].replace(/,$/, ""));
+  const expected = Object.keys(COMMANDS).filter((name) => name !== "update");
+  assert.deepEqual(listed.sort(), expected.sort());
 });
 
 test("the help option rows stay bidirectionally aligned with command flags", () => {

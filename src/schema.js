@@ -77,37 +77,26 @@ export const SUBCOMMAND_FLAGS = {
 // Commands. `flags` is what the command actually reads — anything else typed
 // on it is a usage error, not a silent no-op. `mutates: false` marks a
 // read-only command, which is what makes `--dry` on it meaningless rather than
-// merely unsupported. `rows` is the command's help text (a command can render
-// more than one row, e.g. `agent add` / `agent build`).
+// merely unsupported. Help text for each command lives in GLOBAL_ROWS and
+// HELP_PAGES below, not here.
 export const COMMANDS = {
   init: {
     mutates: true, flags: ["config-file", "dry", "link"],
-    rows: [["init", "Scaffold .orch/orch.yml and .orch/ORCH.md."]],
   },
   // Mutating: runConfigWizard creates .orch/ and writes orch.yml. `--check`
   // and `--json` select the non-interactive report path; with neither flag,
   // cli.js keeps the legacy wizard until the v0.5 cutover.
   config: {
     mutates: true, flags: ["config-file", "dry", "check", "json"],
-    rows: [["config", "Check config or interactively edit an orch YAML config."]],
   },
   agent: {
     mutates: true, flags: [...new Set([...SUBCOMMAND_FLAGS["agent add"], ...SUBCOMMAND_FLAGS["agent build"]])],
-    rows: [
-      ["agent add <name>", "Add a registered agent to the rotation pool."],
-      ["agent build <name>", "Scaffold an adapter via orch's author/audit/test loop."],
-    ],
   },
   task: {
     mutates: true, flags: [...RUN_FLAGS, "file", "cheap", "allow-protected", "json"],
-    rows: [
-      ['task "change"', "Run a cycle and update orch/integration on merge."],
-      ["task --file <file>", "Run a cycle from an untrusted JSON work order."],
-    ],
   },
   issue: {
     mutates: true, flags: [...RUN_FLAGS, "cheap", "allow-protected", "json"],
-    rows: [["issue <number>", "Run from a GitHub issue and close it on merge."]],
   },
   review: {
     // No --author/--authors: review audits an existing branch, whose author is
@@ -120,7 +109,6 @@ export const COMMANDS = {
     // exists to prove the protected-path floor blocks that merge). Whether
     // --no-tidy should therefore be legal here is #528's call, not a help fix.
     mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-tidy", "author", "authors"].includes(f)), "cheap", "json"],
-    rows: [["review <branch>", "Audit an existing branch without merging."]],
   },
   continue: {
     // No --author: the branch's commits were authored by a specific agent
@@ -128,7 +116,6 @@ export const COMMANDS = {
     // accepting the flag and ignoring it is the exact lie this schema removes.
     // --reviewer(s) IS honoured (see the `continue` handler in cli.js).
     mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-banner", "author", "authors"].includes(f)), "json"],
-    rows: [["continue <sid>", "Resume an interrupted/stalled cycle from its checkpoint."]],
   },
   // No --author/--authors: pr audits an existing PR/branch, it never assigns
   // an author. applyRoleOverrides is called with allowReviewerOnly, so a
@@ -138,43 +125,32 @@ export const COMMANDS = {
   // `--merge` remains a compatibility alias until the P12 clean break.
   pr: {
     mutates: true, flags: ["config-file", "dry", "merge", "until", "detach", "allow-large-scope", "reviewer", "reviewers", "json"],
-    rows: [["pr <number|branch>", "Review a PR/branch; --until controls readiness."]],
   },
   release: {
     mutates: true, flags: ["dry"],
-    rows: [['release "entry"', "Bump version + CHANGELOG by hand (autoBump repos only)."]],
   },
   dashboard: {
     mutates: false, flags: ["json", "limit", "check-history", "once", "plain", "refresh-ms"],
-    rows: [["dashboard", "Live status TUI; --once prints the static one-shot."]],
   },
   mcp: {
     mutates: false, flags: [],
-    rows: [["mcp", "Serve orch as an MCP server over stdio (for AI clients)."]],
   },
   upgrade: {
     mutates: true, flags: ["check", "dry"],
-    rows: [["upgrade, update", "Self-update the global npm install."]],
   },
-  update: { mutates: true, flags: ["check", "dry"], rows: [] }, // alias, documented on upgrade's row
+  update: { mutates: true, flags: ["check", "dry"] }, // alias, documented on upgrade's row
   completion: {
     // `completion install` writes ~/.orch/completion.bash, so it needs --dry
     // like every other mutating command. `completion [bash]` only prints —
     // validatePositionals below rejects --dry there instead of letting it
     // through as a silent no-op on the one subcommand it doesn't apply to.
     mutates: true, flags: ["dry"],
-    rows: [
-      ["completion [bash]", "Print the bash completion script (default: bash)."],
-      ["completion install", "Write the completion script to ~/.orch/completion.bash."],
-    ],
   },
   version: {
     mutates: false, flags: [],
-    rows: [["version", "Print the version (same as --version)."]],
   },
   help: {
     mutates: false, flags: [],
-    rows: [["help", "Show this help."]],
   },
 };
 
