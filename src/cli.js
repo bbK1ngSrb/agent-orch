@@ -608,9 +608,15 @@ function nextPoolAuthor(pool, orchDir, pinnedAuthor, dry, options, isExcluded, b
   const persist = !dry && options.persist !== false;
   if (persist) mkdirSync(orchDir, { recursive: true });
   const f = join(orchDir, "last-author");
-  const pinnedRole = typeof pinnedAuthor === "object" && pinnedAuthor?.agent
-    ? pinnedAuthor : pool.authors.find((role) => role.agent === pinnedAuthor);
-  const pinnedIndex = pinnedRole ? pool.authors.findIndex((role) => sameRole(role, pinnedRole)) : -1;
+  const last = existsSync(f) ? readFileSync(f, "utf8").trim() : null;
+  const lastIndex = roleIndex(last, pool.authors);
+  const pinnedIndex = typeof pinnedAuthor === "object" && pinnedAuthor?.agent
+    ? pool.authors.findIndex((role) => sameRole(role, pinnedAuthor))
+    : Number.isInteger(pinnedAuthor) || (typeof pinnedAuthor === "string" && /^\d+$/.test(pinnedAuthor))
+      ? roleIndex(pinnedAuthor, pool.authors)
+      : /^\d+$/.test(last) && lastIndex >= 0 && pool.authors[lastIndex].agent === pinnedAuthor
+        ? lastIndex : pool.authors.findLastIndex((role) => role.agent === pinnedAuthor);
+  const pinnedRole = pinnedIndex >= 0 ? pool.authors[pinnedIndex] : null;
   const pinnedName = pinnedRole?.agent;
   const select = (author, authorIndex) => {
     const reviewers = author ? poolReviewers(pool, author.agent, authorIndex, isExcluded) : [];
@@ -627,8 +633,6 @@ function nextPoolAuthor(pool, orchDir, pinnedAuthor, dry, options, isExcluded, b
   if (pinnedRole && !isExcluded(pinnedRole) && !blockedAuthors.has(pinnedName) && !options.forceRotate)
     return select(pinnedRole, pinnedIndex);
 
-  const last = existsSync(f) ? readFileSync(f, "utf8").trim() : null;
-  const lastIndex = roleIndex(last, pool.authors);
   const start = options.forceRotate && pinnedIndex >= 0
     ? (pinnedIndex + 1) % pool.authors.length
     : (lastIndex >= 0 ? (lastIndex + 1) % pool.authors.length : 0);
@@ -659,6 +663,7 @@ export function applyRoleOverrides(cfg, flags, opts = {}) {
   if (authorValue == null && reviewerValue != null && opts.allowReviewerOnly) {
     return markCliRoleOverrides({
       ...cfg,
+      authors: null,
       reviewer: null,
       reviewers: splitNames(reviewerValue),
     });

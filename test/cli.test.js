@@ -2741,6 +2741,23 @@ test("configured role pools read legacy names and integer last-author pointers",
     [{ agent: "claude", model: "opus-4.8", effort: null }]);
 });
 
+test("configured role pools resume string and object author pins by seat", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-cli-pool-resume-pin-"));
+  const cfg = {
+    agents: ["claude", "codex"],
+    authors: ["claude sonnet-4.6", "claude opus-4.8"],
+    reviewers: ["codex", "codex"],
+  };
+  writeFileSync(join(d, "last-author"), "1\n");
+  assert.deepEqual(nextAuthor(cfg, d, "claude", true).authors,
+    [{ agent: "claude", model: "opus-4.8", effort: null }]);
+  assert.deepEqual(nextAuthor(cfg, d, { agent: "claude", model: "sonnet-4.6", effort: null }, true).authors,
+    [{ agent: "claude", model: "sonnet-4.6", effort: null }]);
+  writeFileSync(join(d, "last-author"), "claude\n");
+  assert.deepEqual(nextAuthor(cfg, d, "claude", true).authors,
+    [{ agent: "claude", model: "opus-4.8", effort: null }]);
+});
+
 test("configured role pools advance past a same-agent reviewer at the paired index", () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cli-pool-diversity-"));
   const cfg = {
@@ -4417,6 +4434,23 @@ test("task --reviewer-only forces reviewers while rotating the author (D2)", () 
   assert.equal(picked.authorName, "claude"); // rotation author
   assert.deepEqual(picked.reviewerNames, ["codex"]); // forced reviewer, not rotation's codex-by-chance alone
   assert.deepEqual(picked.reviewers, [{ agent: "codex", model: null, effort: null }]);
+});
+
+test("task --reviewer-only does not fan out an inherited YAML role pool", () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-reviewer-only-pool-"));
+  const cfg = applyRoleOverrides({
+    agents: ["claude", "codex", "gemini"],
+    authors: ["claude sonnet-4.6", "codex", "gemini"],
+    reviewers: ["codex", "gemini", "claude"],
+  }, { reviewer: "codex" }, { allowReviewerOnly: true });
+
+  const options = { blockedAuthors: ["codex"] };
+  const first = nextAuthor(cfg, d, null, false, options);
+  const second = nextAuthor(cfg, d, null, false, options);
+  assert.deepEqual(first.authorNames, ["claude"]);
+  assert.deepEqual(first.reviewerNames, ["codex"]);
+  assert.deepEqual(second.authorNames, ["gemini"]);
+  assert.deepEqual(second.reviewerNames, ["codex"]);
 });
 
 import { resolveTaskBranch } from "../src/cli.js";
