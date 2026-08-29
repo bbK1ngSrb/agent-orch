@@ -8,7 +8,7 @@
 **Reads first:** `docs/cli-v2-proposal.md` (contract), `docs/cli-v2-design.md`
 (mechanics; glossary in its §0 — the same names are used here).
 **Baseline:** commit `5879651` (v0.4.315), 2070/2070 tests green
-(`node --test`, 4.7 s).
+(`npm test`, 4.7 s).
 
 ---
 
@@ -433,7 +433,7 @@ flip is deferred to P12 and every earlier slice is additive or message-only.
 ```
 # all slices
 npm test                                            # 2070 + new, 0 fail
-node --test test/<new-file>.test.js                 # the slice's own file
+npm test -- test/<new-file>.test.js                 # the slice's own file
 git merge-base --is-ancestor origin/orch/integration origin/main   # after each hand-land (repo rule)
 
 # P0
