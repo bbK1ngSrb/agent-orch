@@ -267,7 +267,9 @@ test("two-agent author rotation uses the failed seat's next configured model", a
   });
   assert.equal(usedModel, "model-a");
   assert.deepEqual(picked.excludedAgents.map((entry) => entry.name), ["a"]);
+  assert.equal(picked.excludedAgents[0].model, null);
   assert.deepEqual(result.record.excludedAgents.map((entry) => entry.name), ["a"]);
+  assert.equal(result.record.excludedAgents[0].model, null);
   assert.equal(result.cycle.status, "approved");
 });
 
@@ -314,8 +316,42 @@ test("two-agent reviewer rotation uses the failed seat's next configured model",
   assert.equal(picked.author.agent, "a");
   assert.equal(picked.reviewers[0].agent, "b");
   assert.deepEqual(picked.excludedAgents.map((entry) => entry.name), ["b"]);
+  assert.equal(picked.excludedAgents[0].model, null);
   assert.deepEqual(result.record.excludedAgents.map((entry) => entry.name), ["b"]);
+  assert.equal(result.record.excludedAgents[0].model, null);
   assert.equal(result.cycle.status, "approved");
+});
+
+test("multi-reviewer rotation advances every failed reviewer's model ladder", async () => {
+  let picked;
+  const result = await rotateRemedy({
+    failure: { class: "AGENT_QUOTA" },
+    cycle: {
+      failedRole: "reviewer",
+      failedAgents: [{ agent: "b", quota: true }, { agent: "c", quota: true }],
+    },
+    record: { attempt: 1, excludedAgents: [] },
+    run: {
+      author: { agent: "a" }, reviewers: [{ agent: "b" }, { agent: "c" }],
+      cfg: {
+        agents: ["a", "b", "c"],
+        automation: { rotateModels: { b: ["model-b"], c: ["model-c"] } },
+      },
+      orchDir: mkdtempSync(join(tmpdir(), "orch-rotate-reviewer-models-")),
+    },
+    deps: { adapters: { get: () => ({ capabilities: { model: true } }) } },
+    selectRoles: nextAuthor,
+    runCycle: async (cycle) => { picked = cycle; return { status: "approved" }; },
+  });
+  assert.deepEqual(picked.reviewers.map((reviewer) => [reviewer.agent, reviewer.model]), [
+    ["b", "model-b"], ["c", "model-c"],
+  ]);
+  assert.deepEqual(picked.excludedAgents.map((entry) => [entry.name, entry.model]), [
+    ["b", null], ["c", null],
+  ]);
+  assert.deepEqual(result.record.excludedAgents.map((entry) => [entry.name, entry.model]), [
+    ["b", null], ["c", null],
+  ]);
 });
 
 test("two-agent author rotation degrades when the model ladder is exhausted", async () => {
@@ -336,6 +372,26 @@ test("two-agent author rotation degrades when the model ladder is exhausted", as
   assert.equal(result.result.state, "STOPPED_AT_CAP");
   assert.equal(result.result.outcome, "stopped-at-cap");
   assert.equal(result.result.exit, 2);
+});
+
+test("a seated model absent from its ladder follows the degraded path", async () => {
+  let calls = 0;
+  const result = await rotateRemedy({
+    failure: { class: "AGENT_QUOTA" },
+    cycle: { failedRole: "author", failedAgents: [{ agent: "a", quota: true }] },
+    record: { attempt: 1, excludedAgents: [] },
+    run: {
+      author: { agent: "a", model: "not-listed" }, reviewers: [{ agent: "b" }],
+      cfg: { agents: ["a", "b"], automation: { rotateModels: { a: ["model-a"] } } },
+      orchDir: mkdtempSync(join(tmpdir(), "orch-rotate-model-mismatch-")),
+    },
+    deps: { adapters: { get: () => ({ capabilities: { model: true } }) } },
+    selectRoles: nextAuthor,
+    runCycle: async () => { calls += 1; return { status: "approved" }; },
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.result.outcome, "stopped-at-cap");
+  assert.ok(result.record.excludedAgents.some((entry) => entry.name === "a" && !Object.hasOwn(entry, "model")));
 });
 
 test("rebase remedy uses the real integration branch and returns a fresh cycle", async () => {

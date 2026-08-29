@@ -2341,6 +2341,56 @@ test("orch continue re-seats an excluded author from the inflight record", async
   assert.equal(inflight.lookup(orchDir, sid), null);
 });
 
+test("orch continue resumes a rotated model without excluding its seated agent", async () => {
+  const repo = initGitRepo("orch-continue-rotate-model-");
+  const orchDir = join(repo, ".orch");
+  const sid = "rotate-model-resume";
+  const branch = `pr/claude/model-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  writeFileSync(join(repo, "orch.yml"), [
+    "agents: [claude, codex]",
+    "automation:",
+    "  rotateModels:",
+    "    claude: [model-a, model-b]",
+    "",
+  ].join("\n"));
+  inflight.register(orchDir, sid, {
+    branch, pid: 999999999, baseSha: gitDep.git(["rev-parse", "main"], repo),
+    author: { agent: "claude", model: "model-b", effort: null },
+    reviewers: [{ agent: "codex", model: null, effort: null }],
+    excludedAgents: [{ name: "claude", model: "model-a", reason: "quota", at: "2026-08-27T00:00:00.000Z" }],
+    rotationStage: "started",
+  });
+
+  const authorModels = [];
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    checkpoint: checkpointDep,
+    adapters: {
+      get: (name) => ({
+        name,
+        async author(_prompt, worktree, options) {
+          authorModels.push([name, options.model]);
+          if (name === "claude") {
+            writeFileSync(join(worktree, "replacement.txt"), "replacement\n");
+            gitDep.git(["add", "replacement.txt"], worktree);
+            gitDep.git(["commit", "-m", "replacement author work"], worktree);
+          }
+          return { usage: {} };
+        },
+        async audit() { return { decision: "AGREE", reason: "ok", raw: "", usage: {} }; },
+      }),
+    },
+  };
+
+  await runMainInRepo(repo, ["continue", sid, "--no-tidy"], { cycleDeps, finishRun: async () => {} });
+  assert.deepEqual(authorModels, [["claude", "model-b"]]);
+  assert.equal(inflight.lookup(orchDir, sid), null);
+});
+
 test("orch continue preserves a reviewer rotation if killed before its checkpoint", async () => {
   const repo = initGitRepo("orch-continue-reviewer-rotate-");
   const orchDir = join(repo, ".orch");

@@ -383,6 +383,10 @@ test("automation.rotateModels defaults to empty and validates model ladders", ()
     writeFileSync(join(bad, "orch.yml"), `automation:\n  rotateModels: ${value}\n`);
     assert.throws(() => load(bad), /automation\.rotateModels must map/);
   }
+
+  const unknown = tmp();
+  writeFileSync(join(unknown, "orch.yml"), "automation:\n  rotateModels:\n    not-an-adapter: [model]\n");
+  assert.throws(() => load(unknown), /automation\.rotateModels\.not-an-adapter.*unknown adapter/);
 });
 
 test("main.autoMerge defaults to false; non-boolean throws", () => {
