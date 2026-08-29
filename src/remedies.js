@@ -155,6 +155,15 @@ function agentName(value) {
   return typeof value === "string" ? value : value?.agent || value?.name;
 }
 
+function hasModel(value) {
+  return value !== null && typeof value === "object"
+    && Object.prototype.hasOwnProperty.call(value, "model");
+}
+
+function exclusionKey(value) {
+  return `${agentName(value)}\0${hasModel(value) ? JSON.stringify(value.model) : "*"}`;
+}
+
 function currentRoles(run) {
   const author = roleSpec(run?.author || { agent: run?.authorName });
   const reviewers = (run?.reviewers || run?.reviewerNames || [run?.reviewerName])
@@ -163,22 +172,74 @@ function currentRoles(run) {
   return { author, reviewers };
 }
 
-function exclusionEntry(value, fallbackReason = "error") {
+function nextModelRole(role, run, deps) {
+  const models = run?.cfg?.automation?.rotateModels?.[role?.agent];
+  if (!role?.agent || !Array.isArray(models)) return null;
+  let adapter;
+  try { adapter = deps.adapters?.get?.(role.agent); } catch { return null; }
+  if (!adapter?.capabilities?.model) return null;
+
+  const current = role.model ?? null;
+  const currentIndex = current == null ? -1 : models.indexOf(current);
+  if (current != null && currentIndex === -1) return null;
+  const model = models.slice(currentIndex + 1)
+    .find((candidate) => typeof candidate === "string" && candidate.trim() && candidate !== current);
+  return model ? { ...role, model } : null;
+}
+
+function exclusionEntry(value, fallbackReason = "error", model) {
   const name = agentName(value);
   if (!name) return null;
-  if (typeof value === "object" && value.name) {
-    return { name, reason: value.reason || fallbackReason, at: value.at || new Date().toISOString() };
-  }
-  return { name, reason: fallbackReason, at: new Date().toISOString() };
+  const valueModel = hasModel(value) ? value.model : model;
+  return {
+    name,
+    ...(valueModel !== undefined ? { model: valueModel } : {}),
+    reason: typeof value === "object" ? value.reason || fallbackReason : fallbackReason,
+    at: typeof value === "object" ? value.at || new Date().toISOString() : new Date().toISOString(),
+  };
 }
 
 function exclusionMap(values = []) {
   const entries = new Map();
   for (const value of values) {
     const entry = exclusionEntry(value);
-    if (entry && !entries.has(entry.name)) entries.set(entry.name, entry);
+    if (entry && !entries.has(exclusionKey(entry))) entries.set(exclusionKey(entry), entry);
   }
   return entries;
+}
+
+function modelLadder(role, run) {
+  const models = run?.cfg?.automation?.rotateModels?.[role?.agent];
+  return Array.isArray(models) ? models : null;
+}
+
+function agentExcluded(exclusions, name) {
+  return [...exclusions.values()].some((entry) => agentName(entry) === name && !hasModel(entry));
+}
+
+function isExcludedRole(role, exclusions) {
+  const name = agentName(role);
+  if (!name) return false;
+  return exclusions.some((entry) => agentName(entry) === name
+    && (!hasModel(entry) || (hasModel(role) && entry.model === role.model)));
+}
+
+function clearAgentExclusion(exclusions, name) {
+  for (const [key, entry] of exclusions) {
+    if (agentName(entry) === name && !hasModel(entry)) exclusions.delete(key);
+  }
+}
+
+function markExhausted(exclusions, role, run, deps, reason = "quota") {
+  if (!role || !modelLadder(role, run) || nextModelRole(role, run, deps) !== null) return;
+  const prior = [...exclusions.values()].find((entry) => agentName(entry) === role.agent);
+  clearAgentExclusion(exclusions, role.agent);
+  const entry = {
+    name: role.agent,
+    reason: prior?.reason || reason,
+    at: prior?.at || new Date().toISOString(),
+  };
+  exclusions.set(exclusionKey(entry), entry);
 }
 
 function rotateTerminal(failure, reason, record) {
@@ -197,7 +258,7 @@ function rotateTerminal(failure, reason, record) {
 
 function selectionDetail({ excluded = [], blockedAuthors = [], agents = [] } = {}) {
   const details = [];
-  if (excluded.length) details.push(`excluded ${[...new Set(excluded)].join(", ")}`);
+  if (excluded.length) details.push(`excluded ${[...new Set(excluded.map(agentName))].join(", ")}`);
   if (blockedAuthors.length) details.push(`author blocked by reviewer ${[...new Set(blockedAuthors)].join(", ")}`);
   if (agents.length < 2) details.push(`rotation pool has ${agents.length} agent${agents.length === 1 ? "" : "s"}`);
   return details.join("; ") || "no independent candidate remains in the rotation pool";
@@ -237,12 +298,19 @@ export async function rotateRemedy({ failure, record, cycle, run, deps = {}, run
   if (!failedAgents.length && failedRole === "reviewer" && failure?.class !== "REVIEW_STALEMATE" && reviewers[0]?.agent)
     failedAgents.push(reviewers[0].agent);
 
-  for (const value of failure?.failedAgents || cycle?.failedAgents || []) {
+  const roleForAgent = (name) => [author, ...reviewers].find((role) => role.agent === name);
+  const addFailureExclusion = (value) => {
     const name = agentName(value);
-    if (name) excluded.set(name, exclusionEntry(value, value?.quota ? "quota" : "error"));
-  }
+    if (!name) return;
+    const role = roleForAgent(name);
+    const model = modelLadder(role, run) ? role?.model ?? null : undefined;
+    const entry = exclusionEntry(value, value?.quota ? "quota" : "error", model);
+    if (entry && !excluded.has(exclusionKey(entry))) excluded.set(exclusionKey(entry), entry);
+  };
+  for (const value of failure?.failedAgents || cycle?.failedAgents || []) addFailureExclusion(value);
   for (const name of failedAgents) {
-    if (!excluded.has(name)) excluded.set(name, exclusionEntry(name));
+    addFailureExclusion(name);
+    markExhausted(excluded, roleForAgent(name), run, deps);
   }
 
   if (!failedRole || !author.agent) {
@@ -254,18 +322,18 @@ export async function rotateRemedy({ failure, record, cycle, run, deps = {}, run
 
   // A stalemate has no agent-error metadata. It still vacates the current
   // reviewer for this selection, without permanently burning that agent.
-  const selectionExcluded = new Set(excluded.keys());
+  const selectionExcluded = [...excluded.values()];
   if (failure?.class === "REVIEW_STALEMATE" && !failedAgents.length && reviewers[0]?.agent)
-    selectionExcluded.add(reviewers[0].agent);
+    selectionExcluded.push({ name: reviewers[0].agent });
 
-  const rotateAuthor = failedRole === "author" || excluded.has(author.agent);
+  const rotateAuthor = failedRole === "author" || agentExcluded(excluded, author.agent);
   const selector = selectRoles || deps.nextAuthor;
   if (typeof selector !== "function") return rotateTerminal(failure, "seat selector is unavailable", {
     ...currentRecord,
     excludedAgents: [...excluded.values()],
   });
   const blockedAuthors = rotateAuthor ? reviewers.map((reviewer) => reviewer.agent) : [];
-  const selected = selector(run.cfg, run.orchDir, author.agent, true, {
+  const selected = selector(run.cfg, run.orchDir, author, true, {
     exclude: [...selectionExcluded],
     persist: false,
     forceRotate: rotateAuthor,
@@ -273,9 +341,38 @@ export async function rotateRemedy({ failure, record, cycle, run, deps = {}, run
     blockedAuthors,
   });
   const selectedAuthor = selected?.authors?.[0];
-  const nextAuthor = selectedAuthor?.agent === author.agent ? author : selectedAuthor;
-  const nextReviewers = (selected?.reviewers || [])
-    .filter((reviewer) => reviewer.agent !== nextAuthor?.agent && !selectionExcluded.has(reviewer.agent));
+  let nextAuthor = selectedAuthor?.agent === author.agent ? author : selectedAuthor;
+  let nextReviewers = (selected?.reviewers || [])
+    .filter((reviewer) => reviewer.agent !== nextAuthor?.agent && !isExcludedRole(reviewer, selectionExcluded));
+
+  // With no spare adapter seat, keep the failed role but advance its model
+  // ladder. The failed adapter remains in excludedAgents so a later exhausted
+  // ladder still follows the normal degraded terminal path.
+  if (!nextAuthor || !nextReviewers.length) {
+    if (failedRole === "author") {
+      const replacement = nextModelRole(author, run, deps);
+      const replacementReviewers = reviewers
+        .filter((reviewer) => reviewer.agent !== replacement?.agent && !isExcludedRole(reviewer, selectionExcluded));
+      if (replacement && replacementReviewers.length) {
+        clearAgentExclusion(excluded, replacement.agent);
+        nextAuthor = replacement;
+        nextReviewers = replacementReviewers;
+      }
+    } else {
+      const failedReviewerNames = new Set(failedAgents.length ? failedAgents : [reviewers[0]?.agent]);
+      const replacements = reviewers.map((reviewer) => {
+        if (!failedReviewerNames.has(reviewer.agent)) return reviewer;
+        const replacement = nextModelRole(reviewer, run, deps);
+        if (!replacement) return null;
+        clearAgentExclusion(excluded, replacement.agent);
+        return replacement;
+      }).filter(Boolean);
+      if (replacements.length && nextAuthor) {
+        nextReviewers = replacements.filter((reviewer) => reviewer.agent !== nextAuthor.agent);
+      }
+    }
+  }
+
   if (!nextAuthor) {
     return rotateTerminal(failure, `no diverse author candidate remains — ${selectionDetail({
       excluded: [...selectionExcluded], blockedAuthors, agents: run.cfg?.agents || [],

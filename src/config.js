@@ -58,7 +58,7 @@ const DEFAULTS = {
     humanWaitHours: 24, // bounded wait for an `ask` reply; continue resumes it later
     mcpMayMerge: false, // MCP may request `--until merged` only when explicitly enabled
     remedies: null, // null uses the failure table order; operators may override the priority
-    rotateModels: {}, // accepted v2 key; model ladders remain inert until the rotate remedy consumes them
+    rotateModels: {}, // optional per-agent model ladders consumed by the rotate remedy
     pollSeconds: 30, // initial readiness poll interval; backs off 2x per attempt, capped at 10 min
     ciWaitMinutes: 30, // bound on one readiness wait window before it counts as an attempt (REMOTE_CI_TIMEOUT)
     conflictResolvers: null, // canonical spelling of main.conflictResolutionResolvers
@@ -225,9 +225,15 @@ export function validate(cfg, roundCapKey = "roundCap", landingKey = cfg?.landin
   if (typeof cfg.automation.mcpMayMerge !== "boolean")
     throw new Error("orch.yml: automation.mcpMayMerge must be a boolean");
   if (!isObject(cfg.automation.rotateModels)
-    || Object.values(cfg.automation.rotateModels).some((models) => !Array.isArray(models)
-      || models.length < 1 || !models.every((model) => typeof model === "string" && model.trim())))
-    throw new Error("orch.yml: automation.rotateModels must map agents to non-empty lists of model strings");
+    || Object.entries(cfg.automation.rotateModels).some(([agent, models]) => !/^\S+$/.test(agent)
+      || !Array.isArray(models) || models.length < 1
+      || new Set(models).size !== models.length
+      || !models.every((model) => typeof model === "string" && model.trim())))
+    throw new Error("orch.yml: automation.rotateModels must map agents to non-empty, duplicate-free lists of model strings");
+  for (const agent of Object.keys(cfg.automation.rotateModels)) {
+    try { getAdapter(agent); }
+    catch { throw new Error(`orch.yml: automation.rotateModels.${agent} names an unknown adapter`); }
+  }
   const remedyNames = new Set(["rebase", "rotate", "reauthor", "ask"]);
   if (cfg.automation.remedies !== null && (!Array.isArray(cfg.automation.remedies)
     || new Set(cfg.automation.remedies).size !== cfg.automation.remedies.length
