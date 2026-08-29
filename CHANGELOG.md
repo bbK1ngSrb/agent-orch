@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.361 — 2026-08-29
+- fix(rotate): use configured model ladders (closes [#567](https://github.com/bbk1ng/agent-orch/issues/567))
+
 ## v0.4.360 — 2026-08-28
 - CLI v2 P11 config keys in warn mode, config --check/--json, gateTimeout; retry wrapper for orch's own gh calls with escalation spill-to-file
 
