@@ -19,6 +19,16 @@ test("record then lookup round-trips branch + sid", () => {
   );
 });
 
+test("record preserves a resolved author role spec while clear remains name-keyed", () => {
+  const d = freshDir();
+  const author = { agent: "claude", model: "opus-4.8", effort: "high" };
+  resume.record(d, "do x", author, { branch: "pr/claude/do-x-1-a", sid: "1-a" });
+  assert.deepEqual(resume.lookup(d, "do x", "claude").author, author);
+  assert.deepEqual(resume.lookup(d, "do x", author).author, author);
+  resume.clear(d, "do x", "claude");
+  assert.equal(resume.lookup(d, "do x", "claude"), null);
+});
+
 test("lookup returns null for a different task or author", () => {
   const d = freshDir();
   resume.record(d, "do x", "claude", { branch: "b", sid: "s" });

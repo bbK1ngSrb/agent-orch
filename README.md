@@ -132,14 +132,17 @@ author: qwen3-coder-30b   # writes the change
 reviewer: claude          # audits it
 ```
 Set both or neither. Unset → the `agents:` list rotates author each cycle.
-For parallel authors/reviewers, use plural lists:
+For a configured rotation pool with per-seat model and effort, use plural role
+specs. One author and one reviewer run per cycle; the reviewer is chosen at
+the matching index and advanced until it names a different agent:
 ```yaml
-authors: [claude, codex]     # each writes a separate branch
-reviewers: [claude, codex]   # all audit each branch, except its author
+authors: ["claude claude-sonnet-5", "codex gpt-5.6-luna"]
+reviewers: ["codex gpt-5.6-sol", "claude claude-opus-5"]
 ```
-CLI flags override `orch.yml`: `--author/--reviewer` or comma-separated
-`--authors/--reviewers`. A role is a spec `"<agent> [model] [effort]"` — agent
-required, model and effort optional. Valid `effort` values: `minimal`, `low`,
+CLI flags override `orch.yml`: `--author/--reviewer` pins one pair, while
+comma-separated `--authors/--reviewers` retain the parallel fan-out/panel
+behavior. A role is a spec `"<agent> [model] [effort]"` — agent required, model
+and effort optional. Valid `effort` values: `minimal`, `low`,
 `medium`, `high`, `xhigh`, `max` (which ones a given agent CLI actually honors
 depends on the agent — e.g. codex takes effort via a `-c` config override
 rather than a flag).

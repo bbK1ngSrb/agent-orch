@@ -34,12 +34,13 @@ agents:
 #
 # author: claude claude-opus-4-8 high        # single author spec
 # reviewer: codex                            # single reviewer spec
-# authors:                                   # each writes its own branch
+# authors:                                   # one rotating author per cycle
 #   - claude claude-opus-4-8 high
 #   - codex
-# reviewers:                                 # all audit each branch, except its author
+# reviewers:                                 # one rotating, cross-agent reviewer per cycle
 #   - claude
 #   - codex high
+# CLI --authors/--reviewers keeps the parallel fan-out/panel behavior.
 
 
 # ===================================================================

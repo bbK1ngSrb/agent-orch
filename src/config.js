@@ -7,8 +7,8 @@ const DEFAULTS = {
   agents: ["claude", "codex"],
   author: null, // explicit fixed author; null = rotate through `agents`
   reviewer: null, // explicit fixed reviewer; pairs with `author`
-  authors: null, // plural fixed authors; pairs with `reviewers`
-  reviewers: null, // plural fixed reviewers; pairs with `authors`
+  authors: null, // configured role-spec pool; pairs with `reviewers`
+  reviewers: null, // configured role-spec pool; pairs with `authors`
   test: "auto",
   roundCap: 3, // max review rounds, counting the initial review as round 1
                // (so 3 = 3 reviews / 2 revisions). `reviseCap` is the deprecated alias.
@@ -170,6 +170,19 @@ export function validate(cfg, roundCapKey = "roundCap", landingKey = cfg?.landin
     throw new Error("orch.yml: authors must be a non-empty list of strings");
   if (cfg.reviewers != null && (!Array.isArray(cfg.reviewers) || cfg.reviewers.length < 1 || !cfg.reviewers.every((r) => typeof r === "string" && r.trim())))
     throw new Error("orch.yml: reviewers must be a non-empty list of strings");
+  if (cfg.authors != null) {
+    const authors = parseRoleSpecs(cfg.authors);
+    const reviewers = parseRoleSpecs(cfg.reviewers);
+    for (let i = 0; i < authors.length; i += 1) {
+      const author = authors[i];
+      const start = i % reviewers.length;
+      const diverse = reviewers.some((_, step) =>
+        reviewers[(start + step) % reviewers.length].agent !== author.agent);
+      if (!diverse) {
+        throw new Error(`orch.yml: authors[${i}] (${author.agent}) has no reviewer with a different agent`);
+      }
+    }
+  }
   const landing = cfg.landing ?? cfg.merge;
   if (!["ff-only", "no-ff", "pr"].includes(landing))
     throw new Error(`orch.yml: ${landingKey} must be ff-only, no-ff, or pr`);

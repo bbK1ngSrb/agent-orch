@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.363 — 2026-08-29
+- docs: add the v0.5.0 documentation set as drafts under `docs/drafts/`
+
+## v0.4.362 — 2026-08-29
+- feat: rotate configured role pools (closes [#532](https://github.com/bbk1ng/agent-orch/issues/532))
+- **BREAKING (config):** `authors:` and `reviewers:` are now rotation pools, not frozen seats
+  (see [#603](https://github.com/bbk1ng/agent-orch/issues/603)). Two previously-valid configs
+  change behaviour: `authors: [claude]` + `reviewers: [claude]` now fails to load
+  (`authors[0] (claude) has no reviewer with a different agent`), and
+  `authors: [claude, codex]` + `reviewers: [claude, codex]` no longer fans out to one full cycle
+  per author — it seats one rotating author/reviewer pair per cycle.
+
 ## v0.4.361 — 2026-08-29
 - fix(rotate): use configured model ladders (closes [#567](https://github.com/bbk1ng/agent-orch/issues/567))
 
