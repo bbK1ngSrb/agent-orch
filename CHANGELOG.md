@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.364 — 2026-08-29
+- feat(cli): grouped global help and a help page per command (closes #605)
+
 ## v0.4.363 — 2026-08-29
 - docs: add the v0.5.0 documentation set as drafts under `docs/drafts/`
 

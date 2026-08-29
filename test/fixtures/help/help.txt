@@ -1,0 +1,17 @@
+orch help — show this help.
+
+Usage: orch help [command]
+
+With no argument, prints the command list, the global options and the exit
+codes. With a command name, prints that command's page — `orch help task` and
+`orch task --help` are the same thing, and print the same bytes.
+
+Options: none.
+
+Arguments: at most one command name.
+
+Exit codes: 0 printed · 64 unknown command name.
+
+Examples:
+  orch help
+  orch help pr

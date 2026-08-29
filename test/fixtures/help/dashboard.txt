@@ -1,0 +1,26 @@
+orch dashboard — show live cycle status, run history and metrics.
+
+Usage: orch dashboard [options]
+
+Reads .orch/ — the inflight registry, the run records and runs.jsonl — and
+renders what is running now, the tail of the current log, recent runs and their
+outcomes. On an interactive terminal it opens a live TUI that repaints on a
+timer; anywhere else (piped, redirected, --json, --once) it prints one static
+snapshot and exits, so it is safe in a script. It only reads: nothing here
+changes a run.
+
+Options:
+  --json                  Print one JSON snapshot instead of the TUI.
+  --limit <n>             History rows to show. (default: 10)
+  --check-history         Show stale red rows as resolved when their branch is
+                          gone. View only — runs.jsonl is not rewritten.
+  --once, --plain         Print the static one-shot instead of the TUI.
+  --refresh-ms <n>        TUI repaint interval in ms. (default: 1000)
+
+Arguments: none.
+
+Exit codes: 0 rendered · 1 .orch/ could not be read · 64 usage error.
+
+Examples:
+  orch dashboard
+  orch dashboard --json --limit 5

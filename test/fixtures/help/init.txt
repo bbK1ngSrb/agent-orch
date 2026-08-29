@@ -1,0 +1,24 @@
+orch init — write .orch/orch.yml and .orch/ORCH.md into this repo.
+
+Usage: orch init [options]
+
+Writes a fully commented .orch/orch.yml (every key with its default and a note
+on what it does) plus .orch/ORCH.md, the short usage file agents and humans
+read from inside the repo. The config is written only if neither .orch/orch.yml
+nor a repo-root orch.yml already exists, so your settings survive a re-run;
+.orch/ORCH.md is rewritten every time, so do not hand-edit it. This is the only
+setup step: orch reads config from .orch/orch.yml and needs nothing else.
+
+Options:
+  --link                  Link .orch/ORCH.md from the agent doc files
+                          (CLAUDE.md, AGENTS.md) so an agent finds it.
+  --config-file <path>    Write to this YAML path instead of .orch/orch.yml.
+  --dry                   Print what would be written; write nothing.
+
+Arguments: none.
+
+Exit codes: 0 written · 1 could not write · 64 usage error.
+
+Examples:
+  orch init
+  orch init --link
