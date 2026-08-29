@@ -8,14 +8,14 @@ test can assert it byte-for-byte. Where a block contains a line that describes
 behaviour P12 has not landed yet, the marker sits *outside* the block and the
 unlanded rows are tabulated beneath it — the assertable text stays clean.
 
-**Verified against:** working tree at `733760b` (`v0.4.360`), `src/schema.js`
-(542 lines) and `src/cli.js` (3350 lines), and re-checked against
-`origin/orch/integration` at `39177e8` (`v0.4.361`), which is ahead of `main`.
+**Verified against:** `origin/main` at `4345cb6` (`v0.4.361`), `src/schema.js`
+(542 lines) and `src/cli.js` (3388 lines), and re-checked against
+`origin/orch/integration` at `4fa3163` (`v0.4.362`), which is ahead of `main`.
 `src/schema.js` is byte-identical on both branches — integration's only `src/`
-changes are in `cli.js`, `config.js` and `remedies.js` — so every claim below
-that is derived from the schema holds on both. Every flag set in this document
-is *derived* from `COMMANDS` in `src/schema.js` (see §6.1 for the derivation),
-not hand-typed, so the spec cannot drift from the parser.
+changes are in `cli.js`, `config.js`, `config-wizard.js` and `resume.js` — so
+every claim below that is derived from the schema holds on both. Every flag set
+in this document is *derived* from `COMMANDS` in `src/schema.js` (see §6.1 for
+the derivation), not hand-typed, so the spec cannot drift from the parser.
 
 **Terminology** (used consistently, no synonyms): a *cycle* is one author →
 cross-audit → test-gate → security-scan → land pass; a *round* is one
@@ -154,7 +154,7 @@ $ echo $?
 0
 ```
 
-Two mechanisms produce this. `src/cli.js:1863` routes `--help` ahead of every
+Two mechanisms produce this. `src/cli.js:1900` routes `--help` ahead of every
 command branch:
 
 ```js
@@ -219,29 +219,30 @@ ships **14 help pages** (`§4.1`–`§4.14`), one per surviving `COMMANDS` key.
 > help text below as the v0.5 contract; on the current checkout the behaviour
 > still differs as noted.
 
-| Line in the spec | Today on `733760b` |
+| Line in the spec | Today on `4345cb6` |
 |---|---|
-| `--until <goal>` default `ready` | default is `once` (`src/cli.js:2084`, `:2873`) |
-| `--max-attempts <n>` row | flag does not exist in `FLAGS`; only the config key `automation.maxAttempts` (`src/cli.js:2099`) |
+| `--until <goal>` default `ready` | default is `once` (`src/cli.js:2121`, `:2911`) |
+| `--max-attempts <n>` row | flag does not exist in `FLAGS`; only the config key `automation.maxAttempts` (`src/cli.js:2136`) |
 | `config` page has no `--dry` row | `COMMANDS.config.flags` still contains `dry` (`src/schema.js:91`) |
 | `config` purpose: "prints the effective config" | bare `orch config` still opens the wizard on a TTY |
 | no `pr --merge`, no `agent build`, no `orch update`, no `--no-banner` | all four still exist |
-| `agent add --build` honours `landing: pr` (§4.3) | `noMerge: !flags.pr` (`src/cli.js:1779`) returns before `cfg.landing` is read, so today `--pr` is the only thing that makes a build open a PR; #528 must rewire the expression or the clause documents a no-op |
+| `agent add --build` honours `landing: pr` (§4.3) | `noMerge: !flags.pr` (`src/cli.js:1816`) returns before `cfg.landing` is read, so today `--pr` is the only thing that makes a build open a PR; #528 must rewire the expression or the clause documents a no-op |
 | per-command help exists at all | every `orch <cmd> --help` prints the global page (§1.4) |
 | `continue --until ready\|merged` (§4.7's `--until` row) | the *typed* flag is refused with exit 64 (`src/schema.js:292`): "`--until ready` is not yet available with 'orch continue' — only `--until once` (the default)". Only the explicit override is blocked: **inheritance already works**, so a resume of a run whose record carries `policy.until` of `ready` or `merged` reaches the run controller today, and §4.7's exit-2/exit-4 resume paragraph is live |
-| `completion install` failure exits 1 (§4.12) | exits **0** and prints the reason on **stdout** (`src/cli.js:3245-3252`; `installCompletion` swallows the error into `{ok:false, reason}`, `src/completion.js:308-321`). Probed with a read-only `$HOME`: `orch: could not install completion script (EACCES …)`, exit 0. Two defects in one line — the missing gate and the error text on stdout |
+| `completion install` failure exits 1 (§4.12) | exits **0** and prints the reason on **stdout** (`src/cli.js:3283-3290`; `installCompletion` swallows the error into `{ok:false, reason}`, `src/completion.js:308-321`). Probed with a read-only `$HOME`: `orch: could not install completion script (EACCES …)`, exit 0. Two defects in one line — the missing gate and the error text on stdout |
 
 Everything else in this document — the exit codes 0/1/2/3/4/64
-(`src/run-controller.js:11`), the `--limit` default of 10 (`src/cli.js:3259`),
-the `--refresh-ms` default of 1000 (`src/cli.js:3269`), the per-command flag
+(`src/run-controller.js:11`), the `--limit` default of 10 (`src/cli.js:3297`),
+the `--refresh-ms` default of 1000 (`src/cli.js:3307`), the per-command flag
 sets, the streams — is true of the checkout today and must stay true.
 
-Every row above was re-checked against `origin/orch/integration` (`39177e8`)
-and none of them has landed there either: that branch changes `src/cli.js`,
-`src/config.js` and `src/remedies.js` only, leaving `src/schema.js` untouched,
-so the parser-side rows (`--dry` on `config`, `continue --until`, the surviving
-`--merge`/`agent build`/`update`/`--no-banner`) are unchanged, and its `cli.js`
-edits are confined to seat rotation and the adapter work order.
+Every row above was re-checked against `origin/orch/integration` (`4fa3163`,
+`v0.4.362`) and none of them has landed there either: that branch changes
+`src/cli.js`, `src/config.js`, `src/config-wizard.js` and `src/resume.js` only,
+leaving `src/schema.js` untouched, so the parser-side rows (`--dry` on `config`,
+`continue --until`, the surviving `--merge`/`agent build`/`update`/`--no-banner`)
+are unchanged, and its `cli.js` edits are confined to #532's rotating
+author/reviewer pools.
 
 ---
 
@@ -397,11 +398,11 @@ Examples:
 ```
 
 The overwrite asymmetry in that paragraph is the landed behaviour, not a wish:
-`src/cli.js:1960-1963` guards only the config
+`src/cli.js:1997-2000` guards only the config
 (`if (!existsSync(ex) && !existsSync(join(repo, "orch.yml"))) writeFileSync(ex, SCAFFOLD)`)
 and then calls `writeFileSync(join(orchDir, "ORCH.md"), ORCH_DOC)`
 unconditionally. orch's own `--dry` line already says so
-(`src/cli.js:1945`): `would write …/orch.yml (only if absent) and …/ORCH.md
+(`src/cli.js:1982`): `would write …/orch.yml (only if absent) and …/ORCH.md
 (overwrites)`. A help page that promised "existing files are never
 overwritten" would contradict the dry-run output of the same command.
 
@@ -446,8 +447,8 @@ it: `collectConfigIssues` routes every `REMOVED_CONFIG_MESSAGES` hit — `merge`
 `continue`s (`src/config.js:114-117`). `problemList` (`src/config.js:143-149`)
 collects unknown keys and load errors — never a removed-key message — and
 `--check`'s exit is
-`report.ok ? 0 : 1` off problems alone (`src/cli.js:1906`), with the two
-sections printed separately (`src/cli.js:1408-1415`). Probed: an orch.yml
+`report.ok ? 0 : 1` off problems alone (`src/cli.js:1943`), with the two
+sections printed separately (`src/cli.js:1443-1450`). Probed: an orch.yml
 holding `merge: ff-only` plus `main.autoMerge: true` prints two Warnings and
 exits **0** under `--check` (a *bad value* under `merge:` still fails, but on
 value validation, not on the key being removed). If v0.5 wants
@@ -523,7 +524,7 @@ you break it.
 
 The "a build never merges" paragraph is today's behaviour, kept on purpose
 rather than harmonised away. `buildAgent` sets `noMerge: !flags.pr`
-(`src/cli.js:1779`) with the reason written above it (`src/cli.js:1729-1734`):
+(`src/cli.js:1816`) with the reason written above it (`src/cli.js:1766-1771`):
 "the result sits on its local branch only (no PR, main untouched) so it can be
 reviewed before it's trusted". v0.5 deletes `--pr`, and the tempting reading of
 that deletion is that the build now follows `landing:` like any other cycle.
@@ -632,11 +633,12 @@ page must not imply a fixed four-step ladder.
 **Pinning a model does not opt a seat out of model rotation**, so no row may
 imply that `--author "claude claude-opus-5 high"` freezes the seat. When
 `rotate` fires, `automation.rotateModels[claude]` is walked from the entry
-*after* the pinned one (`nextModelRole`, `src/remedies.js` on
-`origin/orch/integration`, landed by `d8c0c7e`). One sharp edge, since it turns
-a config typo into silence: a pinned model absent from its agent's ladder
-returns the same `null` as an exhausted ladder, and the agent is then excluded
-by name on its next failure — exactly as if no ladder had been configured.
+*after* the pinned one (`nextModelRole`, `src/remedies.js:175-188`; #567's
+wiring landed on `main` in `d8c0c7e`, so this is current behaviour, not
+integration-only). One sharp edge, since it turns a config typo into silence:
+a pinned model absent from its agent's ladder returns the same `null` as an
+exhausted ladder, and the agent is then excluded by name on its next failure —
+exactly as if no ladder had been configured.
 
 ### 4.5 `orch issue --help`
 
@@ -823,7 +825,7 @@ with is what a bare `orch continue <sid>` keeps pursuing, and the global
 explicit `--until` on the continue wins over the record, for that resume only,
 and is journaled as a policy change. The landed expression of this reading is
 already in the code — `until: flags.until || priorRun?.policy?.until || "once"`
-(`src/cli.js:2873`), the flag first, the record second, the constant last — and
+(`src/cli.js:2911`), the flag first, the record second, the constant last — and
 `docs/cli-v2-design.md` §5.3's "all other flags are taken from the record" says
 the same for the seats. What P12 changes is the constant at the end of that
 chain and the fact that a `ready|merged` goal can be *typed* here at all — it is
@@ -946,7 +948,7 @@ Examples:
 
 > **Not yet landed** (P12, #528): the `1 could not write the script` leg below
 > is the v0.5 contract, not today's behaviour. A failed install currently
-> reports the reason on **stdout** and exits **0** (`src/cli.js:3245-3252`,
+> reports the reason on **stdout** and exits **0** (`src/cli.js:3283-3290`,
 > `src/completion.js:308-321`), so a scripted caller gets no gate. The exit
 > code is written as 1 here on purpose: documenting exit 0 would enshrine a
 > gate a scripted caller does not get, and put an error on stdout against §3
@@ -1057,7 +1059,7 @@ the global page's `help [command]` row something real to point at.
 
 Implementation: `POSITIONAL_ARITY.help` becomes `[0, 1]`, and `orch help <x>`
 with an unrecognised `<x>` reuses the existing unknown-command wording verbatim
-(`src/cli.js:1855`):
+(`src/cli.js:1892`):
 
 ```console
 $ orch help taks
@@ -1080,7 +1082,7 @@ $ orch pr --help | head -1
 orch pr — audit a pull request or a branch, and repair or merge it.
 ```
 
-**Why** — the mechanism is a one-line routing change at `src/cli.js:1863`, which
+**Why** — the mechanism is a one-line routing change at `src/cli.js:1900`, which
 today discards the command word before rendering. Passing that word to the
 renderer is what turns `COMMANDS[<cmd>].flags` — already declared, already read
 by the parser, the validator and bash completion — into documentation instead of
@@ -1119,7 +1121,7 @@ $ echo $?
 
 Rules:
 
-- Message and exit are unchanged from the checkout (`src/cli.js:1855`, exit 64
+- Message and exit are unchanged from the checkout (`src/cli.js:1892`, exit 64
   via `usageError`).
 - The text goes to **stderr** (`bin/orch.js:5`), and so does the usage page that
   follows it (`bin/orch.js:9`). Verified today: `orch bogsu 2>/dev/null` prints
@@ -1132,7 +1134,7 @@ Rules:
 ### 5.5 `--version`, and `--help` next to other flags
 
 - **`--version` beats `--help`.** `orch --help --version` prints the version and
-  exits 0. This is today's precedence (`src/cli.js:1862` runs before `:1863`)
+  exits 0. This is today's precedence (`src/cli.js:1899` runs before `:1900`)
   and is kept rather than reversed, because a version probe is the more
   machine-facing of the two.
 - **The `version` command word does not beat `--help`.** `orch version --help`
@@ -1319,9 +1321,9 @@ BLOCKED: 3, WAIT_TIMEOUT: 4 }`) plus `usageError`'s 64.
 | `src/schema.js:198` | `EXAMPLES` — one flat array | moves onto each command's `examples`; the global page's four lines stay as a module constant |
 | `src/schema.js:257` | `effective = flags.help ? "help" : …` | `effective = command` when `flags.help` and a command word was given (§5.5) |
 | `src/schema.js:371` | `POSITIONAL_ARITY.help = [0, 0]` | `[0, 1]`, with the target validated against `COMMANDS` in the help route |
-| `src/cli.js:1863` | `if (flags.help \|\| command === "help") { printUsage(); return; }` | resolve the target (`command === "help" ? rest[0] : command`), then `console.log(renderHelp(target))` |
-| `src/cli.js:1862` | version route ahead of help | unchanged for the `--version` *flag*; the `version` *command* word must fall through when `flags.help` is set (§5.5) |
-| `src/cli.js:3332` | `printUsage()` wrapper | takes an optional command name |
+| `src/cli.js:1900` | `if (flags.help \|\| command === "help") { printUsage(); return; }` | resolve the target (`command === "help" ? rest[0] : command`), then `console.log(renderHelp(target))` |
+| `src/cli.js:1899` | version route ahead of help | unchanged for the `--version` *flag*; the `version` *command* word must fall through when `flags.help` is set (§5.5) |
+| `src/cli.js:3370` | `printUsage()` wrapper | takes an optional command name |
 | `bin/orch.js:9` | `if (err.showUsage) console.error(renderHelp())` | `console.error(renderHelp(err.helpFor))` — per-command page for a flag error on a known command (§5.4) |
 | `src/completion.js` | renders from `COMMANDS`/`FLAGS` | unchanged in behaviour, but must keep compiling once `rows` is gone |
 
@@ -1383,7 +1385,7 @@ per page, containing exactly the blocks in §4.
 
 6. **Every example parses.** Feed each `examples` line through `parse()` +
    `validate()` + `validatePositionals()` and assert none throws — the
-   generalisation of `test/cli.test.js:4186` ("printUsage examples all parse").
+   generalisation of `test/cli.test.js:4257` ("printUsage examples all parse").
    An example that the parser would refuse is worse than no example.
 
    The assertion is absolute — no line is exempt and nothing is stripped
