@@ -1,10 +1,25 @@
 # Changelog
 
 ## v0.4.363 — 2026-08-29
-- null
+- docs: the v0.5.0 documentation set lands under `docs/drafts/` — migration guide, rewritten manual and README, CLI reference, and the help-output implementation spec
 
 ## v0.4.362 — 2026-08-29
 - feat: rotate configured role pools (closes [#532](https://github.com/bbk1ng/agent-orch/issues/532))
+
+  **Breaking — `authors:` and `reviewers:` changed meaning.** They used to freeze the seats; they
+  are now rotation pools, paired by index, one author and one reviewer per cycle. Two existing
+  configurations behave differently (see [#603](https://github.com/bbk1ng/agent-orch/issues/603)):
+
+  - `authors: [claude]` with `reviewers: [claude]` no longer loads. Pairing pools by index could
+    otherwise seat one agent on both sides, and self-review by a single model family is what the
+    cross-audit exists to prevent, so this is now rejected at config load with
+    `authors[0] (claude) has no reviewer with a different agent`. Fix: give `reviewers:` a
+    different agent.
+  - `authors: [claude, codex]` used to be a fan-out — one complete cycle per entry, two branches,
+    two test gates. It is now a single rotating pair, so it runs half the work with no error and no
+    warning. Fix: if you wanted the fan-out, pass `--authors a,b` on the command line.
+
+  `agents:` is unchanged and still takes bare adapter names.
 
 ## v0.4.361 — 2026-08-29
 - fix(rotate): use configured model ladders (closes [#567](https://github.com/bbk1ng/agent-orch/issues/567))
