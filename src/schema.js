@@ -110,10 +110,15 @@ export const COMMANDS = {
     rows: [["issue <number>", "Run from a GitHub issue and close it on merge."]],
   },
   review: {
-    // No --author/--authors or --no-tidy: review audits an existing branch's
-    // author (read off the branch name) and never merges, so nothing reads
-    // them — accepting and ignoring them is the exact lie this schema exists
-    // to remove. --reviewer(s)/--cheap ARE honoured (they pick who audits).
+    // No --author/--authors: review audits an existing branch, whose author is
+    // read off the branch name — accepting and ignoring them is the exact lie
+    // this schema exists to remove. --reviewer(s)/--cheap ARE honoured (they
+    // pick who audits). The --no-tidy exclusion is inherited from the days this
+    // comment claimed review "never merges"; it does — cli.js sets
+    // `noMerge: command === "pr"`, so a review that agrees and is green lands
+    // on the integration branch like a task cycle (test/engine.test.js:782
+    // exists to prove the protected-path floor blocks that merge). Whether
+    // --no-tidy should therefore be legal here is #528's call, not a help fix.
     mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-tidy", "author", "authors"].includes(f)), "cheap", "json"],
     rows: [["review <branch>", "Audit an existing branch without merging."]],
   },
@@ -195,7 +200,7 @@ const AGENT_BUILD_ONLY_FLAGS = SUBCOMMAND_FLAGS["agent build"].filter(
   (f) => !SUBCOMMAND_FLAGS["agent add"].includes(f),
 );
 
-const EXAMPLES = [
+export const EXAMPLES = [
   "orch init --link",
   'orch task "add input validation" --reviewer "codex"',
   "orch issue 42 --until merged",
@@ -214,12 +219,28 @@ const HELP_GROUPS = [
   ["Maintain", ["release", "upgrade", "completion", "version", "help"]],
 ];
 
-const HELP_PAGES = {
+// Wording shared by more than one page. FLAGS[].help stays the default for a
+// flag, which is what stops fourteen copies of --config-file drifting apart;
+// these are the rows where a page needs to say more than the default does —
+// what the flag lifts, and what it does NOT lift. A row that lists a flag
+// without saying what it lifts is worse than no row at all.
+const ALLOW_PROTECTED_HELP =
+  "Run even though the work order names a guardrail path. The intake scan is textual, so this is for an incidental mention; a real guardrail change still escalates at the security floor.";
+const FILE_HELP =
+  "Read the work order from a JSON file, treating it as untrusted input; takes no positional text.";
+const NO_TIDY_HELP = "Keep the task branch and worktree after landing.";
+
+// The goal list aligns its `=` column and hangs the wrapped `ready` line under
+// the description, so it reads as three definitions rather than a paragraph.
+// wrapWords() emits an already-short line verbatim, which is what preserves it.
+const untilHelp = (...lines) => lines.join("\n");
+
+export const HELP_PAGES = {
   init: {
     title: "orch init — write .orch/orch.yml and .orch/ORCH.md into this repo.",
     synopsis: ["orch init [options]"],
     about: [
-      "Writes a fully commented .orch/orch.yml plus .orch/ORCH.md, the short usage file agents and humans read from inside the repo. The config is written only if neither .orch/orch.yml nor a repo-root orch.yml already exists, so your settings survive a re-run; .orch/ORCH.md is rewritten every time, so do not hand-edit it. This is the only setup step: orch reads config from .orch/orch.yml and needs nothing else.",
+      "Writes a fully commented .orch/orch.yml (every key with its default and a note on what it does) plus .orch/ORCH.md, the short usage file agents and humans read from inside the repo. The config is written only if neither .orch/orch.yml nor a repo-root orch.yml already exists, so your settings survive a re-run; .orch/ORCH.md is rewritten every time, so do not hand-edit it. This is the only setup step: orch reads config from .orch/orch.yml and needs nothing else.",
     ],
     args: "Arguments: none.",
     exits: [[0, "written"], [1, "could not write"], [64, "usage error"]],
@@ -228,13 +249,14 @@ const HELP_PAGES = {
     flagHelp: {
       link: "Link .orch/ORCH.md from the agent doc files (CLAUDE.md, AGENTS.md) so an agent finds it.",
       "config-file": "Write to this YAML path instead of .orch/orch.yml.",
+      dry: "Print what would be written; write nothing.",
     },
   },
   config: {
     title: "orch config — print the effective, validated configuration.",
     synopsis: ["orch config [options]"],
     about: [
-      "Prints every setting orch will actually use for a run in this repo, with the source of each value: a built-in default, .orch/orch.yml, or a file layered on with --config-file. Reading it answers 'why did that run pick that reviewer' without reading the code. --check turns it into a gate: it validates instead of printing, and exits 1 listing every unknown key.",
+      "Prints every setting orch will actually use for a run in this repo, with the source of each value: a built-in default, .orch/orch.yml, or a file layered on with --config-file. Reading it answers \"why did that run pick that reviewer\" without reading the code. --check turns it into a gate: it validates instead of printing, and exits 1 listing every unknown key. A key that was renamed or removed is listed under Warnings, with the rename to make, and does not fail the gate. The schema is closed — an unrecognised key is an error, not silence, so a typo like `roudCap` is reported instead of ignored.",
     ],
     args: "Arguments: none.",
     exits: [[0, "valid"], [1, "invalid config (--check)"], [64, "usage error"]],
@@ -250,8 +272,8 @@ const HELP_PAGES = {
     title: "orch agent add — add an agent to the rotation pool.",
     synopsis: ["orch agent add <name> [options]", "orch agent build <name> [options]"],
     about: [
-      "Appends <name> to the agents: list in .orch/orch.yml, which is the pool the author and reviewer seats rotate through. If orch has no adapter for <name>, add alone changes nothing but the config; pass --build to scaffold the adapter through a normal cycle. A name orch already has an adapter for never builds, with or without --build.",
-      "A build never merges. An agreed and green adapter stays on its branch for a human to read and land, because code orch wrote that orch will then run as an agent gets a human checkpoint.",
+      "Appends <name> to the `agents:` list in .orch/orch.yml, which is the pool the author and reviewer seats rotate through. If orch has no adapter for <name>, `add` alone changes nothing but the config; pass --build to scaffold the adapter through a normal cycle — orch writes its own integration code with the same author, cross-audit and test-gate path any other change goes through. A name orch already has an adapter for never builds, with or without --build.",
+      "A build never merges. An agreed and green adapter stays on its branch for a human to read and land, because code orch wrote that orch will then run as an agent gets a human checkpoint. With --pr that branch is opened as a pull request instead of left bare; it is still yours to merge.",
     ],
     args: "Arguments: exactly one <name>, after the add or build subcommand word.",
     exits: [[0, "added"], [1, "error"], [2, "the build stopped at the attempt cap"], [3, "the build is blocked and needs a human"], [64, "usage error"]],
@@ -260,77 +282,142 @@ const HELP_PAGES = {
     flagHelp: {
       build: "Scaffold a missing adapter through a cycle.",
       "config-file": "Read and write this YAML path.",
+      dry: "Print the edit and the plan; change nothing.",
+      authors: "Comma-separated author seats.",
+      pr: "Open the finished adapter branch as a pull request.",
     },
-    flagGroups: [["Only with --build:", ["allow-large-scope", "author", "authors", "reviewer", "reviewers", "pr"]]],
+    flagGroups: [["Only with --build:", ["author", "authors", "reviewer", "reviewers", "allow-large-scope", "pr"]]],
   },
   task: {
     title: "orch task — run one change through a cycle.",
     synopsis: ["orch task \"<change>\" [options]", "orch task --file <work-order.json> [options]"],
     about: [
-      "One cycle is: an author agent writes the change on its own branch in an isolated git worktree, a different agent cross-audits the diff, the test gate runs, a deterministic security scan runs, and the reviewed commit lands on the integration branch. With --until ready or merged the cycle repeats under a remedy ladder until the goal is reached or the attempt cap is spent.",
+      "One cycle is: an author agent writes the change on its own branch in an isolated git worktree (a second checkout of the same repository, so concurrent runs never fight over one HEAD), a different agent cross-audits the diff, the test gate runs, a deterministic security scan runs, and the reviewed commit lands on the integration branch. With --until ready or merged the cycle repeats under a remedy ladder — rebase + repair, rotate seats, reauthor, ask a human — offering whichever of those the failure calls for, until the goal is reached or the attempt cap is spent.",
     ],
-    args: "Arguments: the change text. Unquoted words are joined with spaces, so orch task add input validation is the same work order as the quoted form. With --file, no positional text is allowed — the file is the work order.",
+    args: "Arguments: the change text. Unquoted words are joined with spaces, so `orch task add input validation` is the same work order as the quoted form. With --file, no positional text is allowed — the file is the work order.",
     exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
     examples: ["orch task \"add input validation\" --until once", "orch task --file work-order.json --cheap"],
-    flagOrder: ["until", "config-file", "dry", "no-tidy", "no-banner", "detach", "allow-large-scope", "author", "authors", "reviewer", "reviewers", "file", "cheap", "allow-protected", "json"],
+    flagOrder: [
+      "until", "author", "authors", "reviewer", "reviewers", "cheap", "file",
+      "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "detach",
+      "dry", "json", "config-file",
+    ],
     flagHelp: {
-      until: "What this run pursues: once, ready or merged.\n                          once  = a single cycle, then report.\n                          ready = loop until the pull request for this change is green and mergeable; never merge it.\n                          merged = also merge the standing PR.\n                          (default: once)",
+      until: untilHelp(
+        "What this run pursues: once, ready or merged.",
+        "once  = a single cycle, then report.",
+        "ready = loop until the pull request for this change",
+        "        is green and mergeable; never merge it.",
+        "merged = also merge the standing PR.",
+        "(default: once)",
+      ),
+      file: FILE_HELP,
+      "allow-protected": ALLOW_PROTECTED_HELP,
+      "no-tidy": NO_TIDY_HELP,
     },
   },
   issue: {
     title: "orch issue — run a cycle from a GitHub issue.",
     synopsis: ["orch issue <number> [options]"],
     about: [
-      "Fetches issue <number> with gh, uses its body as the work order, and runs the same cycle as orch task. The landing commit carries Closes #<number>, so GitHub closes the issue when the change reaches the base branch. The issue body is the whole brief an author agent gets — comments on the issue are not read — so a thin body is the usual reason a cycle escalates. A work order whose text names a guardrail path is refused at intake, before any agent runs; pass --allow-protected when the mention is incidental.",
+      "Fetches issue <number> with `gh`, uses its body as the work order, and runs the same cycle as `orch task`. The landing commit carries `Closes #<number>`, so GitHub closes the issue when the change reaches the base branch. The issue body is the whole brief an author agent gets — comments on the issue are not read — so a thin body is the usual reason a cycle escalates. A work order whose text names a guardrail path is refused at intake, before any agent runs; pass --allow-protected when the mention is incidental.",
     ],
     args: "Arguments: exactly one issue number, digits only.",
     exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
     examples: ["orch issue 42", "orch issue 42 --until merged --reviewer \"codex gpt-5.6-sol high\""],
-    flagOrder: ["until", "config-file", "dry", "no-tidy", "no-banner", "detach", "allow-large-scope", "author", "authors", "reviewer", "reviewers", "cheap", "allow-protected", "json"],
+    flagOrder: [
+      "until", "author", "authors", "reviewer", "reviewers", "cheap",
+      "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "detach",
+      "dry", "json", "config-file",
+    ],
     flagHelp: {
-      until: "What this run pursues: once, ready or merged.\n                          once  = a single cycle, then report.\n                          ready = loop until the pull request for this change is green and mergeable; never merge it.\n                          merged = also merge the standing PR.\n                          (default: once)",
+      until: untilHelp(
+        "What this run pursues: once, ready or merged.",
+        "once  = a single cycle, then report.",
+        "ready = loop until the pull request for this change",
+        "        is green and mergeable; never merge it.",
+        "merged = also merge the standing PR.",
+        "(default: once)",
+      ),
+      "allow-protected": ALLOW_PROTECTED_HELP,
+      "no-tidy": NO_TIDY_HELP,
     },
   },
   review: {
-    title: "orch review — audit an existing branch without merging.",
+    title: "orch review — audit an existing branch and land it.",
     synopsis: ["orch review <branch> [options]"],
-    about: ["Audits an existing branch: a reviewer agent examines the diff, then the test gate and security scan run on it. This legacy spelling is retained for compatibility; use orch pr for pull requests or branches in new scripts."],
+    about: [
+      "Audits an existing branch: no author writes a new change first, a reviewer agent examines the diff, and the test gate and deterministic security scan run on it. An agreed and green branch then lands on the integration branch — the same local merge a task cycle performs, and the same guardrail and security floors apply to it.",
+      "`orch pr <branch>` audits the same branch without that local merge, leaving the landing to GitHub. This is the older of the two spellings and is kept for compatibility.",
+    ],
+    notes: ["There is no --author here: this command audits work that already has an author."],
     args: "Arguments: exactly one branch name.",
     exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
     examples: ["orch review feature/add-retry", "orch review feature/add-retry --reviewer \"codex\""],
-    flagOrder: ["until", "config-file", "dry", "no-banner", "detach", "allow-large-scope", "reviewer", "reviewers", "cheap", "json"],
+    flagOrder: [
+      "until", "reviewer", "reviewers", "cheap", "allow-large-scope",
+      "no-banner", "detach", "dry", "json", "config-file",
+    ],
     flagHelp: {
-      until: "What this review pursues: once, ready or merged.\n                          (default: once)",
+      until: untilHelp(
+        "What this run pursues: once, ready or merged.",
+        "once  = a single audit, then report.",
+        "ready = loop until the pull request for this branch",
+        "        is green and mergeable; never merge it.",
+        "merged = also merge the standing PR.",
+        "(default: once)",
+      ),
+      cheap: "Fill the reviewer seat from cheap.role in orch.yml.",
     },
   },
   pr: {
     title: "orch pr — audit a pull request or a branch, and repair or merge it.",
     synopsis: ["orch pr <number|branch> [options]"],
     about: [
-      "Takes a GitHub PR number or a local/remote branch name and runs the cycle in review mode: no author writes a new change first, a reviewer agent audits what is already there, and the test gate and security scan run on that diff. --until once audits and reports; ready repairs the head until GitHub says it is green and mergeable; merged also merges it after readiness is verified.",
+      "Takes a GitHub PR number or a local/remote branch name and runs the cycle in review mode: no author writes a new change first, a reviewer agent audits what is already there, and the test gate and security scan run on that diff. --until once audits and reports; ready repairs the head until GitHub says it is green and mergeable; merged also merges it, but only after reading mergeability and check status back for the exact head being merged. A draft pull request is not ready by definition, so ready and merged both refuse one — reporting `pr #<n> is a draft` — instead of marking it ready or undrafting it.",
     ],
-    notes: ["There is no --author here: this command audits work that already has an author."],
+    notes: ["There is no --author here: this command audits work that already has an author. Accepting the flag and ignoring it is exactly the silence the schema exists to remove."],
     args: "Arguments: exactly one PR number or branch name.",
     exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
     examples: ["orch pr 42 --until once", "orch pr pr/claude/add-retry --reviewer \"codex\""],
-    flagOrder: ["until", "config-file", "dry", "merge", "detach", "allow-large-scope", "reviewer", "reviewers", "json"],
+    flagOrder: [
+      "until", "merge", "reviewer", "reviewers", "allow-large-scope", "detach",
+      "dry", "json", "config-file",
+    ],
     flagHelp: {
-      until: "What this run pursues: once, ready or merged.\n                          once  = audit once and report; change nothing.\n                          ready = repair the head until it is green and mergeable; never merge it.\n                          merged = merge it once readiness is verified.\n                          (default: once)",
+      until: untilHelp(
+        "What this run pursues: once, ready or merged.",
+        "once  = audit once and report; change nothing.",
+        "ready = repair the head until it is green and",
+        "        mergeable; never merge it.",
+        "merged = merge it once readiness is verified.",
+        "(default: once)",
+      ),
+      merge: "Alias for --until merged; refused next to a different --until.",
     },
   },
   continue: {
     title: "orch continue — resume an interrupted cycle or a stopped run.",
     synopsis: ["orch continue <sid> [options]"],
     about: [
-      "Every cycle writes a checkpoint keyed by its sid. continue reads that checkpoint and picks the cycle up where it stopped instead of starting over, so a run killed mid-review does not re-author the change. A run that ended at the attempt cap or waiting on a human resumes here too, with a fresh attempt budget. The seats, work order and goal are taken from the record; a flag given here overrides the recorded value for this resume only.",
+      "Every cycle writes a checkpoint keyed by its sid (the run's short id, printed when the run starts and listed by `orch dashboard`). `continue` reads that checkpoint and picks the cycle up where it stopped instead of starting over, so a run killed mid-review does not re-author the change. A run that ended at the attempt cap (exit 2) or waiting on a human (exit 4) resumes here too, with a fresh attempt budget. The seats, work order and goal are taken from the record: a bare `orch continue <sid>` on a run started with --until merged keeps pursuing merged, not the default a fresh run would get. A flag given here overrides the recorded value for this resume only.",
     ],
     notes: ["There is no --author here: the commits being resumed were written by a specific agent, and this command continues that run rather than starting a new one."],
     args: "Arguments: exactly one sid. A sid never contains '/', '..' or a NUL byte — it is used directly as a store key, so anything else is refused.",
     exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
     examples: ["orch continue 1a2b3c4d", "orch continue 1a2b3c4d --reviewer \"claude claude-opus-5 high\""],
-    flagOrder: ["until", "config-file", "dry", "no-tidy", "detach", "allow-large-scope", "reviewer", "reviewers", "json"],
+    flagOrder: [
+      "until", "reviewer", "reviewers", "allow-large-scope", "no-tidy",
+      "detach", "dry", "json", "config-file",
+    ],
     flagHelp: {
-      until: "What this resume pursues: once, ready or merged.\n                          (default: the goal recorded for the run)",
+      until: untilHelp(
+        "What this resume pursues. Only once can be typed here",
+        "today; ready and merged are inherited from the run's",
+        "own record, and are refused as an override.",
+        "(default: the goal recorded for the run)",
+      ),
+      "no-tidy": NO_TIDY_HELP,
     },
   },
   release: {
@@ -341,6 +428,7 @@ const HELP_PAGES = {
     exits: [[0, "written"], [1, "the worktree was dirty, on the wrong branch, or the bump failed"], [64, "usage error"]],
     examples: ["orch release \"hand-landed guardrail fix (closes #123)\"", "orch release \"hand-landed guardrail fix\" --dry"],
     flagOrder: ["dry"],
+    flagHelp: { dry: "Print the bump and the entry; write nothing." },
   },
   dashboard: {
     title: "orch dashboard — show live cycle status, run history and metrics.",
@@ -361,7 +449,7 @@ const HELP_PAGES = {
   mcp: {
     title: "orch mcp — serve orch as an MCP server over stdio.",
     synopsis: ["orch mcp"],
-    about: ["Speaks the Model Context Protocol on stdin/stdout so an AI client can run cycles as tools instead of shelling out. Because stdout is the protocol transport here, nothing else may print on it. The server runs until stdin closes."],
+    about: ["Speaks the Model Context Protocol on stdin/stdout so an AI client can run cycles as tools instead of shelling out. Because stdout is the protocol transport here, nothing else may print on it — this command deliberately skips the update banner every other command may show. Each cycle the server spawns authenticates on its own. The server runs until stdin closes."],
     args: "Arguments: none.",
     exits: [[0, "the client disconnected"], [1, "the transport failed"], [64, "usage error"]],
     examples: ["orch mcp"],
@@ -370,7 +458,7 @@ const HELP_PAGES = {
   upgrade: {
     title: "orch upgrade — self-update the global npm install.",
     synopsis: ["orch upgrade [options]"],
-    about: ["Compares the running version against the published one and reinstalls the global package when it is behind. --check only reports the comparison and installs nothing. orch update is an alias of this command."],
+    about: ["Compares the running version against the published one and reinstalls the global package when it is behind. --check only reports the comparison and installs nothing, which is what a scripted or scheduled caller wants. `orch update` is a second spelling of this command."],
     args: "Arguments: none.",
     exits: [[0, "up to date or upgraded"], [1, "the check or the install failed"], [64, "usage error"]],
     examples: ["orch upgrade --check", "orch upgrade"],
@@ -380,7 +468,7 @@ const HELP_PAGES = {
   update: {
     title: "orch update — self-update the global npm install.",
     synopsis: ["orch update [options]"],
-    about: ["Alias for orch upgrade. Compares the running version against the published one and reinstalls the global package when it is behind."],
+    about: ["A second spelling of `orch upgrade`, kept for compatibility: it compares the running version against the published one and reinstalls the global package when it is behind. --check only reports the comparison and installs nothing, which is what a scripted or scheduled caller wants."],
     args: "Arguments: none.",
     exits: [[0, "up to date or upgraded"], [1, "the check or the install failed"], [64, "usage error"]],
     examples: ["orch update --check", "orch update"],
@@ -390,17 +478,17 @@ const HELP_PAGES = {
   completion: {
     title: "orch completion — print or install the bash completion script.",
     synopsis: ["orch completion [bash]", "orch completion install [--dry]"],
-    about: ["The completion script is generated from the same command schema that drives parsing and this help, so tab-completion can never offer a command or flag the parser would refuse. orch completion (or orch completion bash) prints the script to stdout; orch completion install writes it to ~/.orch/completion.bash and tells you the line to add to ~/.bashrc."],
-    args: "Arguments: at most one target, bash or install. Default: bash.",
+    about: ["The completion script is generated from the same command schema that drives parsing and this help, so tab-completion can never offer a command or flag the parser would refuse. `orch completion` (or `orch completion bash`) prints the script to stdout; `orch completion install` writes it to ~/.orch/completion.bash and tells you the line to add to ~/.bashrc. Because the plain form only writes to stdout, you can redirect it wherever your shell looks for completions — `> /etc/bash_completion.d/orch` for a system-wide install."],
+    args: "Arguments: at most one target, `bash` or `install`. Default: bash.",
     exits: [[0, "printed or installed"], [1, "could not write the script"], [64, "usage error"]],
     examples: ["orch completion install", "orch completion bash"],
     flagOrder: ["dry"],
-    flagHelp: { dry: "With install: print the path; write nothing. Refused on the plain form, which never writes." },
+    flagHelp: { dry: "With `install`: print the path; write nothing. Refused on the plain form, which never writes." },
   },
   version: {
     title: "orch version — print the version.",
     synopsis: ["orch version"],
-    about: ["Prints the installed version, the same string as orch --version."],
+    about: ["Prints the installed version, the same string as `orch --version`."],
     args: "Arguments: none.",
     exits: [[0, "printed"], [64, "usage error"]],
     examples: ["orch version"],
@@ -409,14 +497,13 @@ const HELP_PAGES = {
   help: {
     title: "orch help — show this help.",
     synopsis: ["orch help [command]"],
-    about: ["With no argument, prints the command list, the global options and the exit codes. With a command name, prints that command's page — orch help task and orch task --help are the same thing, and print the same bytes."],
+    about: ["With no argument, prints the command list, the global options and the exit codes. With a command name, prints that command's page — `orch help task` and `orch task --help` are the same thing, and print the same bytes."],
     args: "Arguments: at most one command name.",
     exits: [[0, "printed"], [64, "unknown command name"]],
     examples: ["orch help", "orch help pr"],
     flagOrder: [],
   },
 };
-
 export const EXITS = {
   0: "the goal was reached and verified",
   1: "internal error (orch bug, or the environment failed)",
@@ -431,6 +518,18 @@ export const EXITS = {
 // wrong" from "the run failed". bin/orch.js reads `.exit`.
 export function usageError(message, extra = {}) {
   return Object.assign(new Error(message), { exit: 64, ...extra });
+}
+
+// `helpFor` names the page bin/orch.js renders after the message, so it may
+// only ever name a command that HAS a page. INTERNAL_COMMANDS entries
+// (`__update-check-child`) are re-exec targets deliberately kept out of
+// COMMANDS and so out of HELP_PAGES; validate() still checks their flags, and
+// naming one here made renderHelp() throw *inside the error funnel* — turning a
+// documented exit 64 into exit 1 plus a stack trace. Filter at the site the
+// value is created rather than guarding the funnel that consumes it: with no
+// page to show, the message alone is the whole (correct) output.
+function helpPageFor(command) {
+  return command && HELP_PAGES[command] ? command : undefined;
 }
 
 // parseArgs options, derived: "int"/"enum" are our refinements, and parseArgs
@@ -502,25 +601,25 @@ export function validate(command, flags, { detachedChild = false } = {}) {
       if (value !== true && value !== false) {
         try { validateValue(name, value); }
         catch (e) {
-          if (command && e.exit === 64) e.helpFor = command;
+          if (e.exit === 64) e.helpFor = helpPageFor(command);
           throw e;
         }
       }
       continue;
     }
     if (name === "dry" && spec.mutates === false) {
-      throw usageError(`--dry has no effect on 'orch ${effective}' — it changes nothing`, { helpFor: command });
+      throw usageError(`--dry has no effect on 'orch ${effective}' — it changes nothing`, { helpFor: helpPageFor(command) });
     }
     const valid = Object.keys(COMMANDS).filter((c) => COMMANDS[c].flags.includes(name));
     throw usageError(
       `--${name} is not valid with 'orch ${effective}'` +
       (valid.length ? ` — only with: ${valid.map((c) => `orch ${c}`).join(", ")}` : " — it is not a flag of any command"),
-      { helpFor: command },
+      { helpFor: helpPageFor(command) },
     );
   }
   if (flags.help && command) {
     const action = flags.until && flags.until !== "once" ? "until" : flags.detach ? "detach" : flags.build ? "build" : flags.merge ? "merge" : null;
-    if (action) throw usageError(`--${action} cannot be combined with --help on 'orch ${command}'`, { helpFor: command });
+    if (action) throw usageError(`--${action} cannot be combined with --help on 'orch ${command}'`, { helpFor: helpPageFor(command) });
   }
   // --until ready|merged (design docs/cli-v2-design.md §6/§9) drives the run
   // controller. `continue` is still on the legacy path; PRs now share the
@@ -760,7 +859,7 @@ const GLOBAL_ROWS = {
   agent: ["agent add|build <name>", "Add an agent to the rotation pool; --build scaffolds its adapter."],
   task: ["task \"change\"", "Author, cross-audit, test-gate and land one change."],
   issue: ["issue <number>", "The same, from a GitHub issue; closes it on landing."],
-  review: ["review <branch>", "Audit an existing branch without merging."],
+  review: ["review <branch>", "Audit and land an existing branch (superseded by pr)."],
   pr: ["pr <number|branch>", "Audit a pull request or a branch; repair or merge it."],
   continue: ["continue <sid>", "Resume an interrupted cycle or a stopped run."],
   dashboard: ["dashboard", "Live status TUI; --once prints a static snapshot."],
@@ -772,27 +871,44 @@ const GLOBAL_ROWS = {
   help: ["help [command]", "This page, or one command's page."],
 };
 
+// Reflow `text` to `width`, prefixing every line after the first with
+// `continuation`. A source line that already fits is emitted verbatim, leading
+// whitespace and all: some rows align deliberately — the `=` column down
+// --until's three goal lines, and the hanging indent under `ready =` — and
+// re-splitting on /\s+/ silently flattens that alignment into one ragged
+// paragraph. A line that does NOT fit is word-wrapped, with its own leading
+// indent carried onto the wrapped remainder so the alignment survives there too.
 function wrapWords(text, width, continuation = "") {
   const lines = [];
   for (const source of String(text).split("\n")) {
-    const words = source.trim().split(/\s+/).filter(Boolean);
-    if (!words.length) {
+    const line = source.replace(/\s+$/, "");
+    if (!line.trim()) {
       lines.push("");
       continue;
     }
-    let line = "";
-    for (const word of words) {
-      if (line && line.length + word.length + 1 > width) {
-        lines.push(line);
-        line = word;
+    if (line.length <= width) {
+      lines.push(line);
+      continue;
+    }
+    const indent = line.match(/^ */)[0];
+    let current = "";
+    for (const word of line.trim().split(/\s+/)) {
+      if (current && current.length + word.length + 1 > width) {
+        lines.push(current);
+        current = indent + word;
       } else {
-        line = line ? `${line} ${word}` : word;
+        current = current ? `${current} ${word}` : indent + word;
       }
     }
-    lines.push(line);
+    lines.push(current);
   }
-  return lines.map((line, index) => index ? `${continuation}${line}` : line).join("\n");
+  return lines.map((line, index) => index && line ? `${continuation}${line}` : line).join("\n");
 }
+
+// §3 rule 1: two-space indent, label padded to 24, description from column 27,
+// total line width capped. The spec's own §4 blocks sit just under this cap.
+const PAGE_WIDTH = 79;
+const DESCRIPTION_WIDTH = PAGE_WIDTH - 26; // continuation column for a flag row
 
 function optionLabel(name) {
   const f = FLAGS[name];
@@ -813,20 +929,36 @@ function flagRows(names, page) {
     .filter((name) => FLAGS[name]?.help)
     .map((name) => {
       const help = page.flagHelp?.[name] || FLAGS[name].help;
-      return `  ${pad(optionLabel(name))}${wrapWords(help, 62, " ".repeat(26))}`;
+      return `  ${pad(optionLabel(name))}${wrapWords(help, DESCRIPTION_WIDTH, " ".repeat(26))}`;
     });
 }
 
+// The exit list is packed by whole entry, not by word: a line break inside
+// "2 stopped at the attempt cap" reads as the end of one code and the start of
+// another, which is the one thing this list must never be ambiguous about.
 function renderExits(page) {
-  const text = page.exits.map(([code, description]) => `${code} ${description}`).join(" · ");
-  return wrapWords(`Exit codes: ${text}.`, 88);
+  const entries = page.exits.map(([code, description]) => `${code} ${description}`);
+  const lines = [];
+  let current = "Exit codes:";
+  entries.forEach((entry, index) => {
+    const tail = index === entries.length - 1 ? "." : " ·";
+    const packed = `${current} ${entry}${tail}`;
+    if (index && packed.length > PAGE_WIDTH) {
+      lines.push(current);
+      current = entry + tail;
+    } else {
+      current = packed;
+    }
+  });
+  lines.push(current);
+  return lines.join("\n");
 }
 
 function renderGlobal() {
   const groups = HELP_GROUPS.map(([heading, commands]) => {
     const rows = commands.map((name) => {
       const [label, description] = GLOBAL_ROWS[name];
-      return `  ${pad(label)}${wrapWords(description, 54, " ".repeat(26))}`;
+      return `  ${pad(label)}${wrapWords(description, DESCRIPTION_WIDTH, " ".repeat(26))}`;
     });
     return `${heading}:\n${rows.join("\n")}`;
   }).join("\n\n");
@@ -873,8 +1005,14 @@ export function renderHelp(command = null) {
     }
   }
   const synopsis = page.synopsis.map((line, index) => index ? `       ${line}` : `Usage: ${line}`);
-  const about = page.about.flatMap((paragraph) => wrapWords(paragraph, 88).split("\n"));
-  const notes = page.notes?.flatMap((note) => wrapWords(note, 88).split("\n")) || [];
+  const about = page.about.flatMap((paragraph, index) => [
+    ...(index ? [""] : []),
+    ...wrapWords(paragraph, PAGE_WIDTH).split("\n"),
+  ]);
+  const notes = page.notes?.flatMap((note, index) => [
+    ...(index ? [""] : []),
+    ...wrapWords(note, PAGE_WIDTH).split("\n"),
+  ]) || [];
   const examples = page.examples.map((example) => `  ${example}`);
   return [
     page.title,
@@ -885,7 +1023,7 @@ export function renderHelp(command = null) {
     "",
     ...options,
     "",
-    ...wrapWords(page.args, 88).split("\n"),
+    ...wrapWords(page.args, PAGE_WIDTH).split("\n"),
     ...(notes.length ? ["", ...notes] : []),
     "",
     renderExits(page),

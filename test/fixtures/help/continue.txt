@@ -1,0 +1,41 @@
+orch continue — resume an interrupted cycle or a stopped run.
+
+Usage: orch continue <sid> [options]
+
+Every cycle writes a checkpoint keyed by its sid (the run's short id, printed
+when the run starts and listed by `orch dashboard`). `continue` reads that
+checkpoint and picks the cycle up where it stopped instead of starting over, so
+a run killed mid-review does not re-author the change. A run that ended at the
+attempt cap (exit 2) or waiting on a human (exit 4) resumes here too, with a
+fresh attempt budget. The seats, work order and goal are taken from the record:
+a bare `orch continue <sid>` on a run started with --until merged keeps
+pursuing merged, not the default a fresh run would get. A flag given here
+overrides the recorded value for this resume only.
+
+Options:
+  --until <goal>          What this resume pursues. Only once can be typed here
+                          today; ready and merged are inherited from the run's
+                          own record, and are refused as an override.
+                          (default: the goal recorded for the run)
+  --reviewer <spec>       Reviewer seat as "<agent> [model] [effort]".
+  --reviewers <a,b>       Comma-separated reviewer seats.
+  --allow-large-scope     Sanction a deliberately large review slice.
+  --no-tidy               Keep the task branch and worktree after landing.
+  --detach                Run in the background; print pid, log and runId.
+  --dry                   Plan only: no agent runs, nothing is written.
+  --json                  Print one JSON event per line; no prose.
+  --config-file <path>    Layer this YAML file over .orch/orch.yml.
+
+Arguments: exactly one sid. A sid never contains '/', '..' or a NUL byte — it
+is used directly as a store key, so anything else is refused.
+
+There is no --author here: the commits being resumed were written by a specific
+agent, and this command continues that run rather than starting a new one.
+
+Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
+3 blocked, a human must decide · 4 asked a human, no answer in time ·
+64 usage error.
+
+Examples:
+  orch continue 1a2b3c4d
+  orch continue 1a2b3c4d --reviewer "claude claude-opus-5 high"

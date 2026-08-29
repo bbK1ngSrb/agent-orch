@@ -1,0 +1,45 @@
+orch issue — run a cycle from a GitHub issue.
+
+Usage: orch issue <number> [options]
+
+Fetches issue <number> with `gh`, uses its body as the work order, and runs the
+same cycle as `orch task`. The landing commit carries `Closes #<number>`, so
+GitHub closes the issue when the change reaches the base branch. The issue body
+is the whole brief an author agent gets — comments on the issue are not read —
+so a thin body is the usual reason a cycle escalates. A work order whose text
+names a guardrail path is refused at intake, before any agent runs; pass
+--allow-protected when the mention is incidental.
+
+Options:
+  --until <goal>          What this run pursues: once, ready or merged.
+                          once  = a single cycle, then report.
+                          ready = loop until the pull request for this change
+                                  is green and mergeable; never merge it.
+                          merged = also merge the standing PR.
+                          (default: once)
+  --author <spec>         Author seat as "<agent> [model] [effort]".
+  --authors <a,b>         Comma-separated author seats; each gets a branch.
+  --reviewer <spec>       Reviewer seat as "<agent> [model] [effort]".
+  --reviewers <a,b>       Comma-separated reviewer seats.
+  --cheap                 Fill both seats from cheap.role in orch.yml.
+  --allow-protected       Run even though the work order names a guardrail
+                          path. The intake scan is textual, so this is for an
+                          incidental mention; a real guardrail change still
+                          escalates at the security floor.
+  --allow-large-scope     Sanction a deliberately large review slice.
+  --no-tidy               Keep the task branch and worktree after landing.
+  --no-banner             Hide the run banner.
+  --detach                Run in the background; print pid, log and runId.
+  --dry                   Plan only: no agent runs, nothing is written.
+  --json                  Print one JSON event per line; no prose.
+  --config-file <path>    Layer this YAML file over .orch/orch.yml.
+
+Arguments: exactly one issue number, digits only.
+
+Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
+3 blocked, a human must decide · 4 asked a human, no answer in time ·
+64 usage error.
+
+Examples:
+  orch issue 42
+  orch issue 42 --until merged --reviewer "codex gpt-5.6-sol high"

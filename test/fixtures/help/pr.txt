@@ -1,0 +1,43 @@
+orch pr — audit a pull request or a branch, and repair or merge it.
+
+Usage: orch pr <number|branch> [options]
+
+Takes a GitHub PR number or a local/remote branch name and runs the cycle in
+review mode: no author writes a new change first, a reviewer agent audits what
+is already there, and the test gate and security scan run on that diff. --until
+once audits and reports; ready repairs the head until GitHub says it is green
+and mergeable; merged also merges it, but only after reading mergeability and
+check status back for the exact head being merged. A draft pull request is not
+ready by definition, so ready and merged both refuse one — reporting `pr #<n>
+is a draft` — instead of marking it ready or undrafting it.
+
+Options:
+  --until <goal>          What this run pursues: once, ready or merged.
+                          once  = audit once and report; change nothing.
+                          ready = repair the head until it is green and
+                                  mergeable; never merge it.
+                          merged = merge it once readiness is verified.
+                          (default: once)
+  --merge                 Alias for --until merged; refused next to a different
+                          --until.
+  --reviewer <spec>       Reviewer seat as "<agent> [model] [effort]".
+  --reviewers <a,b>       Comma-separated reviewer seats.
+  --allow-large-scope     Sanction a deliberately large review slice.
+  --detach                Run in the background; print pid, log and runId.
+  --dry                   Plan only: no agent runs, nothing is written.
+  --json                  Print one JSON event per line; no prose.
+  --config-file <path>    Layer this YAML file over .orch/orch.yml.
+
+Arguments: exactly one PR number or branch name.
+
+There is no --author here: this command audits work that already has an author.
+Accepting the flag and ignoring it is exactly the silence the schema exists to
+remove.
+
+Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
+3 blocked, a human must decide · 4 asked a human, no answer in time ·
+64 usage error.
+
+Examples:
+  orch pr 42 --until once
+  orch pr pr/claude/add-retry --reviewer "codex"

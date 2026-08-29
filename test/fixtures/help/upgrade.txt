@@ -1,0 +1,21 @@
+orch upgrade — self-update the global npm install.
+
+Usage: orch upgrade [options]
+
+Compares the running version against the published one and reinstalls the
+global package when it is behind. --check only reports the comparison and
+installs nothing, which is what a scripted or scheduled caller wants. `orch
+update` is a second spelling of this command.
+
+Options:
+  --check                 Report the latest version; install nothing.
+  --dry                   Print the install command; run nothing.
+
+Arguments: none.
+
+Exit codes: 0 up to date or upgraded · 1 the check or the install failed ·
+64 usage error.
+
+Examples:
+  orch upgrade --check
+  orch upgrade
