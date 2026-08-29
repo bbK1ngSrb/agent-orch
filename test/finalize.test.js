@@ -895,6 +895,15 @@ test("clean merge on a resumed cycle (task === branch): entry is never the branc
   );
 });
 
+test("clean merge with null task: version bump uses the no-work-order fallback", async () => {
+  let bumpArgs;
+  const { deps } = baseDeps({
+    git: { ...baseDeps().deps.git, bumpVersion: (path, entry) => { bumpArgs = { path, entry }; return "0.1.1"; } },
+  });
+  await finalize({ ...bumpCtx(), task: null }, deps);
+  assert.equal(bumpArgs.entry, "release bookkeeping (no work-order text recorded)");
+});
+
 test("clean merge with task: version bump entry uses the human title", async () => {
   let bumpArgs;
   const { deps } = baseDeps({
