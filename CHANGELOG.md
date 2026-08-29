@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.363 — 2026-08-29
+- null
+
 ## v0.4.362 — 2026-08-29
 - feat: rotate configured role pools (closes [#532](https://github.com/bbk1ng/agent-orch/issues/532))
 
