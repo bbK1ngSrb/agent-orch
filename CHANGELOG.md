@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.365 — 2026-08-29
+- fix(release): oneLine() treats null as empty, restoring the NO_WORK_ORDER fallback (closes #607)
+
 ## v0.4.364 — 2026-08-29
 - feat(cli): grouped global help and a help page per command (closes #605)
 
