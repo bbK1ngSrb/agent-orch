@@ -1295,6 +1295,10 @@ merge: no-ff                     # ff-only | no-ff | pr
 # === MCP PR merge opt-in ===
 automation:
   mcpMayMerge: false              # true = MCP orch_pr may request --until merged
+  # Ordered model fallback when a quota/error exhausts a seated adapter.
+  # The adapter stays eligible while the next model is tried; use real adapter names.
+  # rotateModels:
+  #   claude: [claude-sonnet-5, claude-opus-4-8]
   detachLogDir: .orch/logs        # detached-run log directory; default: .orch/logs
 
 # === Cheap-agent dispatch (optional) ===

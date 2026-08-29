@@ -614,11 +614,39 @@ function exclusionName(value) {
   return typeof value === "string" ? value : value?.name || value?.agent;
 }
 
+function exclusionHasModel(value) {
+  return value !== null && typeof value === "object"
+    && Object.prototype.hasOwnProperty.call(value, "model");
+}
+
+function exclusionKey(value) {
+  const name = exclusionName(value);
+  return `${name}\0${exclusionHasModel(value) ? JSON.stringify(value.model) : "*"}`;
+}
+
+function isExcludedRole(role, exclusions = []) {
+  const name = exclusionName(role);
+  if (!name) return false;
+  const roleHasModel = role !== null && typeof role === "object"
+    && Object.prototype.hasOwnProperty.call(role, "model");
+  return exclusions.some((value) => {
+    if (exclusionName(value) !== name) return false;
+    // A legacy/name-only exclusion still burns the whole adapter. A model
+    // exclusion only burns the matching (agent, model) pair.
+    return !exclusionHasModel(value) || (roleHasModel && value.model === role.model);
+  });
+}
+
 function exclusionRecord(value) {
   const name = exclusionName(value);
   if (!name) return null;
-  return typeof value === "object" && value.name
-    ? { name, reason: value.reason || "error", at: value.at || null }
+  return typeof value === "object"
+    ? {
+      name,
+      ...(exclusionHasModel(value) ? { model: value.model } : {}),
+      reason: value.reason || "error",
+      at: value.at || null,
+    }
     : { name, reason: "error", at: null };
 }
 
@@ -633,9 +661,9 @@ export function resumeExclusions(orchDir, task, author, deps = { resume, checkpo
     deps.inflight.lookup(orchDir, sid)?.excludedAgents,
   ]) {
     for (const value of source || []) {
-      const name = exclusionName(value);
-      if (!name || entries.has(name)) continue;
-      entries.set(name, exclusionRecord(value));
+      const entry = exclusionRecord(value);
+      if (!entry || entries.has(exclusionKey(entry))) continue;
+      entries.set(exclusionKey(entry), entry);
     }
   }
   return [...entries.values()];
@@ -643,7 +671,8 @@ export function resumeExclusions(orchDir, task, author, deps = { resume, checkpo
 
 export function nextAuthor(cfg, orchDir, pinnedAuthor = null, dry = false, options = {}) {
   const opts = options || {};
-  const excluded = new Set((opts.exclude || []).map(exclusionName).filter(Boolean));
+  const exclusions = Array.isArray(opts.exclude) ? opts.exclude : [];
+  const isExcluded = (role) => isExcludedRole(role, exclusions);
   const blockedAuthors = new Set((opts.blockedAuthors || []).map(exclusionName).filter(Boolean));
   const agents = Array.isArray(cfg.agents) ? cfg.agents : [];
   const persist = !dry && opts.persist !== false;
@@ -654,15 +683,15 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null, dry = false, optio
   const fixed = fixedRoles(cfg);
   if (fixed) {
     if (persist) mkdirSync(orchDir, { recursive: true });
-    const authors = fixed.authors.filter((spec) => !excluded.has(spec.agent));
+    const authors = fixed.authors.filter((spec) => !isExcluded(spec));
     const authorName = authors[0]?.agent;
     // A paired fixed X/X role is an explicit request, unlike the reviewer-only
     // rotation path, so preserve the same seat when no independent seat exists.
     const allowSelf = fixedSelfReview(cfg);
-    let reviewers = fixed.reviewers.filter((spec) => !excluded.has(spec.agent)
+    let reviewers = fixed.reviewers.filter((spec) => !isExcluded(spec)
       && (allowSelf || authors.length > 1 || spec.agent !== authorName));
     if (!reviewers.length && singleAgentPool(cfg)) {
-      reviewers = fixed.reviewers.filter((spec) => !excluded.has(spec.agent) && spec.agent === authorName);
+      reviewers = fixed.reviewers.filter((spec) => !isExcluded(spec) && spec.agent === authorName);
     }
     return {
       authorName,
@@ -679,7 +708,7 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null, dry = false, optio
   // this run is the prior run continuing, not a new author's turn.
   // Reviewer-only CLI overrides (D2) force reviewers while still rotating the author.
   const configured = configuredReviewers(cfg);
-  const configuredCandidates = configured?.filter((spec) => !excluded.has(spec.agent));
+  const configuredCandidates = configured?.filter((spec) => !isExcluded(spec));
   const reviewerCandidates = (authorName) => {
     if (configured) {
       let eligible = configuredCandidates.filter((spec) => spec.agent !== authorName);
@@ -692,26 +721,32 @@ export function nextAuthor(cfg, orchDir, pinnedAuthor = null, dry = false, optio
     const result = [];
     for (let step = 1; step <= agents.length && result.length < (reviewerCount || 1); step += 1) {
       const candidate = agents[(authorIndex + step) % agents.length];
-      if (candidate !== authorName && !excluded.has(candidate)) result.push({ agent: candidate, model: null, effort: null });
+      const candidateRole = { agent: candidate, model: null, effort: null };
+      if (candidate !== authorName && !isExcluded(candidateRole)) result.push(candidateRole);
     }
-    if (!result.length && singleAgentPool(cfg) && !excluded.has(authorName))
+    if (!result.length && singleAgentPool(cfg) && !isExcluded({ agent: authorName, model: null }))
       result.push({ agent: authorName, model: null, effort: null });
     return result;
   };
   const pickAgent = (start) => {
     for (let step = 0; step < agents.length; step += 1) {
       const candidate = agents[(start + step) % agents.length];
-      if (!excluded.has(candidate) && (!blockedAuthors.has(candidate) || singleAgentPool(cfg))) return candidate;
+      if (!isExcluded({ agent: candidate, model: null })
+        && (!blockedAuthors.has(candidate) || singleAgentPool(cfg))) return candidate;
     }
     return undefined;
   };
-  const pinIndex = agents.indexOf(pinnedAuthor);
-  if (pinnedAuthor && pinIndex >= 0 && !excluded.has(pinnedAuthor) && !blockedAuthors.has(pinnedAuthor) && !forceRotate) {
-    const reviewers = reviewerCandidates(pinnedAuthor);
+  const pinnedName = typeof pinnedAuthor === "object" ? pinnedAuthor?.agent : pinnedAuthor;
+  const pinnedRole = typeof pinnedAuthor === "object" && pinnedAuthor?.agent
+    ? pinnedAuthor : { agent: pinnedName, model: null, effort: null };
+  const pinIndex = agents.indexOf(pinnedName);
+  if (pinnedName && pinIndex >= 0 && !isExcluded(pinnedRole)
+    && !blockedAuthors.has(pinnedName) && !forceRotate) {
+    const reviewers = reviewerCandidates(pinnedName);
     return {
-      authorName: pinnedAuthor, reviewerName: reviewers[0]?.agent,
-      authorNames: [pinnedAuthor], reviewerNames: reviewers.map((s) => s.agent),
-      authors: [{ agent: pinnedAuthor, model: null, effort: null }],
+      authorName: pinnedName, reviewerName: reviewers[0]?.agent,
+      authorNames: [pinnedName], reviewerNames: reviewers.map((s) => s.agent),
+      authors: [pinnedRole],
       reviewers,
     };
   }
@@ -1705,6 +1740,8 @@ function buildAdapterWorkOrder(name) {
     suspected_paths: [`src/adapters/${name}.js`, "src/adapters/index.js", "test/adapters.test.js"],
     acceptance_criteria: [
       `src/adapters/${name}.js exports an adapter matching the claude.js/codex.js shape`,
+      `src/adapters/${name}.js declares a limitPattern for its CLI's quota wording`,
+      `src/adapters/${name}.js declares env for the environment it needs`,
       `src/adapters/index.js REGISTRY registers "${name}"`,
       `adapters.get("${name}") no longer throws`,
       "tests cover the new adapter",
@@ -1770,7 +1807,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   const authorName = authorSpec.agent;
   const { sid, branch, resume: isResume } = resolveTaskBranch({ repo, orchDir, task, authorName, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
   const reviewerList = reviewersForAuthor(authorName, reviewers, { allowSelf: singleAgentPool(cfg) || fixedSelfReview(cfg) })
-    .filter((reviewer) => !exclusions.some((value) => exclusionName(value) === reviewer.agent));
+    .filter((reviewer) => !isExcludedRole(reviewer, exclusions));
   if (!reviewerList.length) throw noEligibleRole("reviewer", { exclude: exclusions, agents: cfg.agents || [] });
   const run = {
     mode: "task", task, authorPrompt, workOrder: wo, allowLargeScope: Boolean(flags["allow-large-scope"]),
@@ -2272,7 +2309,7 @@ export async function main(argv, deps = {}) {
       });
       const reviewersForRun = (authorName) => {
         let reviewerList = reviewersForAuthor(authorName, reviewers, { allowSelf: singleAgentPool(cfg) || fixedSelfReview(cfg) })
-          .filter((reviewer) => !exclusions.some((value) => exclusionName(value) === reviewer.agent));
+          .filter((reviewer) => !isExcludedRole(reviewer, exclusions));
         // Cheap mode intentionally uses its single configured seat for both
         // stages; the no-self-review rule still applies to pool rotation.
         if (!reviewerList.length && cfg.cheap?.role === authorName)
@@ -2816,18 +2853,19 @@ export async function main(argv, deps = {}) {
     const exclusions = new Map();
     for (const value of persistedExclusions) {
       const entry = exclusionRecord(value);
-      if (entry && !exclusions.has(entry.name)) exclusions.set(entry.name, entry);
+      if (entry && !exclusions.has(exclusionKey(entry))) exclusions.set(exclusionKey(entry), entry);
     }
-    const excludedNames = new Set(exclusions.keys());
-    const selectedRoles = nextAuthor(cfg, orchDir, persistedAuthor?.agent || branchAuthor || cfg.agents?.[0], true, {
-      exclude: [...excludedNames],
+    const exclusionValues = [...exclusions.values()];
+    const selectedRoles = nextAuthor(cfg, orchDir, persistedAuthor || branchAuthor || cfg.agents?.[0], true, {
+      exclude: exclusionValues,
       persist: false,
     });
-    const authorSpec = persistedAuthor?.agent && !excludedNames.has(persistedAuthor.agent)
+    const authorSpec = persistedAuthor?.agent && !isExcludedRole(persistedAuthor, exclusionValues)
       ? persistedAuthor
       : selectedRoles.authors?.[0]
-        || (branchAuthor && !excludedNames.has(branchAuthor) ? { agent: branchAuthor, model: null, effort: null } : null);
-    if (!authorSpec) throw noEligibleRole("author", { exclude: [...excludedNames], agents: cfg.agents || [] });
+        || (branchAuthor && !isExcludedRole({ agent: branchAuthor, model: null }, exclusionValues)
+          ? { agent: branchAuthor, model: null, effort: null } : null);
+    if (!authorSpec) throw noEligibleRole("author", { exclude: exclusionValues, agents: cfg.agents || [] });
     const authorName = authorSpec.agent;
     try { adapters.get(authorName); }
     catch { throw new Error(`orch: cannot determine a registered author from branch ${branch}`); }
@@ -2837,16 +2875,16 @@ export async function main(argv, deps = {}) {
     const eligiblePersistedReviewers = (persistedReviewers || [])
       .filter((reviewer) => reviewer?.agent
         && (reviewer.agent !== authorName || singleAgentPool(cfg) || configuredSelfReview)
-        && !excludedNames.has(reviewer.agent));
+        && !isExcludedRole(reviewer, exclusionValues));
     const configured = configuredReviewers(cfg);
     const fallbackReviewers = reviewersForAuthor(authorName, configured || selectedRoles.reviewers || roleSpecsFromAgents(cfg.agents), {
       allowSelf: singleAgentPool(cfg) || reviewerOverride || configuredSelfReview,
     })
-      .filter((reviewer) => !excludedNames.has(reviewer.agent));
+      .filter((reviewer) => !isExcludedRole(reviewer, exclusionValues));
     const reviewers = !reviewerOverride && eligiblePersistedReviewers.length
       ? eligiblePersistedReviewers
       : fallbackReviewers;
-    if (!reviewers.length) throw noEligibleRole("reviewer", { exclude: [...excludedNames], agents: cfg.agents || [] });
+    if (!reviewers.length) throw noEligibleRole("reviewer", { exclude: exclusionValues, agents: cfg.agents || [] });
     if (!dry) preflightFn(cfg, orchDir, { only: [authorSpec.agent, ...reviewers.map((r) => r.agent)] });
 
     // Codex review (#125 stalemate): an `orch issue <n>` run stamps `Closes #n`
