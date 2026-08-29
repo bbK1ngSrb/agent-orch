@@ -252,7 +252,12 @@ test("npm pack dry-run excludes test files from the package", () => {
       npm_config_update_notifier: "false",
     },
   });
-  const [{ files }] = JSON.parse(out);
+  // npm <= 11 printed an array of package objects; npm 12 prints an object keyed
+  // by package name (#610). Object.values() turns the latter back into the
+  // former, so one line covers both without sniffing the npm version.
+  const parsed = JSON.parse(out);
+  const [{ files }] = Array.isArray(parsed) ? parsed : Object.values(parsed);
+  assert.ok(Array.isArray(files) && files.length, `unexpected npm pack --json shape: ${out.slice(0, 200)}`);
   assert.deepEqual(files.map((f) => f.path).filter((p) => p.endsWith(".test.js")), []);
 });
 
