@@ -395,7 +395,6 @@ test-gate is the governing review.
 ## Commands
 - \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
 - \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\`
-- \`orch review <branch>\`           audit an existing branch; --until ready opts into landing
 - \`orch continue <sid>\`            resume an interrupted/stalled cycle from its checkpoint
 - \`orch pr <number|branch> [--merge|--until once|ready|merged]\` review (and optionally merge) a PR
 - \`orch release "<entry>"\`         run the version bump + CHANGELOG write by hand; only needed
@@ -1839,8 +1838,8 @@ export function formatPriorStagedBranches(closes, entries) {
     out.push(`  ${e.branch} — ${e.verdict || "unknown"}${reason ? `: ${reason}` : ""}${hedge}`);
     // NOT `orch continue <sid>`: that needs a checkpoint/inflight record, and
     // both are cleared once a cycle returns — so it cannot resume a run that
-    // already reached a terminal status. `orch review` re-audits the branch.
-    out.push(`    inspect: git log ${e.branch}   re-audit: orch review ${e.branch}`);
+    // already reached a terminal status. `orch pr` re-audits the branch.
+    out.push(`    inspect: git log ${e.branch}   re-audit: orch pr ${e.branch} --until once`);
   }
   out.push("  this run stages a NEW branch. A re-run rotates the author and regenerates the diff, so a security-floor");
   out.push("  escalation repeats only if the fresh diff touches the same protected paths.");
@@ -2013,7 +2012,10 @@ export async function main(argv, deps = {}) {
   // "__update-check-child" is an internal re-exec target (see below), never
   // typed by a user, so it is exempt rather than added to the schema.
   if (command && command !== "__update-check-child" && !COMMANDS[command]) {
-    throw usageError(`unknown command: ${command} (run 'orch help' for usage)`, { showUsage: true });
+    const replacement = command === "review" && rest[0]
+      ? ` — use 'orch pr ${rest[0]} --until once'`
+      : "";
+    throw usageError(`unknown command: ${command}${replacement} (run 'orch help' for usage)`, { showUsage: true });
   }
 
   // --help/--version describe the tool rather than run it, so they route
@@ -2241,7 +2243,7 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "task" || command === "review" || command === "issue" || command === "pr") {
+  if (command === "task" || command === "issue" || command === "pr") {
     // D2: reviewer-only is meaningful for task/issue too ("rotate author, force this
     // reviewer"), matching review/continue/pr and the printUsage example.
     let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
@@ -2320,7 +2322,7 @@ export async function main(argv, deps = {}) {
       };
     } else {
       reviewBranch = rest[0];
-      if (!reviewBranch) throw usageError(command === "pr" ? "usage: orch pr <number|branch>" : "usage: orch review <branch>");
+      if (!reviewBranch) throw usageError("usage: orch pr <number|branch>");
     }
 
     // §3c intake scan (#394): a task whose text names a protected path almost
@@ -2478,7 +2480,7 @@ export async function main(argv, deps = {}) {
       task = null;
       const sid = newSid();
       runs = [{
-        mode, task, until, noMerge: command === "pr" || (command === "review" && until === "once"), prTarget,
+        mode, task, until, noMerge: command === "pr", prTarget,
         allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
         reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
         reviewers,

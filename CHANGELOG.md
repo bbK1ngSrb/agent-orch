@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.373 — Unreleased
+- **BREAKING (cli):** remove the legacy `orch review <branch>` command; use `orch pr <branch> --until once` for an audit-only run. The removed `orch_review` MCP tool now returns JSON-RPC `-32601` and names `orch_pr` as its replacement.
+
 ## v0.4.372 — 2026-08-30
 - fix: persist post-merge tidy outcomes (closes [#622](https://github.com/bbk1ng/agent-orch/issues/622))
 

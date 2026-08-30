@@ -35,13 +35,13 @@ test("every declared flag validates on its command, every other flag is refused"
       // reviewer-only is meaningful there, author-only isn't) — sampling --author
       // alone would otherwise trip that pairing rule for a reason unrelated to
       // what this matrix checks (does the command accept the flag at all).
-      // --json on task/issue/review only validates paired with --until ready
+      // --json on task/issue/pr only validates paired with --until ready
       // (schema.js: there's no event stream to print on the bare/once path) —
       // sampling --json alone would otherwise trip that pairing rule for a
       // reason unrelated to what this matrix checks.
       const extra = ["task", "issue"].includes(command) && ["author", "authors"].includes(name)
         ? sample("reviewer")
-        : ["task", "issue", "review", "pr"].includes(command) && name === "json" ? ["--until", "ready"] : [];
+        : ["task", "issue", "pr"].includes(command) && name === "json" ? ["--until", "ready"] : [];
       const { flags } = parse([command, ...sample(name), ...extra]);
       assert.doesNotThrow(() => validate(command, flags), `orch ${command} --${name}`);
     }
@@ -98,7 +98,6 @@ test("positional grammar is enforced before dispatch, not silently accepted", ()
   assert.doesNotThrow(() => validatePositionals("dashboard", [], {}));
   for (const [command, message, validArg] of [
     ["issue", /usage: orch issue <number>/, "42"],
-    ["review", /usage: orch review <branch>/, "x"],
     ["continue", /usage: orch continue <sid>/, "x"],
     ["pr", /usage: orch pr <number>/, "42"],
     ["release", /usage: orch release/, "x"],
@@ -143,7 +142,7 @@ test("--help and --version are legal on every command", () => {
 test("--json is scoped to dashboard, config, and run-controller commands", () => {
   assert.doesNotThrow(() => validate("dashboard", { json: true }));
   assert.doesNotThrow(() => validate("config", { json: true }));
-  const RUN_CONTROLLED = new Set(["task", "issue", "review", "pr"]);
+  const RUN_CONTROLLED = new Set(["task", "issue", "pr"]);
   for (const command of Object.keys(COMMANDS).filter((c) => c !== "dashboard" && c !== "config")) {
     if (command === "continue") {
       assert.doesNotThrow(() => validate(command, { json: true }), "orch continue --json");
@@ -164,10 +163,6 @@ test("--json is scoped to dashboard, config, and run-controller commands", () =>
       `orch ${command} --json`,
     );
   }
-  assert.throws(
-    () => validate("review", { json: true }),
-    /either goal also opts into landing the branch/,
-  );
 });
 
 test("an out-of-scope flag names the commands where it IS legal", () => {
@@ -181,7 +176,7 @@ test("--from is an authoring-cycle flag and documents a fresh round 1", () => {
     assert.equal(flags.from, "salvaged");
     assert.doesNotThrow(() => validate(command, flags));
   }
-  for (const command of ["review", "continue", "pr"]) {
+  for (const command of ["continue", "pr"]) {
     assert.throws(
       () => validate(command, { from: "salvaged" }),
       (e) => e.exit === 64 && /--from is not valid/.test(e.message),
@@ -223,12 +218,12 @@ test("--max-attempts is not declared — it would be a silent no-op, nothing rea
   );
 });
 
-test("--until ready|merged is available on task/issue/review/pr; continue is not", () => {
-  for (const command of ["task", "issue", "review", "pr"]) {
+test("--until ready|merged is available on task/issue/pr; continue is not", () => {
+  for (const command of ["task", "issue", "pr"]) {
     assert.doesNotThrow(() => validate(command, { until: "once" }), `${command} once`);
   }
   for (const mode of ["ready", "merged"]) {
-    for (const command of ["task", "issue", "review", "pr"]) {
+    for (const command of ["task", "issue", "pr"]) {
       assert.doesNotThrow(() => validate(command, { until: mode }), `${command} ${mode}`);
     }
     assert.throws(
@@ -238,24 +233,6 @@ test("--until ready|merged is available on task/issue/review/pr; continue is not
     );
   }
   assert.throws(() => validate("task", { until: "forever" }), /--until must be one of: once, ready, merged/);
-});
-
-// `orch review` audits an existing branch: the reviewed author is read off
-// the branch name and review never merges, so --author/--authors (who
-// authors) and --no-tidy (post-merge cleanup) have nothing to act on. RUN_FLAGS
-// used to be shared verbatim across task/issue/review/continue, so these
-// validated on review and silently did nothing — the same "declared but
-// inert" defect the schema exists to remove.
-test("orch review rejects --author/--authors/--no-tidy, which it cannot honour", () => {
-  for (const name of ["author", "authors", "no-tidy"]) {
-    const { flags } = parse(["review", ...sample(name)]);
-    assert.throws(() => validate("review", flags), (e) => e.exit === 64, `orch review --${name}`);
-  }
-  // --reviewer(s)/--cheap ARE honoured (they pick who audits) — still legal.
-  for (const name of ["reviewer", "reviewers", "cheap"]) {
-    const { flags } = parse(["review", ...sample(name)]);
-    assert.doesNotThrow(() => validate("review", flags), `orch review --${name}`);
-  }
 });
 
 // `orch pr` audits an existing GitHub PR's author — applyRoleOverrides is

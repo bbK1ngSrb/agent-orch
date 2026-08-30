@@ -237,7 +237,7 @@ test("--detach child registers a live run visible to dashboard JSON", async () =
   chdir(repo);
   console.log = (...args) => parentLogs.push(args.map(String).join(" "));
   try {
-    const event = await main(["review", "main", "--detach"], {
+    const event = await main(["pr", "main", "--until", "once", "--detach"], {
       script,
       spawn: (...args) => {
         childProcess = spawn(...args);
@@ -2262,7 +2262,7 @@ test("nextAuthor rotates the author away from a forced reviewer collision", () =
   assert.deepEqual(r.reviewerNames, ["claude"]);
 });
 
-test("a one-agent pool keeps task and review role selection usable", async () => {
+test("a one-agent pool keeps task and pr role selection usable", async () => {
   const taskRepo = initGitRepo("orch-one-agent-task-");
   writeFileSync(join(taskRepo, "orch.yml"), "agents: [claude]\n");
   const taskLogs = await runMainInRepo(taskRepo, ["task", "one agent task", "--no-tidy"]);
@@ -2272,7 +2272,7 @@ test("a one-agent pool keeps task and review role selection usable", async () =>
   const branch = "pr/claude/one-agent-review";
   gitDep.git(["branch", branch], reviewRepo);
   writeFileSync(join(reviewRepo, "orch.yml"), "agents: [claude]\n");
-  const reviewLogs = await runMainInRepo(reviewRepo, ["review", branch], { finishRun: async () => {} });
+  const reviewLogs = await runMainInRepoPreserveExit(reviewRepo, ["pr", branch, "--until", "once"], { finishRun: async () => {} });
   assert.match(reviewLogs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
@@ -2293,7 +2293,7 @@ test("task --reviewer rotates away from the requested reviewer end to end", asyn
   assert.match(logs.join("\n"), /pr\/codex\/.*: merged/);
 });
 
-test("review --reviewer uses the requested reviewer end to end", async () => {
+test("pr --reviewer uses the requested reviewer end to end", async () => {
   const repo = initGitRepo("orch-reviewer-review-e2e-");
   const branch = "pr/codex/reviewer-regression";
   gitDep.git(["branch", branch], repo);
@@ -2307,7 +2307,7 @@ test("review --reviewer uses the requested reviewer end to end", async () => {
       async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "" }; },
     }),
   };
-  const logs = await runMainInRepo(repo, ["review", branch, "--reviewer", "claude"], { cycleDeps, finishRun: async () => {} });
+  const logs = await runMainInRepoPreserveExit(repo, ["pr", branch, "--until", "once", "--reviewer", "claude"], { cycleDeps, finishRun: async () => {} });
   assert.deepEqual(auditCalls, ["claude"]);
   assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
@@ -3889,7 +3889,6 @@ test("a flag not read by the command is rejected", async () => {
   const cases = [
     [["issue", "42", "--merge"], /--merge is not valid with 'orch issue'/],
     [["task", "x", "--merge"], /--merge is not valid with 'orch task'/],
-    [["review", "b", "--merge"], /--merge is not valid with 'orch review'/],
     [["version", "--merge"], /--merge is not valid with 'orch version'/],
     [["help", "--merge"], /--merge is not valid with 'orch help'/],
     [["upgrade", "--merge"], /--merge is not valid with 'orch upgrade'/],
@@ -4039,6 +4038,15 @@ async function runMainInRepo(repo, argv, deps = {}) {
   } finally {
     console.log = origLog;
     chdir(prev);
+  }
+}
+
+async function runMainInRepoPreserveExit(repo, argv, deps = {}) {
+  const saved = process.exitCode;
+  try {
+    return await runMainInRepo(repo, argv, deps);
+  } finally {
+    process.exitCode = saved;
   }
 }
 
@@ -4872,7 +4880,7 @@ test("completed review cycle clears its checkpoint (no false interrupted entry)"
   };
   try {
     process.exitCode = 0;
-    await runMainInRepo(repo, ["review", "pr/claude/some-fix"], { cycleDeps });
+    await runMainInRepoPreserveExit(repo, ["pr", "pr/claude/some-fix", "--until", "once"], { cycleDeps });
   } finally {
     process.exitCode = 0;
   }
@@ -4881,80 +4889,6 @@ test("completed review cycle clears its checkpoint (no false interrupted entry)"
   const dir = join(repo, ".orch", "checkpoints");
   const leftover = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")) : [];
   assert.deepEqual(leftover, []); // ...and the completed run cleared it
-});
-
-// `review` shares task/issue's dry-run mechanism (dryDeps() instead of the
-// real cycle deps), but had no dedicated regression test of its own — every
-// mutating command in the schema needs one, not just the ones this slice
-// touched directly.
-test("orch review --dry never preflights or shells out to a real cycle", async () => {
-  const repo = initGitRepo("orch-review-dry-");
-  gitDep.git(["branch", "pr/claude/some-fix"], repo);
-  const logs = await runMainInRepo(repo, ["review", "pr/claude/some-fix", "--dry"], {
-    preflight() { assert.fail("preflight ran on a dry run"); },
-  });
-  assert.match(logs.join("\n"), /orch \(dry\)/);
-  const dir = join(repo, ".orch", "checkpoints");
-  assert.equal(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")).length : 0, 0);
-});
-
-test("orch review audits by default without changing the integration tip", async () => {
-  const repo = initGitRepo("orch-review-only-");
-  const branch = "pr/claude/review-only";
-  gitDep.git(["branch", "orch/integration"], repo);
-  gitDep.git(["checkout", "-b", branch], repo);
-  writeFileSync(join(repo, "review.txt"), "review me\n");
-  gitDep.git(["add", "review.txt"], repo);
-  gitDep.git(["commit", "-m", "review fixture"], repo);
-  gitDep.git(["checkout", "main"], repo);
-
-  const before = gitDep.git(["rev-parse", "orch/integration"], repo);
-  let finalized = false;
-  const logs = await runMainInRepo(repo, ["review", branch], {
-    cycleDeps: {
-      ...fakeCycleDeps(),
-      finalize: async () => { finalized = true; return { status: "merged", reason: "unexpected", sha: "abc" }; },
-    },
-  });
-  const after = gitDep.git(["rev-parse", "orch/integration"], repo);
-
-  assert.equal(after, before);
-  assert.equal(finalized, false);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
-});
-
-test("orch review --until ready uses the landing path", async () => {
-  const repo = initGitRepo("orch-review-ready-");
-  const branch = "pr/claude/review-ready";
-  gitDep.git(["branch", "orch/integration"], repo);
-  gitDep.git(["checkout", "-b", branch], repo);
-  writeFileSync(join(repo, "review.txt"), "review me\n");
-  gitDep.git(["add", "review.txt"], repo);
-  gitDep.git(["commit", "-m", "review fixture"], repo);
-  gitDep.git(["checkout", "main"], repo);
-  addOriginWithPeer(repo);
-  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
-  const gh = readinessGh({
-    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
-    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
-  });
-
-  let finalized = false;
-  const logs = await runMainInRepo(repo, ["review", branch, "--until", "ready"], {
-    cycleDeps: {
-      ...fakeCycleDeps(),
-      finalize: async (ctx) => {
-        finalized = true;
-        assert.equal(ctx.branch, branch);
-        assert.equal(ctx.until, "ready");
-        return { status: "merged", reason: "test", sha: "abc" };
-      },
-    },
-    githubDeps: () => ({ gh, git: gitDep.git }),
-  });
-
-  assert.equal(finalized, true);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
 test("orch continue resumes a ready review through the landing path", async () => {
@@ -5341,7 +5275,7 @@ test("orch task fans out explicit plural role overrides into two branches", asyn
   assert.deepEqual(calls.filter(([role]) => role === "author").map(([, name]) => name), ["claude", "codex"]);
 });
 
-test("orch review sends explicit plural reviewer overrides to both auditors", async () => {
+test("orch pr sends explicit plural reviewer overrides to both auditors", async () => {
   const repo = initGitRepo("orch-plural-reviewer-panel-");
   const branch = "pr/gemini/plural-reviewers";
   gitDep.git(["checkout", "-b", branch], repo);
@@ -5367,14 +5301,14 @@ test("orch review sends explicit plural reviewer overrides to both auditors", as
     },
   };
 
-  await runMainInRepo(repo, ["review", branch, "--reviewers", "claude,codex"], {
+  await runMainInRepoPreserveExit(repo, ["pr", branch, "--until", "once", "--reviewers", "claude,codex"], {
     cycleDeps, finishRun: async () => {},
   });
 
   assert.deepEqual(audits.sort(), ["claude", "codex"]);
 });
 
-test("orch review permits an explicitly requested reviewer who authored the branch", async () => {
+test("orch pr permits an explicitly requested reviewer who authored the branch", async () => {
   const repo = initGitRepo("orch-fixed-self-review-");
   const branch = "pr/claude/review-self";
   gitDep.git(["branch", branch], repo);
@@ -5390,7 +5324,7 @@ test("orch review permits an explicitly requested reviewer who authored the bran
       }),
     },
   };
-  const logs = await runMainInRepo(repo, ["review", branch, "--reviewer", "claude"], {
+  const logs = await runMainInRepoPreserveExit(repo, ["pr", branch, "--until", "once", "--reviewer", "claude"], {
     cycleDeps, finishRun: async () => {},
   });
 
@@ -5398,7 +5332,7 @@ test("orch review permits an explicitly requested reviewer who authored the bran
   assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
-test("orch review permits an explicitly configured reviewer who authored the branch", async () => {
+test("orch pr permits an explicitly configured reviewer who authored the branch", async () => {
   const repo = initGitRepo("orch-configured-self-review-");
   const branch = "pr/codex/review-self";
   gitDep.git(["branch", branch], repo);
@@ -5414,7 +5348,7 @@ test("orch review permits an explicitly configured reviewer who authored the bra
       }),
     },
   };
-  const logs = await runMainInRepo(repo, ["review", branch], { cycleDeps, finishRun: async () => {} });
+  const logs = await runMainInRepoPreserveExit(repo, ["pr", branch, "--until", "once"], { cycleDeps, finishRun: async () => {} });
 
   assert.deepEqual(auditCalls, ["codex"]);
   assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
@@ -6414,7 +6348,7 @@ test("orch issue <n> warns about a branch a prior run staged for the same issue 
     const out = logs.join("\n");
     assert.match(out, /issue #52 already has 1 staged branch/);
     assert.match(out, /pr\/claude\/stale-base-9999-0 — escalated/);
-    assert.match(out, /orch review pr\/claude\/stale-base-9999-0/);
+    assert.match(out, /orch pr pr\/claude\/stale-base-9999-0 --until once/);
     assert.doesNotMatch(out, /may belong to another issue/);
   } finally {
     process.exitCode = saved;
@@ -6672,7 +6606,6 @@ test("missing required positional exits 64 like every other usage error", async 
   await assert.rejects(() => main(["release"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["issue", "abc"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["task"], { preflight() {} }), (e) => e.exit === 64);
-  await assert.rejects(() => main(["review"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["continue"], { preflight() {} }), (e) => e.exit === 64);
   // This deliberately uses no probe stub: a missing branch is answerable from
   // local git and must remain a usage error in a bare environment.
@@ -6685,6 +6618,13 @@ test("missing required positional exits 64 like every other usage error", async 
   await assert.rejects(
     () => main(["agent", "typo", "widget", "--build"], { preflight() {} }),
     (e) => e.exit === 64,
+  );
+});
+
+test("removed review command exits 64 and points to the pr audit spelling", async () => {
+  await assert.rejects(
+    () => main(["review", "feature/x"], { preflight() {} }),
+    (e) => e.exit === 64 && e.showUsage === true && /use 'orch pr feature\/x --until once'/.test(e.message),
   );
 });
 

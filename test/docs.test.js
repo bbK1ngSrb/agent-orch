@@ -180,7 +180,7 @@ test("the manual scopes --until modes to wired commands (#525)", () => {
   const bullet = manual.match(/^- \*\*`--until <mode>`\*\*[\s\S]*?(?=\n- \*\*)/m);
   assert.ok(bullet, "manual does not document the --until flag");
   assert.match(bullet[0], /`once` is the default/);
-  assert.match(bullet[0], /`task`, `issue`, `review`, and `pr` support `ready`/);
+  assert.match(bullet[0], /`task`, `issue`, and `pr` support `ready`/);
   assert.match(bullet[0], /`continue` currently accepts only `--until once`/);
   assert.match(bullet[0], /On `pr`, `--merge` remains a compatibility\s+alias for `--until merged`/);
   assert.doesNotMatch(bullet[0], /only `--until once` .* exists today/);
@@ -459,7 +459,7 @@ test("docs document that the version bump on merge is opt-in via release.autoBum
   }
   // the FAQ answer must point at the flag, not just at merge modes
   const faqStart = manual.indexOf('"Why didn\'t my version get bumped?"');
-  const faq = manual.slice(faqStart, manual.indexOf('"I ran `orch review`', faqStart));
+  const faq = manual.slice(faqStart);
   assert.match(faq, /release\.autoBump/);
 });
 
