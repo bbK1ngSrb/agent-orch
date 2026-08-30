@@ -1,12 +1,11 @@
-orch review — audit an existing branch and land it.
+orch review — audit an existing branch without merging it.
 
 Usage: orch review <branch> [options]
 
 Audits an existing branch: no author writes a new change first, a reviewer
 agent examines the diff, and the test gate and deterministic security scan run
-on it. An agreed and green branch then lands on the integration branch — the
-same local merge a task cycle performs, and the same guardrail and security
-floors apply to it.
+on it. By default an agreed and green branch is reported without landing; use
+--until ready (or merged) to opt into landing it on the integration branch.
 
 `orch pr <branch>` audits the same branch without that local merge, leaving the
 landing to GitHub. This is the older of the two spellings and is kept for
@@ -15,8 +14,9 @@ compatibility.
 Options:
   --until <goal>          What this run pursues: once, ready or merged.
                           once  = a single audit, then report.
-                          ready = loop until the pull request for this branch
-                                  is green and mergeable; never merge it.
+                          ready = land locally, then wait for the standing PR
+                          to be green and
+                                  mergeable; never merge the standing PR.
                           merged = also merge the standing PR.
                           (default: once)
   --reviewer <spec>       Reviewer seat as "<agent> [model] [effort]".

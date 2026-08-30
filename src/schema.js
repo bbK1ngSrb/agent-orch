@@ -102,12 +102,10 @@ export const COMMANDS = {
     // No --author/--authors: review audits an existing branch, whose author is
     // read off the branch name — accepting and ignoring them is the exact lie
     // this schema exists to remove. --reviewer(s)/--cheap ARE honoured (they
-    // pick who audits). The --no-tidy exclusion is inherited from the days this
-    // comment claimed review "never merges"; it does — cli.js sets
-    // `noMerge: command === "pr"`, so a review that agrees and is green lands
-    // on the integration branch like a task cycle (test/engine.test.js:782
-    // exists to prove the protected-path floor blocks that merge). Whether
-    // --no-tidy should therefore be legal here is #528's call, not a help fix.
+    // pick who audits). The default review path does not merge; --until ready
+    // or merged opts into the landing path. The --no-tidy exclusion is inherited
+    // from the days this comment claimed review "never merges"; whether it
+    // should therefore be legal here is #528's call, not a help fix.
     mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-tidy", "author", "authors"].includes(f)), "cheap", "json"],
   },
   continue: {
@@ -320,10 +318,10 @@ export const HELP_PAGES = {
     },
   },
   review: {
-    title: "orch review — audit an existing branch and land it.",
+    title: "orch review — audit an existing branch without merging it.",
     synopsis: ["orch review <branch> [options]"],
     about: [
-      "Audits an existing branch: no author writes a new change first, a reviewer agent examines the diff, and the test gate and deterministic security scan run on it. An agreed and green branch then lands on the integration branch — the same local merge a task cycle performs, and the same guardrail and security floors apply to it.",
+      "Audits an existing branch: no author writes a new change first, a reviewer agent examines the diff, and the test gate and deterministic security scan run on it. By default an agreed and green branch is reported without landing; use --until ready (or merged) to opt into landing it on the integration branch.",
       "`orch pr <branch>` audits the same branch without that local merge, leaving the landing to GitHub. This is the older of the two spellings and is kept for compatibility.",
     ],
     notes: ["There is no --author here: this command audits work that already has an author."],
@@ -338,8 +336,8 @@ export const HELP_PAGES = {
       until: untilHelp(
         "What this run pursues: once, ready or merged.",
         "once  = a single audit, then report.",
-        "ready = loop until the pull request for this branch",
-        "        is green and mergeable; never merge it.",
+        "ready = land locally, then wait for the standing PR to be green and",
+        "        mergeable; never merge the standing PR.",
         "merged = also merge the standing PR.",
         "(default: once)",
       ),
@@ -835,7 +833,7 @@ const GLOBAL_ROWS = {
   agent: ["agent add|build <name>", "Add an agent to the rotation pool; --build scaffolds its adapter."],
   task: ["task \"change\"", "Author, cross-audit, test-gate and land one change."],
   issue: ["issue <number>", "The same, from a GitHub issue; closes it on landing."],
-  review: ["review <branch>", "Audit and land an existing branch (superseded by pr)."],
+  review: ["review <branch>", "Audit an existing branch; --until ready opts into landing."],
   pr: ["pr <number|branch>", "Audit a pull request or a branch; repair or merge it."],
   continue: ["continue <sid>", "Resume an interrupted cycle or a stopped run."],
   dashboard: ["dashboard", "Live status TUI; --once prints a static snapshot."],

@@ -2264,7 +2264,7 @@ test("a one-agent pool keeps task and review role selection usable", async () =>
   gitDep.git(["branch", branch], reviewRepo);
   writeFileSync(join(reviewRepo, "orch.yml"), "agents: [claude]\n");
   const reviewLogs = await runMainInRepo(reviewRepo, ["review", branch], { finishRun: async () => {} });
-  assert.match(reviewLogs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.match(reviewLogs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
 test("task --reviewer rotates away from the requested reviewer end to end", async () => {
@@ -2300,7 +2300,7 @@ test("review --reviewer uses the requested reviewer end to end", async () => {
   };
   const logs = await runMainInRepo(repo, ["review", branch, "--reviewer", "claude"], { cycleDeps, finishRun: async () => {} });
   assert.deepEqual(auditCalls, ["claude"]);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
 test("orch continue re-seats an excluded author from the inflight record", async () => {
@@ -4778,6 +4778,31 @@ test("orch review --dry never preflights or shells out to a real cycle", async (
   assert.equal(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")).length : 0, 0);
 });
 
+test("orch review audits by default without changing the integration tip", async () => {
+  const repo = initGitRepo("orch-review-only-");
+  const branch = "pr/claude/review-only";
+  gitDep.git(["branch", "orch/integration"], repo);
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const before = gitDep.git(["rev-parse", "orch/integration"], repo);
+  let finalized = false;
+  const logs = await runMainInRepo(repo, ["review", branch], {
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async () => { finalized = true; return { status: "merged", reason: "unexpected", sha: "abc" }; },
+    },
+  });
+  const after = gitDep.git(["rev-parse", "orch/integration"], repo);
+
+  assert.equal(after, before);
+  assert.equal(finalized, false);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
+});
+
 // The schema's own matrix test (schema.test.js) derives its expectations from
 // FLAGS/COMMANDS, so it can't catch a regression in those declarations
 // themselves — delete --allow-large-scope from the schema and that test gets
@@ -5104,7 +5129,7 @@ test("orch review permits an explicitly requested reviewer who authored the bran
   });
 
   assert.deepEqual(auditCalls, ["claude"]);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
 test("orch review permits an explicitly configured reviewer who authored the branch", async () => {
@@ -5126,7 +5151,7 @@ test("orch review permits an explicitly configured reviewer who authored the bra
   const logs = await runMainInRepo(repo, ["review", branch], { cycleDeps, finishRun: async () => {} });
 
   assert.deepEqual(auditCalls, ["codex"]);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
 test("orch continue permits an explicitly requested branch author as reviewer", async () => {
