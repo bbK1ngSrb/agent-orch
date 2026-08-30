@@ -7,8 +7,16 @@
 // selected remedy, the controller terminates cleanly at STOPPED_AT_CAP (2).
 import { chooseRemedy, fingerprint as computeFingerprint } from "./failure.js";
 import { waitReady } from "./readiness.js";
+import { EXIT_CODES } from "./exit-codes.js";
 
-const EXIT_FOR_STATE = { READY: 0, MERGED: 0, ERROR: 1, STOPPED_AT_CAP: 2, BLOCKED: 3, WAIT_TIMEOUT: 4 };
+const STATE_EXIT = {
+  READY: EXIT_CODES.OK,
+  MERGED: EXIT_CODES.OK,
+  ERROR: EXIT_CODES.ERROR,
+  STOPPED_AT_CAP: EXIT_CODES.ESCALATED,
+  BLOCKED: EXIT_CODES.BLOCKED,
+  WAIT_TIMEOUT: EXIT_CODES.WAIT_TIMEOUT,
+};
 const OUTCOME_FOR_STATE = {
   READY: "reached", MERGED: "reached", ERROR: "error",
   STOPPED_AT_CAP: "stopped-at-cap", BLOCKED: "blocked", WAIT_TIMEOUT: "wait-timeout",
@@ -37,7 +45,7 @@ function terminal(state, failureClass) {
   return {
     state,
     outcome: OUTCOME_FOR_STATE[state],
-    exit: EXIT_FOR_STATE[state],
+    exit: STATE_EXIT[state],
     ...(failureClass ? { failureClass } : {}),
     ...(state === "BLOCKED" ? { blockedReason: BLOCKED_REASON[failureClass] || null } : {}),
   };
@@ -160,7 +168,7 @@ export async function runUntil(policy, record = {}, deps) {
     if (repinnedHead && land.landing === "standing") land = { ...land, expectedHead: repinnedHead };
     if (land.landing === "base") {
       return withRecord({
-        state: policy.until === "merged" ? "MERGED" : "READY", outcome: "reached", exit: 0,
+        state: policy.until === "merged" ? "MERGED" : "READY", outcome: "reached", exit: EXIT_CODES.OK,
         headSha: land.expectedHead, cycle, land,
       }, currentRecord, cycleResults);
     }
@@ -230,7 +238,7 @@ export async function runUntil(policy, record = {}, deps) {
         }
         if (mergeResult.result === "merged") {
           return withRecord({
-            state: "MERGED", outcome: "reached", exit: 0,
+            state: "MERGED", outcome: "reached", exit: EXIT_CODES.OK,
             warnings: readiness.warnings || [], headSha: mergeResult.headSha || mergeLand.expectedHead,
             headMovedRepins, mergeCommit: mergeResult.mergeCommit,
             merge: mergeResult.merge, cycle, land: mergeLand,
@@ -251,7 +259,7 @@ export async function runUntil(policy, record = {}, deps) {
         continue;
       }
       return withRecord({
-        state: "READY", outcome: "reached", exit: 0,
+        state: "READY", outcome: "reached", exit: EXIT_CODES.OK,
         warnings: readiness.warnings || [], headSha: readiness.headSha, headMovedRepins,
         cycle, land,
       }, currentRecord, cycleResults);

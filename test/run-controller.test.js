@@ -120,7 +120,7 @@ test("runUntil: readiness details reach the integration-repair remedy", async ()
 test("runUntil: gh pr view 401/403 mid-poll classifies REMOTE_AUTH instead of throwing", async () => {
   const deps = baseDeps({ gh: () => { throw new Error("gh: Bad credentials (HTTP 401)"); } });
   const result = await runUntil(POLICY, {}, deps);
-  assert.equal(result.exit, 3);
+  assert.equal(result.exit, 6);
   assert.equal(result.outcome, "blocked");
   assert.equal(result.failureClass, "REMOTE_AUTH");
   assert.equal(result.retries.REMOTE_AUTH, 1);
@@ -195,12 +195,12 @@ test("runUntil: an unavailable remedy terminates cleanly without consuming its a
 // REMOTE_AUTH's free retry (cap 1) is exhausted on the second occurrence in
 // the same run, at which point chooseRemedy's decision is terminal and
 // run-controller.js's BLOCKED_REASON map turns it into blockedReason "auth"
-// (design §7's `REMOTE_AUTH ... none -> BLOCKED (3)` row).
+// (design §7's `REMOTE_AUTH ... none -> BLOCKED (6)` row).
 test("runUntil: gh pr view 401/403 after the free retry is exhausted -> BLOCKED, blockedReason auth", async () => {
   const deps = baseDeps({ gh: () => { throw new Error("gh: Bad credentials (HTTP 401)"); } });
   const record = { retries: { REMOTE_AUTH: 1 } };
   const result = await runUntil(POLICY, record, deps);
-  assert.equal(result.exit, 3);
+  assert.equal(result.exit, 6);
   assert.equal(result.outcome, "blocked");
   assert.equal(result.blockedReason, "auth");
 });
@@ -345,12 +345,12 @@ test("runUntil: REVIEW_STALEMATE rotates into a fresh cycle with three review ro
   );
 });
 
-test("runUntil: cycle escalated on a BLOCKED-terminal class (protected path) -> exit 3 with blockedReason", async () => {
+test("runUntil: cycle escalated on a BLOCKED-terminal class (protected path) -> exit 6 with blockedReason", async () => {
   const deps = baseDeps({
     runCycle: async () => ({ status: "escalated", class: "POLICY_PROTECTED_PATH", fingerprint: "fp2", reason: "protected paths touched" }),
   });
   const result = await runUntil(POLICY, {}, deps);
-  assert.equal(result.exit, 3);
+  assert.equal(result.exit, 6);
   assert.equal(result.outcome, "blocked");
   assert.equal(result.blockedReason, "guardrail-path");
 });

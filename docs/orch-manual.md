@@ -854,31 +854,33 @@ merge and avoids that overlap.
 
 `&&` depends on the exit status, not on the wording of the terminal summary:
 
-| Code | Meaning |
-|---|---|
-| `0` | Normal completion: merged, approved, or a successful dry run. |
-| `1` | An uncaught exception (`bin/orch.js:5`): orch itself broke. |
-| `2` | An escalation, `merge-deferred`, or a non-approved `orch pr`. |
-| `3` | Blocked before deciding anything: the concurrency cap was reached. |
-| `64` | A usage error: unknown command, unknown flag, a flag the command does not read, or a bad flag value. |
+| Code | Name | Meaning | What to do |
+|---|---|---|---|
+| `0` | `OK` | The run reached its goal — agreed, green, landed (`READY`/`MERGED`). | Nothing. |
+| `1` | `ERROR` | A crash, invalid config, unusable `gh` auth, or unexpected exception. | Fix the cause and re-run. |
+| `2` | `ESCALATED` | A cycle ran but agents did not agree, or the remedy loop stopped at its cap. | Investigate the staged branch. |
+| `3` | `THROTTLED` | The concurrency cap refused the run before any cycle started. | Retry later, unchanged. |
+| `4` | `WAIT_TIMEOUT` | Asked a human and got no answer in `automation.humanWaitHours`. | Resume or re-check. |
+| `6` | `BLOCKED` | A policy-terminal guardrail, security, auth, or merge-rejection block. | Make a human decision; do not retry. |
+| `64` | Usage error | An invalid command, flag, positional, or value. | Fix the command line. |
 
-Exit `2` for a cycle outcome is not a crash. It means orch is working
-correctly and declining to land something on its own — a human should decide
-this — which is why halting the rest of a `&&` chain is usually sensible.
+Exit `2` for a cycle outcome is not a crash. It means a cycle ran and needs
+investigation — a human should decide this — which is why halting the rest of
+a `&&` chain is usually sensible.
 
-Exit `3` is deliberately *not* `2`. If another cycle is already live and the cap
-is reached, orch prints:
+Exit `3` means no cycle ran. If another cycle is already live and the cap is
+reached, orch prints:
 
 ```text
 orch: concurrency cap N reached — M cycles live; skipping <branch>
 ```
 
-Nothing was reviewed or decided in that case; the issue was skipped, so retrying
-later is the right response — whereas retrying a `2` just burns another cycle on
-a decision a human already needs to make. The `2` status is set in the `agent
-build`, `task`/`issue`/`review`, `continue`, and `pr` handlers for the relevant
-outcomes; `3` comes from the concurrency cap in the same handlers, and `64` from
-the command schema (`src/schema.js`) before any command runs.
+Nothing was reviewed or decided in that case, so retrying later is the right
+response. Exit `4` means orch asked a human and got no answer in
+`automation.humanWaitHours`; resume or re-check. Exit `6` is a terminal policy, security,
+authentication, or merge-rejection block; do not retry the same input. The
+command schema (`src/schema.js`) reports the same table in `orch --help` before
+any command runs.
 
 After a halt, use `orch dashboard` for the full run history. The durable record
 is `.orch/runs.jsonl`; its rows include `ts`, `branch`, `sid`, `verdict`,

@@ -238,7 +238,8 @@ land while checks are still pending.
 | `0` | goal reached and verified | nothing |
 | `1` | orch bug or environment failure | read the error; file an issue |
 | `2` | the run stopped short of its goal and is resumable | `orch continue <runId>` grants a fresh attempt budget |
-| `3` | blocked — a human must decide (always with a `blockedReason`, e.g. `guardrail-path`, `security-finding`, `concurrency-cap`) | decide, then re-run |
+| `3` | throttled — the concurrency cap was already reached, so nothing ran | retry later, unchanged |
+| `6` | blocked — a human must decide (always with a `blockedReason`, e.g. `guardrail-path`, `security-finding`) | decide, then re-run |
 | `4` | asked a human, no answer inside the window | answer on the issue/PR, then `orch continue <runId>` |
 | `64` | usage error (unknown command, bad flag, bad enum value) | fix the command line |
 
@@ -361,7 +362,7 @@ base→branch diff and runs it through a deterministic pattern scanner (`scanDif
 `src/security-review.js`) that flags added lines reading secrets or environment
 (`process.env`, `.ssh/`, `PRIVATE KEY`, …), opening network connections, spawning
 subprocesses, or touching workflow and branch-protection files. Any finding escalates the run
-(exit `3`, `blockedReason: security-finding`) even when every reviewer said `AGREE` and the
+(exit `6`, `blockedReason: security-finding`) even when every reviewer said `AGREE` and the
 tests are green — a reviewer can be talked into approving something; this check cannot. If
 the diff itself cannot be read, orch fails closed. Note where the gate is *not*: the merge of
 the standing `orch/integration → main` PR does not re-scan, because every commit in it was

@@ -5,6 +5,7 @@ import { portableSpawnSpec } from "./platform.js";
 import { resolveAgentBin } from "./agent-bin.js";
 import { C, colorEnabled, paint } from "./tui/theme.js";
 import { compareVersions } from "./update-check.js";
+import { EXIT_CODES } from "./exit-codes.js";
 
 const VERSION = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -70,7 +71,7 @@ export async function runUpgrade(opts = {}) {
     install = resolve();
   } catch (e) {
     write(`${paint(color, C.fail, "orch upgrade:")} could not resolve global install (${explainError(e)})`);
-    process.exitCode = 1;
+    process.exitCode = EXIT_CODES.ERROR;
     return { status: "error" };
   }
 
@@ -86,7 +87,7 @@ export async function runUpgrade(opts = {}) {
     target = latestVersion(exec);
   } catch (e) {
     write(`${paint(color, C.fail, "orch upgrade:")} could not check latest npm version (${explainError(e)})`);
-    process.exitCode = 1;
+    process.exitCode = EXIT_CODES.ERROR;
     return { status: "error", install };
   }
 
@@ -113,7 +114,7 @@ export async function runUpgrade(opts = {}) {
     return { status: "upgraded", current, target, install, command: commandText };
   } catch (e) {
     write(`${paint(color, C.fail, "orch upgrade:")} ${explainError(e)}`);
-    process.exitCode = 1;
+    process.exitCode = EXIT_CODES.ERROR;
     return { status: "error", current, target, install, command: commandText };
   }
 }

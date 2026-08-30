@@ -143,6 +143,10 @@ selftest() {
     is_quota_exit 2 "Claude usage limit reached" || { echo "FAIL retry exit 2"; exit 1; }
     is_quota_exit 3 "Claude usage limit reached" && { echo "FAIL retry exit 3"; exit 1; }
     is_quota_exit 4 "Claude usage limit reached" && { echo "FAIL retry exit 4"; exit 1; }
+    # #575: a blocked run must never be retried as a quota death. That outcome
+    # moved from exit 3 to exit 6, so assert the code it actually uses now —
+    # exit 3 above is the concurrency refusal, a different outcome entirely.
+    is_quota_exit 6 "Claude usage limit reached" && { echo "FAIL retry exit 6"; exit 1; }
     is_quota_exit 0 "Claude usage limit reached" && { echo "FAIL retry on success"; exit 1; }
     # An ordinary escalation (exit 2, no limit in the probe) must STOP the wrapper.
     is_quota_exit 2 "build completed successfully" && { echo "FAIL retry non-limit"; exit 1; }
