@@ -12,20 +12,10 @@
 // wording change against a file — the whole page, in context — instead of
 // squinting at a diff of an escaped string inside a test.
 //
-// The fixtures are the spec's §4 blocks with three documented classes of
-// deviation, because P12a restructures the pages but deletes nothing (§2 and
-// §2.1 of the spec; deletions are #528's slice):
+// The fixtures are the rendered v0.5 pages. They are regenerated deliberately
+// when the shared schema's help wording or command surface changes.
 //
-//   (a) a §2.1 "not yet landed" row — `--until` still defaults to `once`,
-//       `--max-attempts` does not exist, `config` still takes `--dry`;
-//   (b) a command or flag v0.5 removes that this slice keeps — the `review` and
-//       `update` pages, `agent build`, `pr --merge`, `task/issue --no-banner`;
-//   (c) a wrap point. The spec's §4 blocks are hand-wrapped at widths that vary
-//       between sections (79 in §4.4, 76 in §4.10), so no single algorithmic
-//       width reproduces all of them. The renderer wraps every page at one
-//       width (79, inside §3 rule 1's 88-column cap). What it does reproduce
-//       exactly is the *semantic* layout — the column-27 description start, the
-//       aligned `=` in the --until goal list, the hanging indent beneath it.
+// The renderer wraps every page at one width (79, inside the 88-column cap).
 //
 // Regenerating after a deliberate wording change, from the package root:
 //   node --input-type=module -e 'import {renderHelp, COMMANDS} from "./src/schema.js";
@@ -46,7 +36,7 @@ import { COMMANDS, HELP_PAGES, EXAMPLES, renderHelp, validate, validatePositiona
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = (name) => readFileSync(join(root, "test/fixtures/help", `${name}.txt`), "utf8");
 
-// §6.4 test 1 — one byte-for-byte assertion per page (16 commands + global).
+// §6.4 test 1 — one byte-for-byte assertion per page + the global page.
 test("every help page renders byte-for-byte as its fixture", () => {
   for (const name of [...Object.keys(COMMANDS), null]) {
     const file = name ?? "orch";
@@ -122,7 +112,7 @@ test("an example carrying shell redirection is refused, not silently accepted", 
 // and no page (there is nothing to show), and above all no crash.
 test("a usage error on an internal command exits 64 without crashing the error funnel", () => {
   for (const [argv, expected] of [
-    [["__update-check-child", "--merge"], /--merge is not valid with 'orch __update-check-child'/],
+    [["__update-check-child", "--no-banner"], /unknown option --no-banner/],
     [["__update-check-child", "--dry"], /--dry has no effect on 'orch __update-check-child'/],
   ]) {
     const result = spawnSync(process.execPath, ["bin/orch.js", ...argv], { cwd: root, encoding: "utf8" });

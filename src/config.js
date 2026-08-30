@@ -11,7 +11,7 @@ const DEFAULTS = {
   reviewers: null, // configured role-spec pool; pairs with `authors`
   test: "auto",
   roundCap: 3, // max review rounds, counting the initial review as round 1
-               // (so 3 = 3 reviews / 2 revisions). `reviseCap` is the deprecated alias.
+               // (so 3 = 3 reviews / 2 revisions).
   stageTimeout: 25, // #56: per-stage wall-clock cap in MINUTES; 0 disables. A stalled
                     // codex/claude stage is killed and the cycle fails (nonzero exit)
                     // instead of hanging forever on an infinite "still running" heartbeat.
@@ -69,13 +69,14 @@ const DEFAULTS = {
 };
 
 const REMOVED_CONFIG_MESSAGES = new Map([
-  ["merge", "orch.yml: 'merge' will be renamed to 'landing' in v0.5.0 (same values). Rename the key."],
-  ["main.autoMerge", "orch.yml: 'main.autoMerge' will be removed in v0.5.0; use --until merged for per-run merging."],
-  ["github.autoMergePr", "orch.yml: 'github.autoMergePr' will be removed in v0.5.0; use --until merged for per-run merging."],
-  ["main.conflictResolution", "orch.yml: 'main.conflictResolution'/'main.autoResolveConflicts' will be removed in v0.5.0. Conflict repair is a loop remedy under --until ready|merged; disable it with automation.remedies."],
-  ["main.autoResolveConflicts", "orch.yml: 'main.conflictResolution'/'main.autoResolveConflicts' will be removed in v0.5.0. Conflict repair is a loop remedy under --until ready|merged; disable it with automation.remedies."],
-  ["main.conflictResolutionResolvers", "orch.yml: 'main.conflictResolutionResolvers' will be removed in v0.5.0; use 'automation.conflictResolvers'."],
-  ["main.autoResolveConflictPaths", "orch.yml: 'main.autoResolveConflictPaths' will be removed in v0.5.0; use 'automation.conflictAutoPaths'."],
+  ["merge", "orch.yml: 'merge' was renamed to 'landing' in v0.5.0 (same values). Rename the key."],
+  ["main.autoMerge", "orch.yml: 'main.autoMerge' was removed in v0.5.0; use --until merged for per-run merging."],
+  ["github.autoMergePr", "orch.yml: 'github.autoMergePr' was removed in v0.5.0; use --until merged for per-run merging."],
+  ["main.conflictResolution", "orch.yml: 'main.conflictResolution'/'main.autoResolveConflicts' were removed in v0.5.0; conflict repair is a loop remedy under --until ready|merged."],
+  ["main.autoResolveConflicts", "orch.yml: 'main.conflictResolution'/'main.autoResolveConflicts' were removed in v0.5.0; conflict repair is a loop remedy under --until ready|merged."],
+  ["main.conflictResolutionResolvers", "orch.yml: 'main.conflictResolutionResolvers' was removed in v0.5.0; use 'automation.conflictResolvers'."],
+  ["main.autoResolveConflictPaths", "orch.yml: 'main.autoResolveConflictPaths' was removed in v0.5.0; use 'automation.conflictAutoPaths'."],
+  ["reviseCap", "orch.yml: 'reviseCap' was removed in v0.5.0; use 'roundCap'."],
 ]);
 
 const CONFIG_CHILDREN = {
@@ -94,7 +95,7 @@ const CONFIG_CHILDREN = {
 };
 
 const CONFIG_KEYS = new Set([
-  "agents", "author", "reviewer", "authors", "reviewers", "test", "roundCap", "reviseCap", "stageTimeout",
+  "agents", "author", "reviewer", "authors", "reviewers", "test", "roundCap", "stageTimeout",
   "gateTimeout", "baseBranch", "integrationBranch", "landing", "concurrency", "cheap", "scope",
   "security", "github", "main", "docs", "release", "automation", "env",
 ]);
@@ -113,8 +114,8 @@ function collectConfigIssues(source, warnings, problems, prefix = "", label = "o
   for (const [key, value] of Object.entries(source)) {
     const path = prefix ? `${prefix}.${key}` : key;
     if (REMOVED_CONFIG_MESSAGES.has(path)) {
-      const warning = REMOVED_CONFIG_MESSAGES.get(path).replace("orch.yml:", `${label}:`);
-      warnings.add(warning);
+      const problem = REMOVED_CONFIG_MESSAGES.get(path).replace("orch.yml:", `${label}:`);
+      problems.add(problem);
       continue;
     }
     const known = prefix ? CONFIG_CHILDREN[prefix]?.has(key) : CONFIG_KEYS.has(key);
@@ -317,28 +318,10 @@ export function configPath(dir) {
   return existsSync(preferred) ? preferred : join(dir, "orch.yml");
 }
 
-// `reviseCap` is the deprecated spelling of `roundCap`. Resolved per source (repo
-// orch.yml vs --config-file) rather than across the merged config: a --config-file
-// that says reviseCap must still beat an orch.yml that says roundCap, otherwise the
-// override is silently dropped — the exact failure the alias exists to prevent.
-// Returns { value, key } or null when this source names neither key.
+// Read the canonical round-cap spelling from one config layer.
 function pickRoundCap(source, label) {
   const has = (k) => Object.prototype.hasOwnProperty.call(source, k);
-  if (has("roundCap") && has("reviseCap")) {
-    return {
-      value: source.roundCap,
-      key: "roundCap",
-      warning: `orch: ${label} sets both roundCap and reviseCap; using roundCap and ignoring the deprecated reviseCap`,
-    };
-  }
   if (has("roundCap")) return { value: source.roundCap, key: "roundCap" };
-  if (has("reviseCap")) {
-    return {
-      value: source.reviseCap,
-      key: "reviseCap",
-      warning: `orch: ${label} uses deprecated reviseCap; rename it to roundCap (same meaning: total review rounds, initial review included)`,
-    };
-  }
   return null;
 }
 
@@ -469,11 +452,16 @@ export function configReport(dir, overridePath) {
   const landingSource = has(override, "landing") || has(override, "merge") ? "--config-file"
     : has(user, "landing") || has(user, "merge") ? userSource : "default";
   sources.landing = landingSource;
-  sources.merge = landingSource;
   const roundCapSource = has(override, "roundCap") || has(override, "reviseCap") ? "--config-file"
     : has(user, "roundCap") || has(user, "reviseCap") ? userSource : "default";
   sources.roundCap = roundCapSource;
+  delete sources.merge;
   delete sources.reviseCap;
+  delete sources["github.autoMergePr"];
+  for (const key of [
+    "main.autoMerge", "main.autoResolveConflicts", "main.conflictResolution",
+    "main.conflictResolutionResolvers", "main.autoResolveConflictPaths",
+  ]) delete sources[key];
   if (!has(override, "gateTimeout") && !has(user, "gateTimeout")) {
     sources.gateTimeout = sources.stageTimeout;
   }
@@ -500,6 +488,18 @@ export function configReport(dir, overridePath) {
   sources["main.autoResolveConflictPaths"] = normalizedSource(
     "automation.conflictAutoPaths", "main.autoResolveConflictPaths",
   );
+  for (const key of [
+    "main.autoMerge", "main.autoResolveConflicts", "main.conflictResolution",
+    "main.conflictResolutionResolvers", "main.autoResolveConflictPaths",
+  ]) delete sources[key];
+  if (config) {
+    const { merge: _merge, main: _main, ...publicConfig } = config;
+    if (publicConfig.github) {
+      const { autoMergePr: _autoMergePr, ...github } = publicConfig.github;
+      publicConfig.github = github;
+    }
+    config = publicConfig;
+  }
   return { config, sources, warnings, problems, ok: problems.length === 0 };
 }
 

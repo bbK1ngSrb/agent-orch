@@ -28,12 +28,12 @@ async function runConfig(repo, args) {
   }
 }
 
-test("config --check accepts v0.4 outcome keys and names their replacements", async () => {
+test("config --check rejects removed keys and names their replacements", async () => {
   const repo = tmp();
   writeFileSync(join(repo, "orch.yml"), "main:\n  autoMerge: true\n");
   const result = await runConfig(repo, ["--check"]);
-  assert.equal(result.exitCode, 0);
-  assert.match(result.output, /^orch config: ok/m);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.output, /main\.autoMerge.*removed/);
   assert.match(result.output, /--until merged/);
 });
 
@@ -66,22 +66,22 @@ test("config --check returns a non-zero status for unknown config keys", async (
   assert.match(result.output, /unknown key 'landng'/);
 });
 
-test("config inspection is not replaced by the dry-run wizard plan", async () => {
+test("config inspection is read-only and has no dry-run mode", async () => {
   const repo = tmp();
   writeFileSync(join(repo, "orch.yml"), "stageTimeout: 7\n");
 
-  const dry = await runConfig(repo, ["--check", "--dry"]);
-  assert.equal(dry.exitCode, 0);
-  assert.match(dry.output, /^orch config: ok/m);
-  assert.doesNotMatch(dry.output, /would run the interactive config wizard/);
+  const report = await runConfig(repo, ["--check"]);
+  assert.equal(report.exitCode, 0);
+  assert.match(report.output, /^orch config: ok/m);
+  assert.doesNotMatch(report.output, /interactive config wizard/);
 
   const previous = process.env.ORCH_DRYRUN;
   process.env.ORCH_DRYRUN = "1";
   try {
-    const envDry = await runConfig(repo, ["--check"]);
-    assert.equal(envDry.exitCode, 0);
-    assert.match(envDry.output, /^orch config: ok/m);
-    assert.doesNotMatch(envDry.output, /would run the interactive config wizard/);
+    const envReport = await runConfig(repo, ["--check"]);
+    assert.equal(envReport.exitCode, 0);
+    assert.match(envReport.output, /^orch config: ok/m);
+    assert.doesNotMatch(envReport.output, /interactive config wizard/);
   } finally {
     if (previous === undefined) delete process.env.ORCH_DRYRUN;
     else process.env.ORCH_DRYRUN = previous;

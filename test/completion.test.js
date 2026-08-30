@@ -65,24 +65,13 @@ test("completion offers exactly the flags each command's schema declares", BASH_
   }
 });
 
-// `agent add` and `agent build` don't share a flag set (schema.js
-// SUBCOMMAND_FLAGS) — completion used to render `agent`'s flag list as one
-// union, so `orch agent add <TAB>` offered `--pr`/`--author`/etc, all of
-// which the parser refuses on `add` without `--build`. This is finding 8 for
-// the one command the generic per-command test above can't cover, because
-// `agent`'s own COMMANDS.flags entry is deliberately that same union.
+// `agent add` has one optional build workflow; without --build it only offers
+// registration flags, while --build widens the set for an unregistered name.
 test("agent add and agent build completion do not offer each other's flags", BASH_SKIP, () => {
-  for (const [key, flags] of Object.entries(SUBCOMMAND_FLAGS)) {
-    const sub = key.split(" ")[1];
-    const offered = new Set(complete(["orch", "agent", sub, ""], 3));
-    for (const name of [...GLOBAL_FLAGS, ...flags]) {
-      assert.ok(offered.has(`--${name}`), `orch agent ${sub} completion missing --${name}`);
-    }
-    for (const name of Object.keys(FLAGS)) {
-      if (flags.includes(name) || GLOBAL_FLAGS.includes(name)) continue;
-      assert.ok(!offered.has(`--${name}`), `orch agent ${sub} completion should not offer --${name}`);
-    }
-  }
+  const offered = new Set(complete(["orch", "agent", "add", ""], 3));
+  assert.ok(offered.has("--build"));
+  assert.ok(!offered.has("--author"));
+  assert.ok(!offered.has("--reviewer"));
 });
 
 // `orch agent --dry <TAB>` used to fall through to the global-flag fallback:
@@ -100,7 +89,7 @@ test("orch agent --dry completion still offers add/build, not just global flags"
 // been typed, so `--pr` never appeared even though the parser would accept it.
 test("orch agent add --build completion offers the build-only flags", BASH_SKIP, () => {
   const offered = new Set(complete(["orch", "agent", "add", "--build", ""], 4));
-  for (const name of SUBCOMMAND_FLAGS["agent build"]) {
+  for (const name of ["allow-large-scope", "author", "authors", "reviewer", "reviewers"]) {
     assert.ok(offered.has(`--${name}`), `orch agent add --build completion missing --${name}`);
   }
 });
@@ -113,41 +102,13 @@ test("orch agent add --build completion offers the build-only flags", BASH_SKIP,
 // --build --p<TAB>` suggested `--pr` for an invocation the parser refuses.
 test("orch agent add <known-adapter> --build completion does not offer the build-only flags", BASH_SKIP, () => {
   const offered = new Set(complete(["orch", "agent", "add", "claude", "--build", ""], 5));
-  for (const name of SUBCOMMAND_FLAGS["agent build"]) {
-    if (SUBCOMMAND_FLAGS["agent add"].includes(name)) continue;
+  for (const name of ["allow-large-scope", "author", "authors", "reviewer", "reviewers"]) {
     assert.ok(!offered.has(`--${name}`), `orch agent add claude --build should not offer --${name}`);
   }
   // An unregistered name right next to it still gets the full build-only set.
   const unknown = new Set(complete(["orch", "agent", "add", "totally-new-agent", "--build", ""], 5));
-  for (const name of SUBCOMMAND_FLAGS["agent build"]) {
+  for (const name of ["allow-large-scope", "author", "authors", "reviewer", "reviewers"]) {
     assert.ok(unknown.has(`--${name}`), `orch agent add totally-new-agent --build missing --${name}`);
-  }
-});
-
-// `agent build <name>` has the same known-name gate as `agent add <name>
-// --build` above, but validateAgentArgs (schema.js) enforces it unconditionally
-// on "build" — no --build flag needed, since building is what the subcommand
-// already does. Completion's gate used to live only inside the "add" arm, so
-// `orch agent build claude <TAB>` still offered --pr/--allow-large-scope/the
-// role flags, each of which the parser then refuses with exit 64.
-test("orch agent build <known-adapter> completion does not offer the build-only flags", BASH_SKIP, () => {
-  const offered = new Set(complete(["orch", "agent", "build", "claude", ""], 4));
-  for (const name of SUBCOMMAND_FLAGS["agent build"]) {
-    if (SUBCOMMAND_FLAGS["agent add"].includes(name)) continue;
-    assert.ok(!offered.has(`--${name}`), `orch agent build claude should not offer --${name}`);
-  }
-  // config-file/dry stay legal on a known name — only the build-only flags drop.
-  for (const name of ["config-file", "dry"]) {
-    assert.ok(offered.has(`--${name}`), `orch agent build claude completion missing --${name}`);
-  }
-});
-
-// The gate must key off the actual typed <name>, not fire unconditionally on
-// "build" — an unregistered name is a real build and still gets the full flag set.
-test("orch agent build <unregistered-name> completion offers the full build flag set", BASH_SKIP, () => {
-  const unknown = new Set(complete(["orch", "agent", "build", "totally-new-agent", ""], 4));
-  for (const name of SUBCOMMAND_FLAGS["agent build"]) {
-    assert.ok(unknown.has(`--${name}`), `orch agent build totally-new-agent missing --${name}`);
   }
 });
 
@@ -172,7 +133,9 @@ test("completion offers every subcommand the schema declares, plus flags legal b
   for (const [command, words] of Object.entries(SUBCOMMANDS)) {
     const subKeys = Object.keys(SUBCOMMAND_FLAGS).filter((k) => k.startsWith(`${command} `));
     const flagSets = subKeys.map((k) => new Set(SUBCOMMAND_FLAGS[k]));
-    const commonFlags = flagSets.length
+    const commonFlags = command === "agent"
+      ? ["config-file", "dry", "build"]
+      : flagSets.length
       ? [...flagSets[0]].filter((f) => flagSets.every((s) => s.has(f)))
       : COMMANDS[command].flags.filter((f) => f !== "dry"); // completion: --dry only legal once "install" is known
     const expectedFlags = [...new Set([...GLOBAL_FLAGS, ...commonFlags])].flatMap(
@@ -192,7 +155,7 @@ test("completion finds the command word even when a flag precedes it", BASH_SKIP
   // parseArgs (and so orch itself) accepts options before positionals; the
   // completion script used to assume COMP_WORDS[1] was always the command.
   const offered = new Set(complete(["orch", "--dry", "pr", ""], 3));
-  assert.ok(offered.has("--merge"), "flag-before-command should still resolve to pr's flags");
+  assert.ok(offered.has("--until"), "flag-before-command should still resolve to pr's flags");
   assert.ok(!offered.has("--file"), "flag-before-command should not fall back to the global flag union");
 });
 
@@ -228,8 +191,8 @@ test("completion offers nothing once an already-typed flag is illegal for the re
 test("completion finds 'install' and '--build' regardless of where they sit in the arguments", BASH_SKIP, () => {
   const dry = new Set(complete(["orch", "completion", "--dry", "install", ""], 4));
   assert.ok(dry.has("--dry"), "orch completion --dry install should still offer --dry");
-  const pr = new Set(complete(["orch", "agent", "--build", "add", "--pr", ""], 5));
-  assert.ok(pr.has("--pr"), "orch agent --build add --pr should offer --pr");
+  const pr = new Set(complete(["orch", "agent", "--build", "add", ""], 4));
+  assert.ok(pr.has("--author"), "orch agent --build add should offer --author");
 });
 
 async function usage(argv = ["help"]) {
@@ -308,8 +271,9 @@ test("orch completion --dry offers install/bash and keeps --dry legal before the
 // legal on `pr` — completion never narrowed the command list by an
 // already-typed flag's actual owners.
 test("a command-specific flag typed before the command word narrows the offered commands", BASH_SKIP, () => {
-  const merge = complete(["orch", "--merge", ""], 2).filter((w) => !w.startsWith("-"));
-  assert.deepEqual(merge, ["pr"]);
+  // --until takes a value, so the completion position immediately after it is
+  // intentionally empty until enum-value completion is added.
+  assert.deepEqual(complete(["orch", "--until", ""], 2), []);
   const build = complete(["orch", "--build", ""], 2).filter((w) => !w.startsWith("-"));
   assert.deepEqual(build, ["agent"]);
   // A flag legal on nearly every command (--dry) must not over-narrow.

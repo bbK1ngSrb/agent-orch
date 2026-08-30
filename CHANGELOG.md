@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.0 — 2026-08-30
+- **BREAKING (cli):** bare cycle commands now pursue `ready`; use `--until once` for a single pass.
+- **BREAKING (cli):** removed `review`, `agent build`, `update`, `--merge`, `--pr`, and `--no-banner`; use `pr`, `agent add --build`, `upgrade`, `--until merged`, and `landing: pr`.
+- **BREAKING (config):** `merge:`, `reviseCap`, `main.*` migration keys, and `github.autoMergePr` now fail validation; use `landing:`, `roundCap`, and per-run goals.
+- **BREAKING (mcp):** removed `orch_review`; cycle tools expose `until` with a `ready` default.
+
 ## v0.4.372 — 2026-08-30
 - fix: persist post-merge tidy outcomes (closes [#622](https://github.com/bbk1ng/agent-orch/issues/622))
 

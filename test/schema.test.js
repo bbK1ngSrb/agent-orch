@@ -57,12 +57,8 @@ test("every declared flag validates on its command, every other flag is refused"
   }
 });
 
-// runConfigWizard (src/config-wizard.js) creates .orch/ and writes orch.yml —
-// `config` is a mutating command. Classifying it `mutates: false` made the
-// generic "--dry has no effect on 'orch config' — it changes nothing"
-// message a lie about a command that does change something.
-test("config is classified as a mutating command", () => {
-  assert.equal(COMMANDS.config.mutates, true);
+test("config is a read-only inspection command", () => {
+  assert.equal(COMMANDS.config.mutates, false);
 });
 
 // `completion install` writes ~/.orch/completion.bash, so it needs --dry like
@@ -98,7 +94,6 @@ test("positional grammar is enforced before dispatch, not silently accepted", ()
   assert.doesNotThrow(() => validatePositionals("dashboard", [], {}));
   for (const [command, message, validArg] of [
     ["issue", /usage: orch issue <number>/, "42"],
-    ["review", /usage: orch review <branch>/, "x"],
     ["continue", /usage: orch continue <sid>/, "x"],
     ["pr", /usage: orch pr <number>/, "42"],
     ["release", /usage: orch release/, "x"],
@@ -143,17 +138,16 @@ test("--help and --version are legal on every command", () => {
 test("--json is scoped to dashboard, config, and run-controller commands", () => {
   assert.doesNotThrow(() => validate("dashboard", { json: true }));
   assert.doesNotThrow(() => validate("config", { json: true }));
-  const RUN_CONTROLLED = new Set(["task", "issue", "review", "pr"]);
+  const RUN_CONTROLLED = new Set(["task", "issue", "pr"]);
   for (const command of Object.keys(COMMANDS).filter((c) => c !== "dashboard" && c !== "config")) {
     if (command === "continue") {
       assert.doesNotThrow(() => validate(command, { json: true }), "orch continue --json");
       continue;
     }
     if (RUN_CONTROLLED.has(command)) {
-      assert.throws(
+      assert.doesNotThrow(
         () => validate(command, { json: true }),
-        (e) => e.exit === 64 && /--json on .* requires --until ready/.test(e.message),
-        `orch ${command} --json (no --until)`,
+        `orch ${command} --json defaults to ready`,
       );
       assert.doesNotThrow(() => validate(command, { json: true, until: "ready" }), `orch ${command} --json --until ready`);
       continue;
@@ -164,15 +158,11 @@ test("--json is scoped to dashboard, config, and run-controller commands", () =>
       `orch ${command} --json`,
     );
   }
-  assert.throws(
-    () => validate("review", { json: true }),
-    /either goal also opts into landing the branch/,
-  );
 });
 
 test("an out-of-scope flag names the commands where it IS legal", () => {
   assert.throws(() => validate("issue", { file: "f" }), /--file is not valid with 'orch issue' — only with: orch task/);
-  assert.throws(() => validate("issue", { merge: true }), /only with: orch pr/);
+  assert.throws(() => validate("issue", { merge: true }), /is not valid with/);
 });
 
 test("--from is an authoring-cycle flag and documents a fresh round 1", () => {
@@ -181,7 +171,7 @@ test("--from is an authoring-cycle flag and documents a fresh round 1", () => {
     assert.equal(flags.from, "salvaged");
     assert.doesNotThrow(() => validate(command, flags));
   }
-  for (const command of ["review", "continue", "pr"]) {
+  for (const command of ["pr"]) {
     assert.throws(
       () => validate(command, { from: "salvaged" }),
       (e) => e.exit === 64 && /--from is not valid/.test(e.message),
@@ -223,39 +213,16 @@ test("--max-attempts is not declared — it would be a silent no-op, nothing rea
   );
 });
 
-test("--until ready|merged is available on task/issue/review/pr; continue is not", () => {
-  for (const command of ["task", "issue", "review", "pr"]) {
+test("--until ready|merged is available on every cycle command", () => {
+  for (const command of ["task", "issue", "pr", "continue"]) {
     assert.doesNotThrow(() => validate(command, { until: "once" }), `${command} once`);
   }
   for (const mode of ["ready", "merged"]) {
-    for (const command of ["task", "issue", "review", "pr"]) {
+    for (const command of ["task", "issue", "pr", "continue"]) {
       assert.doesNotThrow(() => validate(command, { until: mode }), `${command} ${mode}`);
     }
-    assert.throws(
-      () => validate("continue", { until: mode }),
-      (e) => e.exit === 64 && /is not yet available/.test(e.message),
-      `continue ${mode}`,
-    );
   }
   assert.throws(() => validate("task", { until: "forever" }), /--until must be one of: once, ready, merged/);
-});
-
-// `orch review` audits an existing branch: the reviewed author is read off
-// the branch name and review never merges, so --author/--authors (who
-// authors) and --no-tidy (post-merge cleanup) have nothing to act on. RUN_FLAGS
-// used to be shared verbatim across task/issue/review/continue, so these
-// validated on review and silently did nothing — the same "declared but
-// inert" defect the schema exists to remove.
-test("orch review rejects --author/--authors/--no-tidy, which it cannot honour", () => {
-  for (const name of ["author", "authors", "no-tidy"]) {
-    const { flags } = parse(["review", ...sample(name)]);
-    assert.throws(() => validate("review", flags), (e) => e.exit === 64, `orch review --${name}`);
-  }
-  // --reviewer(s)/--cheap ARE honoured (they pick who audits) — still legal.
-  for (const name of ["reviewer", "reviewers", "cheap"]) {
-    const { flags } = parse(["review", ...sample(name)]);
-    assert.doesNotThrow(() => validate("review", flags), `orch review --${name}`);
-  }
 });
 
 // `orch pr` audits an existing GitHub PR's author — applyRoleOverrides is
@@ -304,17 +271,16 @@ test("an unknown command exits 64 and asks for the usage text", async () => {
   }
 });
 
-// A flag with no command at all (`orch --merge`) used to fall through
+// A flag with no command at all must be rejected by the parser.
 // main()'s no-command branch, print the usage text, and exit 0 — the flag
-// was silently dropped rather than refused, same "declared but inert" family
-// as every other finding in this file.
+// rather than silently dropped.
 test("a flag with no command is a usage error, not a silent no-op", async () => {
   const prev = cwd();
   chdir(mkdtempSync(join(tmpdir(), "orch-schema-bare-flag-")));
   try {
     await assert.rejects(
-      () => main(["--merge"], { preflight() {} }),
-      (e) => e.exit === 64 && /--merge requires a command/.test(e.message),
+      () => main(["--no-banner"], { preflight() {} }),
+      (e) => e.exit === 64 && /unknown option --no-banner/.test(e.message),
     );
   } finally {
     chdir(prev);
@@ -329,7 +295,7 @@ test("orch pr --dry performs zero gh calls (real merge stays impossible)", async
   const origLog = console.log;
   console.log = (...a) => logs.push(a.map(String).join(" "));
   try {
-    await main(["pr", "42", "--merge", "--dry"], {
+    await main(["pr", "42", "--until", "merged", "--dry"], {
       preflight() { assert.fail("preflight ran on a dry run"); },
       githubDeps: () => ({ gh, git: () => "" }),
     });
@@ -553,18 +519,18 @@ test("orch task/issue reject --author(s) without a paired --reviewer(s)", () => 
 // — a build's author/reviewer are either both overridden or both left to
 // rotation, never just one. That rule used to surface only once buildAgent
 // ran, after main()'s update-check/token-mint side effects.
-test("orch agent build rejects a lone --author or --reviewer", () => {
+test("orch agent add --build rejects a lone --author or --reviewer", () => {
   assert.throws(
-    () => validatePositionals("agent", ["build", "newagent"], { author: "claude" }),
+    () => validatePositionals("agent", ["add", "newagent"], { build: true, author: "claude" }),
     (e) => e.exit === 64 && /set both --author\(s\) and --reviewer\(s\), or neither/.test(e.message),
   );
   assert.throws(
-    () => validatePositionals("agent", ["build", "newagent"], { reviewer: "claude" }),
+    () => validatePositionals("agent", ["add", "newagent"], { build: true, reviewer: "claude" }),
     (e) => e.exit === 64 && /set both --author\(s\) and --reviewer\(s\), or neither/.test(e.message),
   );
   assert.doesNotThrow(() =>
-    validatePositionals("agent", ["build", "newagent"], { author: "claude", reviewer: "codex" }));
-  assert.doesNotThrow(() => validatePositionals("agent", ["build", "newagent"], {}));
+    validatePositionals("agent", ["add", "newagent"], { build: true, author: "claude", reviewer: "codex" }));
+  assert.doesNotThrow(() => validatePositionals("agent", ["add", "newagent"], { build: true }));
 });
 
 // `orch task "   "` (whitespace-only) used to pass main()'s `if (!task)`

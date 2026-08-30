@@ -1,7 +1,6 @@
 orch agent add — add an agent to the rotation pool.
 
 Usage: orch agent add <name> [options]
-       orch agent build <name> [options]
 
 Appends <name> to the `agents:` list in .orch/orch.yml, which is the pool the
 author and reviewer seats rotate through. If orch has no adapter for <name>,
@@ -12,8 +11,8 @@ name orch already has an adapter for never builds, with or without --build.
 
 A build never merges. An agreed and green adapter stays on its branch for a
 human to read and land, because code orch wrote that orch will then run as an
-agent gets a human checkpoint. With --pr that branch is opened as a pull
-request instead of left bare; it is still yours to merge.
+agent gets a human checkpoint. Set landing: pr to open a pull request instead
+of leaving the branch bare.
 
 Options:
   --build                 Scaffold a missing adapter through a cycle.
@@ -26,9 +25,8 @@ Only with --build:
   --reviewer <spec>       Reviewer seat as "<agent> [model] [effort]".
   --reviewers <a,b>       Comma-separated reviewer seats.
   --allow-large-scope     Sanction a deliberately large review slice.
-  --pr                    Open the finished adapter branch as a pull request.
 
-Arguments: exactly one <name>, after the add or build subcommand word.
+Arguments: exactly one <name>, after the add subcommand word.
 
 Exit codes: 0 added · 1 error · 2 the build stopped at the attempt cap ·
 3 the concurrency cap was reached; retry later ·

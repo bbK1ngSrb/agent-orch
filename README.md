@@ -55,20 +55,19 @@ Run from inside the git repo you want orchestrated:
 ```bash
 orch init                                  # scaffold .orch/orch.yml + .orch/ORCH.md, verify agent CLIs
 orch init --link                           # also wire .orch/ORCH.md into CLAUDE.md/AGENTS.md/GEMINI.md
-orch config                                 # interactive wizard to create/edit .orch/orch.yml
-orch task "fix the flaky login test"       # author + cross-audit + test-gate + merge
+orch config                                 # print the effective .orch/orch.yml settings
+orch task "fix the flaky login test"       # author + cross-audit + test-gate + ready
 orch task "fix x" --authors claude,codex --reviewers claude,codex
 orch task --file wo.json                    # untrusted JSON work order (validated + fenced)
 orch issue 42                               # fetch issue #42 as a work order, run the cycle, Closes #42
-orch review pr/claude/some-branch          # audit an existing branch (no authoring)
-orch pr 42                                  # audit a GitHub PR, post verdict as a comment
-orch pr 42 --merge                          # ...and merge it via gh if agents approve
-orch agent build mynewagent                 # scaffold a missing adapter via orch's own pipeline
+orch pr pr/claude/some-branch                # audit or repair an existing branch
+orch pr 42 --until merged                   # ...and merge it via gh if agents approve
+orch agent add mynewagent --build            # scaffold a missing adapter via orch's own pipeline
 orch continue <sid>                         # resume an interrupted/stalled cycle from its checkpoint
 orch dashboard                              # live cycle status, log tail, run history, metrics
 ```
 For running several issues in a row, see [manual §2.16](docs/orch-manual.md#216-running-several-issues-in-a-row).
-Add `--dry` to any `task`/`review` run to simulate a cycle without touching git,
+Add `--dry` to any `task`/`pr` run to simulate a cycle without touching git,
 agents, or tests, and without advancing the author rotation. `orch` reports the
 machine-readable outcome through the [exit-code table](#exit-codes) below.
 
@@ -98,10 +97,10 @@ also runs before `orch task`/`orch issue` whenever the repo has a remote,
 since even the default `no-ff` path opens/updates the persistent integration
 PR after a merge. It fetches the PR head, runs an
 audit-only cycle (local `main` is never touched — GitHub owns the merge), and
-posts the verdict as a PR comment. With `--merge` it sends GitHub a merge
+posts the verdict as a PR comment. With `--until merged` it sends GitHub a merge
 request pinned to the exact PR commit fetched for that audit. If the PR head
 moves before the merge, GitHub refuses it and orch tells you to re-run
-`orch pr <n> --merge` so the new head is audited. After a pinned merge succeeds,
+`orch pr <n> --until merged` so the new head is audited. After a pinned merge succeeds,
 orch confirms the resulting merge commit is really an ancestor of `origin/main`
 before reporting success — a successful API call alone isn't proof the commit
 landed, so a false "merged" is refused with an error instead of printed.
@@ -159,19 +158,20 @@ orch task "fix the flaky login test"
 
 ## Commands
 - `orch init [--link]` — scaffold `.orch/orch.yml` + agent-agnostic `.orch/ORCH.md` usage doc, verify agent CLIs, and print a detection summary of what's actually usable on this machine (`claude`/`codex`/`copilot`/`gemini`/`grok`/`agy`/`kimi`/`zai` resolvable via the same PATH + fallback-dir lookup preflight uses **and** not disabled, local-llm models configured for `ccr`'s `local` provider), e.g. `orch: detected: claude, glm-4.5-air — not found: codex (CLI not found: PATH + fallback dirs)`. An adapter whose CLI resolves but that preflight would reject anyway (`zai` without `ZAI_API_KEY`, `agy` always) is listed under `not found:` with its reason — `zai (disabled: ZAI_API_KEY is not set)` — so detection never recommends a config the next run refuses. `--link` appends an idempotent pointer to `.orch/ORCH.md` in the repo's `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` (created for the configured agent if none exist). The `@.orch/ORCH.md` line auto-loads the doc in Claude Code; other agents read the prose pointer to it.
-- `orch config` — interactive wizard to create or edit `.orch/orch.yml` field by field, validating and normalizing (e.g. canonicalizing the legacy `main.autoResolveConflicts` alias to `main.conflictResolution`) before writing.
+- `orch config` — print the effective, validated configuration and its source. Use an editor to change `.orch/orch.yml`; removed keys are reported as errors.
+- Bare `task`, `issue`, `pr`, and `continue` runs mean `--until ready`; use
+  `--until merged` when the configured landing should be completed.
 - `orch agent add <name>` — append a registered agent to `.orch/orch.yml`.
 - `orch task "..."` — author + cross-audit + test-gate + merge.
 - `orch issue <n>` — fetch GitHub issue #n (title+body, treated as an untrusted work order), run the full cycle, and stamp `Closes #n` on the no-ff merge so it auto-closes once main reaches origin. Needs the [`gh`] CLI authenticated. If the cycle escalates or falls back to a PR instead of merging, orch posts a comment on the source issue (verdict, branch, reason, round count) — headless runs have no one watching stdout, so this is the only trace besides the local `.orch/reviews/<branch>/DECISION.md`.
-- `orch review <branch>` — audit an existing branch.
-- `orch pr <number|branch> [--merge|--until once|ready|merged]` — audit a PR or branch, comment the verdict, and optionally merge the PR via `gh`.
-- `orch agent build <name> [--pr]` — an unregistered agent name scaffolds `src/adapters/<name>.js` through orch's own author → audit → test pipeline, isolated in its own worktree/branch. Default lands on that local branch only; `--pr` opens a PR instead.
+- `orch pr <number|branch> [--until once|ready|merged]` — audit a PR or branch, comment the verdict, repair it until ready, or merge it via `gh`.
+- `orch agent add <name> [--build]` — register an agent, or scaffold an unregistered adapter through orch's own author → audit → test pipeline. Set `landing: pr` to open a PR.
 - `orch continue <sid>` — resume an interrupted or stalled cycle (crash, hard kill, usage-limit abort) from its checkpoint, reattaching the same branch/author instead of re-authoring from scratch. If the saved branch is gone, stale local resume state is cleared; if it exists only as `origin/<branch>`, check it out locally first. `orch` tells you the `sid` to use when a cycle dies mid-way.
 - `orch release "<changelog entry>"` — run the version bump + CHANGELOG bookkeeping by hand, e.g. after a human hand-merges an escalated branch into the dedicated `.orch/integration` worktree. It reconciles that worktree with `origin/orch/integration` and commits the bump on the integration branch, so run it from your normal repo checkout; it always bumps and never consults `release.autoBump`, so it is only *recovery* in a repo that set `release.autoBump: true`; under the default `false` a clean merge writes no release commit either and there is nothing to recover. Requires a clean working tree in the integration worktree; does not create a git tag (CI tags on push). See the manual's escalation-recovery procedure.
 - `orch dashboard [--json] [--limit N] [--check-history] [--once|--plain] [--refresh-ms N]` — read-only view of live cycle status/stage, streaming log tail, run history, and success-rate metrics. In a real interactive terminal (stdout and stdin both a TTY) with no `--json`/`--once`/`--plain`, it opens a live full-screen TUI that polls and redraws every `--refresh-ms` (default `1000`). Any scriptable context — `--json`, `--once`/`--plain`, a piped/redirected stream, or a non-TTY session — instead prints the static one-shot render, byte-identical to earlier versions, so cron/CI output stays diffable. `--check-history` shows stale red history rows as resolved when their branches are gone — a view-only reconciliation that leaves the run-history file unchanged. State reads are cached in memory between polls (keyed on each file's mtime/size/inode) and log tails read only the last 16 KiB of the round file, so the 1s live refresh re-reads only what changed.
-- `orch mcp` — serve orch to AI clients over the [Model Context Protocol](https://modelcontextprotocol.io) (newline-delimited JSON-RPC on stdio), so Claude Code, Hermes Agent or any other MCP client discovers and calls the same operations instead of each embedding its own shell recipe. Tools: `orch_status`, `orch_plan` (dry run), `orch_task`, `orch_issue`, `orch_review`, `orch_pr`, `orch_continue` — each returns JSON with the cycle id, branch, status, reason, PR URL and log paths. Every tool spawns the CLI with a fixed argument list and no shell: there is no arbitrary-command tool, and `orch_pr` exposes only a fixed target plus the `once`/`ready`/`merged` enum. MCP `merged` requests are refused unless `automation.mcpMayMerge: true` is explicitly configured; when enabled, the child uses the same head-bound, CI-checked merge path as the CLI. Where a green cycle lands still follows the repo's config: under the defaults it lands on the integration branch and the standing integration PR stays a human checkpoint, while a repo that sets `integrationBranch` to its `baseBranch` or `main.autoMerge: true` has already opted every cycle out of that checkpoint. Config example for both clients: manual §2.12b.
+- `orch mcp` — serve orch to AI clients over the [Model Context Protocol](https://modelcontextprotocol.io) (newline-delimited JSON-RPC on stdio). Tools are `orch_status`, `orch_plan`, `orch_task`, `orch_issue`, `orch_pr`, and `orch_continue`; cycle tools accept `until` and default to `ready`. Every tool spawns the CLI with a fixed argument list and no shell. MCP `merged` requests are refused unless `automation.mcpMayMerge: true` is explicitly configured. A removed `orch_review` call returns `-32601 … use orch_pr`. Config example for both clients: manual §2.12b.
 - `orch completion [bash]` / `orch completion install` — print the bash completion script or rewrite `~/.orch/completion.bash`.
-- `orch upgrade` / `orch update` — self-update the global install to the latest published version, detecting whichever package manager installed it. `--check` reports the latest version without installing anything. This command manages the orch binary, not the current repo.
+- `orch upgrade` — self-update the global install to the latest published version, detecting whichever package manager installed it. `--check` reports the latest version without installing anything. This command manages the orch binary, not the current repo.
 
 ### Exit codes
 
@@ -189,7 +189,7 @@ The exit status is the machine-readable outcome; callers should not parse summar
 | `64` | Usage error | An invalid command, flag, positional, or value. | Fix the command line. |
 
 Add `--reviewer name` or `--reviewers a,b` to override review agents for
-`task`/`issue`/`review`/`pr` runs. On `task`/`issue`/`review`, setting only
+`task`/`issue`/`pr` runs. On `task`/`issue`, setting only
 `--reviewer(s)` (no `--author(s)`) is allowed and forces that reviewer while
 still rotating the author from the `agents:` pool — the one asymmetric case;
 setting only `--author(s)` without a reviewer is rejected the same as before.
@@ -197,7 +197,7 @@ setting only `--author(s)` without a reviewer is rejected the same as before.
 Other flags: `--cheap` forces `orch.yml`'s `cheap.role` (e.g. a local llm) for one
 `task`/`issue` run — set `cheap.paths` to auto-route matching `--file`/`orch issue`
 work orders without the flag; `--config-file <path.yml>` layers a custom YAML file
-on top of `orch.yml` for one run; `--no-banner` suppresses the startup banner;
+on top of `orch.yml` for one run;
 `--allow-protected` runs a `task`/`issue` whose work order text names a protected path
 (orch's guardrail denylist), which intake otherwise refuses before the cycle starts —
 see the manual §2.14.
@@ -269,7 +269,7 @@ print `merged` for a cycle whose commit never reached `origin/main`:
 - **Path-specific merge claims.** A normal cycle reports `merged` only after the
   integrated worktree and local `orch/integration` ref agree on the merged SHA; if
   the integration PR bridge fails, its reason says the content is local-only. It
-  does not claim that `origin/main` already contains that commit. `orch pr --merge`
+  does not claim that `origin/main` already contains that commit. `orch pr --until merged`
   has the stronger remote verification path: its GitHub merge request is pinned to
   the fetched-and-reviewed PR SHA, so a concurrent head update is refused instead
   of landing code the agents never saw. After that merge succeeds, orch re-fetches
@@ -294,7 +294,7 @@ live peer's worktree is never disturbed. The branch is deleted **only** when an
 orch-created marker is present **and** it carries no commits beyond `main` (a
 killed-before-commit throwaway) — so a same-slug retry works, while a branch with a
 committed author result is kept for resume (see below) and a branch you handed to
-`orch review` is always preserved. `--dry` never deletes worktrees or branches.
+`orch pr` is always preserved. `--dry` never deletes worktrees or branches.
 
 `orch pr` is admitted through the same concurrency cap and inflight registry as
 other cycles; its integration mutations use `.orch/merge.lock`, and its standing
@@ -388,10 +388,10 @@ surfaces at the cycle's own merge step instead). The branch is immediately usabl
 locally after the post-merge test gate (and the version bump, if
 `release.autoBump` is enabled). Orch then pushes `orch/integration` and opens or
 updates one persistent PR from `orch/integration` to `main`; with
-`github.autoMergePr: true`, it also enables GitHub's native auto-merge on that
+`--until merged` also enables the configured remote merge path on that
 PR using a merge commit so `orch/integration` stays in `main`'s ancestry.
-Alternatively, `main.autoMerge: true` triggers a direct merge of that
-persistent PR once all of its checks are green — a fallback for
+The readiness loop can trigger a direct merge of that persistent PR once all
+of its checks are green — a fallback for
 when native auto-merge stalls at `BLOCKED` because review is satisfied via a
 ruleset bypass grant rather than a human approval. The merge is pinned to the
 integration tip this cycle pushed and verified: a concurrent cycle that advances
@@ -453,7 +453,7 @@ escalation doesn't have to re-derive context orch already had.
 
 **`overlap` deferrals usually heal themselves.** An overlap-deferred cycle is
 parked in `.orch/deferred/`, and when the cycle that blocked it lands, orch
-(on the local integration path — `merge: pr` has no shared tip to collide on)
+(on the local integration path — per-cycle PRs have no shared tip to collide on)
 rebases the parked branch onto the new integration tip and **re-runs the merge
 and the post-merge test gate** — a redriven merge is gated, never trusted on
 its earlier green run. It cascades: a cycle deferred behind the one that just
@@ -462,20 +462,13 @@ rebase, the merge, or the gate, the cycle stays `merge-deferred` for a human.
 So on `overlap`, wait for the blocking cycle to finish before fixing anything by
 hand (manual §3.4).
 
-**`merge: pr` — per-cycle PR mode.** Set `merge: pr` in `.orch/orch.yml` and an
+**`landing: pr` — per-cycle PR mode.** Set `landing: pr` in `.orch/orch.yml` and an
 agreed + green cycle skips the local integration branch and `merge.lock`; it
 pushes that cycle branch and opens its own PR to `main` instead. This mode is
 unchanged by the persistent `orch/integration` bridge. Needs a git remote and
 the `gh` CLI; without them the cycle escalates locally the same way `merge-deferred`
-does. Set `github.autoMergePr: true` to also enable GitHub's native auto-merge
-on that PR. Once native auto-merge is armed, orch also makes one immediate REST
-merge attempt using the numeric PR id from the creation URL and pinned to the
-exact reviewed commit OID. That lets an already-green PR land when a ruleset
-bypass leaves native auto-merge stuck at `BLOCKED`. A not-ready direct attempt
-is swallowed; the PR and native auto-merge remain, and orch does not poll or
-retry this one-shot path. If enabling auto-merge itself fails (e.g. branch
-protection isn't configured), the PR still stands and the direct attempt is
-skipped.
+does. Use `--until merged` when orch should wait for readiness and merge that
+PR; otherwise it remains available for a human to land.
 
 ## Version bump on merge
 
@@ -494,7 +487,7 @@ not a bug: that many merges without a publish means a publish is overdue.
 prefix, as npm requires.
 
 With `release.autoBump: true` in `.orch/orch.yml`, every cycle that lands via
-the local integration path (not `merge: pr`) bumps the merge counter right
+the local integration path (not `landing: pr`) bumps the merge counter right
 after the post-merge test gate passes, mirrored into `package-lock.json`'s
 root version, and prepends a `CHANGELOG.md` entry. If the repo ships a
 GitHub Pages site at `docs/index.html`, the version shown in its header (the
@@ -504,7 +497,7 @@ missing/unparsable `package.json` or any write/commit failure is swallowed —
 it never blocks or unwinds a merge that already landed.
 
 The merge counter moves automatically only through orch's local integration
-path when `release.autoBump` is enabled. A landing through `merge: pr` or
+path when `release.autoBump` is enabled. A landing through `landing: pr` or
 outside orch carries no version bump unless the landing includes one itself;
 otherwise the package version remains unchanged until the release script is
 run by hand.
@@ -536,7 +529,7 @@ merge never re-triggers another one — and when the merge was a no-op (empty di
 nothing to update, which would otherwise re-spawn forever). A mixed code+docs
 merge triggers once.
 
-**One surface.** Local merges (`orch task`/`orch review --until ready`/`orch pr --merge`) are
+**One surface.** Local merges (`orch task`/`orch issue`/`orch pr --until merged`) are
 handled inside `orch`, as described above. A merge performed entirely on
 GitHub — the web UI's merge button — produces no local orch run, so nothing
 refreshes the docs for it; that gap is deliberate. There was once a companion

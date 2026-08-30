@@ -69,7 +69,7 @@ function requireIssueNumber(value) {
 }
 
 function requireUntil(value) {
-  const until = value == null ? "once" : value;
+  const until = value == null ? "ready" : value;
   if (!["once", "ready", "merged"].includes(until)) throw new Error("until must be one of: once, ready, merged");
   return until;
 }
@@ -116,30 +116,24 @@ export const TOOLS = [
     name: "orch_task",
     description:
       "Run a full cycle (author, cross-audit, test gate) from a task description. On agreement the branch lands on the repo's configured integration branch.",
-    inputSchema: { type: "object", properties: { task: TEXT_ARG }, required: ["task"], additionalProperties: false },
-    argv: (a) => ["task", "--", requireText(a.task, "task")],
+    inputSchema: {
+      type: "object",
+      properties: { task: TEXT_ARG, until: { type: "string", enum: ["once", "ready", "merged"], default: "ready" } },
+      required: ["task"],
+      additionalProperties: false,
+    },
+    argv: (a) => ["task", "--until", requireUntil(a.until), "--", requireText(a.task, "task")],
   },
   {
     name: "orch_issue",
     description: "Run a cycle whose work order is fetched from a GitHub issue; the issue closes when the change lands.",
     inputSchema: {
       type: "object",
-      properties: { number: { type: "integer", description: "GitHub issue number." } },
+      properties: { number: { type: "integer", description: "GitHub issue number." }, until: { type: "string", enum: ["once", "ready", "merged"], default: "ready" } },
       required: ["number"],
       additionalProperties: false,
     },
-    argv: (a) => ["issue", requireIssueNumber(a.number)],
-  },
-  {
-    name: "orch_review",
-    description: "Audit an existing branch with the reviewer agents without merging it.",
-    inputSchema: {
-      type: "object",
-      properties: { branch: { type: "string", description: "Branch to audit." } },
-      required: ["branch"],
-      additionalProperties: false,
-    },
-    argv: (a) => ["review", requireBranch(a.branch)],
+    argv: (a) => ["issue", requireIssueNumber(a.number), "--until", requireUntil(a.until)],
   },
   {
     name: "orch_pr",
@@ -149,7 +143,7 @@ export const TOOLS = [
       properties: {
         number: { type: "integer", description: "GitHub PR number." },
         branch: { type: "string", description: "Local or origin branch name." },
-        until: { type: "string", enum: ["once", "ready", "merged"], default: "once" },
+        until: { type: "string", enum: ["once", "ready", "merged"], default: "ready" },
       },
       additionalProperties: false,
       oneOf: [{ required: ["number"] }, { required: ["branch"] }],
@@ -161,11 +155,11 @@ export const TOOLS = [
     description: "Resume an interrupted or stalled cycle from its checkpoint, by cycle id (sid).",
     inputSchema: {
       type: "object",
-      properties: { sid: { type: "string", description: "Cycle id, as reported by orch_status." } },
+      properties: { sid: { type: "string", description: "Cycle id, as reported by orch_status." }, until: { type: "string", enum: ["once", "ready", "merged"], default: "ready" } },
       required: ["sid"],
       additionalProperties: false,
     },
-    argv: (a) => ["continue", requireSid(a.sid)],
+    argv: (a) => ["continue", requireSid(a.sid), "--until", requireUntil(a.until)],
     match: (a) => ({ sid: requireSid(a.sid) }),
   },
 ];
@@ -214,7 +208,8 @@ function readNewRuns(path, offset, filter = {}) {
 export function runTool(tool, args, ctx) {
   const { repo, spawnFn = spawn } = ctx;
   const argv = tool.argv(args); // throws on invalid arguments — caller reports it
-  if (tool.name === "orch_pr" && argv.at(-1) === "merged" && !load(repo).automation.mcpMayMerge) {
+  const untilIndex = argv.indexOf("--until");
+  if (untilIndex >= 0 && argv[untilIndex + 1] === "merged" && !load(repo).automation.mcpMayMerge) {
     throw new Error("until: merged requires automation.mcpMayMerge: true");
   }
   const orchDir = join(repo, ".orch");
@@ -232,11 +227,11 @@ export function runTool(tool, args, ctx) {
     child.stderr?.on("data", (d) => { stderr += d; });
     child.on("error", (e) => resolve({ ok: false, exitCode: null, stdout, stderr: `${stderr}${e.message}` }));
     child.on("close", (code) => {
-      // Every tool that STARTS a cycle — orch_task, orch_issue, orch_review —
+      // Every tool that STARTS a cycle — orch_task, orch_issue, orch_pr —
       // correlates on the sid's own prefix: a sid is `<pid>-<counter>`
       // (src/sid.js), minted by the child we just spawned, so a peer cycle's
       // record can never match. A branch name is deliberately not a key: two
-      // concurrent orch_review calls on the same branch would each pick up the
+      // concurrent orch_pr calls on the same branch would each pick up the
       // other's verdict alongside their own. orch_continue is the one exception —
       // it RESUMES a cycle whose sid was minted by an earlier process, so no pid
       // prefix of ours could match it and it matches the literal sid instead. An
@@ -294,7 +289,10 @@ export async function handle(msg, ctx) {
   }
   if (method === "tools/call") {
     const tool = TOOLS.find((t) => t.name === msg.params?.name);
-    if (!tool) return rpcError(id, -32602, `unknown tool: ${msg.params?.name}`);
+    if (!tool) {
+      if (msg.params?.name === "orch_review") return rpcError(id, -32601, "method not found: orch_review (use orch_pr)");
+      return rpcError(id, -32602, `unknown tool: ${msg.params?.name}`);
+    }
     const args = msg.params?.arguments ?? {};
     if (typeof args !== "object" || Array.isArray(args)) return rpcError(id, -32602, "arguments must be an object");
     try {

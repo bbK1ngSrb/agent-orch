@@ -8,7 +8,7 @@ import { chdir, cwd } from "node:process";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, ghShell, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, ghShell, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -3966,7 +3966,10 @@ async function runMainCapture(argv, deps = {}) {
   const origLog = console.log;
   console.log = (...args) => logs.push(args.map(String).join(" "));
   try {
-    await main(argv, deps);
+    const command = argv[0];
+    const testArgv = ["task", "issue", "pr", "continue"].includes(command) && !argv.includes("--until")
+      ? [...argv, "--until", "once"] : argv;
+    await main(testArgv, deps);
     return logs;
   } finally {
     console.log = origLog;
@@ -4034,7 +4037,10 @@ async function runMainInRepo(repo, argv, deps = {}) {
   const origLog = console.log;
   console.log = (...args) => logs.push(args.map(String).join(" "));
   try {
-    await main(argv, { preflight() {}, cycleDeps: fakeCycleDeps(), ...deps });
+    const command = argv[0];
+    const testArgv = ["task", "issue", "pr", "continue"].includes(command) && !argv.includes("--until")
+      ? [...argv, "--until", "once"] : argv;
+    await main(testArgv, { preflight() {}, cycleDeps: fakeCycleDeps(), ...deps });
     return logs;
   } finally {
     console.log = origLog;

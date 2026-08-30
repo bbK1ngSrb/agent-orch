@@ -5,7 +5,6 @@ import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { gateTimeoutMs, load, configPath, configReport, parseRoleSpec, parseRoleSpecs } from "./config.js";
-import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import { EXIT_CODES } from "./exit-codes.js";
 import {
@@ -49,7 +48,7 @@ import { redact, publicSummary } from "./redact.js";
 import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dashboard.js";
 import { FALLBACK_BIN_DIRS, resolveAgentBin } from "./agent-bin.js";
 import { BASH_COMPLETION, installCompletion } from "./completion.js";
-import { visWidth, paint, C, box, colorEnabled } from "./tui/theme.js";
+import { visWidth, paint, C, colorEnabled } from "./tui/theme.js";
 import { run as runTui } from "./tui/loop.js";
 import { maybeNotifyUpdate, runUpdateCheckChild } from "./update-check.js";
 import { runUpgrade } from "./upgrade.js";
@@ -272,7 +271,6 @@ agents:
 # ===================================================================
 test: auto                              # "auto" detects the test command, or set one, e.g. "pytest -q"
 roundCap: 3                             # max review rounds incl. the first, before escalation (positive int); default: 3
-                                        # (reviseCap is the deprecated alias for this key)
 stageTimeout: 25                        # wall-clock cap in minutes for each agent stage;
                                         # 0 disables; default: 25
 gateTimeout: 25                        # wall-clock cap in minutes for the test gate; defaults to stageTimeout
@@ -280,7 +278,7 @@ concurrency: 4                          # max concurrent cycles per repo dir; ov
 baseBranch: main                        # trunk orch reads/diffs/PRs against (e.g. dev if main is deploy-only); default: main
 integrationBranch: orch/integration     # local merge target for no-ff/ff-only; default: orch/integration
 landing: no-ff                          # into integrationBranch: ff-only | no-ff | pr; default: no-ff
-                                        # (pr = skip local integration, open a per-cycle branch PR; was merge:)
+# (pr = skip local integration, open a per-cycle branch PR)
 
 
 # ===================================================================
@@ -323,7 +321,7 @@ scope:
 
 
 # ===================================================================
-# GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> baseBranch)
+# GitHub PR bridge (orch pr <n>; integrationBranch -> baseBranch)
 # ===================================================================
 github:
   mergeMethod: squash                   # gh pr merge strategy for non-integration PRs; default: squash
@@ -347,10 +345,6 @@ automation:
     - package-lock.json
     - package.json
   detachLogDir: .orch/logs              # detached-run log directory; default: .orch/logs
-
-
-# main.autoMerge, github.autoMergePr, main.conflictResolution, and the
-# other v0.4 main.* spellings remain supported with warnings until P12.
 
 
 # ===================================================================
@@ -395,15 +389,14 @@ test-gate is the governing review.
 ## Commands
 - \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
 - \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\`
-- \`orch review <branch>\`           audit an existing branch; --until ready opts into landing
 - \`orch continue <sid>\`            resume an interrupted/stalled cycle from its checkpoint
-- \`orch pr <number|branch> [--merge|--until once|ready|merged]\` review (and optionally merge) a PR
+- \`orch pr <number|branch> [--until once|ready|merged]\` review (and optionally merge) a PR
 - \`orch release "<entry>"\`         run the version bump + CHANGELOG write by hand; only needed
                                     in repos that set \`release.autoBump: true\` (default \`false\`)
 - \`orch mcp\`                       serve orch's cycle commands over MCP on stdio, for an AI
                                     client to drive; \`orch_pr\` merge needs automation.mcpMayMerge
 - \`orch agent add <name>\`          add an agent to the rotation pool
-- \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
+- \`orch agent add <name> --build\` scaffold a missing adapter via orch's own pipeline
 - \`orch dashboard [--json] [--limit <n>] [--check-history]\`
                                     live cycle status, log tail, run history, metrics
                                     (\`--limit\` caps history rows; \`--check-history\`
@@ -420,7 +413,7 @@ Config and every option live in \`.orch/orch.yml\`.
 The MCP \`orch_pr\` tool accepts a PR number or branch and \`once\`, \`ready\`, or
 \`merged\`. The \`merged\` mode is refused unless \`automation.mcpMayMerge: true\`
 is explicitly enabled in this repo; when enabled, it uses the same head-bound,
-CI-checked merge path as \`orch pr --merge\`.
+CI-checked merge path as \`orch pr --until merged\`.
 
 A \`task\`/\`issue\` whose work order text names a protected path (orch's own
 guardrail denylist in \`src/intake/allowlist.js\`) is refused at intake, before any
@@ -1412,42 +1405,6 @@ function persistRotationState({ orchDir, sid, runId, run, nextRun, previousAutho
   stores.checkpoint.clear(orchDir, sid);
 }
 
-function roleLabel(spec) {
-  return formatRole(spec, " · ");
-}
-
-function uniqueLabels(specs) {
-  return [...new Set(specs.map(roleLabel))].join(", ");
-}
-
-
-export function runBanner(cfg, runs, opts = {}) {
-  const { color = false, columns } = opts;
-  const lbl = (t) => ({ code: C.label, text: t.padEnd(8) });
-  const rows = [
-    [lbl("agents"), { code: C.agents, text: cfg.agents.join(", ") }],
-  ];
-  for (const r of runs) {
-    const seg = [lbl("author"), { code: C.author, text: roleLabel(r.author) }];
-    if (r.resume) seg.push({ code: C.flag, text: "  ⏳ resume pending" });
-    rows.push(seg);
-  }
-  const reviewers = uniqueLabels(runs.flatMap((r) => r.reviewers || []));
-  rows.push([lbl("review"), { code: C.review, text: reviewers || "-" }]);
-  rows.push([
-    lbl("test"), { code: 0, text: cfg.test },
-    { code: C.label, text: "   merge  " }, { code: 0, text: cfg.merge },
-  ]);
-  return box(` agent-orch ${DISPLAY_VERSION} `, rows, { color, columns });
-}
-
-export function maybePrintRunBanner(cfg, runs, flags, stdout = process.stdout) {
-  if (flags["no-banner"] || !stdout.isTTY) return false;
-  const color = colorEnabled(stdout);
-  stdout.write(`${runBanner(cfg, runs, { color, columns: stdout.columns })}\n`);
-  return true;
-}
-
 function hasEscalationDecision(orchDir, branch, sid, roundCap) {
   try {
     if (existsSync(join(notify.reviewsDir(orchDir, branch), "DECISION.md"))) return true;
@@ -1796,8 +1753,8 @@ export function resolveTaskBranch(ctx, deps = { git, resume }) {
 // Matching is per BRANCH, not per record: a branch's whole history is folded
 // first, and the slug fallback applies only when NO record for it carries an
 // issue number. Per-record matching reintroduced the false attribution this
-// warning exists to prevent — a later `orch review <branch>` writes a record
-// with no `closes` (review mode has no issue), so a same-titled issue would
+// warning exists to prevent — a later `orch pr <branch>` writes a record
+// with no `closes` (PR mode has no issue), so a same-titled issue would
 // match that one record and claim a branch already known to belong to another.
 export function priorStagedBranches({ repo, orchDir, closes, task }, deps = { git }) {
   let lines;
@@ -1839,15 +1796,15 @@ export function formatPriorStagedBranches(closes, entries) {
     out.push(`  ${e.branch} — ${e.verdict || "unknown"}${reason ? `: ${reason}` : ""}${hedge}`);
     // NOT `orch continue <sid>`: that needs a checkpoint/inflight record, and
     // both are cleared once a cycle returns — so it cannot resume a run that
-    // already reached a terminal status. `orch review` re-audits the branch.
-    out.push(`    inspect: git log ${e.branch}   re-audit: orch review ${e.branch}`);
+    // already reached a terminal status. `orch pr` re-audits the branch.
+    out.push(`    inspect: git log ${e.branch}   re-audit: orch pr ${e.branch} --until once`);
   }
   out.push("  this run stages a NEW branch. A re-run rotates the author and regenerates the diff, so a security-floor");
   out.push("  escalation repeats only if the fresh diff touches the same protected paths.");
   return out.join("\n");
 }
 
-// `orch agent build <name>` self-bootstraps a missing adapter: a work order
+// `orch agent add <name> --build` self-bootstraps a missing adapter: a work order
 // describing the gap is fed through orch's own author→audit→test pipeline,
 // following the src/adapters/claude.js / codex.js pattern.
 function buildAdapterWorkOrder(name) {
@@ -1878,7 +1835,7 @@ function reportAgentBuildResult(name, result, { withReason = false } = {}) {
   const detail = withReason
     ? ` (${result.reason}) on ${result.branch}`
     : result.branch ? ` on ${result.branch}` : "";
-  console.log(`orch agent build ${name}: ${result.status}${detail}${costSuffix(result)}`);
+  console.log(`orch agent add ${name} --build: ${result.status}${detail}${costSuffix(result)}`);
   if (result.status === "approved") {
     console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
   }
@@ -1891,8 +1848,7 @@ function reportAgentBuildResult(name, result, { withReason = false } = {}) {
 // (the same mechanism every `orch task` uses) since orch would be modifying its
 // own source while running. Default: `noMerge` — the result sits on its local
 // branch only (no PR, main untouched) so it can be reviewed before it's trusted.
-// `--pr` instead forces `cfg.merge: "pr"` for this run only (never persisted to
-// orch.yml), so an AGREE+green result opens a PR through the full gate instead.
+// `landing: pr` makes an AGREE+green result open a PR through the full gate.
 export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} }) {
   try { adapters.get(name); return { status: "already-registered" }; } catch { /* proceed to build */ }
   const resolved = (deps.resolveAgentBin || resolveAgentBin)(name);
@@ -1902,7 +1858,6 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   const task = wo.title;
   const authorPrompt = buildAuthorPrompt(wo);
   let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags);
-  if (flags.pr) cfg = withConfigUpdate(cfg, { merge: "pr" });
   const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
   const preflightFn = deps.preflight || preflight;
   if (!dry) preflightFn(cfg, orchDir);
@@ -1937,7 +1892,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     mode: "task", task, authorPrompt, workOrder: wo, allowLargeScope: Boolean(flags["allow-large-scope"]),
     branch, sid, resume: isResume, authorName, author: authorSpec,
     reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
-    reviewers: reviewerList, noMerge: !flags.pr, excludedAgents: exclusions,
+    reviewers: reviewerList, noMerge: cfg.landing !== "pr", excludedAgents: exclusions,
     cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
   };
 
@@ -2052,7 +2007,7 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "upgrade" || command === "update") {
+  if (command === "upgrade") {
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     await runUpgrade({ flags: { ...flags, dry }, stdout: deps.stdout || process.stdout, ...deps.upgradeDeps });
     return;
@@ -2068,7 +2023,7 @@ export async function main(argv, deps = {}) {
 
   // Config inspection is deliberately before update checks, app auth, and
   // preflight: it is a local, non-interactive diagnostic command.
-  if (command === "config" && (flags.check || flags.json)) {
+  if (command === "config") {
     const report = configReport(repo, flags["config-file"]);
     printConfigReport(report, Boolean(flags.json));
     process.exitCode = report.ok ? EXIT_CODES.OK : EXIT_CODES.ERROR;
@@ -2143,35 +2098,9 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "config") {
-    // Without --check/--json, retain the interactive wizard until the P12
-    // cutover. ORCH_DRYRUN=1 still plans that write without opening a TTY.
-    if (dryRun) {
-      console.log(`orch (dry): would run the interactive config wizard and write ${flags["config-file"] || join(orchDir, "orch.yml")}`);
-      return;
-    }
-    await runConfigWizard({
-      repo,
-      configFile: flags["config-file"],
-      stdin: deps.stdin || process.stdin,
-      stdout: deps.stdout || process.stdout,
-      inputStart: deps.inputStart,
-    });
-    return;
-  }
-
   if (command === "agent") {
     // validatePositionals (schema.js) already guarantees rest[0] is "add" or
     // "build" and rest[1] (the name) is present before main() gets here.
-    if (rest[0] === "build") {
-      const name = rest[1];
-      const buildFn = deps.buildAgent || buildAgent;
-      const result = await buildFn(name, { repo, orchDir, flags, deps });
-      if (result.status === "already-registered") { console.log(`orch: ${name} already registered`); return; }
-      reportAgentBuildResult(name, result, { withReason: true });
-      return;
-    }
-
     // `orch agent add <name>` appends a known agent to the `agents:` rotation
     // pool in orch.yml, preserving the file's comments. "Known" means orch's
     // adapter code has it (adapters.get succeeds) — that is a different
@@ -2179,7 +2108,7 @@ export async function main(argv, deps = {}) {
     // `agents.includes(name)` check below answers. An unregistered name (no
     // adapter code yet) offers to build it — non-interactively via --build,
     // otherwise via the confirm prompt — and building stops there, exactly
-    // like `agent build`: it scaffolds the adapter, it does not also add it
+    // like `agent add --build`: it scaffolds the adapter, it does not also add it
     // (the printed tip says to re-run `agent add` once it's merged). Once the
     // adapter code exists, --build has nothing left to do, so it falls
     // straight through to the add — it must not be read as "build instead of
@@ -2207,7 +2136,7 @@ export async function main(argv, deps = {}) {
       return;
     }
     // Known adapter: there is nothing left to build. validatePositionals
-    // (schema.js) already refused --pr/the role overrides before main() got
+    // (schema.js) already refused the role overrides before main() got
     // here — they only mean something for a build cycle this path never
     // runs. --build itself stays legal (it just means "skip the confirm
     // prompt", which a known adapter never reaches anyway).
@@ -2241,15 +2170,14 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "task" || command === "review" || command === "issue" || command === "pr") {
+  if (command === "task" || command === "issue" || command === "pr") {
     // D2: reviewer-only is meaningful for task/issue too ("rotate author, force this
     // reviewer"), matching review/continue/pr and the printUsage example.
     let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
-    // design §4/§6 (P5): the run controller only drives ready/merged — `once`
-    // (the default) is today's single implicit cycle, byte-for-byte unchanged
-    // below. schema.js already refuses --json without --until ready|merged.
-    const until = flags.until || (command === "pr" && flags.merge ? "merged" : "once");
+    // design §4/§6 (P5): the run controller drives the default `ready` goal;
+    // `once` remains available for an explicit single audit pass.
+    const until = flags.until || "ready";
     const jsonMode = Boolean(flags.json);
     const emit = (event) => { if (jsonMode) console.log(JSON.stringify(event)); };
     if (command === "pr" && dry) {
@@ -2320,7 +2248,7 @@ export async function main(argv, deps = {}) {
       };
     } else {
       reviewBranch = rest[0];
-      if (!reviewBranch) throw usageError(command === "pr" ? "usage: orch pr <number|branch>" : "usage: orch review <branch>");
+      if (!reviewBranch) throw usageError("usage: orch pr <number|branch>");
     }
 
     // §3c intake scan (#394): a task whose text names a protected path almost
@@ -2374,7 +2302,7 @@ export async function main(argv, deps = {}) {
     // cfg.merge === "pr" and autoMergePr obviously need it, but so does the
     // DEFAULT no-ff/ff-only path — finalize.js's openIntegrationPr opens/updates
     // the persistent integration→main PR after every successful local merge,
-    // not just merge:"pr" runs (codex review round 1 on this fix caught that
+    // not just per-cycle PR runs (codex review round 1 on this fix caught that
     // the original gate missed this, letting a plain `orch task` still hit a
     // late gh failure after burning a full cycle). openIntegrationPr itself
     // only calls gh when a remote AND the gh CLI are both present — mirror
@@ -2478,7 +2406,7 @@ export async function main(argv, deps = {}) {
       task = null;
       const sid = newSid();
       runs = [{
-        mode, task, until, noMerge: command === "pr" || (command === "review" && until === "once"), prTarget,
+        mode, task, until, noMerge: command === "pr", prTarget,
         allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
         reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
         reviewers,
@@ -2486,7 +2414,6 @@ export async function main(argv, deps = {}) {
       }];
     }
 
-    if (!jsonMode) maybePrintRunBanner(cfg, runs, flags, deps.stdout);
     if (!dry && runs.some((run) => run.resume)) notify.resetKpi(orchDir);
 
     const results = [];
@@ -2555,7 +2482,7 @@ export async function main(argv, deps = {}) {
           let exit = exitForResult(result, command);
           let state = STATE_FOR_OUTCOME[outcome];
           // "merged" landed on the standing integration→main PR; "pr"
-          // (merge: pr mode) and "merge-deferred" (demote) each open a
+          // (per-cycle PR mode) and "merge-deferred" (demote) each open a
           // fresh PR scoped to this cycle's own branch.
           let pr = result.prUrl ? { number: null, url: result.prUrl, kind: result.status === "merged" ? "standing" : "per-cycle" } : null;
           let controller = null;
@@ -3044,7 +2971,7 @@ export async function main(argv, deps = {}) {
     const isReviewResume = priorRun?.command === "review";
     const isPrResume = priorRun?.command === "pr";
     const prTarget = priorRun?.prTarget || null;
-    const until = flags.until || priorRun?.policy?.until || "once";
+    const until = flags.until || priorRun?.policy?.until || "ready";
     const run = {
       // Older completed-author checkpoints carry no task, so retain the branch
       // fallback for their changelog label. Author-stage resumes fail above
@@ -3052,7 +2979,7 @@ export async function main(argv, deps = {}) {
       mode: isPrResume || isReviewResume ? "review" : "task", task, authorPrompt, workOrder,
       until,
       allowLargeScope, branch, sid: resumeSid, resume: true, closes,
-      noMerge: isPrResume || (isReviewResume && until === "once"), prTarget,
+      noMerge: isPrResume, prTarget,
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers,
@@ -3134,15 +3061,16 @@ export async function main(argv, deps = {}) {
     const continueDeps = !dry && rotationRecorded && existsSync(`${run.worktree}.orch-preserve`)
       ? { ...baseContinueDeps, git: { ...baseContinueDeps.git, pruneWorktree() {} } }
       : baseContinueDeps;
-    const controllerPolicy = priorRun?.policy?.until && priorRun.policy.until !== "once"
+    const requestedUntil = flags.until || priorRun?.policy?.until || "ready";
+    const controllerPolicy = requestedUntil !== "once"
       ? {
-        ...priorRun.policy,
-        until: flags.until || priorRun.policy.until,
-        baseMaxAttempts: priorRun.policy.baseMaxAttempts ?? priorRun.policy.maxAttempts ?? 1,
-        maxAttempts: resumedRecord?.policy?.maxAttempts ?? priorRun.attempt + (priorRun.policy.maxAttempts ?? 1),
+        ...(priorRun?.policy || {}),
+        until: requestedUntil,
+        baseMaxAttempts: priorRun?.policy?.baseMaxAttempts ?? priorRun?.policy?.maxAttempts ?? 1,
+        maxAttempts: resumedRecord?.policy?.maxAttempts ?? (priorRun?.attempt || 0) + (priorRun?.policy?.maxAttempts ?? 1),
       }
       : null;
-    const resumePolicy = controllerPolicy || resumedRecord?.policy || priorRun?.policy || { until: flags.until || "once" };
+    const resumePolicy = controllerPolicy || resumedRecord?.policy || priorRun?.policy || { until: requestedUntil };
     emit({ event: "run.start", runId, command, until: resumePolicy.until, policy: resumePolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
     if (priorRun?.outcome === "stopped-at-cap" || priorRun?.outcome === "wait-timeout") {
       emit({ event: "run.resume", runId, previousOutcome: priorRun.outcome, maxAttempts: resumedRecord?.policy?.maxAttempts });

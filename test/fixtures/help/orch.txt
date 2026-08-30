@@ -6,7 +6,7 @@ Usage: orch <command> [options]
 Set up a repo:
   init                    Write a commented .orch/orch.yml and .orch/ORCH.md.
   config                  Print the effective, validated config.
-  agent add|build <name>  Add an agent to the rotation pool; --build scaffolds
+  agent add <name>        Add an agent to the rotation pool; --build scaffolds
                           its adapter.
 
 Run a cycle:
@@ -14,8 +14,6 @@ Run a cycle:
   issue <number>          The same, from a GitHub issue; closes it on landing.
 
 Review and land:
-  review <branch>         Audit an existing branch; --until ready opts into
-                          landing.
   pr <number|branch>      Audit a pull request or a branch; repair or merge it.
   continue <sid>          Resume an interrupted cycle or a stopped run.
 
@@ -25,7 +23,7 @@ Operate:
 
 Maintain:
   release "entry"         Bump version + CHANGELOG by hand (autoBump repos).
-  upgrade, update         Self-update the global npm install.
+  upgrade                 Self-update the global npm install.
   completion              Print or install the bash completion script.
   version                 Print the version.
   help [command]          This page, or one command's page.
