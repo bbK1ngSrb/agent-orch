@@ -276,6 +276,18 @@ test("adapter forwards model/effort opts to buildArgs", async () => {
   assert.deepEqual(seen, { model: "m1", effort: "low" });
 });
 
+test("adapter renders the supplied review base", async () => {
+  let prompt;
+  const adapter = makeCliAdapter({
+    name: "base-aware",
+    bin: process.execPath,
+    buildArgs: (value) => { prompt = value; return nodeScript("process.stdout.write('AGREE ok\\n')"); },
+  });
+  await adapter.audit("pr/x/y", tmpdir(), { base: "orch/integration" });
+  assert.match(prompt, /Audit the branch `pr\/x\/y` against `orch\/integration`\./);
+  assert.doesNotMatch(prompt, /against `main`/);
+});
+
 test("adapter rejects unsupported model/effort opts before spawning", async () => {
   let spawned = false;
   const adapter = makeCliAdapter({

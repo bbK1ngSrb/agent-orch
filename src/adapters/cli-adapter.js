@@ -583,6 +583,7 @@ export function makeCliAdapter({ name, bin, buildArgs, capabilities = { model: t
       // captured output against it (#360).
       const prompt = render("review", {
         branch,
+        base: opts.base || "main",
         task: buildReviewPromptReference(opts.task),
         allowLargeScope: opts.allowLargeScope ? "GRANTED by the operator" : "NOT GRANTED",
       });
