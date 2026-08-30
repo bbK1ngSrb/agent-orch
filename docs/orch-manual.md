@@ -629,10 +629,11 @@ got to. `orch_status` and `orch_plan` return immediately.
   names a protected path, instead of being refused at intake. See §2.14.
 - **`--allow-large-scope`** — explicitly sanction a deliberately large review
   slice for this run. A plain `orch continue <sid>` requires the flag again.
-- **`--until <mode>`** — `ready` is the default: run the bounded readiness
-  loop. `once` runs one audit/review pass and stops; `merged` runs through
-  readiness and the configured merge path. `task`, `issue`, `continue`, and
-  `pr` accept all three goals.
+- **`--until <mode>`** — `ready` is the default for new runs: run the bounded
+  readiness loop. `once` runs one audit/review pass and stops; `merged` runs
+  through readiness and the configured merge path. `task`, `issue`, and `pr`
+  accept all three goals. `continue` inherits the recorded goal and accepts
+  only an explicit `--until once` override.
 
 Every flag is now declared per command in `src/schema.js`, and a flag the
 command does not read is refused with exit `64` rather than parsed and dropped.

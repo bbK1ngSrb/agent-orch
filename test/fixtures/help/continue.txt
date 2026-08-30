@@ -7,13 +7,15 @@ when the run starts and listed by `orch dashboard`). `continue` reads that
 checkpoint and picks the cycle up where it stopped instead of starting over, so
 a run killed mid-review does not re-author the change. A run that ended at the
 attempt cap (exit 2) or waiting on a human (exit 4) resumes here too, with a
-fresh attempt budget. The seats, work order and goal are taken from the record;
-an explicit `--until` overrides the recorded value for this resume only.
+fresh attempt budget. The seats and work order are taken from the record;
+ready/merged goals are inherited from it, while an explicit `--until once`
+requests one pass for this resume.
 
 Options:
-  --until <goal>          What this resume pursues: once, ready or merged.
-                          (default: ready, unless the recorded run has another
-                          goal)
+  --until <goal>          Request one pass for this resume; ready and merged
+                          are inherited from the recorded run.
+                          (default: the recorded run's goal, or once for a
+                          legacy sid)
   --reviewer <spec>       Reviewer seat as "<agent> [model] [effort]".
   --reviewers <a,b>       Comma-separated reviewer seats.
   --allow-large-scope     Sanction a deliberately large review slice.

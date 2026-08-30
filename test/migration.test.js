@@ -19,8 +19,8 @@ test("v0.5 removes the legacy CLI commands and flags", () => {
   assert.throws(() => validatePositionals("agent", ["build", "name"], {}), /usage: orch agent add/);
 });
 
-test("bare cycle tools use the ready goal and removed MCP review points to orch_pr", async () => {
-  for (const name of ["orch_task", "orch_issue", "orch_pr", "orch_continue"]) {
+test("new cycle tools use the ready goal and continue inherits it", async () => {
+  for (const name of ["orch_task", "orch_issue", "orch_pr"]) {
     const tool = TOOLS.find((candidate) => candidate.name === name);
     const args = name === "orch_task" ? { task: "x" }
       : name === "orch_issue" ? { number: 1 }
@@ -28,6 +28,8 @@ test("bare cycle tools use the ready goal and removed MCP review points to orch_
           : { sid: "1-a" };
     assert.equal(tool.argv(args).at(-1), name === "orch_task" ? "x" : "ready");
   }
+  const continueTool = TOOLS.find((candidate) => candidate.name === "orch_continue");
+  assert.deepEqual(continueTool.argv({ sid: "1-a" }), ["continue", "1-a"]);
   assert.equal(TOOLS.some((tool) => tool.name === "orch_review"), false);
   const removed = await handle({
     jsonrpc: "2.0", id: 1, method: "tools/call",

@@ -155,11 +155,11 @@ export const TOOLS = [
     description: "Resume an interrupted or stalled cycle from its checkpoint, by cycle id (sid).",
     inputSchema: {
       type: "object",
-      properties: { sid: { type: "string", description: "Cycle id, as reported by orch_status." }, until: { type: "string", enum: ["once", "ready", "merged"], default: "ready" } },
+      properties: { sid: { type: "string", description: "Cycle id, as reported by orch_status." } },
       required: ["sid"],
       additionalProperties: false,
     },
-    argv: (a) => ["continue", requireSid(a.sid), "--until", requireUntil(a.until)],
+    argv: (a) => ["continue", requireSid(a.sid)],
     match: (a) => ({ sid: requireSid(a.sid) }),
   },
 ];

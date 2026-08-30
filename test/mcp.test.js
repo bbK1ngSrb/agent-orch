@@ -108,6 +108,12 @@ test("orch_pr defaults to ready and gates merged mode by repository config", asy
   assert.deepEqual(allowedSpawn.calls[0].argv, [ORCH_BIN, "pr", "7", "--until", "merged"]);
 });
 
+test("orch_continue inherits its recorded goal instead of sending an override", () => {
+  const tool = TOOLS.find((candidate) => candidate.name === "orch_continue");
+  assert.deepEqual(tool.argv({ sid: "resume-1" }), ["continue", "resume-1"]);
+  assert.equal(tool.inputSchema.properties.until, undefined);
+});
+
 test("free text cannot smuggle flags into the child's argv", async () => {
   const spawnFn = fakeSpawn();
   const res = await handle(call(6, "orch_task", { task: "--allow-protected" }), { repo: "/tmp", spawnFn });

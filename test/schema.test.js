@@ -213,14 +213,20 @@ test("--max-attempts is not declared — it would be a silent no-op, nothing rea
   );
 });
 
-test("--until ready|merged is available on every cycle command", () => {
+test("--until ready|merged is available on every new cycle command", () => {
   for (const command of ["task", "issue", "pr", "continue"]) {
     assert.doesNotThrow(() => validate(command, { until: "once" }), `${command} once`);
   }
   for (const mode of ["ready", "merged"]) {
-    for (const command of ["task", "issue", "pr", "continue"]) {
+    for (const command of ["task", "issue", "pr"]) {
       assert.doesNotThrow(() => validate(command, { until: mode }), `${command} ${mode}`);
     }
+  }
+  for (const mode of ["ready", "merged"]) {
+    assert.throws(
+      () => validate("continue", { until: mode }),
+      (e) => e.exit === 64 && new RegExp(`--until ${mode} is not yet available`).test(e.message),
+    );
   }
   assert.throws(() => validate("task", { until: "forever" }), /--until must be one of: once, ready, merged/);
 });

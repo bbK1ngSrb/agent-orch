@@ -180,7 +180,8 @@ test("the manual scopes --until modes to wired commands (#525)", () => {
   const bullet = manual.match(/^- \*\*`--until <mode>`\*\*[\s\S]*?(?=\n- \*\*)/m);
   assert.ok(bullet, "manual does not document the --until flag");
   assert.match(bullet[0], /`ready` is the default/);
-  assert.match(bullet[0], /`task`, `issue`, `continue`, and\s+`pr` accept all three/);
+  assert.match(bullet[0], /`task`, `issue`, and `pr`\s+accept all three/);
+  assert.match(bullet[0], /`continue` inherits the recorded goal/);
   assert.doesNotMatch(bullet[0], /compatibility\s+alias/);
   assert.doesNotMatch(bullet[0], /only `--until once` .* exists today/);
 });

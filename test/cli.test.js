@@ -3967,7 +3967,7 @@ async function runMainCapture(argv, deps = {}) {
   console.log = (...args) => logs.push(args.map(String).join(" "));
   try {
     const command = argv[0];
-    const testArgv = ["task", "issue", "pr", "continue"].includes(command) && !argv.includes("--until")
+    const testArgv = ["task", "issue", "pr"].includes(command) && !argv.includes("--until")
       ? [...argv, "--until", "once"] : argv;
     await main(testArgv, deps);
     return logs;
@@ -4038,7 +4038,7 @@ async function runMainInRepo(repo, argv, deps = {}) {
   console.log = (...args) => logs.push(args.map(String).join(" "));
   try {
     const command = argv[0];
-    const testArgv = ["task", "issue", "pr", "continue"].includes(command) && !argv.includes("--until")
+    const testArgv = ["task", "issue", "pr"].includes(command) && !argv.includes("--until")
       ? [...argv, "--until", "once"] : argv;
     await main(testArgv, { preflight() {}, cycleDeps: fakeCycleDeps(), ...deps });
     return logs;
@@ -7182,7 +7182,7 @@ test("orch continue on a pre-v2 sid leaves an error record when runCycle throws"
   assert.match(record.lastError.message, /boom/);
 });
 
-test("orch continue keeps a pre-v2 sid to one cycle even with an explicit ready goal", async () => {
+test("orch continue keeps a pre-v2 sid to one cycle without a persisted goal", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-continue-pre-v2-once-");
   const sid = "pre-v2-ready";
@@ -7209,7 +7209,7 @@ test("orch continue keeps a pre-v2 sid to one cycle even with an explicit ready 
   });
 
   try {
-    await runMainInRepo(repo, ["continue", sid, "--until", "ready", "--no-tidy"], {
+    await runMainInRepo(repo, ["continue", sid, "--no-tidy"], {
       cycleDeps,
       githubDeps: () => ({ gh, git: gitDep.git }),
       sleep: async () => {},

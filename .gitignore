@@ -19,6 +19,7 @@ docs/*.md
 !docs/cli-v2-proposal.md
 !docs/cli-v2-design.md
 !docs/cli-v2-implementation-plan.md
+!docs/MIGRATION-0.5.md
 # subdir markdown isn't matched by docs/*.md, so ignore internal doc dirs wholesale
 docs/superpowers/
 tasks/
