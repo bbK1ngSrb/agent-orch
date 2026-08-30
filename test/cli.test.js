@@ -2431,6 +2431,65 @@ test("orch continue preserves a reviewer rotation if killed before its checkpoin
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
+// The mirror of the test above, and the one that actually pins the fix: a
+// review resumed under the default `--until once` must AUDIT and stop. The
+// landing-direction test above passed before this behavior existed, so it
+// cannot catch a regression on its own — revert `noMerge` to `isPrResume`
+// alone and only this test goes red. `finalized` is the load-bearing
+// assertion (finalize() is the landing step, so it must never be called);
+// the unchanged integration tip corroborates it from the outside.
+test("orch continue leaves an audit-only review unlanded", async () => {
+  const repo = initGitRepo("orch-review-resume-once-");
+  const branch = "pr/claude/review-resume-once";
+  const sid = "reviewresumeonce";
+  gitDep.git(["branch", "orch/integration"], repo);
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid, {
+    branch,
+    oid: gitDep.git(["rev-parse", branch], repo),
+    round: 1,
+    stage: "reviewed",
+    decision: "AGREE",
+    reason: "looks good",
+    author: { agent: "claude" },
+    reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid,
+    command: "review",
+    argv: ["review", branch],
+    policy: { until: "once" },
+  });
+
+  const before = gitDep.git(["rev-parse", "orch/integration"], repo);
+  let finalized = false;
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  await runMainInRepo(repo, ["continue", sid], {
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async () => {
+        finalized = true;
+        return { status: "merged", reason: "test", sha: "abc" };
+      },
+    },
+    githubDeps: () => ({ gh, git: gitDep.git }),
+  });
+
+  assert.equal(finalized, false);
+  assert.equal(gitDep.git(["rev-parse", "orch/integration"], repo), before);
+});
+
 test("orch continue persists a rotated reviewer before a crash", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-continue-rotate-crash-");
