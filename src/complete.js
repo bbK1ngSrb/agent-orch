@@ -9,11 +9,12 @@
 // synced/detached/deleted), so the optional docs-update child can run it too.
 
 import { formatInt, formatUsd } from "./usage.js";
+import * as runRecord from "./run-record.js";
 
 export async function finishRun(ctx, deps) {
   const {
     repo, task, merged = [], interactive, docsPending = false, runStats = [],
-    integrationBranch = "orch/integration", prUrls = [],
+    integrationBranch = "orch/integration", prUrls = [], orchDir, runIds = [],
   } = ctx;
   const { git, io } = deps;
 
@@ -26,9 +27,14 @@ export async function finishRun(ctx, deps) {
   const toDelete = [...merged];
   const deleted = [];
   const leftover = [];
+  const tidyByBranch = [];
   for (const br of toDelete) {
     const res = git.deleteBranchSafe(repo, br, integrationBranch);
-    if (res.ok) { deleted.push(br); continue; }
+    if (res.ok) {
+      deleted.push(br);
+      tidyByBranch.push({ deleted: [br], leftover: [] });
+      continue;
+    }
     if (res.unmerged && interactive) {
       const ok = await io.confirm(
         `❗ The branch "${br}" has changes that were never merged into ${integrationBranch}.\n` +
@@ -36,11 +42,25 @@ export async function finishRun(ctx, deps) {
         `   Delete "${br}" anyway? [y/N] `,
       );
       if (ok) {
-        try { git.forceDeleteBranch(repo, br); deleted.push(br); continue; }
+        try {
+          git.forceDeleteBranch(repo, br);
+          deleted.push(br);
+          tidyByBranch.push({ deleted: [br], leftover: [] });
+          continue;
+        }
         catch { /* fall through to leftover */ }
       }
     }
     leftover.push(br);
+    const detail = { branch: br, ...(res.unmerged ? { unmerged: true } : { reason: res.reason }) };
+    tidyByBranch.push({ deleted: [], leftover: [detail] });
+  }
+
+  if (orchDir) {
+    toDelete.forEach((br, index) => {
+      const runId = runIds[index];
+      if (runId) runRecord.update(orchDir, runId, { tidy: tidyByBranch[index] });
+    });
   }
 
   io.print(summarize({ task, sha, deleted, leftover, docsPending, runStats, integrationBranch, prUrls }));

@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { finishRun } from "../src/complete.js";
+import * as runRecord from "../src/run-record.js";
 
 // A mock git facade + io recorder. Each test overrides only what it cares about.
 function mk(over = {}) {
@@ -88,6 +92,44 @@ test("force-delete throws: degrades to leftover, never crashes", async () => {
   });
   const r = await finishRun(ctx({ merged: ["orch/foo"] }), deps);
   assert.deepEqual(r.leftover, ["orch/foo"]);
+});
+
+test("persists tidy outcome and distinguishes unmerged and failed-delete leftovers", async () => {
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-tidy-record-"));
+  runRecord.create(orchDir, { runId: "100-0", command: "task", argv: [] });
+  runRecord.create(orchDir, { runId: "100-1", command: "task", argv: [] });
+  const { deps } = mk({
+    git: {
+      deleteBranchSafe: (_r, br) => br === "orch/unmerged"
+        ? { ok: false, unmerged: true }
+        : { ok: false, reason: "branch is checked out" },
+    },
+  });
+
+  await finishRun(ctx({
+    orchDir,
+    runIds: ["100-0", "100-1"],
+    merged: ["orch/unmerged", "orch/locked"],
+    interactive: false,
+  }), deps);
+
+  assert.deepEqual(runRecord.lookup(orchDir, "100-0").tidy, {
+    deleted: [], leftover: [{ branch: "orch/unmerged", unmerged: true }],
+  });
+  assert.deepEqual(runRecord.lookup(orchDir, "100-1").tidy, {
+    deleted: [], leftover: [{ branch: "orch/locked", reason: "branch is checked out" }],
+  });
+});
+
+test("persists a successfully deleted branch under tidy.deleted", async () => {
+  const orchDir = mkdtempSync(join(tmpdir(), "orch-tidy-record-"));
+  runRecord.create(orchDir, { runId: "100-0", command: "task", argv: [] });
+
+  await finishRun(ctx({ orchDir, runIds: ["100-0"] }), mk().deps);
+
+  assert.deepEqual(runRecord.lookup(orchDir, "100-0").tidy, {
+    deleted: ["pr/claude/make-it-nice-1"], leftover: [],
+  });
 });
 
 test("docs update spawned: summary says it's still finishing, not fully done", async () => {

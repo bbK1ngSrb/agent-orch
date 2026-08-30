@@ -2491,6 +2491,7 @@ export async function main(argv, deps = {}) {
 
     const results = [];
     const mergedBranches = []; // cycle branches that actually landed on integration
+    const mergedRunIds = [];
     const prUrls = [];
     for (const run of runs) {
       let activeRun = run;
@@ -2828,7 +2829,10 @@ export async function main(argv, deps = {}) {
           emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result, command), usage: result.usage || {}, dry: true });
         }
         if (!jsonMode) console.log(summaryLine(finalResult, activeRun.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
-        if (finalResult.status === "merged" && run.mode === "task") mergedBranches.push(activeRun.branch);
+        if (finalResult.status === "merged" && run.mode === "task") {
+          mergedBranches.push(activeRun.branch);
+          mergedRunIds.push(run.sid);
+        }
         if (finalResult.prUrl) prUrls.push(finalResult.prUrl);
         if (run.mode === "review" && activeRun.prTarget) {
           commentOnPr(finalResult, activeRun, deps.githubDeps || githubDeps);
@@ -2886,7 +2890,7 @@ export async function main(argv, deps = {}) {
       const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
       const runStats = results.flatMap((r) => r.runStats || []);
       await finishFn(
-        { repo, orchDir, task, merged: mergedBranches, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls },
+        { repo, orchDir, task, merged: mergedBranches, runIds: mergedRunIds, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls },
         { git, io, notify },
       );
     }
@@ -3381,7 +3385,7 @@ export async function main(argv, deps = {}) {
         const finishFn = deps.finishRun || finishRun;
         const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
         await finishFn(
-          { repo, orchDir, task: run.task, merged: [activeRun.branch], interactive: Boolean(process.stdin.isTTY), runStats: finalResult.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: finalResult.prUrl ? [finalResult.prUrl] : [] },
+          { repo, orchDir, task: run.task, merged: [activeRun.branch], runIds: [runId], interactive: Boolean(process.stdin.isTTY), runStats: finalResult.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: finalResult.prUrl ? [finalResult.prUrl] : [] },
           { git, io, notify },
         );
       }
