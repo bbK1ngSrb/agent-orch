@@ -3134,6 +3134,10 @@ test("agent build scaffolds quota detection and environment fields", async () =>
 
 test("agent build --pr routes the cycle through merge: pr instead of a local-only branch", async () => {
   const savedExitCode = process.exitCode;
+  // Asserting an exit code of 0 means asserting that nothing raised one, so the
+  // starting value has to be 0 and not whatever a previous test left behind —
+  // otherwise this passes only in batch order and fails when run alone.
+  process.exitCode = 0;
   const d = initGitRepo("orch-agentbuild-pr-");
   let seenMerge = null;
   const deps = {
@@ -3586,6 +3590,7 @@ test("pr accepts a branch target and rejects a missing branch", async () => {
 
 test("orch pr reports an approved review as success", async () => {
   const savedExitCode = process.exitCode;
+  process.exitCode = 0;
   const repo = initGitRepo("orch-pr-approved-");
   gitDep.git(["branch", "feature/x"], repo);
   try {

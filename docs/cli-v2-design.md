@@ -225,7 +225,7 @@ RunRecord = {
   command: "issue", argv: [...],      // as typed (redacted)
   policy: RunPolicy,                  // §4
   state: "CYCLING"|…,                 // §6
-  outcome: null|"reached"|"stopped-at-cap"|"blocked"|"wait-timeout"|"error",
+  outcome: null|"reached"|"stopped-at-cap"|"throttled"|"blocked"|"wait-timeout"|"error",
   exit: null|0|1|2|3|4|5|6,            // 64 never appears: usage errors abort before a record exists
   attempt: 0,                         // current attempt index (cycles started as remedies)
   retries: { "<class>": n },          // free retries spent per class this run (§7 caps)

@@ -137,6 +137,12 @@ const REMEDY_TABLE = {
   HUMAN_TIMEOUT: { remedies: [], terminal: "WAIT_TIMEOUT" },
   SECURITY_FINDING: { remedies: [], terminal: "BLOCKED" },
   POLICY_PROTECTED_PATH: { remedies: [], terminal: "BLOCKED" },
+  // CONCURRENCY_CAP is unreachable today — cli.js refuses over the cap before a
+  // cycle starts, and exits THROTTLED (3) there. If a producer is ever wired up
+  // (P5-P8), this row must NOT stay BLOCKED: blocked means "retrying cannot
+  // succeed" and exits 6, whereas a capacity refusal ran nothing and is safe to
+  // retry unchanged. Landing it as BLOCKED would teach every caller to stop on
+  // exactly the outcome it should retry.
   CONCURRENCY_CAP: { remedies: [], terminal: "BLOCKED" },
   HUMAN_ABANDON: { remedies: [], terminal: "BLOCKED" },
   INTERNAL: { remedies: [], terminal: "ERROR" },

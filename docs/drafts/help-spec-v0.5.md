@@ -1309,7 +1309,8 @@ export const EXITS = {
 
 These are the codes the run controller emits, from the shared table in
 `src/exit-codes.js` (`OK: 0, ERROR: 1, ESCALATED: 2, THROTTLED: 3,
-WAIT_TIMEOUT: 4, ACTION_REQUIRED: 5, BLOCKED: 6`), plus `usageError`'s 64.
+WAIT_TIMEOUT: 4, BLOCKED: 6`), plus `usageError`'s 64. Code 5
+(`ACTION_REQUIRED`) is reserved but not yet a key in that table.
 Note `BLOCKED` is **6**, not 3: 3 is reserved for the concurrency refusal,
 where nothing ran and retrying later is safe, while a `BLOCKED` terminal
 cannot succeed on a retry.

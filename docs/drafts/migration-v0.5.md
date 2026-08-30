@@ -1062,7 +1062,7 @@ get exit 4.
 
 ### 3.4 Exit codes
 
-#### Exit 2 splits: policy, security and concurrency-cap stops now exit 3
+#### Exit 2 splits: policy and security stops now exit 6; a concurrency-cap stop exits 3
 
 **Already live in v0.4.360** for `--until ready|merged` runs
 (`run-controller.js` maps `BLOCKED → 6`, while 3 is raised only for the

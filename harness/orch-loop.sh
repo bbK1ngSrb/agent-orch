@@ -121,10 +121,6 @@ main() {
 
         case "$rc" in
             0)  log "orch finished (rc=$rc)"; exit 0 ;;   # done: approved / merged
-            6)  # BLOCKED: policy-terminal (guardrail path, security finding,
-                # auth, merge rejected). Never a quota death, so skip the probe
-                # and do not retry — the same input cannot succeed.
-                log "orch exit $rc is blocked and not retryable — stopping"; exit "$rc" ;;
             *)  # Exit 1 is the historical author failure; exit 2 is the
                 # AGENT_QUOTA escalation. The limit probe distinguishes those
                 # quota deaths from ordinary failures within those statuses.
