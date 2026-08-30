@@ -131,7 +131,7 @@ test("--config-file conflictResolution beats orch.yml automation.conflictResolut
   assert.equal(c.main.conflictResolution, "propose");
 });
 
-test("--config-file canonical conflict resolvers beat orch.yml v2 aliases", () => {
+test("--config-file conflictResolvers beats orch.yml automation.conflictResolvers", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "automation:\n  conflictResolvers: [claude]\n");
   const override = join(d, "custom.yml");

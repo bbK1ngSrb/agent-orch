@@ -136,10 +136,6 @@ function warningList(user, override, userLabel = "orch.yml") {
   const warnings = new Set();
   collectConfigIssues(user, warnings, new Set(), "", userLabel);
   collectConfigIssues(override, warnings, new Set(), "", "--config-file");
-  for (const [source, label] of [[user, userLabel], [override, "--config-file"]]) {
-    const picked = pickRoundCap(source, label);
-    if (picked?.warning) warnings.add(picked.warning);
-  }
   return [...warnings];
 }
 
@@ -320,10 +316,9 @@ export function configPath(dir) {
 }
 
 // Read the canonical round-cap spelling from one config layer.
-function pickRoundCap(source, label) {
-  const has = (k) => Object.prototype.hasOwnProperty.call(source, k);
-  if (has("roundCap")) return { value: source.roundCap, key: "roundCap" };
-  return null;
+function pickRoundCap(source) {
+  return Object.prototype.hasOwnProperty.call(source, "roundCap")
+    ? { value: source.roundCap, key: "roundCap" } : null;
 }
 
 // overridePath (--config-file) layers on top of the repo's orch.yml, same
@@ -405,8 +400,8 @@ export function load(dir, overridePath, { onWarning = console.warn } = {}) {
   const problems = problemList(user, override);
   if (problems.length) throw new Error(problems.join("\n"));
   // Both layers are consulted so each deprecated spelling gets its own warning.
-  const fromOverride = pickRoundCap(override, "--config-file");
-  const fromUser = pickRoundCap(user, "orch.yml");
+  const fromOverride = pickRoundCap(override);
+  const fromUser = pickRoundCap(user);
   const picked = fromOverride ?? fromUser;
   delete cfg.reviseCap; // one source of truth downstream
   cfg.roundCap = picked ? picked.value : DEFAULTS.roundCap;
@@ -458,9 +453,7 @@ export function configReport(dir, overridePath) {
   const landingSource = has(override, "landing") || has(override, "merge") ? "--config-file"
     : has(user, "landing") || has(user, "merge") ? userSource : "default";
   sources.landing = landingSource;
-  const roundCapSource = has(override, "roundCap") || has(override, "reviseCap") ? "--config-file"
-    : has(user, "roundCap") || has(user, "reviseCap") ? userSource : "default";
-  sources.roundCap = roundCapSource;
+  sources.roundCap = has(override, "roundCap") ? "--config-file" : has(user, "roundCap") ? userSource : "default";
   delete sources.merge;
   delete sources.reviseCap;
   delete sources["github.autoMergePr"];

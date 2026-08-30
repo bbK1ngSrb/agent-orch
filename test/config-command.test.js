@@ -37,6 +37,24 @@ test("config --check rejects removed keys and names their replacements", async (
   assert.match(result.output, /--until merged/);
 });
 
+test("config --check rejects reviseCap and names roundCap as its replacement", async () => {
+  const repo = tmp();
+  writeFileSync(join(repo, "orch.yml"), "reviseCap: 5\n");
+  const result = await runConfig(repo, ["--check"]);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.output, /reviseCap.*removed/);
+  assert.match(result.output, /roundCap/);
+});
+
+test("config --check rejects github.autoMergePr and names --until merged as its replacement", async () => {
+  const repo = tmp();
+  writeFileSync(join(repo, "orch.yml"), "github:\n  autoMergePr: true\n");
+  const result = await runConfig(repo, ["--check"]);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.output, /github\.autoMergePr.*removed/);
+  assert.match(result.output, /--until merged/);
+});
+
 test("config --json reports effective config and provenance", async () => {
   const repo = tmp();
   writeFileSync(join(repo, "orch.yml"), "stageTimeout: 41\nlanding: ff-only\n");
