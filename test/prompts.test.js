@@ -12,7 +12,7 @@ test("renderTemplate leaves unknown placeholders intact", () => {
 
 test("review template mentions the verdict contract and the branch var", () => {
   const task = buildReviewPromptReference({ title: "requested change", problem: "fix it", repro_steps: [], suspected_paths: [], acceptance_criteria: [] });
-  const out = render("review", { branch: "pr/claude/x", task, allowLargeScope: "NOT GRANTED" });
+  const out = render("review", { branch: "pr/claude/x", base: "orch/integration", task, allowLargeScope: "NOT GRANTED" });
   assert.match(out, /AGREE/);
   assert.match(out, /DISAGREE/);
   assert.match(out, /pr\/claude\/x/);
@@ -21,6 +21,8 @@ test("review template mentions the verdict contract and the branch var", () => {
   const referenceEnd = out.indexOf("END UNTRUSTED REFERENCE ");
   const trustedControl = out.indexOf("Trusted run control:");
   assert.ok(referenceEnd >= 0 && referenceEnd < trustedControl, "trusted sanction must follow the untrusted fence");
-  assert.match(render("review", { branch: "pr/claude/x", task, allowLargeScope: "GRANTED by the operator" }), /GRANTED by the operator/);
+  assert.match(render("review", { branch: "pr/claude/x", base: "orch/integration", task, allowLargeScope: "GRANTED by the operator" }), /GRANTED by the operator/);
+  assert.match(out, /Audit the branch `pr\/claude\/x` against `orch\/integration`\./);
+  assert.doesNotMatch(out, /against `main`/);
   assert.match(out, /Compare the diff against the supplied work order\./);
 });

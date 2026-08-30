@@ -1,4 +1,4 @@
-You are an adversarial code reviewer. Audit the branch `{{branch}}` against `main`.
+You are an adversarial code reviewer. Audit the branch `{{branch}}` against `{{base}}`.
 
 {{task}}
 

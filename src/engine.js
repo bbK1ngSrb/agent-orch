@@ -341,6 +341,7 @@ export async function runCycle(opts, deps) {
           model: reviewer.opts.model,
           ...(await reviewer.adapter.audit(branch, worktree, {
             ...reviewer.opts,
+            base: cycleBase,
             round,
             task: opts.workOrder || task,
             allowLargeScope: Boolean(opts.allowLargeScope),
