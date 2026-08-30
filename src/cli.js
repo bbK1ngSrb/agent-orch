@@ -1881,7 +1881,7 @@ function reportAgentBuildResult(name, result, { withReason = false } = {}) {
   if (result.status === "approved") {
     console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
   }
-  if (result.status === "escalated" || result.status === "merge-deferred" || result.status === "pr") {
+  if (result.status === "escalated" || result.status === "merge-deferred") {
     raiseExitCode(exitForResult(result));
   }
 }
@@ -3377,7 +3377,7 @@ export async function main(argv, deps = {}) {
         );
       }
       if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
-        if (!controller) raiseExitCode(EXIT_CODES.ESCALATED);
+        if (!controller) raiseExitCode(exitForResult(finalResult));
         if (!dry) {
           commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
         }

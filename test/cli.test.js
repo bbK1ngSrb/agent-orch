@@ -4981,7 +4981,7 @@ test("orch continue resumes a ready review through the landing path", async () =
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
-test("orch continue persists action-required for an approved PR resume", async () => {
+test("orch continue persists a success exit for an approved PR resume", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-pr-resume-approved-");
   const branch = "pr/claude/pr-resume-approved";

@@ -12,9 +12,6 @@
   "throttled, nothing ran" meaning, which every existing caller was written
   against. The `raiseExitCode` priority map now lists every code, so none can
   silently read as priority 0 and lose to a fresh exit code of `0`.
-- **fix(harness):** `harness/orch-loop.sh` treats `6` as terminal and skips the
-  quota probe for it — a policy block is never a usage limit, so probing was
-  pointless.
 - **fix(cli):** the concurrency refusal emits `outcome: "throttled"` rather than
   `"blocked"`, which had left one outcome name mapping to two different codes.
 - Code `5` (`ACTION_REQUIRED`) is deliberately **not** part of this change. It
