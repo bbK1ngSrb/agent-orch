@@ -878,7 +878,7 @@ That predicate is live. What is **not** live is the disposition beside it:
 > `REMOTE_PR_CLOSED`'s only remedy is `ask` (`src/failure.js:133`), so orch posts
 > the question on the PR, polls for a reply from someone with verified write
 > access, and — if `automation.humanWaitHours` elapses unanswered — exits 4; an
-> `orch: abandon` reply ends it at exit 3 instead. Mark the PR ready for review
+> `orch: abandon` reply ends it at exit 6 instead. Mark the PR ready for review
 > and `orch continue <runId>` resumes from there. If the operator has removed
 > `ask` from `automation.remedies`, the row has no remedy left and the run stops
 > at cap (exit 2) instead; see §6.9. v0.5.0 gives the class a draft-specific
@@ -1515,7 +1515,7 @@ One contract, five run codes plus the usage code.
 | `4` | wait-timeout | orch asked a human on the issue or PR and `automation.humanWaitHours` elapsed with no authorised reply. **Resumable** after you answer. | `task`, `issue`, `pr`, `continue` — only under `--until ready\|merged` |
 | `64` | usage | Unknown command, a flag not valid for this command, `--dry` on a read-only command, a bad numeric or enum value, a bad positional. | every command |
 
-### 5.1 `blockedReason` values (exit 3)
+### 5.1 `blockedReason` values (exit 6)
 
 A closed set of eight. Six come from `BLOCKED_REASON` in
 `src/run-controller.js`; the remaining two are emitted by the `ask` remedy
@@ -1638,7 +1638,7 @@ holding no value of their own.
 | `integrationBranch` | string | `"orch/integration"` | The local landing target. `baseBranch` advances only via the standing PR plus a fast-forward-only fetch — a fast-forward being a merge that just moves the branch pointer, with no merge commit, which is only possible when nothing diverged. | current |
 | `merge` | enum | `"no-ff"` | Old spelling of `landing`. Warns today; **hard error from v0.5.0**. | **renamed** → `landing` |
 | `landing` | `ff-only \| no-ff \| pr` | `"no-ff"` | How an agreed, green cycle lands. `no-ff` and `ff-only` merge locally onto `integrationBranch`; `pr` skips local integration and opens a per-cycle PR instead. | current |
-| `concurrency` | int ≥ 1 | `4` | Maximum concurrent cycles per repo directory. Over the cap a cycle **exits** (blocked, exit 3) rather than blocking — nothing was attempted, so retrying later is safe. | current |
+| `concurrency` | int ≥ 1 | `4` | Maximum concurrent cycles per repo directory. Over the cap a cycle **exits** (throttled, exit 3) rather than blocking — nothing was attempted, so retrying later is safe. | current |
 
 `merge` is worth one extra sentence, because it explains why removal is cheap:
 it is in `DEFAULTS` and in the deprecation map, but **not** in `CONFIG_KEYS`. It

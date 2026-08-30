@@ -933,7 +933,7 @@ their behalf.
 > throw a usage error and does not quietly mark the PR ready-to-merge: it asks a
 > human on the PR, and if nobody with write access answers within
 > `automation.humanWaitHours` the run ends at exit 4 (`HUMAN_TIMEOUT`); an
-> `orch: abandon` reply ends it at exit 3. v0.5.0 gives the class a
+> `orch: abandon` reply ends it at exit 6. v0.5.0 gives the class a
 > draft-specific disposition so the run refuses on the spot instead of waiting a
 > day for a human to confirm what orch already read off the PR. That is one row
 > in the failure table, not a change to readiness.
@@ -1093,11 +1093,12 @@ makes the exit code a real contract:
 | `0` | Reached and verified: merged, ready, approved, or a clean dry run. | Nothing. |
 | `1` | orch itself broke, or the environment did (an uncaught exception). | Alert. This is a bug or a broken machine. |
 | `2` | Stopped at the attempt cap. **Resumable.** | `orch continue <runId>` — it grants a fresh budget. |
-| `3` | **Blocked**; a human must decide. Always carries a `blockedReason`. | Page a person. Never retry unattended. |
+| `3` | **Throttled**: the concurrency cap was already reached, so nothing ran. | Retry later, unchanged. |
+| `6` | **Blocked**; a human must decide. Always carries a `blockedReason`. | Page a person. Never retry unattended. |
 | `4` | orch asked a human and nobody answered within the window. | Answer the question on the issue/PR, then `orch continue <runId>`. |
 | `64` | Usage error: unknown command, a flag the command does not read, `--dry` on a read-only command, a bad numeric or enum value. | Fix the command line. No run record is written. |
 
-The `blockedReason` values that accompany exit 3 are a closed set of eight:
+The `blockedReason` values that accompany exit 6 are a closed set of eight:
 `guardrail-path`, `security-finding`, `no-channel`,
 `cannot-verify-authorization`, `merge-rejected`, `auth`, `human-abandon`,
 `concurrency-cap`. (Six live in `BLOCKED_REASON` in `src/run-controller.js`; the
@@ -1105,11 +1106,11 @@ two `no-channel` / `cannot-verify-authorization` cases are raised by the `ask`
 remedy itself.)
 
 > **Not yet landed** (P12, #528). That table is goal-independent by design — a
-> terminal class blocks at 3 at any goal (§4.5) — but the `once` path does not
+> terminal class blocks at 6 at any goal (§4.5) — but the `once` path does not
 > honour the blocked leg yet. `once` never enters the run controller, so it never
 > classifies the failure and never reaches a `BLOCKED` terminal; it raises a flat
 > 2 for any escalation or demotion. On the current checkout a security finding
-> under `--until once` exits 2, not 3, and carries no `blockedReason`.
+> under `--until once` exits 2, not 6, and carries no `blockedReason`.
 
 Two of these deserve a paragraph.
 
@@ -1118,8 +1119,10 @@ meaning four different things — escalated, merge-deferred, "concurrency cap
 reached, nothing was attempted", `agent build` escalated, and `pr` not-approved.
 A caller checking `$? -eq 2` could not tell "nothing ran, retry later" from "a
 cycle ran and needs a human". They are now different codes, and the difference
-is the follow-up action: retrying a `2` is productive; retrying a `3` just burns
-another cycle on a decision a human already needs to make.
+is the follow-up action: retrying a `3` is productive, because nothing ran and
+the cap may have cleared; retrying a `2` just burns another cycle on a decision
+a human already needs to make. The authoritative mapping is the shared table in
+`src/exit-codes.js` — read it rather than any prose here if the two disagree.
 
 **Before (v0.4.x)**
 ```bash
@@ -1128,7 +1131,7 @@ orch issue 42; case $? in 0) ok;; 2) needs_a_human;; esac
 
 **After (v0.5.0)**
 ```bash
-orch issue 42 --until once; case $? in 0) ok;; 2) resumable_retry;; 3) needs_a_human;; esac
+orch issue 42 --until once; case $? in 0) ok;; 2) needs_a_human;; 3) resumable_retry;; esac
 ```
 
 **Why** — one overloaded code became two honest ones. The in-repo caller to
@@ -1137,7 +1140,7 @@ what the phrase "terminal signal" suggests: the loop re-runs the *same* orch
 invocation until it exits 0, and exits 1 and 2 are the only codes it will ever
 retry — then only when a probe of the agent CLI still reports a usage limit.
 Every other nonzero code, 3 and 4 and 64 included, already stops the loop. So
-what v0.5 changes is not that exit 3 must newly become terminal; it is that a
+what v0.5 changes is not that a blocked exit must newly become terminal; it is that a
 quota-driven retry of exit 2 should resume the interrupted run with
 `orch continue <runId>` instead of firing the identical command line again
 (§5.7).

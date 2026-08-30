@@ -7,6 +7,13 @@
 - **BREAKING (cli):** `orch pr`'s approved path moves from exit `0` to
   `ACTION_REQUIRED` (`5`). Existing `.github/workflows/orch-pr.yml` callers
   treat that nonzero status as failure and will turn red until they handle it.
+- **fix(harness):** `harness/orch-loop.sh` branched on `$rc` and treated every
+  code outside `0|1|2` as a real error, so the new `ACTION_REQUIRED` (`5`) would
+  have logged a successful run as "a real error — stopping" where it previously
+  exited `0`. It now stops cleanly on `5` and treats `BLOCKED` (`6`) as terminal
+  without a pointless quota probe. The other in-repo caller,
+  `.github/workflows/orch-pr.yml`, runs `orch pr "$PR"` as its final step with no
+  exit handling; it is a protected path and is left for a separate owner change.
 
 ## v0.4.369 — 2026-08-30
 - feat(cycle): add --from branch source

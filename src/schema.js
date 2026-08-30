@@ -986,7 +986,8 @@ ${exits}
 Examples:
 ${EXAMPLES.map((e) => `  ${e}`).join("\n")}
 
-Exit-code table: README.md#exit-codes; manual: docs/orch-manual.md.`;
+Exit-code table: README.md#exit-codes; manual: docs/orch-manual.md.
+Full docs: .orch/ORCH.md in an initialized repo, and the README.`;
 }
 
 export function renderHelp(command = null) {

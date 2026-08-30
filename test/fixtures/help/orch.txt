@@ -53,3 +53,4 @@ Examples:
   orch pr 42 --until once
 
 Exit-code table: README.md#exit-codes; manual: docs/orch-manual.md.
+Full docs: .orch/ORCH.md in an initialized repo, and the README.

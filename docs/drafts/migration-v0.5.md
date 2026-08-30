@@ -1065,8 +1065,8 @@ get exit 4.
 #### Exit 2 splits: policy, security and concurrency-cap stops now exit 3
 
 **Already live in v0.4.360** for `--until ready|merged` runs
-(`run-controller.js` maps `BLOCKED → 3`, and `cli.js` raises 3 directly for the
-concurrency cap). Under `--until once` an escalation or a deferred landing still
+(`run-controller.js` maps `BLOCKED → 6`, while 3 is raised only for the
+concurrency cap — the two used to collide on 3). Under `--until once` an escalation or a deferred landing still
 raises a flat 2 today.
 
 **Before (v0.4.x)**

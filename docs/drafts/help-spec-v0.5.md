@@ -1307,9 +1307,12 @@ export const EXITS = {
 };
 ```
 
-These are the codes `src/run-controller.js:11` already emits
-(`EXIT_FOR_STATE = { READY: 0, MERGED: 0, ERROR: 1, STOPPED_AT_CAP: 2,
-BLOCKED: 3, WAIT_TIMEOUT: 4 }`) plus `usageError`'s 64.
+These are the codes the run controller emits, from the shared table in
+`src/exit-codes.js` (`OK: 0, ERROR: 1, ESCALATED: 2, THROTTLED: 3,
+WAIT_TIMEOUT: 4, ACTION_REQUIRED: 5, BLOCKED: 6`), plus `usageError`'s 64.
+Note `BLOCKED` is **6**, not 3: 3 is reserved for the concurrency refusal,
+where nothing ran and retrying later is safe, while a `BLOCKED` terminal
+cannot succeed on a retry.
 
 ### 6.3 The code changes, by file and line
 
