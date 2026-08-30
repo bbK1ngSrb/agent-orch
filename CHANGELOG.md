@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.367 — 2026-08-30
+- fix(review): use resolved comparison base (closes [#604](https://github.com/bbk1ng/agent-orch/issues/604))
+
 ## v0.4.366 — 2026-08-30
 - fix(test): remove test temp directories on exit, ending the /tmp leak (closes #611)
 
