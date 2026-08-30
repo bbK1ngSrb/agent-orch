@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.372 — 2026-08-30
+- fix: persist post-merge tidy outcomes (closes [#622](https://github.com/bbk1ng/agent-orch/issues/622))
+
 ## v0.4.371 — 2026-08-30
 - orch pr now exits 5 (ACTION_REQUIRED) when a review is approved and only a human merge remains; harness/orch-loop.sh treats it as a clean stop
 
