@@ -2264,7 +2264,7 @@ test("a one-agent pool keeps task and review role selection usable", async () =>
   gitDep.git(["branch", branch], reviewRepo);
   writeFileSync(join(reviewRepo, "orch.yml"), "agents: [claude]\n");
   const reviewLogs = await runMainInRepo(reviewRepo, ["review", branch], { finishRun: async () => {} });
-  assert.match(reviewLogs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.match(reviewLogs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
 test("task --reviewer rotates away from the requested reviewer end to end", async () => {
@@ -2300,7 +2300,7 @@ test("review --reviewer uses the requested reviewer end to end", async () => {
   };
   const logs = await runMainInRepo(repo, ["review", branch, "--reviewer", "claude"], { cycleDeps, finishRun: async () => {} });
   assert.deepEqual(auditCalls, ["claude"]);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
 test("orch continue re-seats an excluded author from the inflight record", async () => {
@@ -2429,6 +2429,65 @@ test("orch continue preserves a reviewer rotation if killed before its checkpoin
   assert.equal(authorCalls, 0);
   assert.equal(auditCalls, 1);
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+// The mirror of the test above, and the one that actually pins the fix: a
+// review resumed under the default `--until once` must AUDIT and stop. The
+// landing-direction test above passed before this behavior existed, so it
+// cannot catch a regression on its own — revert `noMerge` to `isPrResume`
+// alone and only this test goes red. `finalized` is the load-bearing
+// assertion (finalize() is the landing step, so it must never be called);
+// the unchanged integration tip corroborates it from the outside.
+test("orch continue leaves an audit-only review unlanded", async () => {
+  const repo = initGitRepo("orch-review-resume-once-");
+  const branch = "pr/claude/review-resume-once";
+  const sid = "reviewresumeonce";
+  gitDep.git(["branch", "orch/integration"], repo);
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid, {
+    branch,
+    oid: gitDep.git(["rev-parse", branch], repo),
+    round: 1,
+    stage: "reviewed",
+    decision: "AGREE",
+    reason: "looks good",
+    author: { agent: "claude" },
+    reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid,
+    command: "review",
+    argv: ["review", branch],
+    policy: { until: "once" },
+  });
+
+  const before = gitDep.git(["rev-parse", "orch/integration"], repo);
+  let finalized = false;
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  await runMainInRepo(repo, ["continue", sid], {
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async () => {
+        finalized = true;
+        return { status: "merged", reason: "test", sha: "abc" };
+      },
+    },
+    githubDeps: () => ({ gh, git: gitDep.git }),
+  });
+
+  assert.equal(finalized, false);
+  assert.equal(gitDep.git(["rev-parse", "orch/integration"], repo), before);
 });
 
 test("orch continue persists a rotated reviewer before a crash", async () => {
@@ -4778,6 +4837,120 @@ test("orch review --dry never preflights or shells out to a real cycle", async (
   assert.equal(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")).length : 0, 0);
 });
 
+test("orch review audits by default without changing the integration tip", async () => {
+  const repo = initGitRepo("orch-review-only-");
+  const branch = "pr/claude/review-only";
+  gitDep.git(["branch", "orch/integration"], repo);
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const before = gitDep.git(["rev-parse", "orch/integration"], repo);
+  let finalized = false;
+  const logs = await runMainInRepo(repo, ["review", branch], {
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async () => { finalized = true; return { status: "merged", reason: "unexpected", sha: "abc" }; },
+    },
+  });
+  const after = gitDep.git(["rev-parse", "orch/integration"], repo);
+
+  assert.equal(after, before);
+  assert.equal(finalized, false);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
+});
+
+test("orch review --until ready uses the landing path", async () => {
+  const repo = initGitRepo("orch-review-ready-");
+  const branch = "pr/claude/review-ready";
+  gitDep.git(["branch", "orch/integration"], repo);
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+
+  let finalized = false;
+  const logs = await runMainInRepo(repo, ["review", branch, "--until", "ready"], {
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async (ctx) => {
+        finalized = true;
+        assert.equal(ctx.branch, branch);
+        assert.equal(ctx.until, "ready");
+        return { status: "merged", reason: "test", sha: "abc" };
+      },
+    },
+    githubDeps: () => ({ gh, git: gitDep.git }),
+  });
+
+  assert.equal(finalized, true);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("orch continue resumes a ready review through the landing path", async () => {
+  const repo = initGitRepo("orch-review-resume-");
+  const branch = "pr/claude/review-resume";
+  const sid = "reviewresume";
+  gitDep.git(["branch", "orch/integration"], repo);
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid, {
+    branch,
+    oid: gitDep.git(["rev-parse", branch], repo),
+    round: 1,
+    stage: "reviewed",
+    decision: "AGREE",
+    reason: "looks good",
+    author: { agent: "claude" },
+    reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid,
+    command: "review",
+    argv: ["review", branch],
+    policy: { until: "ready" },
+  });
+
+  const before = gitDep.git(["rev-parse", "orch/integration"], repo);
+  let finalized = false;
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  const logs = await runMainInRepo(repo, ["continue", sid], {
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async (ctx) => {
+        finalized = true;
+        assert.equal(ctx.until, "ready");
+        return { status: "merged", reason: "test", sha: "abc" };
+      },
+    },
+    githubDeps: () => ({ gh, git: gitDep.git }),
+  });
+  const after = gitDep.git(["rev-parse", "orch/integration"], repo);
+
+  assert.equal(after, before);
+  assert.equal(finalized, true);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
 // The schema's own matrix test (schema.test.js) derives its expectations from
 // FLAGS/COMMANDS, so it can't catch a regression in those declarations
 // themselves — delete --allow-large-scope from the schema and that test gets
@@ -5104,7 +5277,7 @@ test("orch review permits an explicitly requested reviewer who authored the bran
   });
 
   assert.deepEqual(auditCalls, ["claude"]);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
 test("orch review permits an explicitly configured reviewer who authored the branch", async () => {
@@ -5126,7 +5299,7 @@ test("orch review permits an explicitly configured reviewer who authored the bra
   const logs = await runMainInRepo(repo, ["review", branch], { cycleDeps, finishRun: async () => {} });
 
   assert.deepEqual(auditCalls, ["codex"]);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
 test("orch continue permits an explicitly requested branch author as reviewer", async () => {

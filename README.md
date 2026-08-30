@@ -515,7 +515,7 @@ merge never re-triggers another one — and when the merge was a no-op (empty di
 nothing to update, which would otherwise re-spawn forever). A mixed code+docs
 merge triggers once.
 
-**One surface.** Local merges (`orch task`/`orch review`/`orch pr --merge`) are
+**One surface.** Local merges (`orch task`/`orch review --until ready`/`orch pr --merge`) are
 handled inside `orch`, as described above. A merge performed entirely on
 GitHub — the web UI's merge button — produces no local orch run, so nothing
 refreshes the docs for it; that gap is deliberate. There was once a companion

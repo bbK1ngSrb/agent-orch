@@ -92,10 +92,11 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
 5. **Merge** — *only if* every reviewer said `AGREE`, tests passed, **and**
    the security scan found nothing — the branch is merged. How and where it
    merges is the part this manual spends the most time on, because there are
-   three distinct answers. `orch review <branch>` **does merge** on this same
-   AGREE-and-green outcome, exactly like `orch task`; the only thing it skips
-   is the authoring step. Only `orch pr` stops short of a local merge — it
-   reports its verdict and leaves GitHub to own the actual merge (§2.7).
+   three distinct answers. By default, `orch review <branch>` stops after an
+   audit and does not merge; `--until ready` opts into the former local landing
+   behavior, exactly like `orch task`. Only `orch pr` always stops short of a
+   local merge — it reports its verdict and leaves GitHub to own the actual
+   merge (§2.7).
 
 If any stage fails — reviewer disagreement past the cap, red tests, a risky
 security-scan finding, a merge conflict, an author that produced no changes at
@@ -337,15 +338,16 @@ string. Needs `gh` authenticated.
 
 ### 2.6 `orch review <branch>`
 
-No authoring — but it **does merge**. Points one or more reviewer agents at
-an existing branch and runs the exact same audit → test-gate → security-scan
-→ merge machinery as `orch task` (§1.1), just starting from a branch you (or
-something else) already wrote instead of authoring one. If every reviewer
-says `AGREE` and tests pass and the security scan is clean, the branch
-merges into `orch/integration` (or opens a PR, under `merge: pr`) the same
-way a `task` cycle's result would. A `DISAGREE` escalates immediately —
-there's no author to revise, so the retry loop that `task` gets doesn't apply
-here; one round decides it.
+No authoring, and by default no local landing. It points one or more reviewer
+agents at an existing branch and runs the exact same audit → test-gate →
+security-scan machinery as `orch task` (§1.1), just starting from a branch you
+(or something else) already wrote instead of authoring one. With the default
+`--until once`, an `AGREE` result is reported without changing
+`orch/integration`. `--until ready` opts into the former behavior: an agreed,
+green branch lands into `orch/integration`, then orch waits for the standing PR
+to be ready; `--until merged` also merges that standing PR. A `DISAGREE`
+escalates immediately — there's no author to revise, so the retry loop that
+`task` gets doesn't apply here; one round decides it.
 
 ```bash
 orch review pr/claude/some-branch
@@ -353,11 +355,9 @@ orch review my-feature-branch --reviewer "codex, claude high"
 ```
 
 **When to use it:** you (a human) wrote a branch yourself, or an agent wrote
-one outside of orch, and you want orch's cross-audit discipline — including
-its merge decision — applied to it without re-authoring anything. If you want
-a verdict *without* any possibility of a local merge, use `orch pr` (§2.7)
-against a GitHub PR instead, which is the audit-only path that never touches
-`orch/integration`.
+one outside of orch, and you want orch's cross-audit discipline applied to it
+without re-authoring anything. The default is a second-opinion audit; add
+`--until ready` when you explicitly want the agreed branch landed locally.
 
 ### 2.7 `orch pr <number|branch> [--merge|--until once|ready|merged]`
 
@@ -1131,7 +1131,7 @@ itself forever), and when the merge was a no-op diff. A mixed code+docs merge
 triggers once.
 
 One surface implements this: it lives inside `orch` itself, so any merge orch
-performs locally (`orch task`, `orch review`, `orch pr --merge`) triggers it. A
+performs locally (`orch task`, `orch review --until ready`, `orch pr --merge`) triggers it. A
 merge done purely in GitHub's web UI never reaches orch, so nothing refreshes
 the docs for it — run a docs task by hand if you merge that way.
 
@@ -1588,8 +1588,7 @@ orch review my-branch --reviewer "codex, claude high"
   For this repo, the next deliberate release update is made by running
   `node scripts/orch-release.js` by hand.
 - **"I ran `orch review` just to get a second opinion, and it merged the
-  branch!"** That's correct, and by design (§2.6) — `orch review` skips only
-  the *authoring* step; agreement + green tests + a clean security scan still
-  merges it, exactly like `orch task` would. If you want a verdict with no
-  possibility of a local merge, point `orch pr` at a GitHub PR instead —
-  that's the one command in this list that never merges locally.
+  branch!"** Since this version, bare `orch review` is audit-only and leaves
+  `orch/integration` unchanged. Use `orch review <branch> --until ready` to
+  opt into the former local-landing behavior; `--until merged` also merges the
+  standing PR (§2.6).
