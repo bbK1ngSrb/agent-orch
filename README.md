@@ -196,8 +196,8 @@ setting only `--author(s)` without a reviewer is rejected the same as before.
 Other flags: `--cheap` forces `orch.yml`'s `cheap.role` (e.g. a local llm) for one
 `task`/`issue` run — set `cheap.paths` to auto-route matching `--file`/`orch issue`
 work orders without the flag; `--config-file <path.yml>` layers a custom YAML file
-on top of `orch.yml` for one run; `--no-banner` suppresses the startup banner;
-`--allow-protected` runs a `task`/`issue` whose work order text names a protected path
+on top of `orch.yml` for one run; `--allow-protected` runs a `task`/`issue`
+whose work order text names a protected path
 (orch's guardrail denylist), which intake otherwise refuses before the cycle starts —
 see the manual §2.14.
 `--allow-large-scope` explicitly sanctions a deliberately large review slice for the
@@ -480,7 +480,7 @@ arithmetic, not a custom encoding — a plain merge bump is just `patch + 1`;
 99 before a real publish happens, that carry happens on its own — expected,
 not a bug: that many merges without a publish means a publish is overdue.
 
-`orch --version` and the CLI banner display the version with a `v` prefix
+`orch --version` displays the version with a `v` prefix
 (`v0.4.203`); `package.json#version` itself stays plain, valid semver with no
 prefix, as npm requires.
 
