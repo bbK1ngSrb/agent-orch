@@ -395,7 +395,7 @@ export const HELP_PAGES = {
   mcp: {
     title: "orch mcp — serve orch as an MCP server over stdio.",
     synopsis: ["orch mcp"],
-    about: ["Speaks the Model Context Protocol on stdin/stdout so an AI client can run cycles as tools instead of shelling out. Because stdout is the protocol transport here, nothing else may print on it. Each cycle the server spawns authenticates on its own. The server runs until stdin closes."],
+    about: ["Speaks the Model Context Protocol on stdin/stdout so an AI client can run cycles as tools instead of shelling out. Because stdout is the protocol transport here, nothing else may print on it — this command deliberately skips the update banner every other command may show. Each cycle the server spawns authenticates on its own. The server runs until stdin closes."],
     args: "Arguments: none.",
     exits: [[0, "the client disconnected"], [1, "the transport failed"], [64, "usage error"]],
     examples: ["orch mcp"],

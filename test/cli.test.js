@@ -9,7 +9,6 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, ghShell, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
-import { load as loadConfig } from "../src/config.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -392,23 +391,21 @@ test("SIGTERM marks a detached run interrupted and releases its lock", { skip: p
 });
 
 test("--config-file layers a custom yml onto orch.yml for the run (F: config override)", async () => {
-  const d = mkdtempSync(join(tmpdir(), "orch-cfgfile-"));
+  const d = initGitRepo("orch-cfgfile-");
   const override = join(d, "custom.yml");
   writeFileSync(override, "landing: ff-only\n");
-  const prev = cwd();
-  chdir(d);
-  let out = "";
-  try {
-    process.exitCode = 0;
-    await main(["task", "hello world", "--dry", "--config-file", override], {
-      stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
-    });
-  } finally {
-    chdir(prev);
-    process.exitCode = 0;
-  }
-  assert.equal(out, ""); // the task still runs without a startup banner
-  assert.equal(loadConfig(d, override).merge, "ff-only"); // orch.yml default is no-ff; --config-file overrode it
+  const seen = [];
+  await runMainInRepo(d, ["task", "hello world", "--no-tidy", "--config-file", override], {
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async (ctx) => {
+        seen.push(ctx.cfg.merge);
+        return { status: "merged", reason: "test", sha: "abc" };
+      },
+    },
+    maybeNotifyUpdate: () => Promise.resolve(),
+  });
+  assert.deepEqual(seen, ["ff-only"]); // the task run received the --config-file override
 });
 
 test("slugify produces a branch-safe slug", () => {
