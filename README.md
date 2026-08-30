@@ -184,6 +184,7 @@ The exit status is the machine-readable outcome; callers should not parse summar
 | `2` | `ESCALATED` | A cycle ran but agents did not agree, or the remedy loop stopped at its cap. | Investigate the staged branch. |
 | `3` | `THROTTLED` | The concurrency cap refused the run before any cycle started. | Retry later, unchanged. |
 | `4` | `WAIT_TIMEOUT` | Asked a human and got no answer in `automation.humanWaitHours`. | Resume or re-check. |
+| `5` | `ACTION_REQUIRED` | The review succeeded and exactly one human gesture remains, such as merging an approved PR. | Perform the named action. |
 | `6` | `BLOCKED` | A policy-terminal guardrail, security, auth, or merge-rejection block. | Make a human decision; do not retry. |
 | `64` | Usage error | An invalid command, flag, positional, or value. | Fix the command line. |
 

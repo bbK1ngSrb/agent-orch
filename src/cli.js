@@ -154,10 +154,10 @@ function outcomeForResult(result) {
 // One rule, and it reads off the outcome the same run persists: a run whose
 // outcome is "stopped-at-cap" escalated, everything else reached its goal.
 // `merge-deferred` lands on ESCALATED through outcomeForResult, which is what
-// its own STOPPED_AT_CAP state already says; `pr` and `approved` are success
-// cases and stay OK. Splitting a distinct "one human gesture remains" code out
-// of the success side is deferred to the change that resolves #619.
-function exitForResult(result) {
+// its own STOPPED_AT_CAP state already says. An approved `orch pr` review is
+// successful, but leaves exactly one human gesture: merging the PR.
+function exitForResult(result, command = null) {
+  if (command === "pr" && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
   return outcomeForResult(result) === "stopped-at-cap" ? EXIT_CODES.ESCALATED : EXIT_CODES.OK;
 }
 // Design §6 terminal states: only the outcomes a single implicit cycle can
@@ -1529,7 +1529,7 @@ export function fetchIssueWorkOrder(n, gh) {
 
 // A single invocation can see several outcomes during author fan-out. Keep
 // the most actionable one: ERROR > BLOCKED > ESCALATED > WAIT_TIMEOUT >
-// THROTTLED. Every table code is listed so the `|| 0` fallback cannot make a
+// ACTION_REQUIRED > THROTTLED. Every table code is listed so the `|| 0` fallback cannot make a
 // valid outcome indistinguishable from success — an unlisted code reads as
 // priority 0, the same as "nothing raised yet", so it loses to a fresh exit
 // code of 0 and a real failure reports success.
@@ -1539,6 +1539,7 @@ const EXIT_CODE_PRIORITY = {
   [EXIT_CODES.BLOCKED]: 5,
   [EXIT_CODES.ESCALATED]: 4,
   [EXIT_CODES.WAIT_TIMEOUT]: 3,
+  [EXIT_CODES.ACTION_REQUIRED]: 2,
   [EXIT_CODES.THROTTLED]: 1,
 };
 export function raiseExitCode(code) {
@@ -2550,7 +2551,7 @@ export async function main(argv, deps = {}) {
         if (!dry) {
           const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
           let outcome = outcomeForResult(result);
-          let exit = exitForResult(result);
+          let exit = exitForResult(result, command);
           let state = STATE_FOR_OUTCOME[outcome];
           // "merged" landed on the standing integration→main PR; "pr"
           // (merge: pr mode) and "merge-deferred" (demote) each open a
@@ -2756,6 +2757,10 @@ export async function main(argv, deps = {}) {
           for (const retryResult of cycleResults.slice(1)) results.push(retryResult);
           finalResult = outputResult(cycleResults[cycleResults.length - 1], controller);
           results[results.length - 1] = finalResult;
+          const resultExit = !controller || controller.outcome === "reached"
+            ? exitForResult(finalResult, command) : EXIT_CODES.OK;
+          if ((EXIT_CODE_PRIORITY[resultExit] || 0) > (EXIT_CODE_PRIORITY[exit] || 0)) exit = resultExit;
+          if (resultExit !== EXIT_CODES.OK) raiseExitCode(resultExit);
           if (finalResult.prUrl && !controller?.land) {
             pr = { number: null, url: finalResult.prUrl, kind: finalResult.status === "merged" ? "standing" : "per-cycle" };
           }
@@ -2820,7 +2825,7 @@ export async function main(argv, deps = {}) {
           // `--dry` writes no run record and (design §4) never polls readiness —
           // still emit run.end under --json so the event stream isn't silently
           // truncated after run.start.
-          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result), usage: result.usage || {}, dry: true });
+          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result, command), usage: result.usage || {}, dry: true });
         }
         if (!jsonMode) console.log(summaryLine(finalResult, activeRun.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (finalResult.status === "merged" && run.mode === "task") mergedBranches.push(activeRun.branch);
@@ -2828,11 +2833,12 @@ export async function main(argv, deps = {}) {
         if (run.mode === "review" && activeRun.prTarget) {
           commentOnPr(finalResult, activeRun, deps.githubDeps || githubDeps);
         }
-        if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
-          if (until === "once") raiseExitCode(exitForResult(finalResult));
+        if (finalResult.status === "escalated" || finalResult.status === "merge-deferred"
+            || finalResult.status === "approved" || finalResult.status === "pr") {
+          if (until === "once") raiseExitCode(exitForResult(finalResult, command));
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
-          if (!dry) {
+          if (!dry && (finalResult.status === "escalated" || finalResult.status === "merge-deferred")) {
             commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
           }
         }
@@ -3300,7 +3306,10 @@ export async function main(argv, deps = {}) {
         controller.cycleRoles = cycleRoles;
       }
       const outcome = controller?.outcome || outcomeForResult(result);
-      const exit = controller?.exit ?? exitForResult(result);
+      let exit = controller?.exit ?? exitForResult(result, run.prTarget ? "pr" : command);
+      const resultExit = !controller || controller.outcome === "reached"
+        ? exitForResult(finalResult, run.prTarget ? "pr" : command) : EXIT_CODES.OK;
+      if ((EXIT_CODE_PRIORITY[resultExit] || 0) > (EXIT_CODE_PRIORITY[exit] || 0)) exit = resultExit;
       if (controller) raiseExitCode(exit);
       if (!dry) {
         const resumable = Boolean(controller && (outcome === "stopped-at-cap" || outcome === "wait-timeout"));
@@ -3376,9 +3385,10 @@ export async function main(argv, deps = {}) {
           { git, io, notify },
         );
       }
-      if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
-        if (!controller) raiseExitCode(exitForResult(finalResult));
-        if (!dry) {
+      if (finalResult.status === "escalated" || finalResult.status === "merge-deferred"
+          || finalResult.status === "approved" || finalResult.status === "pr") {
+        if (!controller || resultExit !== EXIT_CODES.OK) raiseExitCode(resultExit);
+        if (!dry && (finalResult.status === "escalated" || finalResult.status === "merge-deferred")) {
           commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
         }
       }
