@@ -6,7 +6,7 @@ Usage: orch <command> [options]
 Set up a repo:
   init                    Write a commented .orch/orch.yml and .orch/ORCH.md.
   config                  Print the effective, validated config.
-  agent add|build <name>  Add an agent to the rotation pool; --build scaffolds
+  agent add <name>        Add an agent to the rotation pool; --build scaffolds
                           its adapter.
 
 Run a cycle:

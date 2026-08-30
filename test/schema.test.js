@@ -553,18 +553,18 @@ test("orch task/issue reject --author(s) without a paired --reviewer(s)", () => 
 // — a build's author/reviewer are either both overridden or both left to
 // rotation, never just one. That rule used to surface only once buildAgent
 // ran, after main()'s update-check/token-mint side effects.
-test("orch agent build rejects a lone --author or --reviewer", () => {
+test("orch agent add --build rejects a lone --author or --reviewer", () => {
   assert.throws(
-    () => validatePositionals("agent", ["build", "newagent"], { author: "claude" }),
+    () => validatePositionals("agent", ["add", "newagent"], { build: true, author: "claude" }),
     (e) => e.exit === 64 && /set both --author\(s\) and --reviewer\(s\), or neither/.test(e.message),
   );
   assert.throws(
-    () => validatePositionals("agent", ["build", "newagent"], { reviewer: "claude" }),
+    () => validatePositionals("agent", ["add", "newagent"], { build: true, reviewer: "claude" }),
     (e) => e.exit === 64 && /set both --author\(s\) and --reviewer\(s\), or neither/.test(e.message),
   );
   assert.doesNotThrow(() =>
-    validatePositionals("agent", ["build", "newagent"], { author: "claude", reviewer: "codex" }));
-  assert.doesNotThrow(() => validatePositionals("agent", ["build", "newagent"], {}));
+    validatePositionals("agent", ["add", "newagent"], { build: true, author: "claude", reviewer: "codex" }));
+  assert.doesNotThrow(() => validatePositionals("agent", ["add", "newagent"], {}));
 });
 
 // `orch task "   "` (whitespace-only) used to pass main()'s `if (!task)`

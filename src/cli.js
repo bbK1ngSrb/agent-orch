@@ -402,8 +402,7 @@ test-gate is the governing review.
                                     in repos that set \`release.autoBump: true\` (default \`false\`)
 - \`orch mcp\`                       serve orch's cycle commands over MCP on stdio, for an AI
                                     client to drive; \`orch_pr\` merge needs automation.mcpMayMerge
-- \`orch agent add <name>\`          add an agent to the rotation pool
-- \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
+- \`orch agent add <name> [--build]\` add an agent to the rotation pool, or scaffold a missing adapter
 - \`orch dashboard [--json] [--limit <n>] [--check-history]\`
                                     live cycle status, log tail, run history, metrics
                                     (\`--limit\` caps history rows; \`--check-history\`
@@ -1847,7 +1846,7 @@ export function formatPriorStagedBranches(closes, entries) {
   return out.join("\n");
 }
 
-// `orch agent build <name>` self-bootstraps a missing adapter: a work order
+// `orch agent add <name> --build` self-bootstraps a missing adapter: a work order
 // describing the gap is fed through orch's own author→audit→test pipeline,
 // following the src/adapters/claude.js / codex.js pattern.
 function buildAdapterWorkOrder(name) {
@@ -1878,7 +1877,7 @@ function reportAgentBuildResult(name, result, { withReason = false } = {}) {
   const detail = withReason
     ? ` (${result.reason}) on ${result.branch}`
     : result.branch ? ` on ${result.branch}` : "";
-  console.log(`orch agent build ${name}: ${result.status}${detail}${costSuffix(result)}`);
+  console.log(`orch agent add ${name} --build: ${result.status}${detail}${costSuffix(result)}`);
   if (result.status === "approved") {
     console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
   }
@@ -2161,17 +2160,6 @@ export async function main(argv, deps = {}) {
   }
 
   if (command === "agent") {
-    // validatePositionals (schema.js) already guarantees rest[0] is "add" or
-    // "build" and rest[1] (the name) is present before main() gets here.
-    if (rest[0] === "build") {
-      const name = rest[1];
-      const buildFn = deps.buildAgent || buildAgent;
-      const result = await buildFn(name, { repo, orchDir, flags, deps });
-      if (result.status === "already-registered") { console.log(`orch: ${name} already registered`); return; }
-      reportAgentBuildResult(name, result, { withReason: true });
-      return;
-    }
-
     // `orch agent add <name>` appends a known agent to the `agents:` rotation
     // pool in orch.yml, preserving the file's comments. "Known" means orch's
     // adapter code has it (adapters.get succeeds) — that is a different
@@ -2179,7 +2167,7 @@ export async function main(argv, deps = {}) {
     // `agents.includes(name)` check below answers. An unregistered name (no
     // adapter code yet) offers to build it — non-interactively via --build,
     // otherwise via the confirm prompt — and building stops there, exactly
-    // like `agent build`: it scaffolds the adapter, it does not also add it
+    // like `agent add --build`: it scaffolds the adapter, it does not also add it
     // (the printed tip says to re-run `agent add` once it's merged). Once the
     // adapter code exists, --build has nothing left to do, so it falls
     // straight through to the add — it must not be read as "build instead of

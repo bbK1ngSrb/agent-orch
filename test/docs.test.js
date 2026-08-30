@@ -744,7 +744,7 @@ test("the landing page tracks recently shipped surfaces (#403/#335)", () => {
   assert.match(landing, /orch issue &lt;n&gt;/);
   assert.match(landing, /orch continue &lt;sid&gt;/);
   // The section shows a curated subset — printUsage (src/cli.js) dispatches
-  // `config`, `agent add/build`, `completion`, `upgrade`, `version` and `help`
+  // `config`, `agent add`, `completion`, `upgrade`, `version` and `help`
   // on top of these — so neither the eyebrow nor the heading may bill it as the
   // whole surface. A heading that states a count ("Eight commands") is a
   // factual claim about the CLI, and it was wrong; the section must instead

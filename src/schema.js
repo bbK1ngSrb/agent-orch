@@ -63,17 +63,10 @@ const RUN_FLAGS = [
   "allow-large-scope", "author", "authors", "reviewer", "reviewers",
 ];
 
-// `agent add` and `agent build` are one COMMANDS entry (one positional shape,
-// one help block) but NOT one flag set: --build on `agent build` is redundant
-// (the subcommand already says so), and --pr/author/reviewer overrides only
-// mean something when a build actually happens, which a plain `agent add`
-// never does. This is the declaration `validateAgentArgs` and the completion
-// renderer both read; `COMMANDS.agent.flags` is their union so a flag legal on
-// either subcommand still validates on the bare command name (needed by the
-// generic per-command matrix test, which has no subcommand to key off).
+// `agent add --build` uses one command entry and one positional shape. The
+// build-only flags are accepted only when that switch is present.
 export const SUBCOMMAND_FLAGS = {
-  "agent add": ["config-file", "dry", "build"],
-  "agent build": ["config-file", "dry", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
+  "agent add": ["config-file", "dry", "build", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
 };
 
 // Commands. `flags` is what the command actually reads — anything else typed
@@ -92,7 +85,7 @@ export const COMMANDS = {
     mutates: true, flags: ["config-file", "dry", "check", "json"],
   },
   agent: {
-    mutates: true, flags: [...new Set([...SUBCOMMAND_FLAGS["agent add"], ...SUBCOMMAND_FLAGS["agent build"]])],
+    mutates: true, flags: [...SUBCOMMAND_FLAGS["agent add"]],
   },
   task: {
     mutates: true, flags: [...RUN_FLAGS, "from", "file", "cheap", "allow-protected", "json"],
@@ -165,16 +158,10 @@ const INTERNAL_COMMANDS = { "__update-check-child": { mutates: false, flags: [] 
 
 // Subcommand words, for completion. Derived nowhere else: these are positional
 // literals, not flags.
-export const SUBCOMMANDS = { agent: ["add", "build"], completion: ["bash", "install"] };
+export const SUBCOMMANDS = { agent: ["add"], completion: ["bash", "install"] };
 
-// Build-only flags: legal on `agent build` (SUBCOMMAND_FLAGS above) but not on
-// `agent add`. They mean something on `add` only while `--build` is about to
-// scaffold a genuinely unregistered adapter; a name orch already has code for
-// never builds regardless of `--build` (see cli.js), so they are always inert
-// there too.
-const AGENT_BUILD_ONLY_FLAGS = SUBCOMMAND_FLAGS["agent build"].filter(
-  (f) => !SUBCOMMAND_FLAGS["agent add"].includes(f),
-);
+// These flags only make sense when `agent add` is also given `--build`.
+const AGENT_BUILD_FLAGS = ["pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"];
 
 export const EXAMPLES = [
   "orch init --link",
@@ -266,12 +253,12 @@ export const HELP_PAGES = {
   },
   agent: {
     title: "orch agent add — add an agent to the rotation pool.",
-    synopsis: ["orch agent add <name> [options]", "orch agent build <name> [options]"],
+    synopsis: ["orch agent add <name> [options]"],
     about: [
       "Appends <name> to the `agents:` list in .orch/orch.yml, which is the pool the author and reviewer seats rotate through. If orch has no adapter for <name>, `add` alone changes nothing but the config; pass --build to scaffold the adapter through a normal cycle — orch writes its own integration code with the same author, cross-audit and test-gate path any other change goes through. A name orch already has an adapter for never builds, with or without --build.",
       "A build never merges. An agreed and green adapter stays on its branch for a human to read and land, because code orch wrote that orch will then run as an agent gets a human checkpoint. With --pr that branch is opened as a pull request instead of left bare; it is still yours to merge.",
     ],
-    args: "Arguments: exactly one <name>, after the add or build subcommand word.",
+    args: "Arguments: exactly one <name>, after the add subcommand word.",
     exits: AGENT_EXITS,
     examples: ["orch agent add codex", "orch agent add mynewagent --build --author \"claude\" --reviewer \"codex\""],
     flagOrder: ["build", "config-file", "dry"],
@@ -779,62 +766,30 @@ export function validatePositionals(command, rest, flags) {
   }
 }
 
-// `agent add` and `agent build` share a positional shape (<name>) but not a
-// flag set (SUBCOMMAND_FLAGS above): --build on `agent build` is redundant
-// (the subcommand already says so), and the flags that only matter for
-// building an adapter (--pr and the author/reviewer overrides — everything
-// "agent build" reads that "agent add" doesn't) are meaningless on a plain
-// `agent add` that never builds anything — accepting them there would
-// silently ignore them, the exact defect this schema exists to remove.
 function validateAgentArgs(rest, flags) {
   const [sub, name, ...extra] = rest;
   if (sub === undefined || !SUBCOMMANDS.agent.includes(sub)) {
-    throw usageError("usage: orch agent add <name> | orch agent build <name> [--pr]");
+    throw usageError("usage: orch agent add <name> [--build]");
   }
   if (!name) {
-    throw usageError(sub === "build" ? "usage: orch agent build <name> [--pr]" : "usage: orch agent add <name> | orch agent build <name> [--pr]");
+    throw usageError("usage: orch agent add <name> [--build]");
   }
   if (extra.length) {
     throw usageError(`'orch agent ${sub}' takes a single <name> argument — got ${extra.length} extra: ${extra.join(" ")}`);
   }
-  if (sub === "build" && flags.build) {
-    throw usageError("--build is not valid with 'orch agent build' — building is what the subcommand already does");
-  }
-  if (sub === "build") {
-    // A name orch already has adapter code for never builds (cli.js's
-    // buildAgent returns "already-registered" before it reads any flag) — so
-    // --pr/the role overrides/--allow-large-scope are inert there, same as on
-    // `agent add`. Plain `orch agent build <known>` (no build-only flags)
-    // stays legal; it just reports "already registered".
-    let known = true;
-    try { getAdapter(name); } catch { known = false; }
-    if (known) {
-      for (const flagName of AGENT_BUILD_ONLY_FLAGS) {
-        if (flags[flagName] !== undefined && flags[flagName] !== false) {
-          throw usageError(`--${flagName} is not valid with 'orch agent build ${name}' — ${name} already has an adapter, so no build runs`);
-        }
-      }
-    }
-  }
-  if (sub === "add") {
-    // A name orch already has adapter code for never builds, `--build` or not
-    // (see cli.js's agent-add handler) — so the build-only flags are invalid
-    // there unconditionally. A genuinely unregistered name only makes them
-    // legal once `--build` is present. Checking this here, before
-    // validatePositionals returns to main(), is what stops `agent add
-    // <known> --build --pr` from minting a GitHub App token and firing the
-    // update-check network call before being refused.
-    let known = true;
-    try { getAdapter(name); } catch { known = false; }
-    if (known || !flags.build) {
-      for (const flagName of AGENT_BUILD_ONLY_FLAGS) {
-        if (flags[flagName] !== undefined && flags[flagName] !== false) {
-          throw usageError(
-            known
-              ? `--${flagName} is not valid with 'orch agent add ${name}' — ${name} already has an adapter, so no build runs (use 'orch agent build ${name} --pr' to rebuild it)`
-              : `--${flagName} is not valid with 'orch agent add' without --build — it only affects the build`,
-          );
-        }
+  // A name orch already has adapter code for never builds, `--build` or not
+  // (see cli.js's agent-add handler). Build-only flags are legal only for an
+  // unregistered name when --build is present.
+  let known = true;
+  try { getAdapter(name); } catch { known = false; }
+  if (known || !flags.build) {
+    for (const flagName of AGENT_BUILD_FLAGS) {
+      if (flags[flagName] !== undefined && flags[flagName] !== false) {
+        throw usageError(
+          known
+            ? `--${flagName} is not valid with 'orch agent add ${name}' — ${name} already has an adapter, so no build runs`
+            : `--${flagName} is not valid with 'orch agent add' without --build — it only affects the build`,
+        );
       }
     }
   }
@@ -857,7 +812,7 @@ function pad(label, width = 24) {
 const GLOBAL_ROWS = {
   init: ["init", "Write a commented .orch/orch.yml and .orch/ORCH.md."],
   config: ["config", "Print the effective, validated config."],
-  agent: ["agent add|build <name>", "Add an agent to the rotation pool; --build scaffolds its adapter."],
+  agent: ["agent add <name>", "Add an agent to the rotation pool; --build scaffolds its adapter."],
   task: ["task \"change\"", "Author, cross-audit, test-gate and land one change."],
   issue: ["issue <number>", "The same, from a GitHub issue; closes it on landing."],
   review: ["review <branch>", "Audit an existing branch; --until ready opts into landing."],
@@ -994,14 +949,14 @@ export function renderHelp(command = null) {
   const page = HELP_PAGES[command];
   if (!page) throw new Error(`unknown help page: ${command}`);
   const allFlags = orderedFlags(command, page);
-  const groupFlags = command === "agent" ? new Set(AGENT_BUILD_ONLY_FLAGS) : new Set();
+  const groupFlags = command === "agent" ? new Set(AGENT_BUILD_FLAGS) : new Set();
   const mainFlags = allFlags.filter((name) => !groupFlags.has(name));
   const options = mainFlags.length ? ["Options:", ...flagRows(mainFlags, page)] : ["Options: none."];
   if (page.flagGroups) {
     for (const [heading, preferred] of page.flagGroups) {
       const names = [
         ...preferred.filter((name) => groupFlags.has(name)),
-        ...AGENT_BUILD_ONLY_FLAGS.filter((name) => !preferred.includes(name)),
+        ...AGENT_BUILD_FLAGS.filter((name) => !preferred.includes(name)),
       ];
       if (names.length) options.push("", heading, ...flagRows(names, page));
     }

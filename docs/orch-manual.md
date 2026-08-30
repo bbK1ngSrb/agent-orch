@@ -20,7 +20,7 @@ identically on all three, so nothing in this manual is Linux/macOS-specific.
 
 ### 1.1 What a "cycle" is
 
-Every `orch task`, `orch issue`, `orch review`, or `orch agent build` run is a
+Every `orch task`, `orch issue`, `orch review`, or `orch agent add --build` run is a
 **cycle**:
 
 1. **Author** — one agent writes a change on its own branch, in its own git
@@ -411,14 +411,15 @@ silently didn't take), `orch` refuses to report success and raises an error
 instead — the same "don't claim a merge that didn't happen" discipline
 described under Merge honesty in the README.
 
-### 2.8 `orch agent build <name> [--pr]`
+### 2.8 `orch agent add <name> [--build]`
 
-Scaffolds a missing adapter (`src/adapters/<name>.js`) through orch's *own*
-author → audit → test pipeline, in its own isolated worktree/branch.
+Registers an adapter in `.orch/orch.yml`. With `--build`, a missing adapter
+(`src/adapters/<name>.js`) is scaffolded through orch's *own* author → audit →
+test pipeline, in its own isolated worktree/branch.
 
 ```bash
-orch agent build mynewagent          # lands on a local branch only
-orch agent build mynewagent --pr     # opens a PR instead
+orch agent add mynewagent            # register an existing adapter
+orch agent add mynewagent --build    # scaffold it; merge: pr opens a PR
 ```
 
 **When to use it:** adding support for a new CLI coding agent that isn't
@@ -498,7 +499,8 @@ still parses and still works — YAML treats both forms the same — but any rep
 scaffolded since the block-sequence rewrite gets the multi-line form; `add`
 doesn't rewrite an existing inline array into block style, it just appends in
 whichever form is already there. For an agent orch doesn't know at all, use
-`orch agent build <name>` (§2.8) instead — `add` registers, `build` creates.
+`orch agent add <name> --build` (§2.8) instead — `add` registers, while
+`--build` creates.
 
 Given an unknown name, `add` offers to build it and waits for a `y`. That
 prompt is a dead end for anything headless (a poller, CI, another agent), so
