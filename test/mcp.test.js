@@ -91,7 +91,7 @@ test("unknown methods and removed tools are protocol errors", async () => {
 
 test("orch_pr fixes its target and gates merged mode by repository config", async () => {
   const tool = TOOLS.find((candidate) => candidate.name === "orch_pr");
-  assert.deepEqual(tool.argv({ number: 7 }), ["pr", "7", "--until", "once"]);
+  assert.deepEqual(tool.argv({ number: 7 }), ["pr", "7", "--until", "ready"]);
   assert.deepEqual(tool.argv({ number: 7, until: "once" }), ["pr", "7", "--until", "once"]);
   assert.deepEqual(tool.argv({ branch: "feature/x", until: "ready" }), ["pr", "feature/x", "--until", "ready"]);
   assert.throws(() => tool.argv({ number: 7, branch: "feature/x" }), /exactly one/);
@@ -111,6 +111,16 @@ test("orch_pr fixes its target and gates merged mode by repository config", asyn
   assert.deepEqual(allowedSpawn.calls[0].argv, [ORCH_BIN, "pr", "7", "--until", "merged"]);
 });
 
+test("new MCP cycle tools default to ready and continue sends no goal override", () => {
+  const task = TOOLS.find((candidate) => candidate.name === "orch_task");
+  const issue = TOOLS.find((candidate) => candidate.name === "orch_issue");
+  const continueTool = TOOLS.find((candidate) => candidate.name === "orch_continue");
+  assert.deepEqual(task.argv({ task: "x" }), ["task", "--until", "ready", "--", "x"]);
+  assert.deepEqual(issue.argv({ number: 1 }), ["issue", "1", "--until", "ready"]);
+  assert.deepEqual(continueTool.argv({ sid: "resume-1" }), ["continue", "resume-1"]);
+  assert.equal(continueTool.inputSchema.properties.until, undefined);
+});
+
 test("free text cannot smuggle flags into the child's argv", async () => {
   const spawnFn = fakeSpawn();
   const res = await handle(call(6, "orch_task", { task: "--allow-protected" }), { repo: "/tmp", spawnFn });
@@ -122,7 +132,7 @@ test("free text cannot smuggle flags into the child's argv", async () => {
   // the child's parser reads it as a positional.
   const ok = fakeSpawn();
   await handle(call(7, "orch_task", { task: "fix the --dry flag" }), { repo: "/tmp", spawnFn: ok });
-  assert.deepEqual(ok.calls[0].argv, [ORCH_BIN, "task", "--", "fix the --dry flag"]);
+  assert.deepEqual(ok.calls[0].argv, [ORCH_BIN, "task", "--until", "ready", "--", "fix the --dry flag"]);
   assert.equal(ok.calls[0].opts.shell, false);
   assert.equal(ok.calls[0].bin, process.execPath);
 });
@@ -147,7 +157,7 @@ test("argument validation rejects bad branches, sids and issue numbers", async (
   // A string issue number is accepted and normalized — models emit both.
   const ok = fakeSpawn();
   await handle(call(9, "orch_issue", { number: "42" }), { repo: "/tmp", spawnFn: ok });
-  assert.deepEqual(ok.calls[0].argv, [ORCH_BIN, "issue", "42"]);
+  assert.deepEqual(ok.calls[0].argv, [ORCH_BIN, "issue", "42", "--until", "ready"]);
 });
 
 test("orch_status returns the dashboard's parsed JSON", async () => {

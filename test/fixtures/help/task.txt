@@ -18,7 +18,7 @@ Options:
                           ready = loop until the pull request for this change
                                   is green and mergeable; never merge it.
                           merged = also merge the standing PR.
-                          (default: once)
+                          (default: ready)
   --from <ref>            Start a fresh cycle from <ref>; it starts at round 1,
                           and previous cycle rounds do not count.
   --author <spec>         Author seat as "<agent> [model] [effort]".

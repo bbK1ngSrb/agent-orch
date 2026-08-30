@@ -7,6 +7,7 @@
 - **BREAKING (config):** `merge`, `reviseCap`, `main.autoMerge`, `main.conflictResolution`/`main.autoResolveConflicts`, `main.conflictResolutionResolvers`, `main.autoResolveConflictPaths`, and `github.autoMergePr` in `.orch/orch.yml` are now hard errors instead of warnings; rename to `landing`, `roundCap`, or the `automation.*` equivalent.
 - **BREAKING (cli):** remove `--merge` (use `--until merged` on `orch pr`), `--pr` (an `orch agent add --build` result always stays local-only now; open a PR by hand if you want one), and the `orch update` alias (use `orch upgrade`).
 - **BREAKING (cli):** remove the startup run banner and the `--no-banner` flag.
+- **BREAKING (cli):** bare `task`, `issue`, and `pr` runs now pursue `--until ready`; use `--until once` for one pass. `continue` inherits the recorded goal and refuses explicit `ready`/`merged` overrides; only `--until once` is accepted.
 
 ## v0.4.372 — 2026-08-30
 - fix: persist post-merge tidy outcomes (closes [#622](https://github.com/bbk1ng/agent-orch/issues/622))

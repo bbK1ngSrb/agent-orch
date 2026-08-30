@@ -32,6 +32,7 @@ const BLOCKED_REASON = {
   HUMAN_ABANDON: "human-abandon",
   REMOTE_AUTH: "auth",
   REMOTE_MERGE_REJECTED: "merge-rejected",
+  REMOTE_UNKNOWN: "remote-unknown",
 };
 
 const MAX_HEAD_REPINS = 3;
@@ -166,15 +167,22 @@ export async function runUntil(policy, record = {}, deps) {
 
     let land = deps.resolveLanded(cycle);
     if (repinnedHead && land.landing === "standing") land = { ...land, expectedHead: repinnedHead };
-    if (land.landing === "base") {
+    if (land.landing === "base" || land.remoteGate === false) {
       return withRecord({
-        state: policy.until === "merged" ? "MERGED" : "READY", outcome: "reached", exit: EXIT_CODES.OK,
+        // With no origin there is no readiness/merge gate to satisfy. A local
+        // landing is READY even when the requested goal was `merged`.
+        state: land.remoteGate === false ? "READY" : (policy.until === "merged" ? "MERGED" : "READY"),
+        outcome: "reached", exit: EXIT_CODES.OK,
         headSha: land.expectedHead, cycle, land,
       }, currentRecord, cycleResults);
     }
     if (!land.pr?.number) {
       // The land landed locally but orch could not find/open its PR.
-      const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "no PR found for the landed branch") };
+      const failure = {
+        class: "REMOTE_UNKNOWN",
+        summary: "could not resolve a PR for the landed branch",
+        fingerprint: computeFingerprint("REMOTE_UNKNOWN", "no PR found for the landed branch"),
+      };
       const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
       if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
       currentRecord = outcome.record;

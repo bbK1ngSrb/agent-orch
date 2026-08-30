@@ -69,7 +69,7 @@ function requireIssueNumber(value) {
 }
 
 function requireUntil(value) {
-  const until = value == null ? "once" : value;
+  const until = value == null ? "ready" : value;
   if (!["once", "ready", "merged"].includes(until)) throw new Error("until must be one of: once, ready, merged");
   return until;
 }
@@ -117,7 +117,7 @@ export const TOOLS = [
     description:
       "Run a full cycle (author, cross-audit, test gate) from a task description. On agreement the branch lands on the repo's configured integration branch.",
     inputSchema: { type: "object", properties: { task: TEXT_ARG }, required: ["task"], additionalProperties: false },
-    argv: (a) => ["task", "--", requireText(a.task, "task")],
+    argv: (a) => ["task", "--until", "ready", "--", requireText(a.task, "task")],
   },
   {
     name: "orch_issue",
@@ -128,7 +128,7 @@ export const TOOLS = [
       required: ["number"],
       additionalProperties: false,
     },
-    argv: (a) => ["issue", requireIssueNumber(a.number)],
+    argv: (a) => ["issue", requireIssueNumber(a.number), "--until", "ready"],
   },
   {
     name: "orch_pr",
@@ -138,7 +138,7 @@ export const TOOLS = [
       properties: {
         number: { type: "integer", description: "GitHub PR number." },
         branch: { type: "string", description: "Local or origin branch name." },
-        until: { type: "string", enum: ["once", "ready", "merged"], default: "once" },
+        until: { type: "string", enum: ["once", "ready", "merged"], default: "ready" },
       },
       additionalProperties: false,
       oneOf: [{ required: ["number"] }, { required: ["branch"] }],

@@ -74,7 +74,7 @@ function e2eCycleDeps() {
   };
 }
 
-async function runMainInRepo(repo, argv, deps = {}) {
+async function runMainInRepo(repo, argv, deps = {}, { injectUntilOnce = true } = {}) {
   const prev = cwd();
   const savedExitCode = process.exitCode;
   const logs = [];
@@ -83,7 +83,12 @@ async function runMainInRepo(repo, argv, deps = {}) {
   console.log = (...args) => logs.push(args.map(String).join(" "));
   try {
     process.exitCode = 0;
-    await main(argv, { preflight() {}, cycleDeps: e2eCycleDeps(), ...deps });
+    const command = argv[0];
+    // Existing e2e cases assert one-pass behavior. Keep that explicit while
+    // allowing dedicated tests to exercise the bare v0.5 ready default.
+    const testArgv = injectUntilOnce && ["task", "issue", "pr"].includes(command) && !argv.includes("--until")
+      ? [...argv, "--until", "once"] : argv;
+    await main(testArgv, { preflight() {}, cycleDeps: e2eCycleDeps(), ...deps });
     return logs;
   } finally {
     console.log = origLog;
