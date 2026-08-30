@@ -3143,7 +3143,8 @@ test("agent build --pr routes the cycle through merge: pr instead of a local-onl
     const logs = await runMainInRepo(d, ["agent", "build", "widget", "--pr"], deps);
     assert.equal(seenMerge, "pr");
     assert.match(logs.join("\n"), /agent build widget: pr /);
-    assert.equal(process.exitCode, EXIT_CODES.ESCALATED);
+    // Opening the PR is this command's success case, not a stopped-at-cap run.
+    assert.equal(process.exitCode, EXIT_CODES.OK);
   } finally {
     process.exitCode = savedExitCode;
   }

@@ -1237,7 +1237,7 @@ in this design (owner may overrule per slice):
 | A2 | Attempts are consumed by new agent work **and by each expired CI/readiness wait**; `ask` consumes none | keeps the loop's termination bound `(maxAttempts+1) × ciWaitMinutes` true; owner's "remedy rounds" reading kept for agent work |
 | A3 | `orch: merge` is not a reply command | never widen authority from chat |
 | A4 | Reply authorization = GitHub collaborator permission, no config name list | trust anchor stays in GitHub |
-| A5 | `merged` on `REMOTE_REVIEW_REQUIRED` asks and waits (exit 4 on timeout) rather than exiting 3 immediately | unattended runs benefit from a human approving during the window |
+| A5 | `merged` on `REMOTE_REVIEW_REQUIRED` asks and waits (exit 4 on timeout) rather than exiting 6 immediately | unattended runs benefit from a human approving during the window |
 | A6 | Integration conflict/red-CI repair: gate + security always; reviewer round unless confined to `conflictAutoPaths` | keeps "nothing lands unaudited"; generated files stay fast |
 | A7 | Standing-PR phase serialised by new `standing-pr.lock` | reuse `lock.js`; avoids two runs double-merging |
 | A8 | `landing: pr` kept as explicit opt-out; per-cycle PR is then the target | minimise churn; flagged as open Q1 |
