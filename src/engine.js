@@ -39,8 +39,8 @@ export async function runCycle(opts, deps) {
   // (missing, level, diverged) falls back to baseBranch, i.e. today's behavior.
   // cfg.baseBranch stays the PR target and the trunk — this only moves the
   // branch point and the diff comparisons.
-  const fromSource = from ? resolveFromBranch(git, repo, baseBranch, from) : null;
   const cycleBase = resolveCycleBase(git, repo, baseBranch, cfg.integrationBranch);
+  const fromSource = from ? resolveFromBranch(git, repo, cycleBase, from) : null;
   const branchBase = fromSource?.ref || cycleBase;
   // Role specs carry optional model/effort. Fall back to bare names so callers
   // that pass only authorName/reviewerNames (e.g. the PR bridge) keep working.
