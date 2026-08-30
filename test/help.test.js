@@ -122,7 +122,7 @@ test("an example carrying shell redirection is refused, not silently accepted", 
 // and no page (there is nothing to show), and above all no crash.
 test("a usage error on an internal command exits 64 without crashing the error funnel", () => {
   for (const [argv, expected] of [
-    [["__update-check-child", "--merge"], /--merge is not valid with 'orch __update-check-child'/],
+    [["__update-check-child", "--link"], /--link is not valid with 'orch __update-check-child'/],
     [["__update-check-child", "--dry"], /--dry has no effect on 'orch __update-check-child'/],
   ]) {
     const result = spawnSync(process.execPath, ["bin/orch.js", ...argv], { cwd: root, encoding: "utf8" });

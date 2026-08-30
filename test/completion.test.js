@@ -72,7 +72,7 @@ test("agent add completion exposes the complete conditional flag set", BASH_SKIP
   for (const name of [...GLOBAL_FLAGS, "config-file", "dry", "build"]) {
     assert.ok(offered.has(`--${name}`), `orch agent add completion missing --${name}`);
   }
-  for (const name of ["pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"]) {
+  for (const name of ["allow-large-scope", "author", "authors", "reviewer", "reviewers"]) {
     assert.ok(!offered.has(`--${name}`), `orch agent add should not offer --${name} without --build`);
   }
 });
@@ -158,7 +158,7 @@ test("completion finds the command word even when a flag precedes it", BASH_SKIP
   // parseArgs (and so orch itself) accepts options before positionals; the
   // completion script used to assume COMP_WORDS[1] was always the command.
   const offered = new Set(complete(["orch", "--dry", "pr", ""], 3));
-  assert.ok(offered.has("--merge"), "flag-before-command should still resolve to pr's flags");
+  assert.ok(offered.has("--until"), "flag-before-command should still resolve to pr's flags");
   assert.ok(!offered.has("--file"), "flag-before-command should not fall back to the global flag union");
 });
 
@@ -178,23 +178,23 @@ test("completion offers nothing after a bare --", BASH_SKIP, () => {
 });
 
 // A flag already typed but illegal for the command/subcommand it precedes —
-// "--merge" isn't legal on `dashboard`, and "--pr" isn't legal on a plain
-// `agent add` — these flags must not be skipped as though they might be legal
-// for whatever command follows.
+// "--detach" isn't legal on `dashboard`, and "--allow-large-scope" isn't
+// legal on a plain `agent add` (it's build-only) — these flags must not be
+// skipped as though they might be legal for whatever command follows.
 test("completion offers nothing once an already-typed flag is illegal for the resolved command", BASH_SKIP, () => {
-  assert.deepEqual(complete(["orch", "--merge", "dashboard", ""], 3), []);
-  assert.deepEqual(complete(["orch", "agent", "--pr", "add", ""], 4), []);
+  assert.deepEqual(complete(["orch", "--detach", "dashboard", ""], 3), []);
+  assert.deepEqual(complete(["orch", "agent", "--allow-large-scope", "add", ""], 4), []);
 });
 
 // "install" and "--build" are legal anywhere after the command word, not
 // just in the one literal position each of these used to check — completion
-// used to under-offer --dry / --pr when the flag or the subcommand word
-// appeared in the other order.
+// used to under-offer --dry / --allow-large-scope when the flag or the
+// subcommand word appeared in the other order.
 test("completion finds 'install' and '--build' regardless of where they sit in the arguments", BASH_SKIP, () => {
   const dry = new Set(complete(["orch", "completion", "--dry", "install", ""], 4));
   assert.ok(dry.has("--dry"), "orch completion --dry install should still offer --dry");
-  const pr = new Set(complete(["orch", "agent", "--build", "add", "--pr", ""], 5));
-  assert.ok(pr.has("--pr"), "orch agent --build add --pr should offer --pr");
+  const scope = new Set(complete(["orch", "agent", "--build", "add", "--allow-large-scope", ""], 5));
+  assert.ok(scope.has("--allow-large-scope"), "orch agent --build add --allow-large-scope should offer --allow-large-scope");
 });
 
 async function usage(argv = ["help"]) {
@@ -268,13 +268,13 @@ test("orch completion --dry offers install/bash and keeps --dry legal before the
 });
 
 // A command-specific flag typed BEFORE the command word used to leave every
-// command on offer, even ones the parser refuses it on: `orch --merge <TAB>`
-// offered `dashboard`, `init`, etc., though `--merge` (schema.js) is only
-// legal on `pr` — completion never narrowed the command list by an
-// already-typed flag's actual owners.
+// command on offer, even ones the parser refuses it on: `orch --check-history
+// <TAB>` offered `dashboard`, `init`, etc., though `--check-history`
+// (schema.js) is only legal on `dashboard` — completion never narrowed the
+// command list by an already-typed flag's actual owners.
 test("a command-specific flag typed before the command word narrows the offered commands", BASH_SKIP, () => {
-  const merge = complete(["orch", "--merge", ""], 2).filter((w) => !w.startsWith("-"));
-  assert.deepEqual(merge, ["pr"]);
+  const checkHistory = complete(["orch", "--check-history", ""], 2).filter((w) => !w.startsWith("-"));
+  assert.deepEqual(checkHistory, ["dashboard"]);
   const build = complete(["orch", "--build", ""], 2).filter((w) => !w.startsWith("-"));
   assert.deepEqual(build, ["agent"]);
   // A flag legal on nearly every command (--dry) must not over-narrow.

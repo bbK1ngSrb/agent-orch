@@ -402,7 +402,7 @@ test-gate is the governing review.
 - \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
 - \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\`
 - \`orch continue <sid>\`            resume an interrupted/stalled cycle from its checkpoint
-- \`orch pr <number|branch> [--merge|--until once|ready|merged]\` review (and optionally merge) a PR
+- \`orch pr <number|branch> [--until once|ready|merged]\` review (and optionally merge) a PR
 - \`orch release "<entry>"\`         run the version bump + CHANGELOG write by hand; only needed
                                     in repos that set \`release.autoBump: true\` (default \`false\`)
 - \`orch mcp\`                       serve orch's cycle commands over MCP on stdio, for an AI
@@ -424,7 +424,7 @@ Config and every option live in \`.orch/orch.yml\`.
 The MCP \`orch_pr\` tool accepts a PR number or branch and \`once\`, \`ready\`, or
 \`merged\`. The \`merged\` mode is refused unless \`automation.mcpMayMerge: true\`
 is explicitly enabled in this repo; when enabled, it uses the same head-bound,
-CI-checked merge path as \`orch pr --merge\`.
+CI-checked merge path as \`orch pr --until merged\`.
 
 A \`task\`/\`issue\` whose work order text names a protected path (orch's own
 guardrail denylist in \`src/intake/allowlist.js\`) is refused at intake, before any
@@ -1894,10 +1894,8 @@ function reportAgentBuildResult(name, result, { withReason = false } = {}) {
 
 // Runs the build as a normal task-mode cycle, isolated in its own worktree/branch
 // (the same mechanism every `orch task` uses) since orch would be modifying its
-// own source while running. Default: `noMerge` — the result sits on its local
-// branch only (no PR, main untouched) so it can be reviewed before it's trusted.
-// `--pr` instead forces `cfg.merge: "pr"` for this run only (never persisted to
-// orch.yml), so an AGREE+green result opens a PR through the full gate instead.
+// own source while running. The result always sits on its local branch only
+// (no PR, main untouched) so it can be reviewed before it's trusted.
 export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} }) {
   try { adapters.get(name); return { status: "already-registered" }; } catch { /* proceed to build */ }
   const resolved = (deps.resolveAgentBin || resolveAgentBin)(name);
@@ -1906,8 +1904,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   const wo = buildAdapterWorkOrder(name);
   const task = wo.title;
   const authorPrompt = buildAuthorPrompt(wo);
-  let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags);
-  if (flags.pr) cfg = withConfigUpdate(cfg, { merge: "pr" });
+  const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags);
   const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
   const preflightFn = deps.preflight || preflight;
   if (!dry) preflightFn(cfg, orchDir);
@@ -1942,7 +1939,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     mode: "task", task, authorPrompt, workOrder: wo, allowLargeScope: Boolean(flags["allow-large-scope"]),
     branch, sid, resume: isResume, authorName, author: authorSpec,
     reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
-    reviewers: reviewerList, noMerge: !flags.pr, excludedAgents: exclusions,
+    reviewers: reviewerList, noMerge: true, excludedAgents: exclusions,
     cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
   };
 
@@ -2060,7 +2057,7 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "upgrade" || command === "update") {
+  if (command === "upgrade") {
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     await runUpgrade({ flags: { ...flags, dry }, stdout: deps.stdout || process.stdout, ...deps.upgradeDeps });
     return;
@@ -2187,7 +2184,7 @@ export async function main(argv, deps = {}) {
       return;
     }
     // Known adapter: there is nothing left to build. validatePositionals
-    // (schema.js) already refused --pr/the role overrides before main() got
+    // (schema.js) already refused the role overrides before main() got
     // here — they only mean something for a build cycle this path never
     // runs. --build itself stays legal (it just means "skip the confirm
     // prompt", which a known adapter never reaches anyway).
@@ -2229,7 +2226,7 @@ export async function main(argv, deps = {}) {
     // design §4/§6 (P5): the run controller only drives ready/merged — `once`
     // (the default) is today's single implicit cycle, byte-for-byte unchanged
     // below. schema.js already refuses --json without --until ready|merged.
-    const until = flags.until || (command === "pr" && flags.merge ? "merged" : "once");
+    const until = flags.until || "once";
     const jsonMode = Boolean(flags.json);
     const emit = (event) => { if (jsonMode) console.log(JSON.stringify(event)); };
     if (command === "pr" && dry) {

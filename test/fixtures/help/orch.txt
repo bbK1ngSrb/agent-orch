@@ -23,7 +23,7 @@ Operate:
 
 Maintain:
   release "entry"         Bump version + CHANGELOG by hand (autoBump repos).
-  upgrade, update         Self-update the global npm install.
+  upgrade                 Self-update the global npm install.
   completion              Print or install the bash completion script.
   version                 Print the version.
   help [command]          This page, or one command's page.

@@ -4,8 +4,7 @@ Usage: orch upgrade [options]
 
 Compares the running version against the published one and reinstalls the
 global package when it is behind. --check only reports the comparison and
-installs nothing, which is what a scripted or scheduled caller wants. `orch
-update` is a second spelling of this command.
+installs nothing, which is what a scripted or scheduled caller wants.
 
 Options:
   --check                 Report the latest version; install nothing.
