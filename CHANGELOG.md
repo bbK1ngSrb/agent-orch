@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.368 — 2026-08-30
+- fix(cli): make review audit-only by default
+
 ## v0.4.367 — 2026-08-30
 - fix(review): use resolved comparison base (closes [#604](https://github.com/bbk1ng/agent-orch/issues/604))
 
