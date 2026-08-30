@@ -676,7 +676,8 @@ pass `--allow-protected` when the mention is incidental. The flag affects
 actually touches a protected path, no matter what flags you passed.
 
 **Exit codes.** See §5. Briefly: 0 goal reached, 1 error, 2 stopped at cap
-(resumable), 3 blocked (a human must decide), 4 asked a human and nobody
+(resumable), 3 throttled (nothing ran; retry later), 6 blocked (a human must
+decide), 4 asked a human and nobody
 answered, 64 usage.
 
 **Ordinary use**

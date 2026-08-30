@@ -361,7 +361,7 @@ base→branch diff and runs it through a deterministic pattern scanner (`scanDif
 `src/security-review.js`) that flags added lines reading secrets or environment
 (`process.env`, `.ssh/`, `PRIVATE KEY`, …), opening network connections, spawning
 subprocesses, or touching workflow and branch-protection files. Any finding escalates the run
-(exit `3`, `blockedReason: security-finding`) even when every reviewer said `AGREE` and the
+(exit `6`, `blockedReason: security-finding`) even when every reviewer said `AGREE` and the
 tests are green — a reviewer can be talked into approving something; this check cannot. If
 the diff itself cannot be read, orch fails closed. Note where the gate is *not*: the merge of
 the standing `orch/integration → main` PR does not re-scan, because every commit in it was

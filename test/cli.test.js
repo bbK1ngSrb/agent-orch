@@ -2147,9 +2147,14 @@ test("orch task --until ready --json: a concurrency-cap skip still emits run.sta
     for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
     const events = logs.map((l) => JSON.parse(l));
     assert.deepEqual(events.map((e) => e.event), ["run.start", "run.end"]);
+    // The outcome name is asserted, not just the code: a capacity refusal used
+    // to emit outcome "blocked" while exiting 3, so one name mapped to two
+    // codes. Without this line a silent revert to "blocked" keeps the suite
+    // green — which is exactly how the original collision survived.
+    assert.equal(events[1].outcome, "throttled");
     assert.equal(events[1].blockedReason, "concurrency-cap");
-    assert.equal(events[1].exit, 3);
-    assert.equal(process.exitCode, 3);
+    assert.equal(events[1].exit, EXIT_CODES.THROTTLED);
+    assert.equal(process.exitCode, EXIT_CODES.THROTTLED);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -3396,7 +3401,7 @@ test("agent add confirm path sets exit code 2 on an escalated build (B4)", async
   }
 });
 
-test("agent add confirm path escalates on a merge-deferred build (B4)", async () => {
+test("agent add confirm path escalates on a merge-deferred build", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-build-prfallback-"));
   const prev = cwd();
   const savedExitCode = process.exitCode;
@@ -4240,9 +4245,9 @@ test("raiseExitCode follows the documented outcome priority", () => {
   }
 });
 
-// Regression: 1 (ERROR) and 4 (WAIT_TIMEOUT) — both real run-controller.js
-// ERROR and WAIT_TIMEOUT used to be missing from EXIT_CODE_PRIORITY, and the
-// newly separated BLOCKED and ACTION_REQUIRED outcomes must remain ranked too.
+// Regression: ERROR and WAIT_TIMEOUT — both real run-controller.js outcomes —
+// used to be missing from EXIT_CODE_PRIORITY, and BLOCKED must stay ranked
+// after its move from 3 to 6.
 test("raiseExitCode reports every table outcome instead of silently dropping it", () => {
   const saved = process.exitCode;
   try {

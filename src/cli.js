@@ -1529,8 +1529,10 @@ export function fetchIssueWorkOrder(n, gh) {
 
 // A single invocation can see several outcomes during author fan-out. Keep
 // the most actionable one: ERROR > BLOCKED > ESCALATED > WAIT_TIMEOUT >
-// ACTION_REQUIRED > THROTTLED. Every table code is listed so the `|| 0`
-// fallback cannot make a valid outcome indistinguishable from success.
+// THROTTLED. Every table code is listed so the `|| 0` fallback cannot make a
+// valid outcome indistinguishable from success — an unlisted code reads as
+// priority 0, the same as "nothing raised yet", so it loses to a fresh exit
+// code of 0 and a real failure reports success.
 const EXIT_CODE_PRIORITY = {
   [EXIT_CODES.OK]: 0,
   [EXIT_CODES.ERROR]: 6,
@@ -2826,8 +2828,7 @@ export async function main(argv, deps = {}) {
         if (run.mode === "review" && activeRun.prTarget) {
           commentOnPr(finalResult, activeRun, deps.githubDeps || githubDeps);
         }
-        if (finalResult.status === "escalated" || finalResult.status === "merge-deferred"
-            || finalResult.status === "approved" || finalResult.status === "pr") {
+        if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
           if (until === "once") raiseExitCode(exitForResult(finalResult));
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
