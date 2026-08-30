@@ -7,6 +7,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { gateTimeoutMs, load, configPath, configReport, parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
+import { EXIT_CODES } from "./exit-codes.js";
 import {
   demote, openPr, openIntegrationPr, buildIssueComment, buildComment, commentOnce,
   createPr, hasRemote, ghAvailable, requireGh, findPrByHead, prView, viewerPermission,
@@ -150,8 +151,10 @@ const STATUS_COLOR = { merged: C.ok, escalated: C.fail, "merge-deferred": C.fail
 function outcomeForResult(result) {
   return result.status === "escalated" || result.status === "merge-deferred" ? "stopped-at-cap" : "reached";
 }
-function exitForResult(result) {
-  return outcomeForResult(result) === "stopped-at-cap" ? 2 : 0;
+function exitForResult(result, command = null) {
+  if (result.status === "merge-deferred" || result.status === "pr") return EXIT_CODES.ACTION_REQUIRED;
+  if (command === "pr" && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
+  return outcomeForResult(result) === "stopped-at-cap" ? EXIT_CODES.ESCALATED : EXIT_CODES.OK;
 }
 // Design §6 terminal states: only the outcomes a single implicit cycle can
 // produce today (no run-controller/readiness slice yet) — "reached" success
@@ -1520,25 +1523,19 @@ export function fetchIssueWorkOrder(n, gh) {
   return v.workOrder;
 }
 
-// 2 (a cycle ran and did not agree) outranks 3 (capacity refusal, nothing ran)
-// when a single invocation's author fan-out sees both: a peer process can push
-// a later run over the cap after an earlier one already escalated, and
-// last-write-wins on process.exitCode would then report 3 — "safe to retry" —
-// hiding the escalation a caller actually needs to go review. Exported as a
-// pure function so the priority itself is unit-testable without racing a real
-// concurrent process to reproduce the mix.
-//
-// 1 (ERROR, run-controller.js's EXIT_FOR_STATE) and 4 (WAIT_TIMEOUT) are also
-// reachable via `raiseExitCode(controller.exit)` in the fan-out loop below,
-// but were missing from this table — an unlisted code's priority reads as 0
-// via the `|| 0` fallback, same as "nothing raised yet", so raiseExitCode(1)
-// or raiseExitCode(4) on a fresh process.exitCode of 0 never wins the `>`
-// comparison and silently leaves exitCode at 0 (success) even though the run
-// actually errored or timed out. Ranked by how much a caller needs to see it:
-// 1 (something broke) must survive everything; 2 (needs review) still outranks
-// 3 as established above; 4 (landed, but readiness timed out) is more
-// actionable than a mere capacity refusal so it outranks 3 too.
-const EXIT_CODE_PRIORITY = { 1: 4, 2: 3, 4: 2, 3: 1 };
+// A single invocation can see several outcomes during author fan-out. Keep
+// the most actionable one: ERROR > BLOCKED > ESCALATED > WAIT_TIMEOUT >
+// ACTION_REQUIRED > THROTTLED. Every table code is listed so the `|| 0`
+// fallback cannot make a valid outcome indistinguishable from success.
+const EXIT_CODE_PRIORITY = {
+  [EXIT_CODES.OK]: 0,
+  [EXIT_CODES.ERROR]: 6,
+  [EXIT_CODES.BLOCKED]: 5,
+  [EXIT_CODES.ESCALATED]: 4,
+  [EXIT_CODES.WAIT_TIMEOUT]: 3,
+  [EXIT_CODES.ACTION_REQUIRED]: 2,
+  [EXIT_CODES.THROTTLED]: 1,
+};
 export function raiseExitCode(code) {
   const current = process.exitCode || 0;
   if ((EXIT_CODE_PRIORITY[code] || 0) > (EXIT_CODE_PRIORITY[current] || 0)) process.exitCode = code;
@@ -1614,7 +1611,7 @@ export function installDetachedSignalCleanup(orchDir, runId, info) {
     runRecord.update(orchDir, runId, {
       state: "ERROR",
       outcome: "error",
-      exit: 1,
+      exit: EXIT_CODES.ERROR,
       interrupted: { at: new Date().toISOString(), signal },
     });
     for (const lockName of Object.values(LOCK_NAMES)) releaseLock(orchDir, lockName);
@@ -1879,7 +1876,9 @@ function reportAgentBuildResult(name, result, { withReason = false } = {}) {
   if (result.status === "approved") {
     console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
   }
-  if (result.status === "escalated" || result.status === "merge-deferred") process.exitCode = 2;
+  if (result.status === "escalated" || result.status === "merge-deferred" || result.status === "pr") {
+    raiseExitCode(exitForResult(result, "agent"));
+  }
 }
 
 // Runs the build as a normal task-mode cycle, isolated in its own worktree/branch
@@ -1948,7 +1947,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
       sid,
       { branch, pid: process.pid, baseSha, author: authorSpec, reviewers: reviewerList, workOrder: wo, excludedAgents: exclusions },
       cfg,
-      { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
+      { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: EXIT_CODES.THROTTLED }); } },
     );
     if (!priorRecord) runRecord.create(orchDir, { runId: sid, command: "agent", argv: [redact(name)] });
   }
@@ -1962,7 +1961,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
       runRecord.update(orchDir, sid, {
         state: STATE_FOR_OUTCOME[outcome],
         outcome,
-        exit: exitForResult(result),
+        exit: exitForResult(result, "agent"),
         attempt,
         branch,
         cycles: [
@@ -1973,7 +1972,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     }
     return { ...result, branch };
   } catch (err) {
-    if (!dry) runRecord.update(orchDir, sid, { state: "ERROR", outcome: "error", exit: 1, lastError: toLastError(err) });
+    if (!dry) runRecord.update(orchDir, sid, { state: "ERROR", outcome: "error", exit: EXIT_CODES.ERROR, lastError: toLastError(err) });
     throw err;
   } finally {
     if (!dry) inflight.deregister(orchDir, sid);
@@ -2066,7 +2065,7 @@ export async function main(argv, deps = {}) {
   if (command === "config" && (flags.check || flags.json)) {
     const report = configReport(repo, flags["config-file"]);
     printConfigReport(report, Boolean(flags.json));
-    process.exitCode = report.ok ? 0 : 1;
+    process.exitCode = report.ok ? EXIT_CODES.OK : EXIT_CODES.ERROR;
     return report;
   }
 
@@ -2514,18 +2513,18 @@ export async function main(argv, deps = {}) {
           cfg,
           { onExceeded: (live) => {
             // design §13: stdout under --json is one JSON object per line, nothing
-            // else, and `run.end` always carries `blockedReason` when exit == 3 —
+            // else, and `run.end` always carries `blockedReason` on a throttled
+            // refusal —
             // emit the pair here rather than a bare console.log so a skipped run
             // still closes out the event stream instead of just vanishing from it.
             if (jsonMode) {
               emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
-              emit({ event: "run.end", runId: run.sid, outcome: "blocked", exit: 3, blockedReason: "concurrency-cap", usage: {} });
+              emit({ event: "run.end", runId: run.sid, outcome: "blocked", exit: EXIT_CODES.THROTTLED, blockedReason: "concurrency-cap", usage: {} });
             } else {
               console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
             }
-            // 3 = blocked by a policy/capacity limit, distinct from 2 (the cycle
-            // ran and did not agree) — a caller can retry a 3, not a 2.
-            raiseExitCode(3);
+            // THROTTLED means no cycle ran; a caller can retry unchanged.
+            raiseExitCode(EXIT_CODES.THROTTLED);
           } },
         );
         if (!accepted) {
@@ -2546,7 +2545,7 @@ export async function main(argv, deps = {}) {
         if (!dry) {
           const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
           let outcome = outcomeForResult(result);
-          let exit = exitForResult(result);
+          let exit = exitForResult(result, command);
           let state = STATE_FOR_OUTCOME[outcome];
           // "merged" landed on the standing integration→main PR; "pr"
           // (merge: pr mode) and "merge-deferred" (demote) each open a
@@ -2611,7 +2610,7 @@ export async function main(argv, deps = {}) {
                       excludedAgents: nextRun.excludedAgents || [], rotationStage: nextRun.rotationStage,
                     },
                     cfg,
-                    { onExceeded: () => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — reauthor cycle cannot start`), { exit: 3 }); } },
+                    { onExceeded: () => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — reauthor cycle cannot start`), { exit: EXIT_CODES.THROTTLED }); } },
                   );
                   registeredSids.add(nextSid);
                 }
@@ -2691,7 +2690,7 @@ export async function main(argv, deps = {}) {
                     result: {
                       state: "STOPPED_AT_CAP",
                       outcome: "stopped-at-cap",
-                      exit: 2,
+                      exit: EXIT_CODES.ESCALATED,
                       failureClass: context.failure?.class,
                       failure: context.failure,
                       reason: `could not create PR repair branch: ${error.message || error}`,
@@ -2752,6 +2751,10 @@ export async function main(argv, deps = {}) {
           for (const retryResult of cycleResults.slice(1)) results.push(retryResult);
           finalResult = outputResult(cycleResults[cycleResults.length - 1], controller);
           results[results.length - 1] = finalResult;
+          const resultExit = !controller || controller.outcome === "reached"
+            ? exitForResult(finalResult, command) : EXIT_CODES.OK;
+          if ((EXIT_CODE_PRIORITY[resultExit] || 0) > (EXIT_CODE_PRIORITY[exit] || 0)) exit = resultExit;
+          if (resultExit !== EXIT_CODES.OK) raiseExitCode(resultExit);
           if (finalResult.prUrl && !controller?.land) {
             pr = { number: null, url: finalResult.prUrl, kind: finalResult.status === "merged" ? "standing" : "per-cycle" };
           }
@@ -2816,7 +2819,7 @@ export async function main(argv, deps = {}) {
           // `--dry` writes no run record and (design §4) never polls readiness —
           // still emit run.end under --json so the event stream isn't silently
           // truncated after run.start.
-          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result), usage: result.usage || {}, dry: true });
+          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result, command), usage: result.usage || {}, dry: true });
         }
         if (!jsonMode) console.log(summaryLine(finalResult, activeRun.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (finalResult.status === "merged" && run.mode === "task") mergedBranches.push(activeRun.branch);
@@ -2824,22 +2827,21 @@ export async function main(argv, deps = {}) {
         if (run.mode === "review" && activeRun.prTarget) {
           commentOnPr(finalResult, activeRun, deps.githubDeps || githubDeps);
         }
-        if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
-          // Under `ready`/`merged` the exit code already came from the run
-          // controller above (STOPPED_AT_CAP=2 or BLOCKED=3 per design §6) —
-          // raising a flat 2 here too is harmless (raiseExitCode keeps the
-          // higher of the two) but only `once` needs this as its only source.
-          if (until === "once") raiseExitCode(2);
+        if (finalResult.status === "escalated" || finalResult.status === "merge-deferred"
+            || finalResult.status === "approved" || finalResult.status === "pr") {
+          if (until === "once") raiseExitCode(exitForResult(finalResult, command));
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
-          if (!dry) commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
+          if (!dry && (finalResult.status === "escalated" || finalResult.status === "merge-deferred")) {
+            commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
+          }
         }
       } catch (err) {
         if (!dry) {
           runRecord.update(orchDir, run.sid, {
             state: "ERROR",
             outcome: "error",
-            exit: 1,
+            exit: EXIT_CODES.ERROR,
             prTarget: activeRun.prTarget || run.prTarget || null,
             lastError: toLastError(err),
           });
@@ -2850,7 +2852,7 @@ export async function main(argv, deps = {}) {
         // findPrByHeadSafe/prView above) must still close out the event
         // stream with a run.end before the bin/orch.js catch-all prints to
         // stderr and exits.
-        if (jsonMode) emit({ event: "run.end", runId: run.sid, outcome: "error", exit: 1, usage: {} });
+        if (jsonMode) emit({ event: "run.end", runId: run.sid, outcome: "error", exit: EXIT_CODES.ERROR, usage: {} });
         throw err;
       } finally {
         clearDetachedCleanup?.();
@@ -3085,7 +3087,7 @@ export async function main(argv, deps = {}) {
           ...(detachedRun ? { detached: true, detachedLog: detachedRun.detachedLog, runId: detachedRun.runId } : {}),
         },
         cfg,
-        { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: 3 }); } },
+        { onExceeded: (live) => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; try again shortly`), { exit: EXIT_CODES.THROTTLED }); } },
       );
     }
     // Only reached once a checkpoint/inflight record proved there's actually
@@ -3173,7 +3175,7 @@ export async function main(argv, deps = {}) {
                 excludedAgents: activeRun.excludedAgents || [],
                 rotationStage: activeRun.rotationStage,
               }, cfg, {
-                onExceeded: () => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — reauthor cycle cannot start`), { exit: 3 }); },
+                onExceeded: () => { throw Object.assign(new Error(`orch: concurrency cap ${cfg.concurrency} reached — reauthor cycle cannot start`), { exit: EXIT_CODES.THROTTLED }); },
               });
               registeredSids.add(nextSid);
             }
@@ -3241,7 +3243,7 @@ export async function main(argv, deps = {}) {
                 result: {
                   state: "STOPPED_AT_CAP",
                   outcome: "stopped-at-cap",
-                  exit: 2,
+                  exit: EXIT_CODES.ESCALATED,
                   failureClass: context.failure?.class,
                   failure: context.failure,
                   reason: `could not create PR repair branch: ${error.message || error}`,
@@ -3298,7 +3300,7 @@ export async function main(argv, deps = {}) {
         controller.cycleRoles = cycleRoles;
       }
       const outcome = controller?.outcome || outcomeForResult(result);
-      const exit = controller?.exit ?? exitForResult(result);
+      const exit = controller?.exit ?? exitForResult(result, run.prTarget ? "pr" : command);
       if (controller) raiseExitCode(exit);
       if (!dry) {
         const resumable = Boolean(controller && (outcome === "stopped-at-cap" || outcome === "wait-timeout"));
@@ -3374,9 +3376,14 @@ export async function main(argv, deps = {}) {
           { git, io, notify },
         );
       }
-      if (finalResult.status === "escalated" || finalResult.status === "merge-deferred") {
-        if (!controller) raiseExitCode(2);
-        if (!dry) commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
+      if (finalResult.status === "escalated" || finalResult.status === "merge-deferred"
+          || finalResult.status === "approved" || finalResult.status === "pr") {
+        const resultExit = !controller || controller.outcome === "reached"
+          ? exitForResult(finalResult, run.prTarget ? "pr" : command) : EXIT_CODES.OK;
+        if (!controller || resultExit !== EXIT_CODES.OK) raiseExitCode(resultExit);
+        if (!dry && (finalResult.status === "escalated" || finalResult.status === "merge-deferred")) {
+          commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
+        }
       }
       const mergeEvent = mergeVerifiedEvent(runId, controller, cfg);
       if (mergeEvent) emit(mergeEvent);
@@ -3389,11 +3396,11 @@ export async function main(argv, deps = {}) {
       });
     } catch (err) {
       if (!dry) runRecord.update(orchDir, runId, {
-        state: "ERROR", outcome: "error", exit: 1,
+        state: "ERROR", outcome: "error", exit: EXIT_CODES.ERROR,
         prTarget: activeRun.prTarget || run.prTarget || null,
         lastError: toLastError(err),
       });
-      emit({ event: "run.end", runId, outcome: "error", exit: 1, usage: {} });
+      emit({ event: "run.end", runId, outcome: "error", exit: EXIT_CODES.ERROR, usage: {} });
       throw err;
     } finally {
       clearDetachedCleanup?.();

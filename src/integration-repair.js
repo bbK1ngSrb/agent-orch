@@ -29,6 +29,7 @@ import { LOCK_NAMES } from "./lock.js";
 import { updateBranch } from "./github.js";
 import { redact } from "./redact.js";
 import { frameUntrustedReference, neutralizeFence } from "./intake/workorder.js";
+import { EXIT_CODES } from "./exit-codes.js";
 
 const DEFAULT_RESOLVERS = [{ agent: "claude", model: null, effort: null }];
 
@@ -858,7 +859,7 @@ function withoutLastFailure(record, failure, name) {
     : record;
 }
 
-// The two policy floors in `repairConflictOrRed` end the run BLOCKED (exit 3),
+// The two policy floors in `repairConflictOrRed` end the run BLOCKED (exit 6),
 // not STOPPED_AT_CAP: they are the same classes run-controller.js maps in its
 // own `BLOCKED_REASON`, reached here through a remedy rather than through a
 // local cycle escalation. REMOTE_REVIEW_REQUIRED is deliberately absent — it is
@@ -885,8 +886,8 @@ function terminal(failure, outcome, record, name) {
   return {
     result: {
       ...(blockedReason
-        ? { state: "BLOCKED", outcome: "blocked", exit: 3, blockedReason }
-        : { state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2 }),
+        ? { state: "BLOCKED", outcome: "blocked", exit: EXIT_CODES.BLOCKED, blockedReason }
+        : { state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: EXIT_CODES.ESCALATED }),
       failureClass: outcome.terminalClass || failure?.class,
       failure,
       reason: `integration repair failed: ${outcome.reason}`,

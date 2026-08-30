@@ -32,9 +32,10 @@ is used directly as a store key, so anything else is refused.
 There is no --author here: the commits being resumed were written by a specific
 agent, and this command continues that run rather than starting a new one.
 
-Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
-3 blocked, a human must decide · 4 asked a human, no answer in time ·
-64 usage error.
+Exit codes: 0 goal reached · 1 internal error ·
+2 escalated or stopped at the attempt cap ·
+3 concurrency cap reached; retry later · 4 asked a human, no answer in time ·
+5 a human action is required · 6 blocked, a human must decide · 64 usage error.
 
 Examples:
   orch continue 1a2b3c4d

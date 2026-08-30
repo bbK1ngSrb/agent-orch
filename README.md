@@ -69,8 +69,8 @@ orch dashboard                              # live cycle status, log tail, run h
 ```
 For running several issues in a row, see [manual §2.16](docs/orch-manual.md#216-running-several-issues-in-a-row).
 Add `--dry` to any `task`/`review` run to simulate a cycle without touching git,
-agents, or tests, and without advancing the author rotation. `orch` exits
-non-zero (`2`) when a cycle escalates for a human.
+agents, or tests, and without advancing the author rotation. `orch` reports the
+machine-readable outcome through the [exit-code table](#exit-codes) below.
 
 After a `task` run merges, `orch` tidies up for you: it pushes `orch/integration`
 to GitHub and opens/updates its persistent PR to `main`, deletes the temporary
@@ -172,6 +172,21 @@ orch task "fix the flaky login test"
 - `orch mcp` — serve orch to AI clients over the [Model Context Protocol](https://modelcontextprotocol.io) (newline-delimited JSON-RPC on stdio), so Claude Code, Hermes Agent or any other MCP client discovers and calls the same operations instead of each embedding its own shell recipe. Tools: `orch_status`, `orch_plan` (dry run), `orch_task`, `orch_issue`, `orch_review`, `orch_pr`, `orch_continue` — each returns JSON with the cycle id, branch, status, reason, PR URL and log paths. Every tool spawns the CLI with a fixed argument list and no shell: there is no arbitrary-command tool, and `orch_pr` exposes only a fixed target plus the `once`/`ready`/`merged` enum. MCP `merged` requests are refused unless `automation.mcpMayMerge: true` is explicitly configured; when enabled, the child uses the same head-bound, CI-checked merge path as the CLI. Where a green cycle lands still follows the repo's config: under the defaults it lands on the integration branch and the standing integration PR stays a human checkpoint, while a repo that sets `integrationBranch` to its `baseBranch` or `main.autoMerge: true` has already opted every cycle out of that checkpoint. Config example for both clients: manual §2.12b.
 - `orch completion [bash]` / `orch completion install` — print the bash completion script or rewrite `~/.orch/completion.bash`.
 - `orch upgrade` / `orch update` — self-update the global install to the latest published version, detecting whichever package manager installed it. `--check` reports the latest version without installing anything. This command manages the orch binary, not the current repo.
+
+### Exit codes
+
+The exit status is the machine-readable outcome; callers should not parse summary text.
+
+| Code | Name | Meaning | What to do |
+|---|---|---|---|
+| `0` | `OK` | The run reached its goal — agreed, green, landed (`READY`/`MERGED`). | Nothing. |
+| `1` | `ERROR` | A crash, invalid config, unusable `gh` auth, or unexpected exception. | Fix the cause and re-run. |
+| `2` | `ESCALATED` | A cycle ran but agents did not agree, or the remedy loop stopped at its cap. | Investigate the staged branch. |
+| `3` | `THROTTLED` | The concurrency cap refused the run before any cycle started. | Retry later, unchanged. |
+| `4` | `WAIT_TIMEOUT` | The change landed, but its readiness or merge wait expired before the outcome was known. | Resume or re-check. |
+| `5` | `ACTION_REQUIRED` | A PR or branch is ready for exactly one human gesture, including `orch pr` approval or a merge-deferred branch. | Perform the named merge/action. |
+| `6` | `BLOCKED` | A policy-terminal guardrail, security, auth, or merge-rejection block. | Make a human decision; do not retry. |
+| `64` | Usage error | An invalid command, flag, positional, or value. | Fix the command line. |
 
 Add `--reviewer name` or `--reviewers a,b` to override review agents for
 `task`/`issue`/`review`/`pr` runs. On `task`/`issue`/`review`, setting only

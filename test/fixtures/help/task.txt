@@ -44,9 +44,10 @@ Arguments: the change text. Unquoted words are joined with spaces, so `orch
 task add input validation` is the same work order as the quoted form. With
 --file, no positional text is allowed — the file is the work order.
 
-Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
-3 blocked, a human must decide · 4 asked a human, no answer in time ·
-64 usage error.
+Exit codes: 0 goal reached · 1 internal error ·
+2 escalated or stopped at the attempt cap ·
+3 concurrency cap reached; retry later · 4 asked a human, no answer in time ·
+5 a human action is required · 6 blocked, a human must decide · 64 usage error.
 
 Examples:
   orch task "add input validation" --until once

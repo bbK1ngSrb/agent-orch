@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.0 — Unreleased
+- **BREAKING (cli):** unify run exit codes: blocked moves from `3` to `6`, and
+  PR-ready / human-action-required outcomes use new code `5`; concurrency
+  throttling remains `3`.
+
 ## v0.4.369 — 2026-08-30
 - feat(cycle): add --from branch source
 
