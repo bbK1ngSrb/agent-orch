@@ -40,9 +40,7 @@ export async function runCycle(opts, deps) {
   // cfg.baseBranch stays the PR target and the trunk — this only moves the
   // branch point and the diff comparisons.
   const fromSource = from ? resolveFromBranch(git, repo, baseBranch, from) : null;
-  // Keep the configured base as the review surface for salvaged work; only the
-  // branch point changes. Ordinary cycles retain their integration-aware base.
-  const cycleBase = fromSource ? baseBranch : resolveCycleBase(git, repo, baseBranch, cfg.integrationBranch);
+  const cycleBase = resolveCycleBase(git, repo, baseBranch, cfg.integrationBranch);
   const branchBase = fromSource?.ref || cycleBase;
   // Role specs carry optional model/effort. Fall back to bare names so callers
   // that pass only authorName/reviewerNames (e.g. the PR bridge) keep working.

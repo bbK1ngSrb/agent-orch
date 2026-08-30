@@ -145,10 +145,16 @@ test("a cycle branches from orch/integration while it is ahead of main", async (
   assert.equal(git.git(["log", "--oneline", "main"], repo).split("\n").length, 1);
 });
 
-test("--from salvages a branch while reviewing the whole slice against base", async () => {
+test("--from salvages a branch while reviewing the slice against integration", async () => {
   const repo = initRepoOn("main");
   mkdirSync(join(repo, ".orch"), { recursive: true });
   writeFileSync(join(repo, ".orch", "orch.yml"), "merge: no-ff\ntest: \"true\"\n");
+  git.git(["checkout", "-b", "orch/integration"], repo);
+  writeFileSync(join(repo, "c.txt"), "already integrated\n");
+  git.git(["add", "c.txt"], repo);
+  git.git(["commit", "-m", "integrated earlier"], repo);
+  const integrationTip = git.git(["rev-parse", "orch/integration"], repo);
+  git.git(["checkout", "main"], repo);
   git.git(["checkout", "-b", "salvaged"], repo);
   writeFileSync(join(repo, "b.txt"), "salvaged\n");
   git.git(["add", "b.txt"], repo);
@@ -186,7 +192,7 @@ test("--from salvages a branch while reviewing the whole slice against base", as
   assert.equal(created.start, "salvaged");
   assert.equal(created.expected, salvagedTip);
   assert.equal(git.git(["merge-base", created.branch, "salvaged"], repo), salvagedTip);
-  assert.equal(auditBase, "main");
-  assert.deepEqual(git.changedFiles(repo, created.branch, "main").sort(), ["a.txt", "b.txt"]);
+  assert.equal(auditBase, "orch/integration");
+  assert.deepEqual(git.changedFiles(repo, created.branch, integrationTip).sort(), ["a.txt", "b.txt"]);
   assert.equal(existsSync(join(repo, "b.txt")), false, "the configured base checkout stays untouched");
 });
