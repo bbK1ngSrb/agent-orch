@@ -2123,9 +2123,10 @@ test("orch task --until ready --json: the docs-update spawn notice stays out of 
   }
 });
 
-// design §13: `run.end` always carries `blockedReason` when exit == 3
-// (values include "concurrency-cap") — the skipped run must close out the
-// event stream, not just print a bare human line while --json is active.
+// design §13: a scheduler skip carries `blockedReason` even though
+// `CONCURRENCY_CAP` remains the distinct throttled exit 3; terminal BLOCKED
+// outcomes use exit 6. The skipped run must close out the event stream, not
+// just print a bare human line while --json is active.
 test("orch task --until ready --json: a concurrency-cap skip still emits run.start/run.end with blockedReason", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo();

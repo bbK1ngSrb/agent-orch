@@ -1,11 +1,12 @@
 # Changelog
 
-## v0.5.0 — Unreleased
+## v0.4.370 — Unreleased
 - **BREAKING (cli):** unify run exit codes: blocked moves from `3` to `6`, and
   PR-ready / human-action-required outcomes use new code `5`; concurrency
   throttling remains `3`.
-- Existing `.github/workflows/orch-pr.yml` callers should treat `orch pr`'s
-  `ACTION_REQUIRED` (`5`) as a reported human-action outcome.
+- **BREAKING (cli):** `orch pr`'s approved path moves from exit `0` to
+  `ACTION_REQUIRED` (`5`). Existing `.github/workflows/orch-pr.yml` callers
+  treat that nonzero status as failure and will turn red until they handle it.
 
 ## v0.4.369 — 2026-08-30
 - feat(cycle): add --from branch source

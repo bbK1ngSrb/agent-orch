@@ -34,7 +34,7 @@ one-line reason; §18 collects them.
 | **statusCheckRollup** | GitHub's per-PR list of checks/statuses with `state`/`conclusion`, evaluated by the shared `checksGreen` predicate (`github.js:131-145`). |
 | **failure class** | a structured code (§7) derived from a cycle/remote outcome; drives remedy choice. |
 | **remedy** | one of the four operator-orderable remedies `rebase`, `rotate`, `reauthor`, `ask` (§8, `automation.remedies`), plus **`integration-repair`** (§10A), which is always on and not operator-disablable — it is `ready`'s only path to its goal. |
-| **exit codes** | `0` reached · `1` error · `2` stopped-at-cap · `3` blocked · `4` wait-timeout · `64` usage (proposal §4.4). |
+| **exit codes** | `0` reached · `1` error · `2` stopped-at-cap · `3` throttled · `4` wait-timeout · `5` action-required · `6` blocked · `64` usage (proposal §4.4). |
 
 ---
 
@@ -68,8 +68,8 @@ one-line reason; §18 collects them.
 
 | Invariant | Where it lives today | v2 |
 |---|---|---|
-| Guardrail floor: work orders naming protected paths refused at intake unless `--allow-protected`; any diff touching `DEFAULT_PROTECTED` escalates | `src/intake/allowlist.js:9-23,43-53,63-77`; `engine.js:346-351`; `cli.js:1382-1399` | unchanged; class `POLICY_PROTECTED_PATH` → exit 3, no remedy |
-| Deterministic security floor over the final diff | `src/security-review.js`, `engine.js:319-333` | unchanged; `SECURITY_FINDING` → exit 3; the solver never edits to evade it |
+| Guardrail floor: work orders naming protected paths refused at intake unless `--allow-protected`; any diff touching `DEFAULT_PROTECTED` escalates | `src/intake/allowlist.js:9-23,43-53,63-77`; `engine.js:346-351`; `cli.js:1382-1399` | unchanged; class `POLICY_PROTECTED_PATH` → exit 6, no remedy |
+| Deterministic security floor over the final diff | `src/security-review.js`, `engine.js:319-333` | unchanged; `SECURITY_FINDING` → exit 6; the solver never edits to evade it |
 | Landing = local no-ff/ff-only merge onto `integrationBranch` in a dedicated worktree, under `merge.lock`, Guard 2 re-tests | `finalize.js:59-172`, `git.js:313-325`, `lock.js:58` | unchanged for landing; **extended**: any integration tip orch did not gate locally (GitHub `update-branch`, a re-pinned head) is re-gated before `merged` merges it (§10A, §10.4) |
 | Head integrity at landing (`reviewedHeadEscalation`) | `finalize.js:30-57`, called at 68/185/556 | unchanged; class `LAND_HEAD_MOVED` |
 | Local base never written except ff from origin | `git.js:207-234` | unchanged; `merged` fast-forwards after GitHub merges |
@@ -226,7 +226,7 @@ RunRecord = {
   policy: RunPolicy,                  // §4
   state: "CYCLING"|…,                 // §6
   outcome: null|"reached"|"stopped-at-cap"|"blocked"|"wait-timeout"|"error",
-  exit: null|0|1|2|3|4,               // 64 never appears: usage errors abort before a record exists
+  exit: null|0|1|2|3|4|5|6,            // 64 never appears: usage errors abort before a record exists
   attempt: 0,                         // current attempt index (cycles started as remedies)
   retries: { "<class>": n },          // free retries spent per class this run (§7 caps)
   headMovedRepins: 0,                 // §10.4 cap
@@ -312,23 +312,26 @@ that crosses a side-effect boundary writes the record first):
   │                       └── escalated/deferred ───▶ CLASSIFYING ──▶ REMEDYING ──applied──▶ CYCLING
   │                                                     │              │ (ask) ──▶ WAITING_HUMAN ──reply──▶ CYCLING
   │                                                     │              │                        └─timeout──▶ WAIT_TIMEOUT ──▶ exit 4
-  │                                                     │ (POLICY/SECURITY/no channel) ──▶ BLOCKED ──▶ exit 3
+  │                                                     │ (POLICY/SECURITY/no channel) ──▶ BLOCKED ──▶ exit 6
   │                                                     │ (attempts exhausted, ask unavailable/declined) ──▶ STOPPED_AT_CAP ──▶ exit 2
   └── (uncaught throw anywhere) ──▶ ERROR ──▶ exit 1  (record keeps state for continue)
 ```
 
 `until=once` (**strict parity with today's single pass**, lead decision, fidelity
-B2): `CYCLING → exit 0` on `merged`/`pr`/`approved` — **no READINESS read** —
-and `escalated/deferred → CLASSIFYING → (POLICY_PROTECTED_PATH/SECURITY_FINDING
-/CONCURRENCY_CAP → 3) else 2`. No REMEDYING, no WAITING_HUMAN. The only
-differences from today are the exit codes 3 (was 2) and 64 (was 0/1) and the
-absence of the banner; the migration table lists them.
+B2): `CYCLING → exit 0` on `merged`; a `pr` or `merge-deferred` result, or an
+`approved` `orch pr` result → exit 5 — **no READINESS read** — and `escalated →
+CLASSIFYING → (POLICY_PROTECTED_PATH/SECURITY_FINDING → 6; CONCURRENCY_CAP → 3)
+else 2`.
+No REMEDYING, no WAITING_HUMAN. The only differences from today are the
+distinct exit codes 3/5/6 for throttled, action-required, and blocked outcomes,
+plus 64 (was 0/1) and the absence of the banner; the migration table lists them.
 
 The cycle sub-machine is today's `runCycle` unchanged: `started → authored →
 reviewed → tested → finalize` (`engine.js:140,154,275,300,354`).
 
 Terminal state → exit code: `READY`/`MERGED` → 0; `ERROR` → 1;
-`STOPPED_AT_CAP` → 2; `BLOCKED` → 3; `WAIT_TIMEOUT` → 4.
+`STOPPED_AT_CAP` → 2; `WAIT_TIMEOUT` → 4; `BLOCKED` → 6. A PR-ready result
+(`pr`, `merge-deferred`, or `approved` from `orch pr`) is `ACTION_REQUIRED` → 5.
 
 Escalation and demotion triggers mapped to failure classes:
 
@@ -414,9 +417,10 @@ fidelity-B1).
 | `REMOTE_REVIEW_REQUIRED` | — | (`merged` only) `ask` "ready — approve or `orch: abandon`" | not a failure under `ready` |
 | `REMOTE_PR_CLOSED` | — | `ask` | a human closed it; do not reopen |
 | `LAND_PR_OPEN_FAILED` (`landing: pr`) | 1 | `ask` | |
-| `REMOTE_AUTH`, `REMOTE_MERGE_REJECTED` | 1 (30 s) | none → `BLOCKED` (3) | never swallowed (fixes #504) |
+| `REMOTE_AUTH`, `REMOTE_MERGE_REJECTED` | 1 (30 s) | none → `BLOCKED` (6) | never swallowed (fixes #504) |
 | `HUMAN_TIMEOUT` | — | none → `WAIT_TIMEOUT` (4) | |
-| `SECURITY_FINDING`, `POLICY_PROTECTED_PATH`, `CONCURRENCY_CAP`, `HUMAN_ABANDON` | — | none → `BLOCKED` (3) | `run.end.blockedReason` names which |
+| `SECURITY_FINDING`, `POLICY_PROTECTED_PATH`, `HUMAN_ABANDON` | — | none → `BLOCKED` (6) | `run.end.blockedReason` names which |
+| `CONCURRENCY_CAP` | — | none → `THROTTLED` (3) | `run.end.blockedReason:"concurrency-cap"` |
 | `INTERNAL` | — | none → `ERROR` (1) | |
 
 Attempt accounting: `rebase`, `rotate`, `reauthor`, integration repair each start
@@ -577,7 +581,7 @@ to `policy.source.text` as "Human addendum (<user>, <date>)"). Each reply is
 journaled with its comment id; a reply is consumed once. `retry` → back to
 `REMEDYING` with the last failure and `maxAttempts += n` (caps in §7). Free text
 → `reauthor` in *revise* mode (same branch, addendum in prompt). `abandon` →
-`BLOCKED` (3), reason `human-abandon`, closing comment posted. Timeout →
+`BLOCKED` (6), reason `human-abandon`, closing comment posted. Timeout →
 `WAIT_TIMEOUT` (4), a comment "timed out; resume with …" posted;
 `orch continue <runId>` re-polls from `askCommentId` first (a late reply is
 honoured) before asking again.
@@ -708,7 +712,7 @@ counter, which §7 forbids.
   (`cli.js:680`) reshaped: gate + security scan on the resolution diff always;
   if any conflicted path is outside `automation.conflictAutoPaths`, one
   reviewer audit round on the resolution diff (advisor decision A6); a
-  protected path in the diff → `POLICY_PROTECTED_PATH` → 3. Then under
+  protected path in the diff → `POLICY_PROTECTED_PATH` → 6. Then under
   `merge.lock` (nested inside the still-held `integration-repair.lock`, §12):
   fast-forward the integration worktree to the scratch result
   (`git merge --ff-only`; if integration moved meanwhile → repeat the scratch
@@ -835,7 +839,7 @@ Behaviour by `--until`:
 - `once`: audit only (today's `orch review` / `orch pr` without `--merge`): one
   review-mode cycle (`mode:"review", noMerge:true`, `github.js:178-183`), one
   comment (marker-guarded, edited in place on later runs — fixes the `runPr`
-  comment spam, audit-landing #3), exit 0 if AGREE+green else 2 (3 for
+  comment spam, audit-landing #3), exit 0 if AGREE+green else 2 (6 for
   policy/security).
 - `ready`: repair until green. **Repair authority (lead decision, review impl-M8):**
   orch pushes repairs to the PR head **only if** `isCrossRepository == false`
@@ -932,11 +936,12 @@ gate cannot pin `merge.lock` (#505) — a timeout is `TEST_RED` "gate timed out"
 - No prompts on the run path: `finishRun` runs with `interactive:false`
   (leaves unmerged branches, lists them); `agent add` builds only with `--build`.
 - Final line (human mode): `orch: <outcome> — <one-line reason>; exit <code>[;
-  resume: orch continue <runId>]`. `run.end` always carries `blockedReason` when
-  `exit == 3` (values: `guardrail-path`, `security-finding`, `no-channel`,
-  `cannot-verify-authorization`, `merge-rejected`, `auth`, `human-abandon`,
-  `concurrency-cap`) so a scheduler can tell "retry later" from "never
-  unattended" (review impl-m13).
+  resume: orch continue <runId>]`. `run.end` carries `blockedReason` for
+  terminal `BLOCKED` outcomes (`exit == 6`; values: `guardrail-path`,
+  `security-finding`, `no-channel`, `cannot-verify-authorization`,
+  `merge-rejected`, `auth`, `human-abandon`) and for the scheduler's
+  `THROTTLED` concurrency-cap skip (`exit == 3`) so a scheduler can tell
+  "retry later" from "never unattended" (review impl-m13).
 - **`--detach` lifecycle (lead decision, review impl-M10):**
   - parent: `spawn(process.execPath, [bin/orch.js, ...argv minus --detach],
     {detached: true, stdio: ["ignore", logFd, logFd], env: {...process.env,
@@ -1196,7 +1201,7 @@ the fake `gh` saw at most one create/comment/merge per idempotency key):
 | crash after `createPr` was issued, before the record noted the PR | resume `findPrByHead` finds it; no second create |
 | crash after `merge` requested, GitHub merged | resume verifies ancestry → 0, no second merge |
 | crash after `merge` requested, GitHub did not merge | resume re-checks readiness for the exact head, requests again (`merge.requests[1].ordinal == 2`) |
-| `gh` unavailable mid-run | `REMOTE_AUTH`/`no-channel` → 3, record intact |
+| `gh` unavailable mid-run | `REMOTE_AUTH`/`no-channel` → 6, record intact |
 | base moves between land and readiness | `REMOTE_BEHIND` → update-branch → ready |
 | PR closed by human | `REMOTE_PR_CLOSED` → ask → reply/timeout |
 | comment from read-only user / bot | ignored; wait continues |
