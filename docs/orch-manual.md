@@ -419,7 +419,7 @@ test pipeline, in its own isolated worktree/branch.
 
 ```bash
 orch agent add mynewagent            # register an existing adapter
-orch agent add mynewagent --build    # scaffold it; merge: pr opens a PR
+orch agent add mynewagent --build --pr  # scaffold it and open a pull request
 ```
 
 **When to use it:** adding support for a new CLI coding agent that isn't
