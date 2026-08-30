@@ -188,6 +188,12 @@ on top of `orch.yml` for one run; `--no-banner` suppresses the startup banner;
 see the manual §2.14.
 `--allow-large-scope` explicitly sanctions a deliberately large review slice for the
 current run; `orch continue <sid>` requires the flag again.
+`--from <ref>` starts a `task`/`issue` cycle from an existing local branch instead of
+the usual base — the way to salvage work from a branch an earlier cycle escalated,
+which would otherwise have to be re-authored from scratch. The review surface is
+unchanged: the diff is still taken against the base, so the reviewer re-judges the
+whole accumulated slice rather than only the new fix pass. The salvage runs as a
+fresh cycle with its own round counter.
 
 ## Config (`.orch/orch.yml`, all optional)
 See `orch.example.yml`. Most repos need no config. A bare `orch.yml` at the

@@ -334,24 +334,46 @@ test("DISAGREE escalation diffs against cfg.baseBranch", async () => {
   assert.deepEqual(diffArgs, ["diff", "--stat", "dev...pr/auth/x"]);
 });
 
-test("--from refuses a stale source branch before authoring", async () => {
+// The inverse of a guard that used to live here: a --from branch that is NOT a
+// descendant of the cycle base must still run. That is the normal shape of a
+// salvage — anything landing after a cycle escalates leaves its branch behind
+// both the integration branch and the trunk — so refusing on ancestry would
+// reject every real use of the flag. Asserted through a merge-base stub that
+// reports "not an ancestor" for every query.
+test("--from accepts a source branch that is behind the cycle base", async () => {
   const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
-  let mergeBaseCalls = 0;
   deps.git.git = (args) => {
     const ref = args.at(-1);
     if (args[0] === "rev-parse" && args[1] === "--verify" && ref === "refs/heads/salvaged") return "salvaged-tip";
     if (args[0] === "rev-parse" && args[1] === "--verify" && ref === "refs/heads/orch/integration") return "integration-tip";
     if (args[0] === "rev-parse" && args[1] === "--verify" && ref === "refs/heads/main") return "base-tip";
-    if (args[0] === "merge-base" && mergeBaseCalls++ === 0) return "";
     if (args[0] === "merge-base") throw new Error("not an ancestor");
     return "unused";
   };
 
+  const r = await runCycle(
+    { ...opts, cfg: { ...opts.cfg, integrationBranch: "orch/integration" }, from: "salvaged" },
+    deps,
+  );
+  assert.equal(r.status, "merged");
+  assert.equal(deps._calls.authors, 1);
+});
+
+// A --from ref that does not exist is still refused: that is an operator typo,
+// not a stale branch, and starting from the base instead would silently produce
+// the empty diff this flag exists to prevent.
+test("--from refuses a source branch that does not exist", async () => {
+  const deps = makeDeps({ verdicts: [{ decision: "AGREE", reason: "ok", raw: "" }] });
+  deps.git.git = (args) => {
+    const ref = args.at(-1);
+    if (args[0] === "rev-parse" && args[1] === "--verify" && ref === "refs/heads/typo") throw new Error("no such ref");
+    if (args[0] === "rev-parse" && args[1] === "--verify") return "some-tip";
+    return "unused";
+  };
+
   await assert.rejects(
-    () => runCycle({ ...opts, cfg: { ...opts.cfg, integrationBranch: "orch/integration" }, from: "salvaged" }, deps),
-    (error) => error.message.includes("base orch/integration is at integration-tip")
-      && error.message.includes("salvaged is at salvaged-tip")
-      && error.message.includes("git rebase orch/integration salvaged"),
+    () => runCycle({ ...opts, from: "typo" }, deps),
+    (error) => error.message.includes("--from typo") && error.message.includes("does not exist locally"),
   );
   assert.equal(deps._calls.authors, 0);
 });

@@ -154,6 +154,12 @@ test("--from salvages a branch while reviewing the slice against integration", a
   git.git(["add", "c.txt"], repo);
   git.git(["commit", "-m", "integrated earlier"], repo);
   const integrationTip = git.git(["rev-parse", "orch/integration"], repo);
+  // Cut the salvaged branch from main, NOT from integration: an escalated
+  // branch stops descending from the integration branch as soon as any other
+  // cycle lands, and that non-descendant shape is the whole reason --from
+  // exists. A version of this test that branches off integration would pass
+  // against an ancestry guard that rejects every real salvage.
+  git.git(["checkout", "main"], repo);
   git.git(["checkout", "-b", "salvaged"], repo);
   writeFileSync(join(repo, "b.txt"), "salvaged\n");
   git.git(["add", "b.txt"], repo);

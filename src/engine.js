@@ -577,14 +577,15 @@ function resolveFromBranch(git, repo, base, from) {
   } catch {
     throw new Error(`orch: configured base ${base} does not exist locally`);
   }
-  try {
-    git.git(["merge-base", "--is-ancestor", baseSha, fromSha], repo);
-  } catch {
-    throw new Error(
-      `orch: --from ${from} is stale: base ${base} is at ${baseSha}, ` +
-      `${from} is at ${fromSha}; run \`git rebase ${base} ${from}\``,
-    );
-  }
+  // No ancestry check. A salvage branch is behind by construction: the moment
+  // any other cycle lands, an escalated pr/* branch stops being a descendant of
+  // the integration branch, and once the integration PR merges it stops being a
+  // descendant of the trunk too. There is no ref this branch is reliably a
+  // descendant of, so refusing on ancestry rejects exactly the case --from
+  // exists for. Staleness surfaces later where it is actionable — as a merge
+  // conflict the remedy ladder handles — not as a refusal before the author
+  // runs. `baseSha` is still resolved above so a missing base is a clear error.
+  void baseSha;
   return { ref: from, sha: fromSha };
 }
 
