@@ -137,13 +137,16 @@ const REMEDY_TABLE = {
   HUMAN_TIMEOUT: { remedies: [], terminal: "WAIT_TIMEOUT" },
   SECURITY_FINDING: { remedies: [], terminal: "BLOCKED" },
   POLICY_PROTECTED_PATH: { remedies: [], terminal: "BLOCKED" },
-  // CONCURRENCY_CAP is unreachable today — cli.js refuses over the cap before a
-  // cycle starts, and exits THROTTLED (3) there. If a producer is ever wired up
-  // (P5-P8), this row must NOT stay BLOCKED: blocked means "retrying cannot
-  // succeed" and exits 6, whereas a capacity refusal ran nothing and is safe to
-  // retry unchanged. Landing it as BLOCKED would teach every caller to stop on
-  // exactly the outcome it should retry.
-  CONCURRENCY_CAP: { remedies: [], terminal: "BLOCKED" },
+  // Unreachable today: cli.js refuses over the cap before a cycle starts and
+  // exits THROTTLED (3) there. The row still cannot be deleted — chooseRemedy
+  // throws on an unknown class, so a producer wired up later (P5-P8) would
+  // crash rather than fall back. It must not be BLOCKED either: blocked exits 6
+  // and means "retrying cannot succeed", while a capacity refusal ran nothing
+  // and is safe to retry unchanged, so BLOCKED would tell every caller to stop
+  // on exactly the outcome it should retry. STOPPED_AT_CAP is the accurate one
+  // of the existing terminals — a capacity refusal is a run stopped at a cap —
+  // and it is resumable, which matches.
+  CONCURRENCY_CAP: { remedies: [], terminal: "STOPPED_AT_CAP" },
   HUMAN_ABANDON: { remedies: [], terminal: "BLOCKED" },
   INTERNAL: { remedies: [], terminal: "ERROR" },
 };

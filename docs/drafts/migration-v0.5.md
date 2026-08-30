@@ -1097,7 +1097,8 @@ a human must decide — guardrail path, security finding, no channel to ask,
 branch protection refused, `orch: abandon`, concurrency cap. The `run.end` JSON
 event carries `blockedReason` whenever the exit is 3, drawn from a fixed set:
 `guardrail-path`, `security-finding`, `no-channel`, `cannot-verify-authorization`,
-`merge-rejected`, `auth`, `human-abandon`, `concurrency-cap`.
+`merge-rejected`, `auth`, `human-abandon`. (`concurrency-cap` is not among
+them: a capacity refusal exits 3 and ran nothing, rather than blocking at 6.)
 
 The in-repo caller you must update is `harness/orch-loop.sh`, and its rule runs
 the other way round: exits 1 and 2 are the only *retryable* ones, and only when

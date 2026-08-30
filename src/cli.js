@@ -2832,7 +2832,7 @@ export async function main(argv, deps = {}) {
           if (until === "once") raiseExitCode(exitForResult(finalResult));
           // Issue bridge: leave a trace on the source issue — headless runs have
           // no one watching stdout, and the DECISION.md file is local-only.
-          if (!dry && (finalResult.status === "escalated" || finalResult.status === "merge-deferred")) {
+          if (!dry) {
             commentOnIssue(finalResult, activeRun.branch, run.closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);
           }
         }

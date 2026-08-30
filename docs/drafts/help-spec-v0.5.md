@@ -597,7 +597,8 @@ Arguments: the change text. Unquoted words are joined with spaces, so
 With --file, no positional text is allowed — the file is the work order.
 
 Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
-3 blocked, a human must decide · 4 asked a human, no answer in time ·
+3 throttled, nothing ran; retry later · 4 asked a human, no answer in time ·
+6 blocked, a human must decide ·
 64 usage error.
 
 Examples:
@@ -686,7 +687,8 @@ Options:
 Arguments: exactly one issue number, digits only.
 
 Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
-3 blocked, a human must decide · 4 asked a human, no answer in time ·
+3 throttled, nothing ran; retry later · 4 asked a human, no answer in time ·
+6 blocked, a human must decide ·
 64 usage error.
 
 Examples:
@@ -740,7 +742,8 @@ Accepting the flag and ignoring it is exactly the silence the v0.5 schema
 exists to remove.
 
 Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
-3 blocked, a human must decide · 4 asked a human, no answer in time ·
+3 throttled, nothing ran; retry later · 4 asked a human, no answer in time ·
+6 blocked, a human must decide ·
 64 usage error.
 
 Examples:
@@ -809,7 +812,8 @@ There is no --author here: the commits being resumed were written by a specific
 agent, and this command continues that run rather than starting a new one.
 
 Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
-3 blocked, a human must decide · 4 asked a human, no answer in time ·
+3 throttled, nothing ran; retry later · 4 asked a human, no answer in time ·
+6 blocked, a human must decide ·
 64 usage error.
 
 Examples:

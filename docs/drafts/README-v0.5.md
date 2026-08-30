@@ -238,7 +238,8 @@ land while checks are still pending.
 | `0` | goal reached and verified | nothing |
 | `1` | orch bug or environment failure | read the error; file an issue |
 | `2` | the run stopped short of its goal and is resumable | `orch continue <runId>` grants a fresh attempt budget |
-| `3` | blocked — a human must decide (always with a `blockedReason`, e.g. `guardrail-path`, `security-finding`, `concurrency-cap`) | decide, then re-run |
+| `3` | throttled — the concurrency cap was already reached, so nothing ran | retry later, unchanged |
+| `6` | blocked — a human must decide (always with a `blockedReason`, e.g. `guardrail-path`, `security-finding`) | decide, then re-run |
 | `4` | asked a human, no answer inside the window | answer on the issue/PR, then `orch continue <runId>` |
 | `64` | usage error (unknown command, bad flag, bad enum value) | fix the command line |
 

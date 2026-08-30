@@ -1101,7 +1101,8 @@ makes the exit code a real contract:
 The `blockedReason` values that accompany exit 6 are a closed set of eight:
 `guardrail-path`, `security-finding`, `no-channel`,
 `cannot-verify-authorization`, `merge-rejected`, `auth`, `human-abandon`,
-`concurrency-cap`. (Six live in `BLOCKED_REASON` in `src/run-controller.js`; the
+and no longer `concurrency-cap`, which exits 3 having attempted nothing.
+(Six live in `BLOCKED_REASON` in `src/run-controller.js`; the
 two `no-channel` / `cannot-verify-authorization` cases are raised by the `ask`
 remedy itself.)
 
@@ -1366,7 +1367,7 @@ and under any config:
 | `REMOTE_AUTH` | 3 | `auth` |
 | `REMOTE_MERGE_REJECTED` | 3 | `merge-rejected` |
 | `HUMAN_ABANDON` | 3 | `human-abandon` |
-| `CONCURRENCY_CAP` | 3 | `concurrency-cap` |
+| `CONCURRENCY_CAP` | 3 (throttled, not blocked) | `concurrency-cap` |
 | `HUMAN_TIMEOUT` | 4 | — |
 | `INTERNAL` | 1 | — |
 

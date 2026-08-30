@@ -1527,7 +1527,7 @@ itself (`src/remedies/ask.js`), which is why they are absent from that map:
 |---|---|
 | `guardrail-path` | The diff touches a path on orch's protected denylist. Never overridable by a flag. |
 | `security-finding` | The deterministic security floor found something. |
-| `concurrency-cap` | `cfg.concurrency` cycles are already live in this repo; nothing was attempted. |
+| `concurrency-cap` | `cfg.concurrency` cycles are already live in this repo; nothing was attempted. Reported as exit 3 (throttled), not as an exit-6 block. |
 | `human-abandon` | A human with write access replied `orch: abandon`. |
 | `auth` | GitHub authentication failed during readiness or merge. |
 | `merge-rejected` | Branch protection refused the merge and there is no bypass. |
