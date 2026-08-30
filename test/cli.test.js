@@ -7182,6 +7182,45 @@ test("orch continue on a pre-v2 sid leaves an error record when runCycle throws"
   assert.match(record.lastError.message, /boom/);
 });
 
+test("orch continue keeps a pre-v2 sid to one cycle even with an explicit ready goal", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-continue-pre-v2-once-");
+  const sid = "pre-v2-ready";
+  const branch = `pr/claude/some-fix-${sid}`;
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  gitDep.git(["commit", "-am", "authored fix"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  gitDep.git(["branch", "orch/integration"], repo);
+  checkpointDep.record(join(repo, ".orch"), sid,
+    { branch, round: 1, stage: "reviewed", decision: "AGREE", reason: "looks good" });
+
+  let finalizeCalls = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async () => ++finalizeCalls === 1
+      ? { status: "escalated", class: "REMOTE_AUTH", reason: "temporary auth failure" }
+      : { status: "merged", reason: "fixed", sha: "abc" },
+  };
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+
+  try {
+    await runMainInRepo(repo, ["continue", sid, "--until", "ready", "--no-tidy"], {
+      cycleDeps,
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      sleep: async () => {},
+    });
+
+    assert.equal(finalizeCalls, 1, "a pre-v2 resume must not enter the run controller");
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 // Design §5.3 acceptance: "`orch continue <runId>` and `<sid>` resolve to it" —
 // a run whose lineage has moved past its first cycle must still be reachable
 // by ANY of its cycles' sids, not just the runId. Only proved at the

@@ -3061,16 +3061,15 @@ export async function main(argv, deps = {}) {
     const continueDeps = !dry && rotationRecorded && existsSync(`${run.worktree}.orch-preserve`)
       ? { ...baseContinueDeps, git: { ...baseContinueDeps.git, pruneWorktree() {} } }
       : baseContinueDeps;
-    const requestedUntil = flags.until || priorRun?.policy?.until || "ready";
-    const controllerPolicy = requestedUntil !== "once"
+    const controllerPolicy = priorRun?.policy?.until && priorRun.policy.until !== "once"
       ? {
-        ...(priorRun?.policy || {}),
-        until: requestedUntil,
-        baseMaxAttempts: priorRun?.policy?.baseMaxAttempts ?? priorRun?.policy?.maxAttempts ?? 1,
-        maxAttempts: resumedRecord?.policy?.maxAttempts ?? (priorRun?.attempt || 0) + (priorRun?.policy?.maxAttempts ?? 1),
+        ...priorRun.policy,
+        until: flags.until || priorRun.policy.until,
+        baseMaxAttempts: priorRun.policy.baseMaxAttempts ?? priorRun.policy.maxAttempts ?? 1,
+        maxAttempts: resumedRecord?.policy?.maxAttempts ?? priorRun.attempt + (priorRun.policy.maxAttempts ?? 1),
       }
       : null;
-    const resumePolicy = controllerPolicy || resumedRecord?.policy || priorRun?.policy || { until: requestedUntil };
+    const resumePolicy = controllerPolicy || resumedRecord?.policy || priorRun?.policy || { until: flags.until || "once" };
     emit({ event: "run.start", runId, command, until: resumePolicy.until, policy: resumePolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
     if (priorRun?.outcome === "stopped-at-cap" || priorRun?.outcome === "wait-timeout") {
       emit({ event: "run.resume", runId, previousOutcome: priorRun.outcome, maxAttempts: resumedRecord?.policy?.maxAttempts });
