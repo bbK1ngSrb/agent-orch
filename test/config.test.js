@@ -119,7 +119,8 @@ test("automation.conflictResolution sets the persistent-PR repair mode", () => {
   assert.equal(c.main.autoResolveConflicts, true);
   const bad = tmp();
   writeFileSync(join(bad, "orch.yml"), "automation:\n  conflictResolution: sometimes\n");
-  assert.throws(() => load(bad), /main.conflictResolution must be manual, propose, or auto/);
+  assert.throws(() => load(bad), (err) =>
+    err.message === "orch.yml: automation.conflictResolution must be manual, propose, or auto");
 });
 
 test("--config-file conflictResolution beats orch.yml automation.conflictResolution", () => {
@@ -400,7 +401,8 @@ test("validate keeps its direct-call checks for normalized config objects", () =
 
   const badMode = load(tmp());
   badMode.main.conflictResolution = "sometimes";
-  assert.throws(() => validate(badMode), /main.conflictResolution must be manual, propose, or auto/);
+  assert.throws(() => validate(badMode), (err) =>
+    err.message === "orch.yml: automation.conflictResolution must be manual, propose, or auto");
 
   const badPaths = load(tmp());
   badPaths.main.autoResolveConflictPaths = "CHANGELOG.md";
@@ -410,7 +412,8 @@ test("validate keeps its direct-call checks for normalized config objects", () =
 test("conflictResolution: propose requires a resolver-distinct reviewer (normalizeMainConfig)", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "agents: [claude]\nautomation:\n  conflictResolution: propose\n");
-  assert.throws(() => load(d), /main.conflictResolution requires a conflict reviewer that differs from each resolver/);
+  assert.throws(() => load(d), (err) =>
+    err.message === "orch.yml: automation.conflictResolution requires a conflict reviewer that differs from each resolver");
 });
 
 test("main conflict-resolution keys are removed", () => {
@@ -419,6 +422,18 @@ test("main conflict-resolution keys are removed", () => {
     writeFileSync(join(d, "orch.yml"), `main:\n  ${key}: ${key.endsWith("Paths") ? "[]" : key.endsWith("Resolvers") ? "[claude]" : key === "conflictResolution" ? "manual" : "true"}\n`);
     assert.throws(() => load(d), new RegExp(`main\\.${key}.*removed`));
   }
+});
+
+test("removed main.conflictResolution error names its automation.* replacement", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "main:\n  conflictResolution: manual\n");
+  assert.throws(() => load(d), /use 'automation\.conflictResolution'/);
+});
+
+test("configReport shows automation.conflictResolution's true default (round-trippable)", () => {
+  const r = configReport(tmp());
+  assert.equal(r.config.automation.conflictResolution, "manual");
+  assert.equal(r.sources["automation.conflictResolution"], "default");
 });
 
 test("docs defaults present; off by default", () => {
