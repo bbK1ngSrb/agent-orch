@@ -1230,7 +1230,7 @@ test("integration repair: a security finding blocks the resolution before review
 
   assert.equal(out.cycle, undefined);
   assert.equal(out.result.failureClass, "SECURITY_FINDING");
-  assert.equal(out.result.exit, 3);
+  assert.equal(out.result.exit, 6);
   assert.deepEqual(calls, ["author"], "a security finding must block before review");
   assert.equal(originSha(remote, "orch/integration"), before);
 });
@@ -1470,7 +1470,7 @@ test("integration repair: content-derived guardrail findings are not waived on a
 
   assert.equal(out.cycle, undefined);
   assert.equal(out.result.failureClass, "SECURITY_FINDING");
-  assert.equal(out.result.exit, 3);
+  assert.equal(out.result.exit, 6);
   assert.deepEqual(calls, ["author"], "content-derived guardrail findings must block before review");
   assert.equal(originSha(remote, "orch/integration"), before);
 });

@@ -597,7 +597,8 @@ Arguments: the change text. Unquoted words are joined with spaces, so
 With --file, no positional text is allowed — the file is the work order.
 
 Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
-3 blocked, a human must decide · 4 asked a human, no answer in time ·
+3 throttled, nothing ran; retry later · 4 asked a human, no answer in time ·
+6 blocked, a human must decide ·
 64 usage error.
 
 Examples:
@@ -686,7 +687,8 @@ Options:
 Arguments: exactly one issue number, digits only.
 
 Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
-3 blocked, a human must decide · 4 asked a human, no answer in time ·
+3 throttled, nothing ran; retry later · 4 asked a human, no answer in time ·
+6 blocked, a human must decide ·
 64 usage error.
 
 Examples:
@@ -740,7 +742,8 @@ Accepting the flag and ignoring it is exactly the silence the v0.5 schema
 exists to remove.
 
 Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
-3 blocked, a human must decide · 4 asked a human, no answer in time ·
+3 throttled, nothing ran; retry later · 4 asked a human, no answer in time ·
+6 blocked, a human must decide ·
 64 usage error.
 
 Examples:
@@ -809,7 +812,8 @@ There is no --author here: the commits being resumed were written by a specific
 agent, and this command continues that run rather than starting a new one.
 
 Exit codes: 0 goal reached · 1 internal error · 2 stopped at the attempt cap ·
-3 blocked, a human must decide · 4 asked a human, no answer in time ·
+3 throttled, nothing ran; retry later · 4 asked a human, no answer in time ·
+6 blocked, a human must decide ·
 64 usage error.
 
 Examples:
@@ -1307,9 +1311,13 @@ export const EXITS = {
 };
 ```
 
-These are the codes `src/run-controller.js:11` already emits
-(`EXIT_FOR_STATE = { READY: 0, MERGED: 0, ERROR: 1, STOPPED_AT_CAP: 2,
-BLOCKED: 3, WAIT_TIMEOUT: 4 }`) plus `usageError`'s 64.
+These are the codes the run controller emits, from the shared table in
+`src/exit-codes.js` (`OK: 0, ERROR: 1, ESCALATED: 2, THROTTLED: 3,
+WAIT_TIMEOUT: 4, BLOCKED: 6`), plus `usageError`'s 64. Code 5
+(`ACTION_REQUIRED`) is reserved but not yet a key in that table.
+Note `BLOCKED` is **6**, not 3: 3 is reserved for the concurrency refusal,
+where nothing ran and retrying later is safe, while a `BLOCKED` terminal
+cannot succeed on a retry.
 
 ### 6.3 The code changes, by file and line
 

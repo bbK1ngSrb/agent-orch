@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import * as lockDefault from "./lock.js";
+import { EXIT_CODES } from "./exit-codes.js";
 
 function repairPrompt(failure, cycle, conflicts) {
   const reason = String(cycle?.reason || failure?.reason || "").trim();
@@ -23,7 +24,7 @@ function terminal(failure, reason, record, executed) {
     result: {
       state: "STOPPED_AT_CAP",
       outcome: "stopped-at-cap",
-      exit: 2,
+      exit: EXIT_CODES.ESCALATED,
       failureClass: failure?.class,
       failure,
       reason: `rebase remedy ${executed ? "failed" : "could not proceed"}: ${reason}`,
@@ -247,7 +248,7 @@ function rotateTerminal(failure, reason, record) {
     result: {
       state: "STOPPED_AT_CAP",
       outcome: "stopped-at-cap",
-      exit: 2,
+      exit: EXIT_CODES.ESCALATED,
       failureClass: failure?.class,
       failure,
       reason: `rotate remedy could not proceed: ${reason}`,

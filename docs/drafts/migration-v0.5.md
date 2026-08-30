@@ -1062,11 +1062,11 @@ get exit 4.
 
 ### 3.4 Exit codes
 
-#### Exit 2 splits: policy, security and concurrency-cap stops now exit 3
+#### Exit 2 splits: policy and security stops now exit 6; a concurrency-cap stop exits 3
 
 **Already live in v0.4.360** for `--until ready|merged` runs
-(`run-controller.js` maps `BLOCKED → 3`, and `cli.js` raises 3 directly for the
-concurrency cap). Under `--until once` an escalation or a deferred landing still
+(`run-controller.js` maps `BLOCKED → 6`, while 3 is raised only for the
+concurrency cap — the two used to collide on 3). Under `--until once` an escalation or a deferred landing still
 raises a flat 2 today.
 
 **Before (v0.4.x)**
@@ -1097,7 +1097,8 @@ a human must decide — guardrail path, security finding, no channel to ask,
 branch protection refused, `orch: abandon`, concurrency cap. The `run.end` JSON
 event carries `blockedReason` whenever the exit is 3, drawn from a fixed set:
 `guardrail-path`, `security-finding`, `no-channel`, `cannot-verify-authorization`,
-`merge-rejected`, `auth`, `human-abandon`, `concurrency-cap`.
+`merge-rejected`, `auth`, `human-abandon`. (`concurrency-cap` is not among
+them: a capacity refusal exits 3 and ran nothing, rather than blocking at 6.)
 
 The in-repo caller you must update is `harness/orch-loop.sh`, and its rule runs
 the other way round: exits 1 and 2 are the only *retryable* ones, and only when

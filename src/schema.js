@@ -12,6 +12,7 @@
 import { get as getAdapter } from "./adapters/index.js";
 import { parseRoleSpec, parseRoleSpecs } from "./config.js";
 import { isSafeSid } from "./sid-store.js";
+import { EXIT_CODES } from "./exit-codes.js";
 
 // Flags. `type` is the parseArgs type plus two refinements the parser
 // enforces itself: "int" (positive integer unless `min` says otherwise) and
@@ -211,6 +212,24 @@ const FROM_HELP = "Start a fresh cycle from <ref>; it starts at round 1, and pre
 // wrapWords() emits an already-short line verbatim, which is what preserves it.
 const untilHelp = (...lines) => lines.join("\n");
 
+const RUN_EXITS = [
+  [EXIT_CODES.OK, "goal reached"],
+  [EXIT_CODES.ERROR, "internal error"],
+  [EXIT_CODES.ESCALATED, "escalated or stopped at the attempt cap"],
+  [EXIT_CODES.THROTTLED, "concurrency cap reached; retry later"],
+  [EXIT_CODES.WAIT_TIMEOUT, "asked a human, no answer in time"],
+  [EXIT_CODES.BLOCKED, "blocked, a human must decide"],
+  [64, "usage error"],
+];
+const AGENT_EXITS = [
+  [EXIT_CODES.OK, "added"],
+  [EXIT_CODES.ERROR, "error"],
+  [EXIT_CODES.ESCALATED, "the build stopped at the attempt cap"],
+  [EXIT_CODES.THROTTLED, "the concurrency cap was reached; retry later"],
+  [EXIT_CODES.BLOCKED, "the build is blocked and needs a human"],
+  [64, "usage error"],
+];
+
 export const HELP_PAGES = {
   init: {
     title: "orch init — write .orch/orch.yml and .orch/ORCH.md into this repo.",
@@ -252,7 +271,7 @@ export const HELP_PAGES = {
       "A build never merges. An agreed and green adapter stays on its branch for a human to read and land, because code orch wrote that orch will then run as an agent gets a human checkpoint. With --pr that branch is opened as a pull request instead of left bare; it is still yours to merge.",
     ],
     args: "Arguments: exactly one <name>, after the add or build subcommand word.",
-    exits: [[0, "added"], [1, "error"], [2, "the build stopped at the attempt cap"], [3, "the build is blocked and needs a human"], [64, "usage error"]],
+    exits: AGENT_EXITS,
     examples: ["orch agent add codex", "orch agent add mynewagent --build --author \"claude\" --reviewer \"codex\""],
     flagOrder: ["build", "config-file", "dry"],
     flagHelp: {
@@ -271,7 +290,7 @@ export const HELP_PAGES = {
       "One cycle is: an author agent writes the change on its own branch in an isolated git worktree (a second checkout of the same repository, so concurrent runs never fight over one HEAD), a different agent cross-audits the diff, the test gate runs, a deterministic security scan runs, and the reviewed commit lands on the integration branch. With --until ready or merged the cycle repeats under a remedy ladder — rebase + repair, rotate seats, reauthor, ask a human — offering whichever of those the failure calls for, until the goal is reached or the attempt cap is spent.",
     ],
     args: "Arguments: the change text. Unquoted words are joined with spaces, so `orch task add input validation` is the same work order as the quoted form. With --file, no positional text is allowed — the file is the work order.",
-    exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
+    exits: RUN_EXITS,
     examples: ["orch task \"add input validation\" --until once", "orch task --file work-order.json --cheap"],
     flagOrder: [
       "until", "from", "author", "authors", "reviewer", "reviewers", "cheap", "file",
@@ -300,7 +319,7 @@ export const HELP_PAGES = {
       "Fetches issue <number> with `gh`, uses its body as the work order, and runs the same cycle as `orch task`. The landing commit carries `Closes #<number>`, so GitHub closes the issue when the change reaches the base branch. The issue body is the whole brief an author agent gets — comments on the issue are not read — so a thin body is the usual reason a cycle escalates. A work order whose text names a guardrail path is refused at intake, before any agent runs; pass --allow-protected when the mention is incidental.",
     ],
     args: "Arguments: exactly one issue number, digits only.",
-    exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
+    exits: RUN_EXITS,
     examples: ["orch issue 42", "orch issue 42 --until merged --reviewer \"codex gpt-5.6-sol high\""],
     flagOrder: [
       "until", "from", "author", "authors", "reviewer", "reviewers", "cheap",
@@ -330,7 +349,7 @@ export const HELP_PAGES = {
     ],
     notes: ["There is no --author here: this command audits work that already has an author."],
     args: "Arguments: exactly one branch name.",
-    exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
+    exits: RUN_EXITS,
     examples: ["orch review feature/add-retry", "orch review feature/add-retry --reviewer \"codex\""],
     flagOrder: [
       "until", "reviewer", "reviewers", "cheap", "allow-large-scope",
@@ -356,7 +375,7 @@ export const HELP_PAGES = {
     ],
     notes: ["There is no --author here: this command audits work that already has an author. Accepting the flag and ignoring it is exactly the silence the schema exists to remove."],
     args: "Arguments: exactly one PR number or branch name.",
-    exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
+    exits: RUN_EXITS,
     examples: ["orch pr 42 --until once", "orch pr pr/claude/add-retry --reviewer \"codex\""],
     flagOrder: [
       "until", "merge", "reviewer", "reviewers", "allow-large-scope", "detach",
@@ -382,7 +401,7 @@ export const HELP_PAGES = {
     ],
     notes: ["There is no --author here: the commits being resumed were written by a specific agent, and this command continues that run rather than starting a new one."],
     args: "Arguments: exactly one sid. A sid never contains '/', '..' or a NUL byte — it is used directly as a store key, so anything else is refused.",
-    exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
+    exits: RUN_EXITS,
     examples: ["orch continue 1a2b3c4d", "orch continue 1a2b3c4d --reviewer \"claude claude-opus-5 high\""],
     flagOrder: [
       "until", "reviewer", "reviewers", "allow-large-scope", "no-tidy",
@@ -483,11 +502,12 @@ export const HELP_PAGES = {
   },
 };
 export const EXITS = {
-  0: "the goal was reached and verified",
-  1: "internal error (orch bug, or the environment failed)",
-  2: "stopped at the attempt cap — resume with `orch continue <runId>`",
-  3: "blocked: a human must decide (guardrail, security floor, protection)",
-  4: "asked a human and got no answer in automation.humanWaitHours",
+  [EXIT_CODES.OK]: "the goal was reached and verified",
+  [EXIT_CODES.ERROR]: "internal error (orch bug, or the environment failed)",
+  [EXIT_CODES.ESCALATED]: "escalated: agents disagreed or the attempt cap stopped the run",
+  [EXIT_CODES.THROTTLED]: "throttled: the concurrency cap was reached; retry later",
+  [EXIT_CODES.WAIT_TIMEOUT]: "asked a human and got no answer in automation.humanWaitHours",
+  [EXIT_CODES.BLOCKED]: "blocked: a human must decide (guardrail, security floor, protection)",
   64: "usage error (unknown command, wrong flag for the command, bad value)",
 };
 
@@ -941,7 +961,7 @@ function renderGlobal() {
     });
     return `${heading}:\n${rows.join("\n")}`;
   }).join("\n\n");
-  const exits = [0, 1, 2, 3, 4, 64]
+  const exits = [...Object.values(EXIT_CODES), 64]
     .map((code) => `  ${String(code).padEnd(4)}${EXITS[code]}`)
     .join("\n");
   return `orch — author, cross-audit, test-gate and land a change with coding agents.
@@ -963,6 +983,7 @@ ${exits}
 Examples:
 ${EXAMPLES.map((e) => `  ${e}`).join("\n")}
 
+Exit-code table: README.md#exit-codes; manual: docs/orch-manual.md.
 Full docs: .orch/ORCH.md in an initialized repo, and the README.`;
 }
 

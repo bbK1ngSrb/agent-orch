@@ -18,6 +18,7 @@ import * as runRecordDep from "../src/run-record.js";
 import * as resume from "../src/resume.js";
 import { makeCliAdapter } from "../src/adapters/cli-adapter.js";
 import { IS_WINDOWS } from "../src/platform.js";
+import { EXIT_CODES } from "../src/exit-codes.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
 
@@ -1855,14 +1856,14 @@ test("orch task --until ready lets a write-permissioned user abandon the run", a
     });
     const end = JSON.parse(logs[logs.length - 1]);
     assert.equal(end.outcome, "blocked");
-    assert.equal(end.exit, 3);
+    assert.equal(end.exit, 6);
     assert.equal(end.blockedReason, "human-abandon");
     const dir = join(repo, ".orch", "run-records");
     const record = JSON.parse(readFileSync(join(dir, readdirSync(dir)[0]), "utf8"));
     assert.equal(record.state, "BLOCKED");
     assert.equal(record.outcome, "blocked");
-    assert.equal(record.exit, 3);
-    assert.equal(process.exitCode, 3);
+    assert.equal(record.exit, 6);
+    assert.equal(process.exitCode, 6);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -1909,8 +1910,8 @@ test("orch task --until ready re-runs a non-landed free retry cycle", async () =
 
 // findPrByHead's `gh pr list` throws on any nonzero exit (no GitHub remote,
 // bad auth, network hiccup) — the human channel cannot be established, so the
-// ask remedy must fail closed as BLOCKED/exit 3 with a full --json stream.
-test("orch task --until ready --json exits 3 when the ask channel cannot be created", async () => {
+// ask remedy must fail closed as BLOCKED/exit 6 with a full --json stream.
+test("orch task --until ready --json exits 6 when the ask channel cannot be created", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo();
   gitDep.git(["branch", "orch/integration"], repo);
@@ -1926,10 +1927,10 @@ test("orch task --until ready --json exits 3 when the ask channel cannot be crea
     for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
     const last = JSON.parse(logs[logs.length - 1]);
     assert.equal(last.event, "run.end");
-    assert.equal(last.exit, 3);
+    assert.equal(last.exit, 6);
     assert.equal(last.failureClass, "REMOTE_UNKNOWN");
     assert.equal(last.blockedReason, "no-channel");
-    assert.equal(process.exitCode, 3);
+    assert.equal(process.exitCode, 6);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -1937,10 +1938,10 @@ test("orch task --until ready --json exits 3 when the ask channel cannot be crea
 
 // readiness.js's `prView` (`gh pr view`) throws on any nonzero exit the same
 // way `findPrByHead`'s `gh pr list` does above — a revoked token or network
-// hiccup mid-poll must spend its free retry, then resolve to REMOTE_AUTH/exit 3 with a full --json
+// hiccup mid-poll must spend its free retry, then resolve to REMOTE_AUTH/exit 6 with a full --json
 // stream, not an uncaught throw that skips run-controller's own error
 // handling and truncates the stream after run.start.
-test("orch task --until ready --json exits 3 with failureClass REMOTE_AUTH when gh pr view throws 401", async () => {
+test("orch task --until ready --json exits 6 with failureClass REMOTE_AUTH when gh pr view throws 401", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo();
   gitDep.git(["branch", "orch/integration"], repo);
@@ -1957,9 +1958,9 @@ test("orch task --until ready --json exits 3 with failureClass REMOTE_AUTH when 
     for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
     const last = JSON.parse(logs[logs.length - 1]);
     assert.equal(last.event, "run.end");
-    assert.equal(last.exit, 3);
+    assert.equal(last.exit, 6);
     assert.equal(last.failureClass, "REMOTE_AUTH");
-    assert.equal(process.exitCode, 3);
+    assert.equal(process.exitCode, 6);
     const recordPath = join(repo, ".orch", "run-records", readdirSync(join(repo, ".orch", "run-records"))[0]);
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     assert.equal(record.retries.REMOTE_AUTH, 1);
@@ -2122,9 +2123,10 @@ test("orch task --until ready --json: the docs-update spawn notice stays out of 
   }
 });
 
-// design §13: `run.end` always carries `blockedReason` when exit == 3
-// (values include "concurrency-cap") — the skipped run must close out the
-// event stream, not just print a bare human line while --json is active.
+// design §13: a scheduler skip carries `blockedReason` even though
+// `CONCURRENCY_CAP` remains the distinct throttled exit 3; terminal BLOCKED
+// outcomes use exit 6. The skipped run must close out the event stream, not
+// just print a bare human line while --json is active.
 test("orch task --until ready --json: a concurrency-cap skip still emits run.start/run.end with blockedReason", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo();
@@ -2145,9 +2147,14 @@ test("orch task --until ready --json: a concurrency-cap skip still emits run.sta
     for (const line of logs) assert.doesNotThrow(() => JSON.parse(line), `non-JSON stdout line under --json: ${line}`);
     const events = logs.map((l) => JSON.parse(l));
     assert.deepEqual(events.map((e) => e.event), ["run.start", "run.end"]);
+    // The outcome name is asserted, not just the code: a capacity refusal used
+    // to emit outcome "blocked" while exiting 3, so one name mapped to two
+    // codes. Without this line a silent revert to "blocked" keeps the suite
+    // green — which is exactly how the original collision survived.
+    assert.equal(events[1].outcome, "throttled");
     assert.equal(events[1].blockedReason, "concurrency-cap");
-    assert.equal(events[1].exit, 3);
-    assert.equal(process.exitCode, 3);
+    assert.equal(events[1].exit, EXIT_CODES.THROTTLED);
+    assert.equal(process.exitCode, EXIT_CODES.THROTTLED);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -3126,6 +3133,11 @@ test("agent build scaffolds quota detection and environment fields", async () =>
 });
 
 test("agent build --pr routes the cycle through merge: pr instead of a local-only branch", async () => {
+  const savedExitCode = process.exitCode;
+  // Asserting an exit code of 0 means asserting that nothing raised one, so the
+  // starting value has to be 0 and not whatever a previous test left behind —
+  // otherwise this passes only in batch order and fails when run alone.
+  process.exitCode = 0;
   const d = initGitRepo("orch-agentbuild-pr-");
   let seenMerge = null;
   const deps = {
@@ -3136,9 +3148,15 @@ test("agent build --pr routes the cycle through merge: pr instead of a local-onl
       finalize: async (ctx) => { seenMerge = ctx.cfg.merge; return { status: "pr", reason: "test", prUrl: "https://example/pr/1" }; },
     },
   };
-  const logs = await runMainInRepo(d, ["agent", "build", "widget", "--pr"], deps);
-  assert.equal(seenMerge, "pr");
-  assert.match(logs.join("\n"), /agent build widget: pr /);
+  try {
+    const logs = await runMainInRepo(d, ["agent", "build", "widget", "--pr"], deps);
+    assert.equal(seenMerge, "pr");
+    assert.match(logs.join("\n"), /agent build widget: pr /);
+    // Opening the PR is this command's success case, not a stopped-at-cap run.
+    assert.equal(process.exitCode, EXIT_CODES.OK);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
 });
 
 // buildAgent's dry path is a real stubbed cycle (dryDeps()), not the
@@ -3387,7 +3405,7 @@ test("agent add confirm path sets exit code 2 on an escalated build (B4)", async
   }
 });
 
-test("agent add confirm path sets exit code 2 on a merge-deferred build (B4)", async () => {
+test("agent add confirm path escalates on a merge-deferred build", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-build-prfallback-"));
   const prev = cwd();
   const savedExitCode = process.exitCode;
@@ -3398,7 +3416,8 @@ test("agent add confirm path sets exit code 2 on a merge-deferred build (B4)", a
       io: { confirm: async () => true },
       buildAgent: async () => ({ status: "merge-deferred", reason: "conflict", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }),
     });
-    assert.equal(process.exitCode, 2);
+    // A deferred landing is something to investigate, not a merge to click.
+    assert.equal(process.exitCode, EXIT_CODES.ESCALATED);
   } finally {
     process.exitCode = savedExitCode;
     chdir(prev);
@@ -3567,6 +3586,25 @@ test("pr accepts a branch target and rejects a missing branch", async () => {
   }));
   await assert.rejects(() => runMainCapture(["pr", "abc"]), /branch does not exist/);
   await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
+});
+
+test("orch pr reports an approved review as success", async () => {
+  const savedExitCode = process.exitCode;
+  process.exitCode = 0;
+  const repo = initGitRepo("orch-pr-approved-");
+  gitDep.git(["branch", "feature/x"], repo);
+  try {
+    const logs = await runMainInRepo(repo, ["pr", "feature/x"], {
+      cycleDeps: {
+        ...fakeCycleDeps(),
+        finalize: async () => ({ status: "approved", reason: "review passed" }),
+      },
+    });
+    assert.match(logs.join("\n"), /approved/);
+    assert.equal(process.exitCode, EXIT_CODES.OK);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
 });
 
 test("pr target resolution keeps colleague branches off the push path", () => {
@@ -4186,72 +4224,64 @@ test("registerWithConcurrencyCap removes the rejected run", () => {
   }
 });
 
-// A single invocation's author fan-out can see BOTH an escalation (2, a cycle
-// ran and needs review) and a concurrency-cap skip (3, nothing ran, safe to
-// retry) if a concurrent peer process pushes a later run over the cap — see
-// the "3, not 2" comment on the cap test above. process.exitCode is a single
-// global the loop assigns per-run; last-write-wins would let whichever run
-// finishes last decide the reported code regardless of severity. These are
-// hand-computed against the documented priority (2 must survive a later 3;
-// a later 2 must still win over an earlier 3), not observed from the code.
-test("raiseExitCode: 2 (needs review) always wins over 3 (safe to retry), in either order", () => {
+// A single invocation's author fan-out can see several outcomes. These are
+// hand-computed against the documented priority, not observed from the code.
+test("raiseExitCode follows the documented outcome priority", () => {
   const saved = process.exitCode;
   try {
+    const priority = [1, 6, 2, 4, 3];
+    for (let high = 0; high < priority.length; high++) {
+      for (let low = high + 1; low < priority.length; low++) {
+        process.exitCode = 0;
+        raiseExitCode(priority[low]);
+        raiseExitCode(priority[high]);
+        assert.equal(process.exitCode, priority[high]);
+        process.exitCode = 0;
+        raiseExitCode(priority[high]);
+        raiseExitCode(priority[low]);
+        assert.equal(process.exitCode, priority[high]);
+      }
+    }
     process.exitCode = 0;
-    raiseExitCode(2);
-    raiseExitCode(3);
-    assert.equal(process.exitCode, 2, "a later 3 must not downgrade an earlier 2");
-
-    process.exitCode = 0;
-    raiseExitCode(3);
-    raiseExitCode(2);
-    assert.equal(process.exitCode, 2, "a later 2 must still win over an earlier 3");
-
-    process.exitCode = 0;
-    raiseExitCode(3);
+    raiseExitCode(EXIT_CODES.THROTTLED);
     assert.equal(process.exitCode, 3, "3 alone is still reported");
   } finally {
     process.exitCode = saved;
   }
 });
 
-// Regression: 1 (ERROR) and 4 (WAIT_TIMEOUT) — both real run-controller.js
-// exit codes reachable via raiseExitCode(controller.exit) — were missing from
-// EXIT_CODE_PRIORITY. An unlisted code's priority falls back to 0 via `|| 0`,
-// identical to "nothing raised yet" (process.exitCode starts at 0), so
-// raiseExitCode(1) alone used to leave process.exitCode at 0 — a run that hit
-// an internal error would report success. 1 must win over everything; 4 must
-// still lose to nothing and beat 3 (a landed-but-timed-out run is more
-// actionable than a bare capacity refusal).
-test("raiseExitCode: 1 (error) always wins; 4 (wait-timeout) beats 3", () => {
+// Regression: ERROR and WAIT_TIMEOUT — both real run-controller.js outcomes —
+// used to be missing from EXIT_CODE_PRIORITY, and BLOCKED must stay ranked
+// after its move from 3 to 6.
+test("raiseExitCode reports every table outcome instead of silently dropping it", () => {
   const saved = process.exitCode;
   try {
     process.exitCode = 0;
-    raiseExitCode(1);
+    raiseExitCode(EXIT_CODES.ERROR);
     assert.equal(process.exitCode, 1, "1 alone must be reported, not silently dropped");
 
     process.exitCode = 0;
-    raiseExitCode(2);
-    raiseExitCode(1);
+    raiseExitCode(EXIT_CODES.ESCALATED);
+    raiseExitCode(EXIT_CODES.ERROR);
     assert.equal(process.exitCode, 1, "1 must win over an earlier 2");
 
     process.exitCode = 0;
-    raiseExitCode(1);
-    raiseExitCode(2);
+    raiseExitCode(EXIT_CODES.ERROR);
+    raiseExitCode(EXIT_CODES.ESCALATED);
     assert.equal(process.exitCode, 1, "a later 2 must not downgrade an earlier 1");
 
     process.exitCode = 0;
-    raiseExitCode(4);
+    raiseExitCode(EXIT_CODES.WAIT_TIMEOUT);
     assert.equal(process.exitCode, 4, "4 alone must be reported, not silently dropped");
 
     process.exitCode = 0;
-    raiseExitCode(3);
-    raiseExitCode(4);
+    raiseExitCode(EXIT_CODES.THROTTLED);
+    raiseExitCode(EXIT_CODES.WAIT_TIMEOUT);
     assert.equal(process.exitCode, 4, "4 must win over an earlier 3");
 
     process.exitCode = 0;
-    raiseExitCode(4);
-    raiseExitCode(3);
+    raiseExitCode(EXIT_CODES.WAIT_TIMEOUT);
+    raiseExitCode(EXIT_CODES.THROTTLED);
     assert.equal(process.exitCode, 4, "a later 3 must not downgrade an earlier 4");
   } finally {
     process.exitCode = saved;
@@ -4392,7 +4422,7 @@ test("--help / -h print usage and exit cleanly (no unknown-option error)", async
     assert.match(usage, /\nSet up a repo:\n  init\s+Write a commented \.orch\/orch\.yml/);
     assert.match(usage, /\nOptions \(valid on every command\):\n  -h, --help\s+Show this page/);
     assert.match(usage, /\nExamples:\n  orch init --link/);
-    assert.match(usage, /Full docs: \.orch\/ORCH\.md in an initialized repo, and the README\./);
+    assert.match(usage, /Exit-code table: README\.md#exit-codes; manual: docs\/orch-manual\.md\./);
     assert.doesNotMatch(usage, /\n\s+\(/);
     for (const line of usage.split("\n")) {
       assert.ok(line.length <= 80, `usage line exceeds 80 columns: ${line}`);
@@ -4949,6 +4979,67 @@ test("orch continue resumes a ready review through the landing path", async () =
   assert.equal(after, before);
   assert.equal(finalized, true);
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("orch continue persists a success exit for an approved PR resume", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-pr-resume-approved-");
+  const branch = "pr/claude/pr-resume-approved";
+  const sid = "prresumeapproved";
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  const head = gitDep.git(["rev-parse", branch], repo);
+  checkpointDep.record(orchDir, sid, {
+    branch,
+    oid: head,
+    round: 1,
+    stage: "reviewed",
+    decision: "AGREE",
+    reason: "looks good",
+    author: { agent: "claude" },
+    reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid,
+    command: "pr",
+    argv: ["pr", "9"],
+    policy: { until: "ready" },
+    prTarget: { number: 9, url: "https://github.com/o/r/pull/9", branch, baseBranch: "main" },
+  });
+
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    process.exitCode = 0;
+    const logs = await runMainInRepo(repo, ["continue", sid, "--json", "--no-tidy"], {
+      cycleDeps: {
+        ...fakeCycleDeps(),
+        finalize: async () => ({ status: "approved", reason: "review passed" }),
+      },
+      githubDeps: () => ({ gh, git: gitDep.git }),
+    });
+    const events = logs.map((line) => JSON.parse(line));
+    const end = events.at(-1);
+    assert.equal(end.event, "run.end");
+    assert.equal(end.outcome, "reached");
+    // An approved review reports OK. Splitting out a distinct
+    // "one human gesture remains" code is deliberately not part of this change
+    // — the PR-check job has to handle a nonzero success code first (issue
+    // #619), or this repo's own check goes red on the success path.
+    assert.equal(end.exit, EXIT_CODES.OK);
+    const record = JSON.parse(readFileSync(join(orchDir, "run-records", `${sid}.json`), "utf8"));
+    assert.equal(record.exit, EXIT_CODES.OK);
+    assert.equal(process.exitCode, EXIT_CODES.OK);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
 });
 
 // The schema's own matrix test (schema.test.js) derives its expectations from
@@ -7004,21 +7095,26 @@ test("orch task resuming a sid with an existing run record appends to it instead
 // cycle each open a fresh PR scoped to that one branch, so their `kind` must
 // read "per-cycle", not the hardcoded "standing" every result used to get.
 test("orch task records pr.kind as per-cycle for merge:pr mode, standing only for a real merge", async () => {
-  const merged = initGitRepo();
-  await runMainInRepo(merged, ["task", "some task", "--no-tidy"], {
-    cycleDeps: { ...fakeCycleDeps(), finalize: async () => ({ status: "merged", reason: "test", sha: "abc", prUrl: "https://example/pr/standing" }) },
-  });
-  const mergedDir = join(merged, ".orch", "run-records");
-  const mergedRecord = JSON.parse(readFileSync(join(mergedDir, readdirSync(mergedDir)[0]), "utf8"));
-  assert.deepEqual(mergedRecord.pr, { number: null, url: "https://example/pr/standing", kind: "standing" });
+  const savedExitCode = process.exitCode;
+  try {
+    const merged = initGitRepo();
+    await runMainInRepo(merged, ["task", "some task", "--no-tidy"], {
+      cycleDeps: { ...fakeCycleDeps(), finalize: async () => ({ status: "merged", reason: "test", sha: "abc", prUrl: "https://example/pr/standing" }) },
+    });
+    const mergedDir = join(merged, ".orch", "run-records");
+    const mergedRecord = JSON.parse(readFileSync(join(mergedDir, readdirSync(mergedDir)[0]), "utf8"));
+    assert.deepEqual(mergedRecord.pr, { number: null, url: "https://example/pr/standing", kind: "standing" });
 
-  const perCycle = initGitRepo();
-  await runMainInRepo(perCycle, ["task", "some task", "--no-tidy"], {
-    cycleDeps: { ...fakeCycleDeps(), finalize: async () => ({ status: "pr", reason: "test", prUrl: "https://example/pr/123" }) },
-  });
-  const perCycleDir = join(perCycle, ".orch", "run-records");
-  const perCycleRecord = JSON.parse(readFileSync(join(perCycleDir, readdirSync(perCycleDir)[0]), "utf8"));
-  assert.deepEqual(perCycleRecord.pr, { number: null, url: "https://example/pr/123", kind: "per-cycle" });
+    const perCycle = initGitRepo();
+    await runMainInRepo(perCycle, ["task", "some task", "--no-tidy"], {
+      cycleDeps: { ...fakeCycleDeps(), finalize: async () => ({ status: "pr", reason: "test", prUrl: "https://example/pr/123" }) },
+    });
+    const perCycleDir = join(perCycle, ".orch", "run-records");
+    const perCycleRecord = JSON.parse(readFileSync(join(perCycleDir, readdirSync(perCycleDir)[0]), "utf8"));
+    assert.deepEqual(perCycleRecord.pr, { number: null, url: "https://example/pr/123", kind: "per-cycle" });
+  } finally {
+    process.exitCode = savedExitCode;
+  }
 });
 
 // Regression: a pre-v2 sid resumed via `orch continue` has no prior run

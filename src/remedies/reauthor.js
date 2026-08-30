@@ -1,6 +1,7 @@
 import { newSid } from "../sid.js";
 import { buildAuthorPrompt } from "../intake/workorder.js";
 import { slugify } from "../slug.js";
+import { EXIT_CODES } from "../exit-codes.js";
 
 const MAX_FAILURE_FINGERPRINTS = 3;
 
@@ -71,7 +72,7 @@ function terminal(failure, reason, record) {
     result: {
       state: "STOPPED_AT_CAP",
       outcome: "stopped-at-cap",
-      exit: 2,
+      exit: EXIT_CODES.ESCALATED,
       failureClass: failure?.class,
       failure,
       reason: `reauthor remedy could not proceed: ${reason}`,

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.4.370 — Unreleased
+- **BREAKING (cli):** unify run exit codes behind a single shared table
+  (`src/exit-codes.js`) imported by both `src/cli.js` and `src/run-controller.js`,
+  which previously each defined their own and disagreed: `2` meant "escalated" in
+  one and `STOPPED_AT_CAP` in the other, and `3` meant "concurrency cap reached,
+  nothing ran, retry later" in one and `BLOCKED` — a guardrail or security block
+  that retrying can never clear — in the other. A caller doing the correct thing
+  on `3` would retry forever against a block.
+  Blocked therefore moves from `3` to **`6`**; `3` keeps its long-standing
+  "throttled, nothing ran" meaning, which every existing caller was written
+  against. The `raiseExitCode` priority map now lists every code, so none can
+  silently read as priority 0 and lose to a fresh exit code of `0`.
+- **fix(cli):** the concurrency refusal emits `outcome: "throttled"` rather than
+  `"blocked"`, which had left one outcome name mapping to two different codes.
+- Code `5` (`ACTION_REQUIRED`) is deliberately **not** part of this change. It
+  needs `.github/workflows/orch-pr.yml` to handle it first ([#619](https://github.com/bbk1ng/agent-orch/issues/619))
+  — that workflow runs `orch pr` as its final step with no exit handling, so
+  emitting a nonzero code on the approved path would turn this repo's own PR
+  check red on success.
+
 ## v0.4.369 — 2026-08-30
 - feat(cycle): add --from branch source
 

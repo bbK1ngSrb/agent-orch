@@ -1,6 +1,7 @@
 import { redact } from "../redact.js";
 import { collaboratorPermission, commentOnce, createPr, findPrByHead, listComments } from "../github.js";
 import { raiseMaxAttempts } from "../failure.js";
+import { EXIT_CODES } from "../exit-codes.js";
 
 const MAX_ADDENDUM = 4 * 1024;
 const MAX_POLL_SECONDS = 10 * 60;
@@ -77,7 +78,7 @@ function resolveChannel(run, deps, base) {
 function blocked(failure, reason, record, blockedReason = "no-channel") {
   return {
     result: {
-      state: "BLOCKED", outcome: "blocked", exit: 3,
+      state: "BLOCKED", outcome: "blocked", exit: EXIT_CODES.BLOCKED,
       blockedReason, failureClass: failure?.class, failure,
       reason: `ask remedy blocked: ${reason}`,
     },
@@ -88,7 +89,7 @@ function blocked(failure, reason, record, blockedReason = "no-channel") {
 function timedOut(failure, runId, human, record) {
   return {
     result: {
-      state: "WAIT_TIMEOUT", outcome: "wait-timeout", exit: 4,
+      state: "WAIT_TIMEOUT", outcome: "wait-timeout", exit: EXIT_CODES.WAIT_TIMEOUT,
       failureClass: "HUMAN_TIMEOUT", failure,
       reason: `human decision timed out; resume with \`orch continue ${runId}\``,
       resumeCommand: `orch continue ${runId}`,
@@ -105,7 +106,7 @@ function timeoutComment(runId, human) {
 function stoppedAtCap(failure, human, record) {
   return {
     result: {
-      state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: 2,
+      state: "STOPPED_AT_CAP", outcome: "stopped-at-cap", exit: EXIT_CODES.ESCALATED,
       failureClass: failure?.class, failure,
       reason: "human retry ceiling reached", human,
     },

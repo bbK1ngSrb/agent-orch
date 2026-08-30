@@ -136,7 +136,7 @@ codes), `:1721-1741` (`pr` reads `flags.dry` → dry deps), `:1278-1309` (`agent
 add` threads `config-file` + `dry`; `configPath(dir, override)` in
 `config.js:164`), `:1786-1800` (`release --dry`), `:1223-1250` (`init --dry`),
 `:1804` (unknown → 64), `:1806-1860` (`printUsage` from schema);
-`src/completion.js`; `bin/orch.js` (map `UsageError` → 64, `BlockedError` → 3).
+`src/completion.js`; `bin/orch.js` (map `UsageError` → 64, `BlockedError` → 6).
 **Test harness (review impl-m2).** new `test/helpers/fake-gh.js`: a scripted `gh`
 double `mkGh(script)` returning canned stdout / thrown errors with `HTTP <code>`
 in `message` (mirroring `execFileSync`), recording every call — used by P1
@@ -222,7 +222,7 @@ recorded in the PR description. **Protected.** none.
 become *available* (still not default): `runUntil(policy, record, deps)` drives
 `CYCLING → LANDED → READINESS → READY (0)`; any classified failure with no
 remedy available (all remedies ship in P6/P7, so in P5 `policy.remedies` is
-forced empty) → `STOPPED_AT_CAP` (2) / `BLOCKED` (3) with `blockedReason`;
+forced empty) → `STOPPED_AT_CAP` (2) / `BLOCKED` (6) with `blockedReason`;
 `ciWaitMinutes` bounds each wait and an expiry consumes an attempt; `once`
 parity path formalised (no readiness read); `--json` events; `merged` is
 accepted but stops at `READINESS` with "merge phase ships in P8" (exit 2) —
@@ -512,7 +512,7 @@ node bin/orch.js version                            # 0.5.0
 5. Fault matrix (design §17) green; zero duplicate remote side effects.
 6. Success metrics (proposal §7) via P13's script: clean unattended runs > 0
    within 20 runs; ≥ 60% of `ready` runs exit 0 unattended over the first 50;
-   every exit 2 has a resume command; every exit 3 a `blockedReason`.
+   every exit 2 has a resume command; every exit 6 a `blockedReason`.
 7. README, manual, ORCH.md, example yml, completion, MCP schema describe v2
    only; prior `cli-simplification-*.md` carry a "superseded by" header (owner
    decision 1; docs-only owner PR).
