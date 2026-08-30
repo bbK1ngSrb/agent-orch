@@ -6,8 +6,8 @@ import { agentNames } from "./adapters/index.js";
 
 // Bash completion, rendered from the command schema (src/schema.js) — the same
 // declaration the parser and `orch --help` read. Completion used to offer the
-// union of every flag on every command (so `orch dashboard --m<TAB>` offered
-// `--merge`, which the parser then rejects with exit 64) — this renders one
+// union of every flag on every command (so `orch dashboard --b<TAB>` offered
+// `--build`, which the parser then rejects with exit 64) — this renders one
 // flag list per command instead, from that command's own `flags` array, so
 // tab-completion can never suggest input the parser refuses.
 function flagWords(name) {
@@ -55,10 +55,10 @@ const AGENT_ADD_WITH_BUILD_FLAGS = [...GLOBAL_FLAGS, ...COMMANDS.agent.flags].fl
 // A known adapter name never enters the build path, so completion narrows to
 // the flags accepted by the normal add form once the name is known.
 const KNOWN_AGENT_PATTERN = agentNames.join("|");
-// A command-specific flag typed BEFORE the command word ("orch --merge <TAB>",
+// A command-specific flag typed BEFORE the command word ("orch --link <TAB>",
 // "orch --build <TAB>") used to leave every command on offer, including ones
-// the parser refuses it on (`--merge` is only legal on `pr`; the schema's own
-// validate() already rejects a command-less `--merge` unless it names `pr` —
+// the parser refuses it on (`--link` is only legal on `init`; the schema's own
+// validate() already rejects a command-less `--link` unless it names `init` —
 // see schema.js's "no command at all" branch) — completion just never read
 // that same ownership. One case arm per non-global flag, narrowing the
 // candidate command list to whichever commands actually declare it.
@@ -208,12 +208,13 @@ ${SUBCOMMAND_CASES}
 ${AGENT_SUBCOMMAND_FLAG_CASES}
       *) flags="\${global_flags}" ;;
     esac
-    # "agent add --build" accepts the build-only flags too (--pr, author/
-    # reviewer overrides, --allow-large-scope) — offer them once --build has
-    # actually been typed, not before (validateAgentArgs, schema.js).
+    # "agent add --build" accepts the build-only flags too (author/reviewer
+    # overrides, --allow-large-scope) — offer them once --build has actually
+    # been typed, not before (validateAgentArgs, schema.js).
     # --build can legally appear anywhere before the name too ("orch agent
-    # --build add widget --pr"), not just after "add" — scanning only from
-    # sub_index missed that ordering and under-offered --pr.
+    # --build add widget --allow-large-scope"), not just after "add" —
+    # scanning only from sub_index missed that ordering and under-offered
+    # --allow-large-scope.
     if [[ "\${sub}" == "add" && \${known_agent} -eq 0 ]]; then
       for ((i = cmd_index + 1; i < COMP_CWORD; i++)); do
         if [[ "\${COMP_WORDS[\${i}]}" == "--build" ]]; then
@@ -258,7 +259,7 @@ ${COMMAND_FLAG_CASES}
   fi
 
   # A flag already typed but illegal for the command/subcommand that follows
-  # ("orch --merge dashboard", "orch agent --pr add") must not let
+  # ("orch --link dashboard", "orch agent --allow-large-scope add") must not let
   # completion continue suggesting input as though the invocation were still
   # valid — the parser has already refused it by this point. parseArgs also
   # accepts "--flag=value" as one word; matching that literal word against

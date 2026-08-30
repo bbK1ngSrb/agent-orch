@@ -46,17 +46,17 @@ test("README documents the `orch` CLI", () => {
   assert.match(readme, /orch agent add <name>/);
 });
 
-test("agent build docs use --pr to open a pull request", () => {
+test("agent build docs describe the local-only branch, not a pull request", () => {
   const readmeLine = readme.split("\n").find((line) => line.startsWith("- `orch agent add <name> [--build]`"));
   assert.ok(readmeLine, "README is missing the agent add command documentation");
-  assert.match(readmeLine, /`--pr`[\s\S]*pull request/i);
+  assert.doesNotMatch(readmeLine, /--pr\b/);
   assert.doesNotMatch(readmeLine, /merge:\s*pr/i);
 
   const start = manual.indexOf("### 2.8 `orch agent add <name> [--build]`");
   const end = manual.indexOf("### 2.9", start);
   assert.ok(start >= 0 && end > start, "manual is missing the agent add section");
   const section = manual.slice(start, end);
-  assert.match(section, /orch agent add mynewagent --build --pr/);
+  assert.doesNotMatch(section, /--pr\b/);
   assert.doesNotMatch(section, /merge:\s*pr/i);
 });
 
@@ -131,13 +131,13 @@ test("docs describe integration/base reconciliation for diverged histories (#475
   assert.match(manual, /squash-merge that PR by hand[\s\S]{0,160}repairs the ancestry/);
 });
 
-test("docs explain that `orch pr --merge` pins the reviewed PR head (#421)", () => {
+test("docs explain that `orch pr --until merged` pins the reviewed PR head (#421)", () => {
   // runPr() sends the fetched branch SHA to GitHub's merge endpoint. If a
   // contributor updates the PR during review, GitHub returns 409 and orch asks
   // the operator to audit the new head instead of merging unseen code.
   for (const doc of [readme, manual]) {
     assert.match(doc, /merge request[\s\S]{0,100}pinned|pins[\s\S]{0,100}merge request/i);
-    assert.match(doc, /PR head[\s\S]{0,120}moves[\s\S]{0,160}re-run\s+`orch pr[^`]*--merge`/i);
+    assert.match(doc, /PR head[\s\S]{0,120}moves[\s\S]{0,160}re-run\s+`orch pr[^`]*--until merged`/i);
     assert.match(doc, /new head is audited|agents never saw/i);
   }
 });
@@ -153,7 +153,7 @@ test("docs distinguish local integration from remote merge verification (#445)",
   }
   // The remote ancestor check belongs to the separately pinned `orch pr --merge`
   // path, not to the local integration result.
-  assert.match(manual, /stronger remote verification described in §2\.7[\s\S]{0,180}`orch pr --merge`/);
+  assert.match(manual, /stronger remote verification described in §2\.7[\s\S]{0,180}`orch pr --until merged`/);
 });
 
 test("the manual names the REST merge endpoint `orch pr --merge` uses (#421)", () => {
@@ -196,7 +196,7 @@ test("the manual scopes --until modes to wired commands (#525)", () => {
   assert.match(bullet[0], /`once` is the default/);
   assert.match(bullet[0], /`task`, `issue`, and `pr` support `ready`/);
   assert.match(bullet[0], /`continue` currently accepts only `--until once`/);
-  assert.match(bullet[0], /On `pr`, `--merge` remains a compatibility\s+alias for `--until merged`/);
+  assert.doesNotMatch(bullet[0], /--merge/);
   assert.doesNotMatch(bullet[0], /only `--until once` .* exists today/);
 });
 

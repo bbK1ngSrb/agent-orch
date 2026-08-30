@@ -163,7 +163,7 @@ test("runPr fails closed when the PR head moves during review", async () => {
   const deps = makeDeps({ currentHeadSha: "moved456def" });
   await assert.rejects(
     () => runPr({ ...opts, merge: true }, deps),
-    /PR head moved during review.*re-run `orch pr 7 --merge`/,
+    /PR head moved during review.*re-run `orch pr 7 --until merged`/,
   );
   assert.ok(!deps._calls.gh.some((c) => c.args.includes("state,mergeCommit")));
 });

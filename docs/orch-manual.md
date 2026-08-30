@@ -168,7 +168,7 @@ path-specific: orch reports `merged` only after the integrated worktree and the
 local `orch/integration` ref agree on the merged SHA. That does not prove that
 `origin/main` contains the commit yet; if the PR bridge fails, the reason says
 the content is local-only. The stronger remote verification described in §2.7
-belongs to `orch pr --merge`, whose GitHub merge is pinned to the fetched and
+belongs to `orch pr --until merged`, whose GitHub merge is pinned to the fetched and
 reviewed PR head and checked against `origin/main` afterward.
 
 **Why this design, and not "just merge to main directly"?** Because it lets
@@ -330,7 +330,7 @@ watching stdout. This is the only trace besides the local
 consume them directly rather than re-typing the description as a `task`
 string. Needs `gh` authenticated.
 
-### 2.7 `orch pr <number|branch> [--merge|--until once|ready|merged]`
+### 2.7 `orch pr <number|branch> [--until once|ready|merged]`
 
 The GitHub PR bridge. For a number, orch fetches PR `#n`'s head; for a branch,
 it reviews the local branch or creates it from `origin/<branch>`. It runs an
@@ -339,7 +339,7 @@ the verdict as a PR comment when a PR is available.
 
 ```bash
 orch pr 42            # review only, post a comment
-orch pr 42 --merge     # ...and ask GitHub to merge if agents approve + tests pass
+orch pr 42 --until merged  # ...and ask GitHub to merge if agents approve + tests pass
 orch pr feature/x --until ready  # audit a branch and wait for its PR readiness
 ```
 
@@ -360,14 +360,14 @@ issue` check this too).
 
 **The security scan (§1.1) still applies before any merge.** A risky diff
 escalates instead of reporting `approved`, regardless of what the LLM
-reviewers concluded. Without `--merge` (or `--until merged`), GitHub owns the
+reviewers concluded. Without `--until merged`, GitHub owns the
 actual merge and orch only posts the verdict.
 
 **The fetched and reviewed head is the only one eligible to merge.** With
-`--merge` (and `--until merged`), orch resolves the fetched PR head's commit
+`--until merged`, orch resolves the fetched PR head's commit
 SHA before review and pins GitHub's merge request to it. If the PR head moves
 during review, GitHub rejects the pinned request; orch stops and tells you to re-run
-`orch pr 42 --merge` so the new head is audited instead of landing code the
+`orch pr 42 --until merged` so the new head is audited instead of landing code the
 agents never saw.
 
 **Merge verification, not just a trusted success response.** After the pinned
@@ -390,7 +390,7 @@ test pipeline, in its own isolated worktree/branch.
 
 ```bash
 orch agent add mynewagent            # register an existing adapter
-orch agent add mynewagent --build --pr  # scaffold it and open a pull request
+orch agent add mynewagent --build    # scaffold it through orch's own pipeline
 ```
 
 **When to use it:** adding support for a new CLI coding agent that isn't
@@ -556,7 +556,7 @@ starts with `-`, so a task string can't smuggle in `--allow-protected` or
 `orch_pr` tool exposes only a fixed PR/branch target and a bounded `--until`
 enum; its `merged` mode is refused unless the repository explicitly sets
 `automation.mcpMayMerge: true`. When enabled, it runs the same head-bound,
-CI-checked merge path as a hand-typed `orch pr --merge`; otherwise the MCP
+CI-checked merge path as a hand-typed `orch pr --until merged`; otherwise the MCP
 server has no PR-merge authority. See §5 for the opt-in config key.
 Everything else — the security floor, the protected-path intake
 refusal (§2.14), the test gate, per-cycle worktree isolation, checkpoints and the
@@ -630,8 +630,7 @@ got to. `orch_status` and `orch_plan` return immediately.
   `task`, `issue`, and `pr` support `ready` (run the bounded
   readiness loop) and `merged` (run through readiness and the configured merge
   path). `continue` currently accepts only `--until once`; `ready` and `merged`
-  are refused there with exit `64`. On `pr`, `--merge` remains a compatibility
-  alias for `--until merged`. `--max-attempts` is not declared yet — nothing
+  are refused there with exit `64`. `--max-attempts` is not declared yet — nothing
   reads it, so it stays a usage error rather than a silent no-op until the
   retry loop that needs it ships.
 
@@ -639,7 +638,7 @@ Every flag is now declared per command in `src/schema.js`, and a flag the
 command does not read is refused with exit `64` rather than parsed and dropped.
 That is the difference between "nobody read your flag" and "your flag was
 rejected": `orch issue 42 --file wo.json` used to run against the issue body and
-ignore the file, and `orch pr 42 --merge --dry` used to perform a real merge.
+ignore the file, and `orch pr 42 --until merged --dry` used to perform a real merge.
 `--dry` is honoured by every command that changes something and refused on the
 read-only ones (`dashboard`, `mcp`, `config`), where planning nothing is not a
 meaningful request. `config` only prints and validates `.orch/orch.yml`; it
@@ -858,7 +857,7 @@ is `.orch/runs.jsonl`; its rows include `ts`, `branch`, `sid`, `verdict`,
 `reason`, and `rounds`, with optional `tokens`, `costUsd`, `sha`, `prUrl`, and
 `closes` fields.
 
-### 2.17 `orch upgrade` (alias: `orch update`)
+### 2.17 `orch upgrade`
 
 Self-updates the globally installed `orch` binary to the latest published
 version. It works out how orch was installed and re-runs the matching command,
@@ -1111,7 +1110,7 @@ itself forever), and when the merge was a no-op diff. A mixed code+docs merge
 triggers once.
 
 One surface implements this: it lives inside `orch` itself, so any merge orch
-performs locally (`orch task`, `orch pr --merge`) triggers it. A
+performs locally (`orch task`, `orch pr --until merged`) triggers it. A
 merge done purely in GitHub's web UI never reaches orch, so nothing refreshes
 the docs for it — run a docs task by hand if you merge that way.
 
@@ -1367,7 +1366,7 @@ release:
   from a line count is routine hygiene while dropping it from the security
   floor is a security decision that deserves its own explicit opt-in.
 - **`github.mergeMethod`** — only affects PRs orch itself merges via `gh`:
-  `orch pr --merge` and the `landing: pr` per-cycle PRs. It does **not** apply
+  `orch pr --until merged` and the `landing: pr` per-cycle PRs. It does **not** apply
   to the persistent `orch/integration → main` PR — that one always uses a
   merge commit, deliberately, so `orch/integration` stays in `main`'s
   ancestry (a squash or rebase would strand the integration branch outside
@@ -1494,7 +1493,7 @@ All land on `orch/integration`; one persistent PR accumulates all of them.
 it, and to merge it myself only if agents approve."**
 ```bash
 orch pr 57
-orch pr 57 --merge
+orch pr 57 --until merged
 ```
 
 **"I have a GitHub issue describing a bug; I want it fixed and the issue

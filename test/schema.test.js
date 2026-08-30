@@ -163,7 +163,7 @@ test("--json is scoped to dashboard, config, and run-controller commands", () =>
 
 test("an out-of-scope flag names the commands where it IS legal", () => {
   assert.throws(() => validate("issue", { file: "f" }), /--file is not valid with 'orch issue' — only with: orch task/);
-  assert.throws(() => validate("issue", { merge: true }), /only with: orch pr/);
+  assert.throws(() => validate("dashboard", { detach: true }), /only with: orch task, orch issue, orch continue, orch pr/);
 });
 
 test("--from is an authoring-cycle flag and documents a fresh round 1", () => {
@@ -277,7 +277,7 @@ test("an unknown command exits 64 and asks for the usage text", async () => {
   }
 });
 
-// A flag with no command at all (`orch --merge`) used to fall through
+// A flag with no command at all (`orch --dry`) used to fall through
 // main()'s no-command branch, print the usage text, and exit 0 — the flag
 // was silently dropped rather than refused, same "declared but inert" family
 // as every other finding in this file.
@@ -286,8 +286,8 @@ test("a flag with no command is a usage error, not a silent no-op", async () => 
   chdir(mkdtempSync(join(tmpdir(), "orch-schema-bare-flag-")));
   try {
     await assert.rejects(
-      () => main(["--merge"], { preflight() {} }),
-      (e) => e.exit === 64 && /--merge requires a command/.test(e.message),
+      () => main(["--dry"], { preflight() {} }),
+      (e) => e.exit === 64 && /--dry requires a command/.test(e.message),
     );
   } finally {
     chdir(prev);
@@ -302,7 +302,7 @@ test("orch pr --dry performs zero gh calls (real merge stays impossible)", async
   const origLog = console.log;
   console.log = (...a) => logs.push(a.map(String).join(" "));
   try {
-    await main(["pr", "42", "--merge", "--dry"], {
+    await main(["pr", "42", "--until", "merged", "--dry"], {
       preflight() { assert.fail("preflight ran on a dry run"); },
       githubDeps: () => ({ gh, git: () => "" }),
     });
@@ -417,10 +417,6 @@ test("help renders grouped pages from the schema without leaking scoped flags", 
 // command named "land" whose title mentions "land") or when a stale row
 // survives for a command deleted from COMMANDS. Extracting the grouped rows
 // and comparing the two command sets directly closes both directions.
-//
-// `update` is COMMANDS' one deliberate exception: it is `upgrade`'s alias
-// and shares upgrade's row ("upgrade, update") instead of getting its own,
-// same as the schema.js comment on COMMANDS.update says.
 test("every command in COMMANDS has exactly one grouped row in the global help, and vice versa", () => {
   const global = renderHelp();
   const groupsStart = global.indexOf("Set up a repo:\n");
@@ -430,8 +426,7 @@ test("every command in COMMANDS has exactly one grouped row in the global help, 
     .split("\n")
     .filter((line) => /^ {2}\S/.test(line))
     .map((line) => line.match(/^ {2}(\S+)/)[1].replace(/,$/, ""));
-  const expected = Object.keys(COMMANDS).filter((name) => name !== "update");
-  assert.deepEqual(listed.sort(), expected.sort());
+  assert.deepEqual(listed.sort(), Object.keys(COMMANDS).sort());
 });
 
 test("the help option rows stay bidirectionally aligned with command flags", () => {
