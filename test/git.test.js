@@ -213,6 +213,20 @@ test("createTaskBranch refuses an existing branch", () => {
   assert.throws(() => createTaskBranch(repo, join(repo, ".orch/wt/d"), "pr/claude/dup", "main"), /already exists/);
 });
 
+test("createTaskBranch refuses a source branch whose tip moved", () => {
+  const repo = newRepo();
+  git(["branch", "salvaged"], repo);
+  const expected = git(["rev-parse", "salvaged"], repo);
+  commitFile(repo, "a.txt", "advanced\n", "advance main");
+  git(["update-ref", "refs/heads/salvaged", "main"], repo);
+
+  assert.throws(
+    () => createTaskBranch(repo, join(repo, ".orch/wt/d"), "pr/claude/from", "salvaged", "", expected),
+    /branch moved before checkout: salvaged/,
+  );
+  assert.equal(branchExists(repo, "pr/claude/from"), false);
+});
+
 test("attachExistingBranch refuses a missing branch (F5: no silent create)", () => {
   const repo = newRepo();
   assert.equal(branchExists(repo, "pr/claude/nope"), false);

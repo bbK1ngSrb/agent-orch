@@ -29,7 +29,7 @@ function roundRawOutput(verdicts) {
 // Pure state machine. All side-effecting collaborators arrive via `deps`,
 // so tests stub them and dry-run is just another set of stubs.
 export async function runCycle(opts, deps) {
-  const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false, sid, resume = false } = opts;
+  const { mode = "task", task, branch, authorName, reviewerName, cfg, orchDir, repo, worktree, noMerge = false, sid, resume = false, from = null } = opts;
   const { adapters, git, gate, scope, notify, finalize, inflight, checkpoint } = deps;
   const baseBranch = cfg.baseBranch || "main";
   // Cycles land on integrationBranch but used to branch from baseBranch, so work
@@ -40,6 +40,8 @@ export async function runCycle(opts, deps) {
   // cfg.baseBranch stays the PR target and the trunk — this only moves the
   // branch point and the diff comparisons.
   const cycleBase = resolveCycleBase(git, repo, baseBranch, cfg.integrationBranch);
+  const fromSource = from ? resolveFromBranch(git, repo, cycleBase, from) : null;
+  const branchBase = fromSource?.ref || cycleBase;
   // Role specs carry optional model/effort. Fall back to bare names so callers
   // that pass only authorName/reviewerNames (e.g. the PR bridge) keep working.
   const authorSpec = opts.author || { agent: authorName };
@@ -106,9 +108,9 @@ export async function runCycle(opts, deps) {
   // F5: task mode owns a fresh branch; review mode requires an existing one.
   // A resumed task (#24) re-attaches the quota-aborted branch — its authored
   // commits are already there, so we skip the initial author step below.
-  notify.phase("worktree", `${branch} (${mode}${resume ? ", resume" : ""}${cycleBase !== baseBranch ? `, base ${cycleBase}` : ""})`);
+  notify.phase("worktree", `${branch} (${mode}${resume ? ", resume" : ""}${branchBase !== baseBranch ? `, base ${branchBase}` : ""})`);
   if (mode === "review" || resume) git.attachExistingBranch(repo, worktree, branch);
-  else git.createTaskBranch(repo, worktree, branch, cycleBase, `${process.pid}\n${sid}`);
+  else git.createTaskBranch(repo, worktree, branch, branchBase, `${process.pid}\n${sid}`, fromSource?.sha);
 
   const baseSha = git.git(["rev-parse", cycleBase], repo);
   // A failed author stage is captured as a WIP commit. Derive recovery here so
@@ -560,6 +562,31 @@ function escalate(notify, orchDir, branch, round, reason, body = reason, cls, ex
   if (!cls) throw new Error("engine.escalate: every call site must pass a failure class");
   notify.escalate(orchDir, branch, `# Escalation — ${branch}\n\n${body}\n`);
   return { status: "escalated", reason, rounds: round, class: cls, fingerprint: fingerprint(cls, reason), ...extra };
+}
+
+function resolveFromBranch(git, repo, base, from) {
+  let fromSha;
+  let baseSha;
+  try {
+    fromSha = git.git(["rev-parse", "--verify", "--quiet", `refs/heads/${from}`], repo);
+  } catch {
+    throw new Error(`orch: --from ${from}: branch does not exist locally`);
+  }
+  try {
+    baseSha = git.git(["rev-parse", "--verify", "--quiet", `refs/heads/${base}`], repo);
+  } catch {
+    throw new Error(`orch: configured base ${base} does not exist locally`);
+  }
+  // No ancestry check. A salvage branch is behind by construction: the moment
+  // any other cycle lands, an escalated pr/* branch stops being a descendant of
+  // the integration branch, and once the integration PR merges it stops being a
+  // descendant of the trunk too. There is no ref this branch is reliably a
+  // descendant of, so refusing on ancestry rejects exactly the case --from
+  // exists for. Staleness surfaces later where it is actionable — as a merge
+  // conflict the remedy ladder handles — not as a refusal before the author
+  // runs. `baseSha` is still resolved above so a missing base is a clear error.
+  void baseSha;
+  return { ref: from, sha: fromSha };
 }
 
 // The base a cycle is actually cut from and diffed against: integrationBranch

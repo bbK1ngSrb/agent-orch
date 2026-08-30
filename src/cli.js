@@ -1759,9 +1759,9 @@ function validateLocalPrTarget(repo, target) {
 }
 
 export function resolveTaskBranch(ctx, deps = { git, resume }) {
-  const { repo, orchDir, task, authorName, authorSpec = null, dry = false, liveBranches = new Set(), baseBranch = "main", roundCap } = ctx;
+  const { repo, orchDir, task, authorName, authorSpec = null, dry = false, from = null, liveBranches = new Set(), baseBranch = "main", roundCap } = ctx;
   const { git: g, resume: r } = deps;
-  const found = dry ? null : r.lookup(orchDir, task, authorName);
+  const found = dry || from ? null : r.lookup(orchDir, task, authorName);
   if (found && !liveBranches.has(found.branch)) {
     if (hasEscalationDecision(orchDir, found.branch, found.sid, roundCap)) {
       r.clear(orchDir, task, authorName); // terminal escalation must not be re-run as a resume
@@ -2447,12 +2447,13 @@ export async function main(argv, deps = {}) {
       if (!eligibleAuthors.length) throw noEligibleRole("reviewer", { exclude: exclusions, agents: cfg.agents || [] });
       runs = eligibleAuthors.map((authorSpec) => {
         const authorName = authorSpec.agent;
-        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, authorSpec, dry, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
+        const from = flags.from || null;
+        const { sid, branch, resume } = resolveTaskBranch({ repo, orchDir, task, authorName, authorSpec, dry, from, liveBranches, baseBranch: cfg.baseBranch, roundCap: cfg.roundCap });
         const reviewerList = reviewersForRun(authorName);
         return {
           mode, task, authorPrompt, workOrder, allowLargeScope: Boolean(flags["allow-large-scope"]),
           until,
-          closes, branch, sid, resume, authorName, author: authorSpec,
+          closes, branch, sid, resume, from, authorName, author: authorSpec,
           reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
           reviewers: reviewerList, excludedAgents: exclusions,
           cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),

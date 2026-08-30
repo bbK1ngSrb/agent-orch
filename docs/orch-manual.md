@@ -627,6 +627,21 @@ got to. `orch_status` and `orch_plan` return immediately.
   the cheapest CLI agent) as both author and reviewer for this one
   `task`/`issue` run. See §5.1 `cheap` for the automatic path-based routing
   that works without the flag.
+- **`--from <ref>`** — start the cycle's branch from an existing local branch
+  instead of the base orch would normally cut from. This is the salvage path:
+  when a cycle escalates, its work sits on a `pr/*` branch that no later run can
+  build on, and without this flag re-running the same issue starts from the base
+  again and produces an empty or duplicate diff. `--from` cuts the new branch
+  from that ref so the accumulated work is the starting point. Two consequences
+  worth knowing: the diff handed to the reviewer is still computed against the
+  base, so the audit covers the whole slice and not just the fix pass; and the
+  salvage is a *new* cycle with a new run ID and its own round counter, so the
+  escalated cycle's rounds do not count against this run's cap. There is
+  deliberately no staleness check — a salvaged branch is behind by construction,
+  since anything that lands after it escalated leaves it a non-descendant of both
+  the integration branch and the trunk. Refusing on that would reject every real
+  salvage; a genuinely stale branch surfaces later as a merge conflict, which the
+  remedy ladder already handles.
 - **`--config-file <path.yml>`** — layer a custom YAML file on top of
   `.orch/orch.yml` for this run only. Useful for a one-off role/merge-mode
   experiment without editing the repo's config.

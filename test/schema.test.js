@@ -175,6 +175,21 @@ test("an out-of-scope flag names the commands where it IS legal", () => {
   assert.throws(() => validate("issue", { merge: true }), /only with: orch pr/);
 });
 
+test("--from is an authoring-cycle flag and documents a fresh round 1", () => {
+  for (const command of ["task", "issue"]) {
+    const { flags } = parse([command, ...(command === "task" ? ["work"] : ["42"]), "--from", "salvaged"]);
+    assert.equal(flags.from, "salvaged");
+    assert.doesNotThrow(() => validate(command, flags));
+  }
+  for (const command of ["review", "continue", "pr"]) {
+    assert.throws(
+      () => validate(command, { from: "salvaged" }),
+      (e) => e.exit === 64 && /--from is not valid/.test(e.message),
+    );
+  }
+  assert.match(renderHelp("issue"), /--from <ref>[\s\S]*round 1[\s\S]*previous cycle rounds do not count/);
+});
+
 test("--dry on a read-only command is refused as meaningless, not as unknown", () => {
   for (const command of Object.keys(COMMANDS).filter((c) => COMMANDS[c].mutates === false)) {
     assert.throws(
