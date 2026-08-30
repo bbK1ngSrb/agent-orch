@@ -29,7 +29,10 @@ Every `orch task`, `orch issue`, or `orch agent build` run is a
 2. **Cross-audit** — a *different* agent reviews the author's diff and returns
    `AGREE` or `DISAGREE`. If `DISAGREE`, the author revises and the review
    repeats, up to `roundCap` rounds (default 3) — the initial review is round
-   one, so 3 buys 3 reviews and 2 revisions. Before each round orch checks that the
+   one, so 3 buys 3 reviews and 2 revisions — except for an audit-only run
+   (`orch pr <number|branch>`), which has no author to revise and so escalates
+   immediately on the first `DISAGREE` instead of looping (`src/engine.js`
+   caps a review-mode cycle at one round). Before each round orch checks that the
    branch actually differs from its base. An empty diff means there is nothing
    to review, so the cycle escalates right there with `author produced no
    changes — nothing to review` rather than paying a reviewer to read an empty
@@ -38,7 +41,8 @@ Every `orch task`, `orch issue`, or `orch agent build` run is a
    base — not one revision against the previous one. So it catches a revise
    that leaves the branch empty (the author undid its own work), while a
    revise that simply adds nothing new keeps the earlier diff in place and the
-   loop still runs to `roundCap`.
+   loop still runs to `roundCap`. Under `orch pr <branch>` the same check
+   rejects an already-merged or empty branch before the audit runs.
 3. **Test-gate** — the repo's test command runs against the change. No green
    tests, no merge, no exceptions.
 4. **Security scan** — a deterministic pattern scan (`scanDiff` in

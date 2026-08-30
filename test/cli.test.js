@@ -3635,6 +3635,50 @@ test("orch pr numeric target reports an approved review as action required", asy
   }
 });
 
+test("orch pr branch audit exits 0 even when the branch has a discoverable open PR", async () => {
+  // Regression: the approved-audit exit must not depend on a best-effort
+  // `gh pr list` lookup. Same branch target as the test above, but here GitHub
+  // is reachable and does find an open PR for the branch. The exit must still
+  // be OK, not ACTION_REQUIRED — the caller typed a branch, and the code that
+  // reads this exit cannot be allowed to see a different answer depending on
+  // whether the lookup happened to succeed.
+  const savedExitCode = process.exitCode;
+  process.exitCode = 0;
+  const repo = initGitRepo("orch-pr-approved-branch-with-pr-");
+  addOriginWithPeer(repo);
+  gitDep.git(["branch", "feature/x"], repo);
+  const headOid = gitDep.git(["rev-parse", "feature/x"], repo);
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify([{ number: 11, url: "https://github.com/o/r/pull/11", isDraft: false, headRefOid: headOid }]);
+    }
+    if (args[0] === "pr" && args[1] === "view") {
+      return JSON.stringify({
+        number: 11, state: "OPEN", isDraft: false, headRefName: "feature/x", headRefOid: headOid,
+        baseRefName: "main", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+        reviewDecision: null, statusCheckRollup: [], url: "https://github.com/o/r/pull/11",
+      });
+    }
+    if (args[0] === "api") return "[]";
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["pr", "feature/x"], {
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      cycleDeps: {
+        ...fakeCycleDeps(),
+        finalize: async () => ({ status: "approved", reason: "review passed" }),
+      },
+    });
+    assert.match(logs.join("\n"), /approved/);
+    assert.equal(process.exitCode, EXIT_CODES.OK);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 test("pr target resolution keeps colleague branches off the push path", () => {
   const repo = initGitRepo("orch-pr-authority-");
   gitDep.git(["branch", "feature/colleague"], repo);

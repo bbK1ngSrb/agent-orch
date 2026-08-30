@@ -158,8 +158,13 @@ function outcomeForResult(result) {
 // review is successful, but leaves exactly one human gesture: merging the PR.
 // Branch-target audits are the replacement for the old `orch review` command
 // and remain a clean exit when they finish after one audit pass.
+// The gate reads how the target was *typed* (`requestedByNumber`), never the
+// resolved `number`: for a branch target that number comes from a best-effort
+// `gh pr list` lookup that `resolvePrTarget` catches and ignores, so gating on
+// it would make a machine-readable exit code depend on whether GitHub happened
+// to be reachable.
 function exitForResult(result, command = null, prTarget = null) {
-  if (command === "pr" && prTarget?.number && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
+  if (command === "pr" && prTarget?.requestedByNumber && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
   return outcomeForResult(result) === "stopped-at-cap" ? EXIT_CODES.ESCALATED : EXIT_CODES.OK;
 }
 // Design §6 terminal states: only the outcomes a single implicit cycle can
@@ -1272,6 +1277,7 @@ export function resolvePrTarget({ target, repo, orchDir, baseBranch = "main", un
   return {
     ...pr,
     number: pr?.number ? Number(pr.number) : null,
+    requestedByNumber: /^\d+$/.test(value),
     url: pr?.url || null,
     branch,
     remoteBranch: pr?.headRefName || branch,
@@ -3047,7 +3053,17 @@ export async function main(argv, deps = {}) {
     const allowLargeScope = Boolean(flags["allow-large-scope"]);
     const isReviewResume = priorRun?.command === "review";
     const isPrResume = priorRun?.command === "pr";
-    const prTarget = priorRun?.prTarget || null;
+    // A record written before `requestedByNumber` existed (or by an older
+    // orch) has no such field, and its `number` may have come from the
+    // best-effort branch lookup — so fall back to how the run was actually
+    // invoked, which the record preserves verbatim in `argv`.
+    const prTarget = priorRun?.prTarget
+      ? {
+        ...priorRun.prTarget,
+        requestedByNumber: priorRun.prTarget.requestedByNumber
+          ?? /^\d+$/.test(String(priorRun.argv?.[1] ?? "")),
+      }
+      : null;
     const until = flags.until || priorRun?.policy?.until || "once";
     const run = {
       // Older completed-author checkpoints carry no task, so retain the branch

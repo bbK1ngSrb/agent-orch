@@ -1,7 +1,7 @@
 # Changelog
 
 ## v0.4.373 — Unreleased
-- **BREAKING (cli):** remove the legacy `orch review <branch>` command; use `orch pr <branch> --until once` for an audit-only run. The removed `orch_review` MCP tool now returns JSON-RPC `-32601` and names `orch_pr` as its replacement.
+- **BREAKING (cli):** remove the legacy `orch review <branch>` command; use `orch pr <branch> --until once` for an audit-only run. The removed `orch_review` MCP tool now returns JSON-RPC `-32601` and names `orch_pr` as its replacement. Two differences to note when migrating: `orch pr` does not accept `--cheap`, so a cheap-role audit must be requested with an explicit `--reviewer` spec instead; and an approved audit of a branch target exits 0, while an approved audit of a numeric PR target exits 5 (ACTION_REQUIRED, one human merge still pending).
 
 ## v0.4.372 — 2026-08-30
 - fix: persist post-merge tidy outcomes (closes [#622](https://github.com/bbk1ng/agent-orch/issues/622))
