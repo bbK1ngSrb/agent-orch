@@ -6652,10 +6652,10 @@ test("removed --merge flag exits 64 and points to --until merged", async () => {
   );
 });
 
-test("removed --pr flag exits 64 and points to the landing config key", async () => {
+test("removed --pr flag exits 64 and points to opening a PR by hand", async () => {
   await assert.rejects(
     () => main(["agent", "add", "widget", "--build", "--pr"], { preflight() {} }),
-    (e) => e.exit === 64 && /landing: pr/.test(e.message),
+    (e) => e.exit === 64 && /open a PR by hand/.test(e.message),
   );
 });
 

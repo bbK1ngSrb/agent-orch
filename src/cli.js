@@ -505,7 +505,7 @@ export function parse(argv) {
       // --merge and --pr were removed in v0.5 (P12d) in favour of exact
       // replacements; name them so the old spelling still teaches the new one.
       const replacement = unknown[1] === "--merge" ? " — use '--until merged'"
-        : unknown[1] === "--pr" ? " — set 'landing: pr' in .orch/orch.yml"
+        : unknown[1] === "--pr" ? " — agent add --build stays local-only now; open a PR by hand if you want one"
         : "";
       throw usageError(`unknown option ${unknown[1]}${replacement} (run 'orch help' for usage)`);
     }
