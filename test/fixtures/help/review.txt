@@ -15,7 +15,7 @@ Options:
   --until <goal>          What this run pursues: once, ready or merged.
                           once  = a single audit, then report.
                           ready = land locally, then wait for the standing PR
-                          to be green and
+                                  to be green and
                                   mergeable; never merge the standing PR.
                           merged = also merge the standing PR.
                           (default: once)

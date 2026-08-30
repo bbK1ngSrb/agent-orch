@@ -336,7 +336,8 @@ export const HELP_PAGES = {
       until: untilHelp(
         "What this run pursues: once, ready or merged.",
         "once  = a single audit, then report.",
-        "ready = land locally, then wait for the standing PR to be green and",
+        "ready = land locally, then wait for the standing PR",
+        "        to be green and",
         "        mergeable; never merge the standing PR.",
         "merged = also merge the standing PR.",
         "(default: once)",
@@ -609,7 +610,8 @@ export function validate(command, flags, { detachedChild = false } = {}) {
   // there is nothing to stream, so accepting it would be another silent no-op.
   if (flags.json && ["task", "issue", "review", "pr"].includes(effective) && (!flags.until || flags.until === "once")) {
     if (!flags.detach && !detachedChild) {
-      throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged) — the once path has no event stream to print`);
+      const landing = effective === "review" ? " — either goal also opts into landing the branch" : "";
+      throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged)${landing} — the once path has no event stream to print`);
     }
   }
   if (flags.detach && flags.dry) {

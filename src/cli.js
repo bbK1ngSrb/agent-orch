@@ -3028,16 +3028,17 @@ export async function main(argv, deps = {}) {
     }
 
     const allowLargeScope = Boolean(flags["allow-large-scope"]);
+    const isReviewResume = priorRun?.command === "review";
     const isPrResume = priorRun?.command === "pr";
     const prTarget = priorRun?.prTarget || null;
     const run = {
       // Older completed-author checkpoints carry no task, so retain the branch
       // fallback for their changelog label. Author-stage resumes fail above
       // unless they have the original work order and can execute it safely.
-      mode: isPrResume ? "review" : "task", task, authorPrompt, workOrder,
+      mode: isPrResume || isReviewResume ? "review" : "task", task, authorPrompt, workOrder,
       until: flags.until || priorRun?.policy?.until || "once",
       allowLargeScope, branch, sid: resumeSid, resume: true, closes,
-      noMerge: isPrResume, prTarget,
+      noMerge: isPrResume || isReviewResume, prTarget,
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers,

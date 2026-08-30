@@ -4803,6 +4803,84 @@ test("orch review audits by default without changing the integration tip", async
   assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
+test("orch review --until ready uses the landing path", async () => {
+  const repo = initGitRepo("orch-review-ready-");
+  const branch = "pr/claude/review-ready";
+  gitDep.git(["branch", "orch/integration"], repo);
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+
+  let finalized = false;
+  const logs = await runMainInRepo(repo, ["review", branch, "--until", "ready"], {
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async (ctx) => {
+        finalized = true;
+        assert.equal(ctx.branch, branch);
+        assert.equal(ctx.until, "ready");
+        return { status: "merged", reason: "test", sha: "abc" };
+      },
+    },
+    githubDeps: () => ({ gh, git: gitDep.git }),
+  });
+
+  assert.equal(finalized, true);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
+});
+
+test("orch continue resumes a review without changing the integration tip", async () => {
+  const repo = initGitRepo("orch-review-resume-");
+  const branch = "pr/claude/review-resume";
+  const sid = "reviewresume";
+  gitDep.git(["branch", "orch/integration"], repo);
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  checkpointDep.record(orchDir, sid, {
+    branch,
+    oid: gitDep.git(["rev-parse", branch], repo),
+    round: 1,
+    stage: "reviewed",
+    decision: "AGREE",
+    reason: "looks good",
+    author: { agent: "claude" },
+    reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid,
+    command: "review",
+    argv: ["review", branch],
+    policy: { until: "once" },
+  });
+
+  const before = gitDep.git(["rev-parse", "orch/integration"], repo);
+  let finalized = false;
+  const logs = await runMainInRepo(repo, ["continue", sid], {
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async () => { finalized = true; return { status: "merged", reason: "unexpected", sha: "abc" }; },
+    },
+  });
+  const after = gitDep.git(["rev-parse", "orch/integration"], repo);
+
+  assert.equal(after, before);
+  assert.equal(finalized, false);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
+});
+
 // The schema's own matrix test (schema.test.js) derives its expectations from
 // FLAGS/COMMANDS, so it can't catch a regression in those declarations
 // themselves — delete --allow-large-scope from the schema and that test gets
