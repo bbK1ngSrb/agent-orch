@@ -6,6 +6,7 @@ import { tmpdir, homedir } from "node:os";
 import { join, delimiter } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, ghShell, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
 import { existsSync } from "node:fs";
@@ -21,6 +22,7 @@ import { IS_WINDOWS } from "../src/platform.js";
 import { EXIT_CODES } from "../src/exit-codes.js";
 
 const docsCfg = { docs: { autoUpdate: true, prompt: "update docs", paths: ["*.md"] } };
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 test("ghShell retries one authentication failure and keeps stdin non-interactive", () => {
   const calls = [];
@@ -3588,7 +3590,7 @@ test("pr accepts a branch target and rejects a missing branch", async () => {
   await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
 });
 
-test("orch pr reports an approved review as success", async () => {
+test("orch pr reports an approved review as action required", async () => {
   const savedExitCode = process.exitCode;
   process.exitCode = 0;
   const repo = initGitRepo("orch-pr-approved-");
@@ -3601,7 +3603,7 @@ test("orch pr reports an approved review as success", async () => {
       },
     });
     assert.match(logs.join("\n"), /approved/);
-    assert.equal(process.exitCode, EXIT_CODES.OK);
+    assert.equal(process.exitCode, EXIT_CODES.ACTION_REQUIRED);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -4229,7 +4231,7 @@ test("registerWithConcurrencyCap removes the rejected run", () => {
 test("raiseExitCode follows the documented outcome priority", () => {
   const saved = process.exitCode;
   try {
-    const priority = [1, 6, 2, 4, 3];
+    const priority = [1, 6, 2, 4, 5, 3];
     for (let high = 0; high < priority.length; high++) {
       for (let low = high + 1; low < priority.length; low++) {
         process.exitCode = 0;
@@ -4283,9 +4285,38 @@ test("raiseExitCode reports every table outcome instead of silently dropping it"
     raiseExitCode(EXIT_CODES.WAIT_TIMEOUT);
     raiseExitCode(EXIT_CODES.THROTTLED);
     assert.equal(process.exitCode, 4, "a later 3 must not downgrade an earlier 4");
+
+    process.exitCode = 0;
+    raiseExitCode(EXIT_CODES.ACTION_REQUIRED);
+    assert.equal(process.exitCode, 5, "5 alone must be reported, not silently dropped");
+
+    process.exitCode = 0;
+    raiseExitCode(EXIT_CODES.THROTTLED);
+    raiseExitCode(EXIT_CODES.ACTION_REQUIRED);
+    assert.equal(process.exitCode, 5, "5 must win over an earlier 3");
   } finally {
     process.exitCode = saved;
   }
+});
+
+test("orch-loop treats ACTION_REQUIRED as a clean stop", { skip: IS_WINDOWS && "requires bash" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "orch-loop-action-required-"));
+  const orch = join(dir, "orch.sh");
+  const probe = join(dir, "probe.sh");
+  const probeMarker = join(dir, "probe-called");
+  writeFileSync(orch, "#!/bin/sh\nexit 5\n");
+  writeFileSync(probe, `#!/bin/sh\nif [ ! -f ${probeMarker}.first ]; then touch ${probeMarker}.first; exit 0; fi\ntouch ${probeMarker}\nexit 1\n`);
+  chmodSync(orch, 0o755);
+  chmodSync(probe, 0o755);
+  const result = spawnSync("bash", [join(repoRoot, "harness", "orch-loop.sh"), "pr", "7"], {
+    cwd: dir,
+    env: { ORCH_CMD: orch, PROBE_CMD: probe, PATH: "/usr/bin:/bin", POLL: "1", MAX_WAITS: "1" },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /waiting on a human action \(rc=5\)/);
+  assert.doesNotMatch(result.stderr, /real error/);
+  assert.equal(existsSync(probeMarker), false, "ACTION_REQUIRED must not trigger quota probing");
 });
 
 test("orch task can run while the operator checkout stays on main", async () => {
@@ -4981,7 +5012,7 @@ test("orch continue resumes a ready review through the landing path", async () =
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
-test("orch continue persists a success exit for an approved PR resume", async () => {
+test("orch continue persists action-required for an approved PR resume", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-pr-resume-approved-");
   const branch = "pr/claude/pr-resume-approved";
@@ -5029,14 +5060,10 @@ test("orch continue persists a success exit for an approved PR resume", async ()
     const end = events.at(-1);
     assert.equal(end.event, "run.end");
     assert.equal(end.outcome, "reached");
-    // An approved review reports OK. Splitting out a distinct
-    // "one human gesture remains" code is deliberately not part of this change
-    // — the PR-check job has to handle a nonzero success code first (issue
-    // #619), or this repo's own check goes red on the success path.
-    assert.equal(end.exit, EXIT_CODES.OK);
+    assert.equal(end.exit, EXIT_CODES.ACTION_REQUIRED);
     const record = JSON.parse(readFileSync(join(orchDir, "run-records", `${sid}.json`), "utf8"));
-    assert.equal(record.exit, EXIT_CODES.OK);
-    assert.equal(process.exitCode, EXIT_CODES.OK);
+    assert.equal(record.exit, EXIT_CODES.ACTION_REQUIRED);
+    assert.equal(process.exitCode, EXIT_CODES.ACTION_REQUIRED);
   } finally {
     process.exitCode = savedExitCode;
   }

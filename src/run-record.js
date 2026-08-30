@@ -53,6 +53,7 @@ export function create(orchDir, { runId, command, argv, policy = null, prTarget 
     integration: null,
     readiness: null,
     merge: null,
+    tidy: null,
     human: null,
     detached,
     interrupted: null,

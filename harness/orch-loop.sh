@@ -121,6 +121,9 @@ main() {
 
         case "$rc" in
             0)  log "orch finished (rc=$rc)"; exit 0 ;;   # done: approved / merged
+            5)  # ACTION_REQUIRED: the cycle succeeded and is waiting on one
+                # human gesture, such as merging an approved `orch pr`.
+                log "orch finished — waiting on a human action (rc=$rc)"; exit 0 ;;
             *)  # Exit 1 is the historical author failure; exit 2 is the
                 # AGENT_QUOTA escalation. The limit probe distinguishes those
                 # quota deaths from ordinary failures within those statuses.
@@ -143,6 +146,7 @@ selftest() {
     is_quota_exit 2 "Claude usage limit reached" || { echo "FAIL retry exit 2"; exit 1; }
     is_quota_exit 3 "Claude usage limit reached" && { echo "FAIL retry exit 3"; exit 1; }
     is_quota_exit 4 "Claude usage limit reached" && { echo "FAIL retry exit 4"; exit 1; }
+    is_quota_exit 5 "Claude usage limit reached" && { echo "FAIL retry exit 5"; exit 1; }
     # #575: a blocked run must never be retried as a quota death. That outcome
     # moved from exit 3 to exit 6, so assert the code it actually uses now —
     # exit 3 above is the concurrency refusal, a different outcome entirely.
