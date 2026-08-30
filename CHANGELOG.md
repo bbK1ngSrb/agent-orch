@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- **BREAKING (cli):** fold `orch agent build <name>` into `orch agent add <name> --build`; the shared adapter-scaffolding pipeline and `--pr` flag remain available on the new spelling.
+
 ## v0.4.372 — 2026-08-30
 - fix: persist post-merge tidy outcomes (closes [#622](https://github.com/bbk1ng/agent-orch/issues/622))
 

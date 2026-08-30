@@ -382,6 +382,29 @@ x` (fake deps) runs the ready loop; README no longer promises "no way to emit
 --merge". **Risk.** L; schedule with no other cycles in flight. **Rollback.**
 `npm i -g @bbk1ng/agent-orch@0.4.<last>`.
 
+**Split into seven slices (2026-08-30).** Run as one cycle this slice stalemated
+three times: a round cap cannot exhaust a surface that removes seven independent
+vocabularies at once. Each slice below removes one vocabulary, carries its own
+docs and its own subset of the 44 stale `cli.test.js` tests, and is green on its
+own. Run them **serially** — they share `src/cli.js`, `src/schema.js` and
+`test/cli.test.js`. Salvage base for all of them: `ab54ea35` (tag
+`p12-salvage`), cut from `b8c889d`; every removal is implemented there and every
+test file except `test/cli.test.js` is green.
+
+| # | Slice | Removes |
+|---|---|---|
+| #625 | P12b | `orch review`; MCP `orch_review` → `-32601` naming `orch_pr` |
+| #626 | P12c | `agent build` (folds into `agent add --build`) |
+| #627 | P12d | `--merge`, `--pr`, the `orch update` alias |
+| #628 | P12e | config wizard; removed keys become hard errors |
+| #629 | P12f | run banner and `--no-banner` |
+| #630 | P12g | bare run == `--until ready`, `continue` inherits its goal, `docs/MIGRATION-0.5.md`, `test/migration.test.js` |
+| #631 | P12h | version `0.5.0` (protected → `--allow-protected`, hand-land) |
+
+Ordering constraints: P12b and P12c both before P12d (stale tests pass `--merge`
+to `review` and exercise `agent build --pr`); P12e before P12f (one test writes
+`merge: ff-only` *and* asserts banner output); P12g after every removal; P12h last.
+
 ### P13 — Telemetry, fault-injection suite, release — **M**
 
 **Goal.** Design §16 `runs.jsonl` fields; redrive `quietFail` lines
@@ -741,7 +764,9 @@ tracking issue #509 holds the same table.
 
 ### P12 — `Cutover to v0.5.0: bare == --until ready; remove old commands/flags/keys; docs + migration guide`
 
-**Filed:** #528.
+**Filed:** #528 — **split 2026-08-30 into #625 (P12b), #626 (P12c), #627 (P12d),
+#628 (P12e), #629 (P12f), #630 (P12g), #631 (P12h); #528 is the umbrella and is not
+run as a cycle.**
 > **What:** the clean break (owner decision 5/16). **Do:** flip the `--until`
 > default to `ready`; delete `review`, `agent build`, `update`, `--merge`,
 > `--pr`, `--no-banner`, banner, wizard, `main.*`, `github.autoMergePr`,

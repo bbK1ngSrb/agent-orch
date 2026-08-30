@@ -3104,19 +3104,19 @@ test("agent add rejects an unknown agent", async () => {
   }
 });
 
-test("agent build feeds an adapter work order through the task pipeline (noMerge by default)", async () => {
+test("agent add --build feeds an adapter work order through the task pipeline (noMerge by default)", async () => {
   const d = initGitRepo("orch-agentbuild-");
-  const logs = await runMainInRepo(d, ["agent", "build", "widget"], { resolveAgentBin: () => "/usr/bin/widget" });
+  const logs = await runMainInRepo(d, ["agent", "add", "widget", "--build"], { resolveAgentBin: () => "/usr/bin/widget" });
   assert.match(
     logs.join("\n"),
-    /agent build widget: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/,
+    /agent add widget --build: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/,
   );
 });
 
-test("agent build scaffolds quota detection and environment fields", async () => {
+test("agent add --build scaffolds quota detection and environment fields", async () => {
   const d = initGitRepo("orch-agentbuild-fields-");
   let prompt = "";
-  await runMainInRepo(d, ["agent", "build", "widget"], {
+  await runMainInRepo(d, ["agent", "add", "widget", "--build"], {
     resolveAgentBin: () => "/usr/bin/widget",
     cycleDeps: {
       ...fakeCycleDeps(),
@@ -3134,7 +3134,7 @@ test("agent build scaffolds quota detection and environment fields", async () =>
   assert.doesNotMatch(prompt, /envKeys/);
 });
 
-test("agent build --pr routes the cycle through merge: pr instead of a local-only branch", async () => {
+test("agent add --build --pr routes the cycle through merge: pr instead of a local-only branch", async () => {
   const savedExitCode = process.exitCode;
   // Asserting an exit code of 0 means asserting that nothing raised one, so the
   // starting value has to be 0 and not whatever a previous test left behind —
@@ -3151,9 +3151,9 @@ test("agent build --pr routes the cycle through merge: pr instead of a local-onl
     },
   };
   try {
-    const logs = await runMainInRepo(d, ["agent", "build", "widget", "--pr"], deps);
+    const logs = await runMainInRepo(d, ["agent", "add", "widget", "--build", "--pr"], deps);
     assert.equal(seenMerge, "pr");
-    assert.match(logs.join("\n"), /agent build widget: pr /);
+    assert.match(logs.join("\n"), /agent add widget --build: pr /);
     // Opening the PR is this command's success case, not a stopped-at-cap run.
     assert.equal(process.exitCode, EXIT_CODES.OK);
   } finally {
@@ -3165,17 +3165,17 @@ test("agent build --pr routes the cycle through merge: pr instead of a local-onl
 // print-and-return short-circuit most other write commands use for --dry —
 // nothing exercised that end-to-end before: preflight/git-sync/inflight
 // registration must all be skipped, and the run must still report a result.
-test("agent build --dry runs a stubbed dry cycle without preflight, sync, or registration side effects", async () => {
+test("agent add --build --dry runs a stubbed dry cycle without preflight, sync, or registration side effects", async () => {
   const d = initGitRepo("orch-agentbuild-dry-");
-  const logs = await runMainInRepo(d, ["agent", "build", "widget", "--dry"], {
+  const logs = await runMainInRepo(d, ["agent", "add", "widget", "--build", "--dry"], {
     resolveAgentBin: () => "/usr/bin/widget",
     preflight() { assert.fail("preflight ran despite --dry"); },
   });
-  assert.match(logs.join("\n"), /agent build widget: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/);
+  assert.match(logs.join("\n"), /agent add widget --build: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/);
   assert.equal(existsSync(join(d, ".orch", "inflight")), false, "dry run must not register an inflight cycle");
 });
 
-test("agent build honors --author/--reviewer role overrides instead of the configured/rotated author", async () => {
+test("agent add --build honors --author/--reviewer role overrides instead of the configured/rotated author", async () => {
   const d = initGitRepo("orch-agentbuild-roles-");
   const authoredBy = [];
   const auditedBy = [];
@@ -3193,7 +3193,7 @@ test("agent build honors --author/--reviewer role overrides instead of the confi
       },
     },
   };
-  const logs = await runMainInRepo(d, ["agent", "build", "widget", "--author", "codex", "--reviewer", "copilot"], deps);
+  const logs = await runMainInRepo(d, ["agent", "add", "widget", "--build", "--author", "codex", "--reviewer", "copilot"], deps);
   assert.deepEqual(authoredBy, ["codex"]);
   assert.deepEqual(auditedBy, ["copilot"]);
   assert.match(logs.join("\n"), /on pr\/codex\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/);
@@ -3202,11 +3202,11 @@ test("agent build honors --author/--reviewer role overrides instead of the confi
 // Regression (codex review of #130's persist-roles PR): `orch task`/`orch pr`
 // pass the resolved author/reviewer specs into inflight.register() so a run
 // that dies before its first checkpoint can still be resumed with the exact
-// same agents/models. `orch agent build` runs its own task-mode cycle through
+// same agents/models. `orch agent add --build` runs its own task-mode cycle through
 // the same runCycle()/inflight machinery but was missing this — a died
 // mid-build recovery would silently re-resolve roles from current rotation
 // instead of reusing what actually authored/reviewed the in-progress build.
-test("agent build persists resolved author/reviewer role specs into the inflight record", async () => {
+test("agent add --build persists resolved author/reviewer role specs into the inflight record", async () => {
   const d = initGitRepo("orch-agentbuild-inflight-");
   const orchDir = join(d, ".orch");
   let seen = null;
@@ -3228,40 +3228,41 @@ test("agent build persists resolved author/reviewer role specs into the inflight
       },
     },
   };
-  await runMainInRepo(d, ["agent", "build", "widget"], deps);
+  await runMainInRepo(d, ["agent", "add", "widget", "--build"], deps);
   assert.ok(seen, "expected an inflight record to exist while the cycle was running");
   assert.equal(seen.author.agent, "claude");
   assert.ok(Array.isArray(seen.reviewers) && seen.reviewers.length > 0);
 });
 
-test("agent build no-ops when the agent is already registered", async () => {
+test("agent add --build no-ops when the agent is already in the rotation pool", async () => {
   const d = initGitRepo("orch-agentbuild-known-");
-  const logs = await runMainInRepo(d, ["agent", "build", "claude"]);
-  assert.match(logs.join("\n"), /already registered/);
+  await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
+  const logs = await runMainInRepo(d, ["agent", "add", "claude", "--build"]);
+  assert.match(logs.join("\n"), /already in agents/);
 });
 
-// `orch agent build <known-adapter>` shares the exact same "nothing left to
-// build" fate as `agent add <known-adapter> --build` above — buildAgent()
+// `orch agent add <known-adapter> --build` shares the exact same "nothing left to
+// build" fate as the normal known-adapter path above — buildAgent()
 // returns "already-registered" before it ever reads flags.pr/author/reviewer/
 // allow-large-scope, so those flags used to validate, run the full dispatch,
 // and get silently dropped instead of refused.
-test("agent build <known-adapter> --pr is a usage error, not a silent drop", async () => {
+test("agent add <known-adapter> --build --pr is a usage error, not a silent drop", async () => {
   const d = initGitRepo("orch-build-known-pr-");
   await assert.rejects(
-    () => runMainInRepo(d, ["agent", "build", "claude", "--pr"], {
+    () => runMainInRepo(d, ["agent", "add", "claude", "--build", "--pr"], {
       buildAgent: async () => assert.fail("buildAgent ran — claude's adapter code already exists, nothing to build"),
     }),
-    (e) => e.exit === 64 && /--pr is not valid with 'orch agent build claude'/.test(e.message),
+    (e) => e.exit === 64 && /--pr is not valid with 'orch agent add claude'/.test(e.message),
   );
 });
 
-test("agent build <known-adapter> --allow-large-scope is a usage error, not a silent drop", async () => {
+test("agent add <known-adapter> --build --allow-large-scope is a usage error, not a silent drop", async () => {
   const d = initGitRepo("orch-build-known-scope-");
   await assert.rejects(
-    () => runMainInRepo(d, ["agent", "build", "claude", "--allow-large-scope"], {
+    () => runMainInRepo(d, ["agent", "add", "claude", "--build", "--allow-large-scope"], {
       buildAgent: async () => assert.fail("buildAgent ran — claude's adapter code already exists, nothing to build"),
     }),
-    (e) => e.exit === 64 && /--allow-large-scope is not valid with 'orch agent build claude'/.test(e.message),
+    (e) => e.exit === 64 && /--allow-large-scope is not valid with 'orch agent add claude'/.test(e.message),
   );
 });
 
@@ -3269,11 +3270,11 @@ test("agent build <known-adapter> --allow-large-scope is a usage error, not a si
 // variant: the known-adapter check runs in validatePositionals (schema.js),
 // which main() calls immediately after parse() — before the update-check
 // network call.
-test("agent build <known-adapter> --pr is refused before the update-check side effect fires", async () => {
+test("agent add <known-adapter> --build --pr is refused before the update-check side effect fires", async () => {
   const d = initGitRepo("orch-build-known-noupdate-");
   let updateChecked = false;
   await assert.rejects(
-    () => runMainInRepo(d, ["agent", "build", "claude", "--pr"], {
+    () => runMainInRepo(d, ["agent", "add", "claude", "--build", "--pr"], {
       maybeNotifyUpdate: () => { updateChecked = true; return Promise.resolve(); },
       buildAgent: async () => assert.fail("buildAgent ran — claude's adapter code already exists, nothing to build"),
     }),
@@ -3313,7 +3314,7 @@ test("agent add offers to build an unregistered agent; accepting delegates to bu
       buildAgent: async (name) => { calledWith = name; return { status: "approved", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }; },
     });
     assert.equal(calledWith, "widget");
-    assert.match(logs.join("\n"), /agent build widget: approved/);
+    assert.match(logs.join("\n"), /agent add widget --build: approved/);
   } finally {
     console.log = origLog;
     chdir(prev);
@@ -3338,7 +3339,7 @@ test("agent add --build skips the confirm prompt and builds", async () => {
       buildAgent: async (name) => { calledWith = name; return { status: "approved", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }; },
     });
     assert.equal(calledWith, "widget");
-    assert.match(logs.join("\n"), /agent build widget: approved/);
+    assert.match(logs.join("\n"), /agent add widget --build: approved/);
   } finally {
     console.log = origLog;
     chdir(prev);
@@ -3358,7 +3359,7 @@ test("agent <typo> <name> --build is a usage error, not a build", async () => {
       () => main(["agent", "typo", "widget", "--build"], {
         buildAgent: async () => { built = true; return { status: "approved" }; },
       }),
-      /usage: orch agent add <name> \| orch agent build <name>/,
+      /usage: orch agent add <name> \[--build\]/,
     );
     assert.equal(built, false);
   } finally {
@@ -3366,10 +3367,17 @@ test("agent <typo> <name> --build is a usage error, not a build", async () => {
   }
 });
 
+test("agent build is removed and reports the agent add --build usage", async () => {
+  await assert.rejects(
+    () => main(["agent", "build", "widget"], { preflight() {} }),
+    (e) => e.exit === 64 && /usage: orch agent add <name> \[--build\]/.test(e.message),
+  );
+});
+
 // A6+B4: the confirm path used to hardcode `flags: {}`, silently discarding
 // `--dry`/`--config-file` — a confirmed `--dry` build would run a REAL build
 // (real worktree/branch/merge) because the flag never reached buildAgent. It
-// also never set the escalation exit code the direct `agent build <name>`
+// also never set the escalation exit code the direct `agent add <name> --build`
 // sibling sets. Both are asserted here against the same confirm path.
 test("agent add confirm path forwards real flags to buildAgent (A6)", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-build-flags-"));
@@ -6681,7 +6689,7 @@ test("missing required positional exits 64 like every other usage error", async 
     (e) => e.exit === 64 && /branch does not exist/.test(e.message),
   );
   await assert.rejects(() => main(["agent", "add"], { preflight() {} }), (e) => e.exit === 64);
-  await assert.rejects(() => main(["agent", "build"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(() => main(["agent", "add"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(
     () => main(["agent", "typo", "widget", "--build"], { preflight() {} }),
     (e) => e.exit === 64,
@@ -6721,19 +6729,17 @@ test("a stray positional argument is a usage error, not silently dropped", async
   await assert.rejects(() => runMainCapture(["version", "extra"]), (e) => e.exit === 64);
 });
 
-// `agent add` and `agent build` used to share one flag list, so `--pr` (only
-// meaningful when a build actually happens) validated on a plain `add`, and
-// `--build` (redundant — the subcommand already says so) validated on
-// `build`. Both silently did nothing, which is the exact "declared but
-// inert" defect this schema exists to remove.
-test("agent add and agent build do not share a flag set", async () => {
+test("agent add owns the complete agent flag surface", async () => {
+  const parsed = parse(["agent", "add", "widget", "--build", "--pr", "--allow-large-scope", "--author", "claude", "--reviewer", "codex"]);
+  assert.deepEqual(parsed.rest, ["add", "widget"]);
+  assert.equal(parsed.flags.build, true);
+  assert.equal(parsed.flags.pr, true);
+  assert.equal(parsed.flags["allow-large-scope"], true);
+  assert.equal(parsed.flags.author, "claude");
+  assert.equal(parsed.flags.reviewer, "codex");
   await assert.rejects(
     () => main(["agent", "add", "widget", "--pr"], { preflight() {} }),
     (e) => e.exit === 64 && /--pr is not valid with 'orch agent add' without --build/.test(e.message),
-  );
-  await assert.rejects(
-    () => main(["agent", "build", "widget", "--build"], { preflight() {} }),
-    (e) => e.exit === 64 && /--build is not valid with 'orch agent build'/.test(e.message),
   );
   // --pr is legal on `agent add <unregistered> --build` (it reaches buildAgent).
   const d = mkdtempSync(join(tmpdir(), "orch-add-build-pr-"));
@@ -6852,7 +6858,7 @@ test("agent add <known-adapter> --build --pr is a usage error, not a silent drop
 
 // Fourth variant: the round-3 fix's build-only-flags list (cli.js) named
 // pr/author/authors/reviewer/reviewers but left out --allow-large-scope,
-// which SUBCOMMAND_FLAGS["agent build"] declares just as build-only — so
+// which SUBCOMMAND_FLAGS["agent add"] declares just as build-only — so
 // `--allow-large-scope` alone validated, reached the known-adapter branch,
 // and was silently dropped exactly like the flags criterion 19 fixed for.
 test("agent add <known-adapter> --build --allow-large-scope is a usage error, not a silent drop", async () => {

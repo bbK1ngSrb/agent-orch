@@ -1,7 +1,6 @@
 orch agent add — add an agent to the rotation pool.
 
 Usage: orch agent add <name> [options]
-       orch agent build <name> [options]
 
 Appends <name> to the `agents:` list in .orch/orch.yml, which is the pool the
 author and reviewer seats rotate through. If orch has no adapter for <name>,
@@ -28,7 +27,7 @@ Only with --build:
   --allow-large-scope     Sanction a deliberately large review slice.
   --pr                    Open the finished adapter branch as a pull request.
 
-Arguments: exactly one <name>, after the add or build subcommand word.
+Arguments: exactly one <name>, after the add subcommand word.
 
 Exit codes: 0 added · 1 error · 2 the build stopped at the attempt cap ·
 3 the concurrency cap was reached; retry later ·

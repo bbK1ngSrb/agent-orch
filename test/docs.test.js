@@ -46,6 +46,20 @@ test("README documents the `orch` CLI", () => {
   assert.match(readme, /orch agent add <name>/);
 });
 
+test("agent build docs use --pr to open a pull request", () => {
+  const readmeLine = readme.split("\n").find((line) => line.startsWith("- `orch agent add <name> [--build]`"));
+  assert.ok(readmeLine, "README is missing the agent add command documentation");
+  assert.match(readmeLine, /`--pr`[\s\S]*pull request/i);
+  assert.doesNotMatch(readmeLine, /merge:\s*pr/i);
+
+  const start = manual.indexOf("### 2.8 `orch agent add <name> [--build]`");
+  const end = manual.indexOf("### 2.9", start);
+  assert.ok(start >= 0 && end > start, "manual is missing the agent add section");
+  const section = manual.slice(start, end);
+  assert.match(section, /orch agent add mynewagent --build --pr/);
+  assert.doesNotMatch(section, /merge:\s*pr/i);
+});
+
 test("the manual and README document `orch upgrade` and its override env vars (#461)", () => {
   // `orch upgrade`/`update` shipped with help text and tab-completion but no prose
   // in either long-form doc, so the only way to discover self-update was to run
@@ -744,7 +758,7 @@ test("the landing page tracks recently shipped surfaces (#403/#335)", () => {
   assert.match(landing, /orch issue &lt;n&gt;/);
   assert.match(landing, /orch continue &lt;sid&gt;/);
   // The section shows a curated subset — printUsage (src/cli.js) dispatches
-  // `config`, `agent add/build`, `completion`, `upgrade`, `version` and `help`
+  // `config`, `agent add`, `completion`, `upgrade`, `version` and `help`
   // on top of these — so neither the eyebrow nor the heading may bill it as the
   // whole surface. A heading that states a count ("Eight commands") is a
   // factual claim about the CLI, and it was wrong; the section must instead
