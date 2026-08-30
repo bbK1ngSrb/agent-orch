@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.370 — 2026-08-30
+- fix(cli): unify run exit codes
+
 ## v0.4.370 — Unreleased
 - **BREAKING (cli):** unify run exit codes behind a single shared table
   (`src/exit-codes.js`) imported by both `src/cli.js` and `src/run-controller.js`,
