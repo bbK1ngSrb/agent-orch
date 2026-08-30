@@ -331,7 +331,7 @@ export function buildIssueComment(result, branch) {
       "next steps:",
       `- full reviewer disagreement (private, not posted here): .orch/reviews/${b}/DECISION.md`,
       `- per-round detail: .orch/reviews/${b}/round-N.md`,
-      `- once resolved: push a fix and \`orch review ${b}\` for a fresh audit, or open a PR manually`,
+      `- once resolved: push a fix and \`orch pr ${b} --until once\` for a fresh audit, or open a PR manually`,
     );
   }
   return lines.join("\n");

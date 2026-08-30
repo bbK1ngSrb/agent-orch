@@ -334,7 +334,7 @@ test("path overlap with a peer → merge-deferred (no merge attempted)", async (
   assert.match(r.reason, /passed on branch \(npm test\)/);
   assert.match(r.reason, /base base; orch\/integration deadbee/);
   assert.match(r.reason, /peer overlap: peer-2: src\/a\.js/);
-  assert.match(r.reason, /next action:/);
+  assert.match(r.reason, /next action:.*orch pr <branch> --until once/);
   assert.match(r.reason, /## Merge deferred: overlap/); // teaching-toned, not a raw dump
   assert.equal(merged, false);
   assert.equal(recorded[0].sid, "1");

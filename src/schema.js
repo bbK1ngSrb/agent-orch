@@ -93,16 +93,6 @@ export const COMMANDS = {
   issue: {
     mutates: true, flags: [...RUN_FLAGS, "from", "cheap", "allow-protected", "json"],
   },
-  review: {
-    // No --author/--authors: review audits an existing branch, whose author is
-    // read off the branch name — accepting and ignoring them is the exact lie
-    // this schema exists to remove. --reviewer(s)/--cheap ARE honoured (they
-    // pick who audits). The default review path does not merge; --until ready
-    // or merged opts into the landing path. The --no-tidy exclusion is inherited
-    // from the days this comment claimed review "never merges"; whether it
-    // should therefore be legal here is #528's call, not a help fix.
-    mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-tidy", "author", "authors"].includes(f)), "cheap", "json"],
-  },
   continue: {
     // No --author: the branch's commits were authored by a specific agent
     // already, and `continue` resumes that run rather than starting a new one —
@@ -177,7 +167,7 @@ export const EXAMPLES = [
 const HELP_GROUPS = [
   ["Set up a repo", ["init", "config", "agent"]],
   ["Run a cycle", ["task", "issue"]],
-  ["Review and land", ["review", "pr", "continue"]],
+  ["Review and land", ["pr", "continue"]],
   ["Operate", ["dashboard", "mcp"]],
   ["Maintain", ["release", "upgrade", "completion", "version", "help"]],
 ];
@@ -326,33 +316,6 @@ export const HELP_PAGES = {
       from: FROM_HELP,
       "allow-protected": ALLOW_PROTECTED_HELP,
       "no-tidy": NO_TIDY_HELP,
-    },
-  },
-  review: {
-    title: "orch review — audit an existing branch without merging it.",
-    synopsis: ["orch review <branch> [options]"],
-    about: [
-      "Audits an existing branch: no author writes a new change first, a reviewer agent examines the diff, and the test gate and deterministic security scan run on it. By default an agreed and green branch is reported without landing; use --until ready (or merged) to opt into landing it on the integration branch.",
-      "`orch pr <branch>` audits the same branch without that local merge, leaving the landing to GitHub. This is the older of the two spellings and is kept for compatibility.",
-    ],
-    notes: ["There is no --author here: this command audits work that already has an author."],
-    args: "Arguments: exactly one branch name.",
-    exits: RUN_EXITS,
-    examples: ["orch review feature/add-retry", "orch review feature/add-retry --reviewer \"codex\""],
-    flagOrder: [
-      "until", "reviewer", "reviewers", "cheap", "allow-large-scope",
-      "no-banner", "detach", "dry", "json", "config-file",
-    ],
-    flagHelp: {
-      until: untilHelp(
-        "What this run pursues: once, ready or merged.",
-        "once  = a single audit, then report.",
-        "ready = land locally, then wait for the standing PR",
-        "        to be green and mergeable; never merge it.",
-        "merged = also merge the standing PR.",
-        "(default: once)",
-      ),
-      cheap: "Fill the reviewer seat from cheap.role in orch.yml.",
     },
   },
   pr: {
@@ -620,10 +583,9 @@ export function validate(command, flags, { detachedChild = false } = {}) {
   // --json on a run command only makes sense once `--until` puts the run
   // through the controller's event stream (P5); on the bare/`once` path
   // there is nothing to stream, so accepting it would be another silent no-op.
-  if (flags.json && ["task", "issue", "review", "pr"].includes(effective) && (!flags.until || flags.until === "once")) {
+  if (flags.json && ["task", "issue", "pr"].includes(effective) && (!flags.until || flags.until === "once")) {
     if (!flags.detach && !detachedChild) {
-      const landing = effective === "review" ? " — either goal also opts into landing the branch" : "";
-      throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged)${landing} — the once path has no event stream to print`);
+      throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged) — the once path has no event stream to print`);
     }
   }
   if (flags.detach && flags.dry) {
@@ -694,7 +656,6 @@ const POSITIONAL_ARITY = {
   upgrade: [0, 0], update: [0, 0], version: [0, 0], help: [0, 1],
   task: [0, Infinity], completion: [0, 1],
   issue: [1, 1, "usage: orch issue <number> [--author ... --reviewer ...]"],
-  review: [1, 1, "usage: orch review <branch>"],
   continue: [1, 1, "usage: orch continue <sid>"],
   pr: [1, 1, "usage: orch pr <number> or <branch> [--until once|ready|merged]"],
   release: [1, Infinity, 'usage: orch release "<changelog entry>"'],
@@ -815,7 +776,6 @@ const GLOBAL_ROWS = {
   agent: ["agent add <name>", "Add an agent to the rotation pool; --build scaffolds its adapter."],
   task: ["task \"change\"", "Author, cross-audit, test-gate and land one change."],
   issue: ["issue <number>", "The same, from a GitHub issue; closes it on landing."],
-  review: ["review <branch>", "Audit an existing branch; --until ready opts into landing."],
   pr: ["pr <number|branch>", "Audit a pull request or a branch; repair or merge it."],
   continue: ["continue <sid>", "Resume an interrupted cycle or a stopped run."],
   dashboard: ["dashboard", "Live status TUI; --once prints a static snapshot."],

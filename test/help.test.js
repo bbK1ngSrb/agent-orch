@@ -18,8 +18,8 @@
 //
 //   (a) a §2.1 "not yet landed" row — `--until` still defaults to `once`,
 //       `--max-attempts` does not exist, `config` still takes `--dry`;
-//   (b) a command or flag v0.5 removes that this slice keeps — the `review` and
-//       `update` pages, `agent build`, `pr --merge`, `task/issue --no-banner`;
+//   (b) a command or flag v0.5 removes that this slice keeps — the `update`
+//       page, `agent build`, `pr --merge`, `task/issue --no-banner`;
 //   (c) a wrap point. The spec's §4 blocks are hand-wrapped at widths that vary
 //       between sections (79 in §4.4, 76 in §4.10), so no single algorithmic
 //       width reproduces all of them. The renderer wraps every page at one

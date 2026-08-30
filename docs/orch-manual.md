@@ -20,20 +20,19 @@ identically on all three, so nothing in this manual is Linux/macOS-specific.
 
 ### 1.1 What a "cycle" is
 
-Every `orch task`, `orch issue`, `orch review`, or `orch agent add --build` run is a
+Every `orch task`, `orch issue`, or `orch agent add --build` run is a
 **cycle**:
 
 1. **Author** — one agent writes a change on its own branch, in its own git
    worktree (isolated from your working directory; you keep working while it
-   runs). `orch review` skips this step entirely — it starts from a branch
-   you (or something else) already wrote — but everything from here on is the
-   same machinery.
+   runs).
 2. **Cross-audit** — a *different* agent reviews the author's diff and returns
    `AGREE` or `DISAGREE`. If `DISAGREE`, the author revises and the review
    repeats, up to `roundCap` rounds (default 3) — the initial review is round
-   one, so 3 buys 3 reviews and 2 revisions — except under `orch review`,
-   which has no author to revise and so escalates immediately on the first
-   `DISAGREE` instead of looping. Before each round orch checks that the
+   one, so 3 buys 3 reviews and 2 revisions — except for an audit-only run
+   (`orch pr <number|branch>`), which has no author to revise and so escalates
+   immediately on the first `DISAGREE` instead of looping (`src/engine.js`
+   caps a review-mode cycle at one round). Before each round orch checks that the
    branch actually differs from its base. An empty diff means there is nothing
    to review, so the cycle escalates right there with `author produced no
    changes — nothing to review` rather than paying a reviewer to read an empty
@@ -42,8 +41,8 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent add --build` run 
    base — not one revision against the previous one. So it catches a revise
    that leaves the branch empty (the author undid its own work), while a
    revise that simply adds nothing new keeps the earlier diff in place and the
-   loop still runs to `roundCap`. Under `orch review` the same check rejects
-   an already-merged or empty branch before the audit runs.
+   loop still runs to `roundCap`. Under `orch pr <branch>` the same check
+   rejects an already-merged or empty branch before the audit runs.
 3. **Test-gate** — the repo's test command runs against the change. No green
    tests, no merge, no exceptions.
 4. **Security scan** — a deterministic pattern scan (`scanDiff` in
@@ -92,9 +91,8 @@ Every `orch task`, `orch issue`, `orch review`, or `orch agent add --build` run 
 5. **Merge** — *only if* every reviewer said `AGREE`, tests passed, **and**
    the security scan found nothing — the branch is merged. How and where it
    merges is the part this manual spends the most time on, because there are
-   three distinct answers. By default, `orch review <branch>` stops after an
-   audit and does not merge; `--until ready` opts into the former local landing
-   behavior, exactly like `orch task`. Only `orch pr` always stops short of a
+   three distinct answers. By default, `orch pr <branch> --until once` stops
+   after an audit and does not merge. Only `orch pr` always stops short of a
    local merge — it reports its verdict and leaves GitHub to own the actual
    merge (§2.7).
 
@@ -251,7 +249,7 @@ orch task "add input validation" --reviewer "codex"   # reviewer-only: rotate th
 - `--author` / `--reviewer` — one spec each, singular. Set both to pin both
   roles, or set only `--reviewer` to force the reviewer while the author
   still rotates from the `agents:` pool — the one asymmetric case `task`,
-  `issue`, and `review` all allow. Setting only `--author` without a
+  `issue`, and `pr` all allow. Setting only `--author` without a
   `--reviewer` is rejected the same as before; author-only isn't meaningful
   the same way, since the rotation pool already picks *someone* to review.
 - `--authors` / `--reviewers` — comma lists; each author writes its **own**
@@ -335,29 +333,6 @@ watching stdout. This is the only trace besides the local
 **When to use it:** you already track work as GitHub issues and want orch to
 consume them directly rather than re-typing the description as a `task`
 string. Needs `gh` authenticated.
-
-### 2.6 `orch review <branch>`
-
-No authoring, and by default no local landing. It points one or more reviewer
-agents at an existing branch and runs the exact same audit → test-gate →
-security-scan machinery as `orch task` (§1.1), just starting from a branch you
-(or something else) already wrote instead of authoring one. With the default
-`--until once`, an `AGREE` result is reported without changing
-`orch/integration`. `--until ready` opts into the former behavior: an agreed,
-green branch lands into `orch/integration`, then orch waits for the standing PR
-to be ready; `--until merged` also merges that standing PR. A `DISAGREE`
-escalates immediately — there's no author to revise, so the retry loop that
-`task` gets doesn't apply here; one round decides it.
-
-```bash
-orch review pr/claude/some-branch
-orch review my-feature-branch --reviewer "codex, claude high"
-```
-
-**When to use it:** you (a human) wrote a branch yourself, or an agent wrote
-one outside of orch, and you want orch's cross-audit discipline applied to it
-without re-authoring anything. The default is a second-opinion audit; add
-`--until ready` when you explicitly want the agreed branch landed locally.
 
 ### 2.7 `orch pr <number|branch> [--merge|--until once|ready|merged]`
 
@@ -559,7 +534,6 @@ The tools:
 | `orch_plan` | `orch task --dry` | Plans a cycle — branch, author, reviewers — without calling an agent, touching git or merging anything. Leaves the author rotation where it was; an escalated plan still writes its brief (§2.13). |
 | `orch_task` | `orch task` | Full cycle from a task description. |
 | `orch_issue` | `orch issue <n>` | Full cycle from a GitHub issue. |
-| `orch_review` | `orch review <branch>` | Audit-only. |
 | `orch_pr` | `orch pr <number|branch> --until <mode>` | Audit a PR/branch; `merged` requires `automation.mcpMayMerge: true`. |
 | `orch_continue` | `orch continue <sid>` | Resume from a checkpoint. |
 
@@ -569,10 +543,10 @@ array (each with `sid`, `branch`, `status`, `reason`, `prUrl`, `closes`,
 `stdout`/`stderr`. `.orch/runs.jsonl` is repo-wide, so a cycle another client or
 a terminal `orch` finished mid-call also lands in that tail; `cycles` holds only
 the records this call produced. Every tool that *starts* a cycle — `orch_task`,
-`orch_issue`, `orch_review` — matches on the cycle id's process prefix, because
+`orch_issue`, `orch_pr` — matches on the cycle id's process prefix, because
 the child that minted that id is the process the call spawned. `orch_continue`
 resumes a cycle whose id predates that child, so it matches the sid literally
-instead. A branch name is deliberately never used as the key: two `orch_review`
+instead. A branch name is deliberately never used as the key: two `orch_pr`
 calls auditing the same branch at once would each read back the other's verdict
 alongside their own. A cycle that escalates
 comes back as a *tool* error (`isError: true`) with the reason readable — not as
@@ -611,7 +585,7 @@ got to. `orch_status` and `orch_plan` return immediately.
 
 ### 2.13 Flags that apply across commands
 
-- **`--dry`** — plan a `task`/`review` cycle without shelling out to agents,
+- **`--dry`** — plan a `task`/`issue`/`pr` cycle without shelling out to agents,
   touching git, or running tests. Never deletes worktrees or branches. Since
   v0.4.302 (#471) it also keeps its bookkeeping out of `.orch/`: the author it
   picks is computed but not persisted to `.orch/last-author`, and round logs and
@@ -650,7 +624,7 @@ got to. `orch_status` and `orch_plan` return immediately.
 - **`--no-tidy`** — skip the post-merge tidy (see §4.5) and leave every
   branch and checkout exactly as the cycle left them.
 - **`--no-banner`** — suppress the startup banner (for scripts and logs).
-- **`--detach`** — run a `task`, `issue`, `review`, `continue`, or `pr` in the
+- **`--detach`** — run a `task`, `issue`, `continue`, or `pr` in the
   background. The parent prints the child PID and log path, plus the run ID
   once registration is visible; use `orch dashboard` to follow the run.
 - **`--allow-protected`** — run a `task`/`issue` even though the work order text
@@ -658,7 +632,7 @@ got to. `orch_status` and `orch_plan` return immediately.
 - **`--allow-large-scope`** — explicitly sanction a deliberately large review
   slice for this run. A plain `orch continue <sid>` requires the flag again.
 - **`--until <mode>`** — `once` is the default: run one cycle and stop.
-  `task`, `issue`, `review`, and `pr` support `ready` (run the bounded
+  `task`, `issue`, and `pr` support `ready` (run the bounded
   readiness loop) and `merged` (run through readiness and the configured merge
   path). `continue` currently accepts only `--until once`; `ready` and `merged`
   are refused there with exit `64`. On `pr`, `--merge` remains a compatibility
@@ -1151,7 +1125,7 @@ itself forever), and when the merge was a no-op diff. A mixed code+docs merge
 triggers once.
 
 One surface implements this: it lives inside `orch` itself, so any merge orch
-performs locally (`orch task`, `orch review --until ready`, `orch pr --merge`) triggers it. A
+performs locally (`orch task`, `orch pr --merge`) triggers it. A
 merge done purely in GitHub's web UI never reaches orch, so nothing refreshes
 the docs for it — run a docs task by hand if you merge that way.
 
@@ -1573,12 +1547,6 @@ closed automatically."**
 orch issue 123
 ```
 
-**"I wrote a branch by hand and just want a second-opinion audit, no
-authoring."**
-```bash
-orch review my-branch --reviewer "codex, claude high"
-```
-
 ---
 
 ## Part 7 — Common misunderstandings, addressed directly
@@ -1607,8 +1575,3 @@ orch review my-branch --reviewer "codex, claude high"
   the existing package version unless it carries its own release-file change.
   For this repo, the next deliberate release update is made by running
   `node scripts/orch-release.js` by hand.
-- **"I ran `orch review` just to get a second opinion, and it merged the
-  branch!"** Since this version, bare `orch review` is audit-only and leaves
-  `orch/integration` unchanged. Use `orch review <branch> --until ready` to
-  opt into the former local-landing behavior; `--until merged` also merges the
-  standing PR (§2.6).

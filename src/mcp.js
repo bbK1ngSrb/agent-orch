@@ -131,17 +131,6 @@ export const TOOLS = [
     argv: (a) => ["issue", requireIssueNumber(a.number)],
   },
   {
-    name: "orch_review",
-    description: "Audit an existing branch with the reviewer agents without merging it.",
-    inputSchema: {
-      type: "object",
-      properties: { branch: { type: "string", description: "Branch to audit." } },
-      required: ["branch"],
-      additionalProperties: false,
-    },
-    argv: (a) => ["review", requireBranch(a.branch)],
-  },
-  {
     name: "orch_pr",
     description: "Audit, repair, or merge a GitHub PR or local branch; merge requests require explicit repository opt-in.",
     inputSchema: {
@@ -232,11 +221,11 @@ export function runTool(tool, args, ctx) {
     child.stderr?.on("data", (d) => { stderr += d; });
     child.on("error", (e) => resolve({ ok: false, exitCode: null, stdout, stderr: `${stderr}${e.message}` }));
     child.on("close", (code) => {
-      // Every tool that STARTS a cycle — orch_task, orch_issue, orch_review —
+      // Every tool that STARTS a cycle — orch_task, orch_issue, orch_pr —
       // correlates on the sid's own prefix: a sid is `<pid>-<counter>`
       // (src/sid.js), minted by the child we just spawned, so a peer cycle's
       // record can never match. A branch name is deliberately not a key: two
-      // concurrent orch_review calls on the same branch would each pick up the
+      // concurrent orch_pr calls on the same branch would each pick up the
       // other's verdict alongside their own. orch_continue is the one exception —
       // it RESUMES a cycle whose sid was minted by an earlier process, so no pid
       // prefix of ours could match it and it matches the literal sid instead. An
@@ -294,7 +283,12 @@ export async function handle(msg, ctx) {
   }
   if (method === "tools/call") {
     const tool = TOOLS.find((t) => t.name === msg.params?.name);
-    if (!tool) return rpcError(id, -32602, `unknown tool: ${msg.params?.name}`);
+    if (!tool) {
+      if (msg.params?.name === "orch_review") {
+        return rpcError(id, -32601, "unknown method: orch_review; use orch_pr");
+      }
+      return rpcError(id, -32602, `unknown tool: ${msg.params?.name}`);
+    }
     const args = msg.params?.arguments ?? {};
     if (typeof args !== "object" || Array.isArray(args)) return rpcError(id, -32602, "arguments must be an object");
     try {

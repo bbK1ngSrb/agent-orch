@@ -154,10 +154,17 @@ function outcomeForResult(result) {
 // One rule, and it reads off the outcome the same run persists: a run whose
 // outcome is "stopped-at-cap" escalated, everything else reached its goal.
 // `merge-deferred` lands on ESCALATED through outcomeForResult, which is what
-// its own STOPPED_AT_CAP state already says. An approved `orch pr` review is
-// successful, but leaves exactly one human gesture: merging the PR.
-function exitForResult(result, command = null) {
-  if (command === "pr" && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
+// its own STOPPED_AT_CAP state already says. An approved numeric `orch pr`
+// review is successful, but leaves exactly one human gesture: merging the PR.
+// Branch-target audits are the replacement for the old `orch review` command
+// and remain a clean exit when they finish after one audit pass.
+// The gate reads how the target was *typed* (`requestedByNumber`), never the
+// resolved `number`: for a branch target that number comes from a best-effort
+// `gh pr list` lookup that `resolvePrTarget` catches and ignores, so gating on
+// it would make a machine-readable exit code depend on whether GitHub happened
+// to be reachable.
+function exitForResult(result, command = null, prTarget = null) {
+  if (command === "pr" && prTarget?.requestedByNumber && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
   return outcomeForResult(result) === "stopped-at-cap" ? EXIT_CODES.ESCALATED : EXIT_CODES.OK;
 }
 // Design §6 terminal states: only the outcomes a single implicit cycle can
@@ -395,7 +402,6 @@ test-gate is the governing review.
 ## Commands
 - \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
 - \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\`
-- \`orch review <branch>\`           audit an existing branch; --until ready opts into landing
 - \`orch continue <sid>\`            resume an interrupted/stalled cycle from its checkpoint
 - \`orch pr <number|branch> [--merge|--until once|ready|merged]\` review (and optionally merge) a PR
 - \`orch release "<entry>"\`         run the version bump + CHANGELOG write by hand; only needed
@@ -1270,6 +1276,7 @@ export function resolvePrTarget({ target, repo, orchDir, baseBranch = "main", un
   return {
     ...pr,
     number: pr?.number ? Number(pr.number) : null,
+    requestedByNumber: /^\d+$/.test(value),
     url: pr?.url || null,
     branch,
     remoteBranch: pr?.headRefName || branch,
@@ -1838,8 +1845,8 @@ export function formatPriorStagedBranches(closes, entries) {
     out.push(`  ${e.branch} — ${e.verdict || "unknown"}${reason ? `: ${reason}` : ""}${hedge}`);
     // NOT `orch continue <sid>`: that needs a checkpoint/inflight record, and
     // both are cleared once a cycle returns — so it cannot resume a run that
-    // already reached a terminal status. `orch review` re-audits the branch.
-    out.push(`    inspect: git log ${e.branch}   re-audit: orch review ${e.branch}`);
+    // already reached a terminal status. `orch pr` re-audits the branch.
+    out.push(`    inspect: git log ${e.branch}   re-audit: orch pr ${e.branch} --until once`);
   }
   out.push("  this run stages a NEW branch. A re-run rotates the author and regenerates the diff, so a security-floor");
   out.push("  escalation repeats only if the fresh diff touches the same protected paths.");
@@ -2012,7 +2019,10 @@ export async function main(argv, deps = {}) {
   // "__update-check-child" is an internal re-exec target (see below), never
   // typed by a user, so it is exempt rather than added to the schema.
   if (command && command !== "__update-check-child" && !COMMANDS[command]) {
-    throw usageError(`unknown command: ${command} (run 'orch help' for usage)`, { showUsage: true });
+    const replacement = command === "review" && rest[0]
+      ? ` — use 'orch pr ${rest[0]} --until once'`
+      : "";
+    throw usageError(`unknown command: ${command}${replacement} (run 'orch help' for usage)`, { showUsage: true });
   }
 
   // --help/--version describe the tool rather than run it, so they route
@@ -2229,7 +2239,7 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "task" || command === "review" || command === "issue" || command === "pr") {
+  if (command === "task" || command === "issue" || command === "pr") {
     // D2: reviewer-only is meaningful for task/issue too ("rotate author, force this
     // reviewer"), matching review/continue/pr and the printUsage example.
     let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
@@ -2308,7 +2318,7 @@ export async function main(argv, deps = {}) {
       };
     } else {
       reviewBranch = rest[0];
-      if (!reviewBranch) throw usageError(command === "pr" ? "usage: orch pr <number|branch>" : "usage: orch review <branch>");
+      if (!reviewBranch) throw usageError("usage: orch pr <number|branch>");
     }
 
     // §3c intake scan (#394): a task whose text names a protected path almost
@@ -2466,7 +2476,7 @@ export async function main(argv, deps = {}) {
       task = null;
       const sid = newSid();
       runs = [{
-        mode, task, until, noMerge: command === "pr" || (command === "review" && until === "once"), prTarget,
+        mode, task, until, noMerge: command === "pr", prTarget,
         allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
         reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
         reviewers,
@@ -2540,7 +2550,7 @@ export async function main(argv, deps = {}) {
         if (!dry) {
           const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
           let outcome = outcomeForResult(result);
-          let exit = exitForResult(result, command);
+          let exit = exitForResult(result, command, run.prTarget);
           let state = STATE_FOR_OUTCOME[outcome];
           // "merged" landed on the standing integration→main PR; "pr"
           // (merge: pr mode) and "merge-deferred" (demote) each open a
@@ -2747,7 +2757,7 @@ export async function main(argv, deps = {}) {
           finalResult = outputResult(cycleResults[cycleResults.length - 1], controller);
           results[results.length - 1] = finalResult;
           const resultExit = !controller || controller.outcome === "reached"
-            ? exitForResult(finalResult, command) : EXIT_CODES.OK;
+            ? exitForResult(finalResult, command, activeRun.prTarget || run.prTarget) : EXIT_CODES.OK;
           if ((EXIT_CODE_PRIORITY[resultExit] || 0) > (EXIT_CODE_PRIORITY[exit] || 0)) exit = resultExit;
           if (resultExit !== EXIT_CODES.OK) raiseExitCode(resultExit);
           if (finalResult.prUrl && !controller?.land) {
@@ -2814,7 +2824,7 @@ export async function main(argv, deps = {}) {
           // `--dry` writes no run record and (design §4) never polls readiness —
           // still emit run.end under --json so the event stream isn't silently
           // truncated after run.start.
-          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result, command), usage: result.usage || {}, dry: true });
+          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result, command, run.prTarget), usage: result.usage || {}, dry: true });
         }
         if (!jsonMode) console.log(summaryLine(finalResult, activeRun.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (finalResult.status === "merged" && run.mode === "task") {
@@ -3031,7 +3041,17 @@ export async function main(argv, deps = {}) {
     const allowLargeScope = Boolean(flags["allow-large-scope"]);
     const isReviewResume = priorRun?.command === "review";
     const isPrResume = priorRun?.command === "pr";
-    const prTarget = priorRun?.prTarget || null;
+    // A record written before `requestedByNumber` existed (or by an older
+    // orch) has no such field, and its `number` may have come from the
+    // best-effort branch lookup — so fall back to how the run was actually
+    // invoked, which the record preserves verbatim in `argv`.
+    const prTarget = priorRun?.prTarget
+      ? {
+        ...priorRun.prTarget,
+        requestedByNumber: priorRun.prTarget.requestedByNumber
+          ?? /^\d+$/.test(String(priorRun.argv?.[1] ?? "")),
+      }
+      : null;
     const until = flags.until || priorRun?.policy?.until || "once";
     const run = {
       // Older completed-author checkpoints carry no task, so retain the branch
@@ -3298,9 +3318,9 @@ export async function main(argv, deps = {}) {
         controller.cycleRoles = cycleRoles;
       }
       const outcome = controller?.outcome || outcomeForResult(result);
-      let exit = controller?.exit ?? exitForResult(result, run.prTarget ? "pr" : command);
+      let exit = controller?.exit ?? exitForResult(result, run.prTarget ? "pr" : command, run.prTarget);
       const resultExit = !controller || controller.outcome === "reached"
-        ? exitForResult(finalResult, run.prTarget ? "pr" : command) : EXIT_CODES.OK;
+        ? exitForResult(finalResult, run.prTarget ? "pr" : command, run.prTarget) : EXIT_CODES.OK;
       if ((EXIT_CODE_PRIORITY[resultExit] || 0) > (EXIT_CODE_PRIORITY[exit] || 0)) exit = resultExit;
       if (controller) raiseExitCode(exit);
       if (!dry) {

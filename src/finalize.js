@@ -570,7 +570,7 @@ function blockedSection(details) {
 function nextStep(trigger, integrationBranch = "orch/integration") {
   switch (trigger) {
     case "overlap":
-      return "next action: inspect the listed overlap, rebase or refresh the branch if needed, then rerun orch review before merging.";
+      return "next action: inspect the listed overlap, rebase or refresh the branch if needed, then rerun `orch pr <branch> --until once` before merging.";
     case "dirty-merge":
       // Do not open a per-change PR against main — that is a second trunk door
       // the standing integration PR exists to prevent. Hand-merge into the
@@ -579,13 +579,13 @@ function nextStep(trigger, integrationBranch = "orch/integration") {
         `(resolve conflicts there); do not open a per-change PR against main. ` +
         `Land via the standing \`${integrationBranch} → main\` PR.`;
     case "integration-test":
-      return "next action: fix the integrated test failure, then rerun orch review.";
+      return "next action: fix the integrated test failure, then rerun `orch pr <branch> --until once`.";
     case "lock":
       return "next action: retry after the active merge finishes.";
     case "sync":
-      return "next action: inspect local main versus origin/main, then rerun orch review after main is synchronized.";
+      return "next action: inspect local main versus origin/main, then rerun `orch pr <branch> --until once` after main is synchronized.";
     default:
-      return "next action: review the branch manually, then rerun orch review.";
+      return "next action: review the branch manually, then rerun `orch pr <branch> --until once`.";
   }
 }
 
