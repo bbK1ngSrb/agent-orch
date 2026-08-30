@@ -388,7 +388,7 @@ surfaces at the cycle's own merge step instead). The branch is immediately usabl
 locally after the post-merge test gate (and the version bump, if
 `release.autoBump` is enabled). Orch then pushes `orch/integration` and opens or
 updates one persistent PR from `orch/integration` to `main`; run
-`orch pr --until merged` against that persistent `orch/integration → main` PR
+`orch pr <number> --until merged` against that persistent `orch/integration → main` PR
 to merge it once all of its checks are green — a path for
 when native auto-merge stalls at `BLOCKED` because review is satisfied via a
 ruleset bypass grant rather than a human approval. The merge is pinned to the
@@ -465,7 +465,7 @@ agreed + green cycle skips the local integration branch and `merge.lock`; it
 pushes that cycle branch and opens its own PR to `main` instead. This mode is
 unchanged by the persistent `orch/integration` bridge. Needs a git remote and
 the `gh` CLI; without them the cycle escalates locally the same way `merge-deferred`
-does. Run `orch pr --until merged` against that PR to merge it once it is
+does. Run `orch pr <number> --until merged` against that PR to merge it once it is
 green — pinned to the exact reviewed commit OID, so a head that moved since
 review is refused rather than merged unseen.
 

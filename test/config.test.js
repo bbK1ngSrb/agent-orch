@@ -103,12 +103,32 @@ test("v2 landing and automation aliases normalize to the runtime config", () => 
   ].join("\n"));
   const c = load(d);
   assert.equal(c.landing, "ff-only");
-  assert.equal(c.landing, "ff-only");
+  assert.equal(c.merge, "ff-only"); // pre-cutover runtime alias, still branched on by finalize.js/landing.js
   assert.deepEqual(c.main.conflictResolutionResolvers, [
     { agent: "claude", model: "opus", effort: "high" },
     { agent: "codex", model: null, effort: null },
   ]);
   assert.deepEqual(c.main.autoResolveConflictPaths, ["src/**"]);
+});
+
+test("automation.conflictResolution sets the persistent-PR repair mode", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "automation:\n  conflictResolution: auto\n");
+  const c = load(d);
+  assert.equal(c.main.conflictResolution, "auto");
+  assert.equal(c.main.autoResolveConflicts, true);
+  const bad = tmp();
+  writeFileSync(join(bad, "orch.yml"), "automation:\n  conflictResolution: sometimes\n");
+  assert.throws(() => load(bad), /main.conflictResolution must be manual, propose, or auto/);
+});
+
+test("--config-file conflictResolution beats orch.yml automation.conflictResolution", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "automation:\n  conflictResolution: auto\n");
+  const override = join(d, "custom.yml");
+  writeFileSync(override, "automation:\n  conflictResolution: propose\n");
+  const c = load(d, override, { onWarning() {} });
+  assert.equal(c.main.conflictResolution, "propose");
 });
 
 test("--config-file canonical conflict resolvers beat orch.yml v2 aliases", () => {
@@ -377,6 +397,20 @@ test("validate keeps its direct-call checks for normalized config objects", () =
   const badResolvers = load(tmp());
   badResolvers.main.conflictResolutionResolvers = [];
   assert.throws(() => validate(badResolvers), /main.conflictResolutionResolvers must be a non-empty list of role specs/);
+
+  const badMode = load(tmp());
+  badMode.main.conflictResolution = "sometimes";
+  assert.throws(() => validate(badMode), /main.conflictResolution must be manual, propose, or auto/);
+
+  const badPaths = load(tmp());
+  badPaths.main.autoResolveConflictPaths = "CHANGELOG.md";
+  assert.throws(() => validate(badPaths), /main.autoResolveConflictPaths must be an array of strings/);
+});
+
+test("conflictResolution: propose requires a resolver-distinct reviewer (normalizeMainConfig)", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "agents: [claude]\nautomation:\n  conflictResolution: propose\n");
+  assert.throws(() => load(d), /main.conflictResolution requires a conflict reviewer that differs from each resolver/);
 });
 
 test("main conflict-resolution keys are removed", () => {

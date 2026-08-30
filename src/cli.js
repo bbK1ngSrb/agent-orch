@@ -338,6 +338,7 @@ automation:
   remedies: null                        # ordered subset of rebase, rotate, reauthor, ask; default: fallback order
   pollSeconds: 30                       # readiness poll interval; default: 30
   ciWaitMinutes: 30                     # readiness wait window; default: 30
+  conflictResolution: manual            # manual | propose | auto; how the persistent PR's conflict repair may act
   conflictResolvers: null               # role specs for integration conflict repair
   conflictAutoPaths:
     - CHANGELOG.md

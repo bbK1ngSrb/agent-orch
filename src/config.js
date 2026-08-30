@@ -61,6 +61,7 @@ const DEFAULTS = {
     rotateModels: {}, // optional per-agent model ladders consumed by the rotate remedy
     pollSeconds: 30, // initial readiness poll interval; backs off 2x per attempt, capped at 10 min
     ciWaitMinutes: 30, // bound on one readiness wait window before it counts as an attempt (REMOTE_CI_TIMEOUT)
+    conflictResolution: null, // canonical spelling of main.conflictResolution; null keeps the manual default
     conflictResolvers: null, // canonical spelling of main.conflictResolutionResolvers
     conflictAutoPaths: ["CHANGELOG.md", "docs/index.html", "package-lock.json", "package.json"],
     detachLogDir: ".orch/logs",
@@ -89,7 +90,7 @@ const CONFIG_CHILDREN = {
   release: new Set(["autoBump"]),
   automation: new Set([
     "maxAttempts", "humanWaitHours", "mcpMayMerge", "remedies", "rotateModels",
-    "pollSeconds", "ciWaitMinutes", "conflictResolvers", "conflictAutoPaths", "detachLogDir",
+    "pollSeconds", "ciWaitMinutes", "conflictResolution", "conflictResolvers", "conflictAutoPaths", "detachLogDir",
   ]),
   env: new Set(["passthrough"]),
 };
@@ -359,6 +360,11 @@ export function normalizeV2Config(cfg, user = {}, override = {}) {
   const gateSource = has(override, "gateTimeout") ? override : has(user, "gateTimeout") ? user : null;
   cfg.gateTimeout = gateSource ? gateSource.gateTimeout : cfg.stageTimeout;
 
+  if (has(override.automation || {}, "conflictResolution")) {
+    cfg.main.conflictResolution = override.automation.conflictResolution;
+  } else if (has(user.automation || {}, "conflictResolution")) {
+    cfg.main.conflictResolution = user.automation.conflictResolution;
+  }
   if (has(override.automation || {}, "conflictResolvers") || has(user.automation || {}, "conflictResolvers")) {
     const overrideAutomation = override.automation || {};
     const userAutomation = user.automation || {};
@@ -405,7 +411,7 @@ export function load(dir, overridePath, { onWarning = console.warn } = {}) {
   delete cfg.reviseCap; // one source of truth downstream
   cfg.roundCap = picked ? picked.value : DEFAULTS.roundCap;
   const { landingKey } = normalizeV2Config(cfg, user, override);
-  normalizeMainConfig(cfg, user.main || {}, override.main || {});
+  normalizeMainConfig(cfg, user.main || {}, override.main || {}, user.automation || {}, override.automation || {});
   validate(cfg, picked?.key || "roundCap", landingKey);
   return cfg;
 }
@@ -503,11 +509,13 @@ export function configReport(dir, overridePath) {
   return { config, sources, warnings, problems, ok: problems.length === 0 };
 }
 
-export function normalizeMainConfig(cfg, userMain = {}, overrideMain = {}) {
+export function normalizeMainConfig(cfg, userMain = {}, overrideMain = {}, userAutomation = {}, overrideAutomation = {}) {
   if (typeof cfg.main.autoResolveConflicts !== "boolean")
     throw new Error("orch.yml: main.autoResolveConflicts must be a boolean");
   const explicitMode = Object.prototype.hasOwnProperty.call(userMain, "conflictResolution") ||
-    Object.prototype.hasOwnProperty.call(overrideMain, "conflictResolution");
+    Object.prototype.hasOwnProperty.call(overrideMain, "conflictResolution") ||
+    Object.prototype.hasOwnProperty.call(userAutomation, "conflictResolution") ||
+    Object.prototype.hasOwnProperty.call(overrideAutomation, "conflictResolution");
   if (!explicitMode) cfg.main.conflictResolution = cfg.main.autoResolveConflicts ? "auto" : "manual";
   cfg.main.autoResolveConflicts = cfg.main.conflictResolution !== "manual";
   if (cfg.main.conflictResolutionResolvers != null) {

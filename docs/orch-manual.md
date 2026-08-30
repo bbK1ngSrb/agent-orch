@@ -975,7 +975,7 @@ orch task "add rate-limit header" --until merged   # → opens and merges its PR
 
 This needs a git remote and the `gh` CLI. Without them, the cycle escalates
 locally the same way ordinary `merge-deferred` does (§3.4) — it does not silently
-merge somewhere else. Run `orch pr --until merged` against the opened PR to
+merge somewhere else. Run `orch pr <number> --until merged` against the opened PR to
 merge it once it is green — pinned to the exact reviewed commit OID, so a
 head that moved since review is refused rather than merged unseen.
 
@@ -1411,11 +1411,11 @@ release:
   requirement is satisfied only via a GitHub ruleset `bypass_actors` grant
   (rather than a real human approval), GitHub's native auto-merge does not
   reliably fire — it can stay enabled with `mergeStateStatus: BLOCKED`
-  indefinitely even after checks pass; run `orch pr --until merged` against
+  indefinitely even after checks pass; run `orch pr <number> --until merged` against
   the persistent `orch/integration → main` PR to have orch merge it directly
   instead.
 - **The legacy persistent-PR direct-merge key was removed in v0.5.0** —
-  `orch pr --until merged` against the persistent `orch/integration → main`
+  `orch pr <number> --until merged` against the persistent `orch/integration → main`
   PR is its replacement: when all of that PR's status checks are green, orch
   merges it directly via
   `gh` (a merge commit, same as the mirror model requires). The merge is
@@ -1446,10 +1446,13 @@ release:
 - **`main.conflictResolution`, `main.autoResolveConflicts`,
   `main.conflictResolutionResolvers`, and `main.autoResolveConflictPaths` were
   removed in v0.5.0.** Conflict repair for the persistent integration PR is
-  now a loop remedy under `--until ready|merged` (disable it by excluding
-  `rebase` from `automation.remedies`), using `automation.conflictResolvers` /
-  `automation.conflictAutoPaths` for the resolver pool and whitelisted paths
-  in place of the old `main.*` spellings.
+  now the `integration-repair` loop remedy under `--until ready|merged`; it is
+  always active and, unlike `rebase`/`rotate`/`reauthor`/`ask`, cannot be
+  turned off via `automation.remedies`. Use `automation.conflictResolution`
+  (`manual` | `propose` | `auto`, default `manual`) to control how far it may
+  act, and `automation.conflictResolvers` / `automation.conflictAutoPaths` for
+  the resolver pool and whitelisted paths, in place of the old `main.*`
+  spellings.
 - **`release.autoBump`** — opt-in (default `false`). When `true`, every cycle
   that lands via the local integration path gets the §4.1 merge-counter bump +
   CHANGELOG commit. Left off, orch never edits release files — same opt-in
