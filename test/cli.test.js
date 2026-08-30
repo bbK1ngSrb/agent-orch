@@ -3143,7 +3143,7 @@ test("agent build --pr routes the cycle through merge: pr instead of a local-onl
     const logs = await runMainInRepo(d, ["agent", "build", "widget", "--pr"], deps);
     assert.equal(seenMerge, "pr");
     assert.match(logs.join("\n"), /agent build widget: pr /);
-    assert.equal(process.exitCode, 5);
+    assert.equal(process.exitCode, EXIT_CODES.ESCALATED);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -3395,7 +3395,7 @@ test("agent add confirm path sets exit code 2 on an escalated build (B4)", async
   }
 });
 
-test("agent add confirm path sets exit code 5 on a merge-deferred build (B4)", async () => {
+test("agent add confirm path escalates on a merge-deferred build (B4)", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-build-prfallback-"));
   const prev = cwd();
   const savedExitCode = process.exitCode;
@@ -3406,7 +3406,8 @@ test("agent add confirm path sets exit code 5 on a merge-deferred build (B4)", a
       io: { confirm: async () => true },
       buildAgent: async () => ({ status: "merge-deferred", reason: "conflict", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }),
     });
-    assert.equal(process.exitCode, 5);
+    // A deferred landing is something to investigate, not a merge to click.
+    assert.equal(process.exitCode, EXIT_CODES.ESCALATED);
   } finally {
     process.exitCode = savedExitCode;
     chdir(prev);
@@ -3577,7 +3578,7 @@ test("pr accepts a branch target and rejects a missing branch", async () => {
   await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
 });
 
-test("orch pr reports approved review as action required", async () => {
+test("orch pr reports an approved review as success", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-pr-approved-");
   gitDep.git(["branch", "feature/x"], repo);
@@ -3589,7 +3590,7 @@ test("orch pr reports approved review as action required", async () => {
       },
     });
     assert.match(logs.join("\n"), /approved/);
-    assert.equal(process.exitCode, 5);
+    assert.equal(process.exitCode, EXIT_CODES.OK);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -4217,7 +4218,7 @@ test("registerWithConcurrencyCap removes the rejected run", () => {
 test("raiseExitCode follows the documented outcome priority", () => {
   const saved = process.exitCode;
   try {
-    const priority = [1, 6, 2, 4, 5, 3];
+    const priority = [1, 6, 2, 4, 3];
     for (let high = 0; high < priority.length; high++) {
       for (let low = high + 1; low < priority.length; low++) {
         process.exitCode = 0;
@@ -5017,10 +5018,14 @@ test("orch continue persists action-required for an approved PR resume", async (
     const end = events.at(-1);
     assert.equal(end.event, "run.end");
     assert.equal(end.outcome, "reached");
-    assert.equal(end.exit, EXIT_CODES.ACTION_REQUIRED);
+    // An approved review reports OK. Splitting out a distinct
+    // "one human gesture remains" code is deliberately not part of this change
+    // — it needs the orch-pr.yml handler (#619) first, or this repo's own PR
+    // check goes red on the success path.
+    assert.equal(end.exit, EXIT_CODES.OK);
     const record = JSON.parse(readFileSync(join(orchDir, "run-records", `${sid}.json`), "utf8"));
-    assert.equal(record.exit, EXIT_CODES.ACTION_REQUIRED);
-    assert.equal(process.exitCode, EXIT_CODES.ACTION_REQUIRED);
+    assert.equal(record.exit, EXIT_CODES.OK);
+    assert.equal(process.exitCode, EXIT_CODES.OK);
   } finally {
     process.exitCode = savedExitCode;
   }

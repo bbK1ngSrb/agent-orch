@@ -121,12 +121,6 @@ main() {
 
         case "$rc" in
             0)  log "orch finished (rc=$rc)"; exit 0 ;;   # done: approved / merged
-            5)  # ACTION_REQUIRED: the cycle succeeded and is waiting on one
-                # human gesture (an approved `orch pr`, or a task landing under
-                # `merge: pr`). Nothing is wrong and nothing is retryable, so
-                # stop cleanly — before exit codes were split this same outcome
-                # arrived as 0 and the loop exited 0, which is preserved here.
-                log "orch finished — waiting on a human action (rc=$rc)"; exit 0 ;;
             6)  # BLOCKED: policy-terminal (guardrail path, security finding,
                 # auth, merge rejected). Never a quota death, so skip the probe
                 # and do not retry — the same input cannot succeed.

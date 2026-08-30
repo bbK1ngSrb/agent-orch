@@ -218,7 +218,6 @@ const RUN_EXITS = [
   [EXIT_CODES.ESCALATED, "escalated or stopped at the attempt cap"],
   [EXIT_CODES.THROTTLED, "concurrency cap reached; retry later"],
   [EXIT_CODES.WAIT_TIMEOUT, "asked a human, no answer in time"],
-  [EXIT_CODES.ACTION_REQUIRED, "a human action is required"],
   [EXIT_CODES.BLOCKED, "blocked, a human must decide"],
   [64, "usage error"],
 ];
@@ -227,7 +226,6 @@ const AGENT_EXITS = [
   [EXIT_CODES.ERROR, "error"],
   [EXIT_CODES.ESCALATED, "the build stopped at the attempt cap"],
   [EXIT_CODES.THROTTLED, "the concurrency cap was reached; retry later"],
-  [EXIT_CODES.ACTION_REQUIRED, "the built branch needs a human action"],
   [EXIT_CODES.BLOCKED, "the build is blocked and needs a human"],
   [64, "usage error"],
 ];
@@ -509,7 +507,6 @@ export const EXITS = {
   [EXIT_CODES.ESCALATED]: "escalated: agents disagreed or the attempt cap stopped the run",
   [EXIT_CODES.THROTTLED]: "throttled: the concurrency cap was reached; retry later",
   [EXIT_CODES.WAIT_TIMEOUT]: "asked a human and got no answer in automation.humanWaitHours",
-  [EXIT_CODES.ACTION_REQUIRED]: "action required: perform the named human gesture",
   [EXIT_CODES.BLOCKED]: "blocked: a human must decide (guardrail, security floor, protection)",
   64: "usage error (unknown command, wrong flag for the command, bad value)",
 };

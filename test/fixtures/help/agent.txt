@@ -32,7 +32,6 @@ Arguments: exactly one <name>, after the add or build subcommand word.
 
 Exit codes: 0 added · 1 error · 2 the build stopped at the attempt cap ·
 3 the concurrency cap was reached; retry later ·
-5 the built branch needs a human action ·
 6 the build is blocked and needs a human · 64 usage error.
 
 Examples:

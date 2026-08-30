@@ -1,19 +1,27 @@
 # Changelog
 
 ## v0.4.370 — Unreleased
-- **BREAKING (cli):** unify run exit codes: blocked moves from `3` to `6`, and
-  PR-ready / human-action-required outcomes use new code `5`; concurrency
-  throttling remains `3`.
-- **BREAKING (cli):** `orch pr`'s approved path moves from exit `0` to
-  `ACTION_REQUIRED` (`5`). Existing `.github/workflows/orch-pr.yml` callers
-  treat that nonzero status as failure and will turn red until they handle it.
-- **fix(harness):** `harness/orch-loop.sh` branched on `$rc` and treated every
-  code outside `0|1|2` as a real error, so the new `ACTION_REQUIRED` (`5`) would
-  have logged a successful run as "a real error — stopping" where it previously
-  exited `0`. It now stops cleanly on `5` and treats `BLOCKED` (`6`) as terminal
-  without a pointless quota probe. The other in-repo caller,
-  `.github/workflows/orch-pr.yml`, runs `orch pr "$PR"` as its final step with no
-  exit handling; it is a protected path and is left for a separate owner change.
+- **BREAKING (cli):** unify run exit codes behind a single shared table
+  (`src/exit-codes.js`) imported by both `src/cli.js` and `src/run-controller.js`,
+  which previously each defined their own and disagreed: `2` meant "escalated" in
+  one and `STOPPED_AT_CAP` in the other, and `3` meant "concurrency cap reached,
+  nothing ran, retry later" in one and `BLOCKED` — a guardrail or security block
+  that retrying can never clear — in the other. A caller doing the correct thing
+  on `3` would retry forever against a block.
+  Blocked therefore moves from `3` to **`6`**; `3` keeps its long-standing
+  "throttled, nothing ran" meaning, which every existing caller was written
+  against. The `raiseExitCode` priority map now lists every code, so none can
+  silently read as priority 0 and lose to a fresh exit code of `0`.
+- **fix(harness):** `harness/orch-loop.sh` treats `6` as terminal and skips the
+  quota probe for it — a policy block is never a usage limit, so probing was
+  pointless.
+- **fix(cli):** the concurrency refusal emits `outcome: "throttled"` rather than
+  `"blocked"`, which had left one outcome name mapping to two different codes.
+- Code `5` (`ACTION_REQUIRED`) is deliberately **not** part of this change. It
+  needs `.github/workflows/orch-pr.yml` to handle it first ([#619](https://github.com/bbk1ng/agent-orch/issues/619))
+  — that workflow runs `orch pr` as its final step with no exit handling, so
+  emitting a nonzero code on the approved path would turn this repo's own PR
+  check red on success.
 
 ## v0.4.369 — 2026-08-30
 - feat(cycle): add --from branch source

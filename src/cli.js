@@ -152,8 +152,14 @@ function outcomeForResult(result) {
   return result.status === "escalated" || result.status === "merge-deferred" ? "stopped-at-cap" : "reached";
 }
 function exitForResult(result, command = null) {
-  if (result.status === "merge-deferred" || result.status === "pr") return EXIT_CODES.ACTION_REQUIRED;
-  if (command === "pr" && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
+  // A merge-deferred cycle reports ESCALATED, not a "one gesture remains" code:
+  // it is deferred because something went wrong after the merge (a post-merge
+  // test failure, say), which needs investigating rather than a merge click.
+  // It also already writes state STOPPED_AT_CAP, which the run controller's own
+  // table maps to ESCALATED — reporting anything else here contradicts the
+  // record the same run writes.
+  if (result.status === "merge-deferred" || result.status === "pr") return EXIT_CODES.ESCALATED;
+  if (command === "pr" && result.status === "approved") return EXIT_CODES.OK;
   return outcomeForResult(result) === "stopped-at-cap" ? EXIT_CODES.ESCALATED : EXIT_CODES.OK;
 }
 // Design §6 terminal states: only the outcomes a single implicit cycle can
@@ -1533,7 +1539,6 @@ const EXIT_CODE_PRIORITY = {
   [EXIT_CODES.BLOCKED]: 5,
   [EXIT_CODES.ESCALATED]: 4,
   [EXIT_CODES.WAIT_TIMEOUT]: 3,
-  [EXIT_CODES.ACTION_REQUIRED]: 2,
   [EXIT_CODES.THROTTLED]: 1,
 };
 export function raiseExitCode(code) {
@@ -2519,7 +2524,7 @@ export async function main(argv, deps = {}) {
             // still closes out the event stream instead of just vanishing from it.
             if (jsonMode) {
               emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
-              emit({ event: "run.end", runId: run.sid, outcome: "blocked", exit: EXIT_CODES.THROTTLED, blockedReason: "concurrency-cap", usage: {} });
+              emit({ event: "run.end", runId: run.sid, outcome: "throttled", exit: EXIT_CODES.THROTTLED, blockedReason: "concurrency-cap", usage: {} });
             } else {
               console.log(`orch: concurrency cap ${cfg.concurrency} reached — ${live} cycles live; skipping ${run.branch}`);
             }

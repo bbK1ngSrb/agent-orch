@@ -37,7 +37,7 @@ remove.
 Exit codes: 0 goal reached · 1 internal error ·
 2 escalated or stopped at the attempt cap ·
 3 concurrency cap reached; retry later · 4 asked a human, no answer in time ·
-5 a human action is required · 6 blocked, a human must decide · 64 usage error.
+6 blocked, a human must decide · 64 usage error.
 
 Examples:
   orch pr 42 --until once

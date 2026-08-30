@@ -1511,7 +1511,8 @@ One contract, five run codes plus the usage code.
 | `0` | reached | The `--until` goal was reached and **verified**: for `ready`, readiness read back from GitHub; for `merged`, the merge commit proven an ancestor of `origin/<base>`. Also the normal success of every non-run command. | every command |
 | `1` | error | An orch bug or an environment failure: `gh` missing, unreadable repo, unexpected throw. Also `config --check` reporting an invalid config, and `upgrade` failing to resolve/fetch/install. | every command |
 | `2` | stopped-at-cap | The goal was not reached and nothing is left to try: `automation.maxAttempts` is exhausted, or `--until once` gave the run no ladder in the first place. A report and a durable run record exist. **Resumable**: `orch continue <runId>` grants a fresh attempt budget. | `task`, `issue`, `pr`, `continue`, `agent add --build` |
-| `3` | blocked | A human must decide. `run.end` always carries a `blockedReason`. | `task`, `issue`, `pr`, `continue`, `agent add --build` |
+| `3` | throttled | The concurrency cap was already reached, so **nothing ran**. Retry later, unchanged. | `task`, `issue`, `pr`, `continue`, `agent add --build` |
+| `6` | blocked | A human must decide. `run.end` always carries a `blockedReason`. | `task`, `issue`, `pr`, `continue`, `agent add --build` |
 | `4` | wait-timeout | orch asked a human on the issue or PR and `automation.humanWaitHours` elapsed with no authorised reply. **Resumable** after you answer. | `task`, `issue`, `pr`, `continue` — only under `--until ready\|merged` |
 | `64` | usage | Unknown command, a flag not valid for this command, `--dry` on a read-only command, a bad numeric or enum value, a bad positional. | every command |
 

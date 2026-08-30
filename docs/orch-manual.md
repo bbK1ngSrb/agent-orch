@@ -861,7 +861,6 @@ merge and avoids that overlap.
 | `2` | `ESCALATED` | A cycle ran but agents did not agree, or the remedy loop stopped at its cap. | Investigate the staged branch. |
 | `3` | `THROTTLED` | The concurrency cap refused the run before any cycle started. | Retry later, unchanged. |
 | `4` | `WAIT_TIMEOUT` | Asked a human and got no answer in `automation.humanWaitHours`. | Resume or re-check. |
-| `5` | `ACTION_REQUIRED` | A PR or branch is ready for exactly one human gesture, including `orch pr` approval or a merge-deferred branch. | Perform the named merge/action. |
 | `6` | `BLOCKED` | A policy-terminal guardrail, security, auth, or merge-rejection block. | Make a human decision; do not retry. |
 | `64` | Usage error | An invalid command, flag, positional, or value. | Fix the command line. |
 
@@ -878,8 +877,7 @@ orch: concurrency cap N reached — M cycles live; skipping <branch>
 
 Nothing was reviewed or decided in that case, so retrying later is the right
 response. Exit `4` means orch asked a human and got no answer in
-`automation.humanWaitHours`; resume or re-check. Exit `5` means one named human gesture remains,
-such as merging a reviewed PR. Exit `6` is a terminal policy, security,
+`automation.humanWaitHours`; resume or re-check. Exit `6` is a terminal policy, security,
 authentication, or merge-rejection block; do not retry the same input. The
 command schema (`src/schema.js`) reports the same table in `orch --help` before
 any command runs.

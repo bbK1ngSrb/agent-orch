@@ -42,7 +42,6 @@ Exit codes:
   2   escalated: agents disagreed or the attempt cap stopped the run
   3   throttled: the concurrency cap was reached; retry later
   4   asked a human and got no answer in automation.humanWaitHours
-  5   action required: perform the named human gesture
   6   blocked: a human must decide (guardrail, security floor, protection)
   64  usage error (unknown command, wrong flag for the command, bad value)
 
