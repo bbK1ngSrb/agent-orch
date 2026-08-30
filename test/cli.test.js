@@ -1217,6 +1217,51 @@ for (const command of ["task", "issue", "pr"]) {
   });
 }
 
+test("a remote without gh keeps a ready task local-only", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-bare-no-gh-");
+  addOriginWithPeer(repo);
+  gitDep.git(["branch", "orch/integration"], repo);
+  writeFileSync(join(repo, "orch.yml"), "automation:\n  remedies: []\n");
+  const gh = () => { throw new Error("gh CLI not found"); };
+  let finishCalls = 0;
+  try {
+    const logs = await runMainInRepo(repo, ["task", "local-only"], {
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      finishRun: async () => { finishCalls += 1; },
+      sleep: async () => {},
+    }, { injectUntilOnce: false });
+    const record = latestRunRecord(repo);
+    assert.equal(record.state, "READY");
+    assert.equal(record.exit, 0);
+    assert.equal(finishCalls, 1, "a local landing must still reach post-run cleanup");
+    assert.match(logs.join("\n"), /merged/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("--until merged without a remote is blocked and never claims completion", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-merged-no-remote-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  const finishCalls = [];
+  try {
+    const logs = await runMainInRepo(repo, ["task", "local-only", "--until", "merged"], {
+      githubDeps: () => ({ gh: () => { throw new Error("gh must not be called"); }, git: gitDep.git }),
+      finishRun: async () => { finishCalls.push(true); },
+    }, { injectUntilOnce: false });
+    const record = latestRunRecord(repo);
+    assert.equal(record.state, "BLOCKED");
+    assert.equal(record.exit, 6);
+    assert.equal(process.exitCode, 6);
+    assert.equal(finishCalls.length, 0);
+    assert.doesNotMatch(logs.join("\n"), /All done/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 // P5 acceptance (docs/cli-v2-implementation-plan.md P5): `--until ready --json`
 // waits on the standing integration→base PR after landing and reports the
 // outcome as the last stdout line; bare `orch task` (tested above) is untouched.
@@ -1800,6 +1845,8 @@ test("orch task --until ready lets a write-permissioned user abandon the run", a
   addOriginWithPeer(repo);
   gitDep.git(["branch", "orch/integration"], repo);
   const gh = (args) => {
+    if (args[0] === "--version") return "gh version test";
+    if (args[0] === "auth" && args[1] === "status") return "";
     if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false }]);
     if (args[0] === "pr" && args[1] === "view") return JSON.stringify({
       number: 9, state: "CLOSED", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo),
@@ -3795,6 +3842,7 @@ test("orch continue restores PR push authority and pushes the owned repair branc
     },
   };
   const gh = (args) => {
+    if (args[0] === "--version") return "gh version test";
     if (args[0] === "pr" && args[1] === "view") {
       const number = String(args[2]);
       return JSON.stringify({
@@ -4427,6 +4475,27 @@ test("#44: a non-merged (escalated) run is not handed to finishRun", async () =>
   try {
     await runMainInRepo(repo, ["task", "some task"], { cycleDeps: escalating, finishRun: async (ctx) => { calls.push(ctx); } });
     assert.equal(calls.length, 0);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("post-run tidy does not print a success banner after a nonzero run", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-mixed-run-banner-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  let finalizations = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async () => finalizations++ === 0
+      ? { status: "merged", reason: "test", sha: "abc" }
+      : { status: "escalated", reason: "second cycle failed", sha: "def" },
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "mixed run", "--until", "once", "--authors", "claude,codex", "--reviewers", "codex,claude"], { cycleDeps });
+    assert.equal(finalizations, 2);
+    assert.equal(process.exitCode, 2, logs.join("\n"));
+    assert.doesNotMatch(logs.join("\n"), /All done/);
   } finally {
     process.exitCode = savedExitCode;
   }

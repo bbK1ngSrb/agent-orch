@@ -70,6 +70,7 @@ For running several issues in a row, see [manual §2.16](docs/orch-manual.md#216
 Add `--dry` to any `task`/`issue`/`pr` run to simulate a cycle without touching git,
 agents, or tests, and without advancing the author rotation. `orch` reports the
 machine-readable outcome through the [exit-code table](#exit-codes) below.
+For the v0.5 command changes, see the [migration guide](docs/MIGRATION-0.5.md).
 
 After a `task` run merges, `orch` tidies up for you: it pushes `orch/integration`
 to GitHub and opens/updates its persistent PR to `main`, deletes the temporary

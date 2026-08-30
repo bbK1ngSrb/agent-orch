@@ -167,12 +167,26 @@ export async function runUntil(policy, record = {}, deps) {
 
     let land = deps.resolveLanded(cycle);
     if (repinnedHead && land.landing === "standing") land = { ...land, expectedHead: repinnedHead };
-    if (land.landing === "base" || land.remoteGate === false) {
+    if (land.remoteGate === false) {
+      if (policy.until === "merged") {
+        const failure = {
+          class: "REMOTE_UNKNOWN",
+          summary: "--until merged requires a git remote and the gh CLI to verify the merge",
+          fingerprint: computeFingerprint("REMOTE_UNKNOWN", "--until merged requires a git remote and the gh CLI to verify the merge"),
+        };
+        return withRecord({ ...terminal("BLOCKED", failure.class), failure, cycle, land }, currentRecord, cycleResults);
+      }
       return withRecord({
-        // With no origin there is no readiness/merge gate to satisfy. A local
-        // landing is READY even when the requested goal was `merged`.
-        state: land.remoteGate === false ? "READY" : (policy.until === "merged" ? "MERGED" : "READY"),
+        // With no remote gate, a local landing is READY. `merged` is handled
+        // above because it requires remote proof rather than a local success.
+        state: "READY",
         outcome: "reached", exit: EXIT_CODES.OK,
+        headSha: land.expectedHead, cycle, land,
+      }, currentRecord, cycleResults);
+    }
+    if (land.landing === "base") {
+      return withRecord({
+        state: policy.until === "merged" ? "MERGED" : "READY", outcome: "reached", exit: EXIT_CODES.OK,
         headSha: land.expectedHead, cycle, land,
       }, currentRecord, cycleResults);
     }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -11,6 +11,9 @@ import { load } from "../src/config.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const bin = join(root, "bin", "orch.js");
+const migration = readFileSync(join(root, "docs", "MIGRATION-0.5.md"), "utf8");
+const readme = readFileSync(join(root, "README.md"), "utf8");
+const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
 
 function cli(argv) {
   return spawnSync(process.execPath, [bin, ...argv], { cwd: root, encoding: "utf8" });
@@ -62,4 +65,11 @@ test("removed config keys stop every command and landing is the surviving route"
     cwd: repo, encoding: "utf8",
   });
   assert.match(check, /orch config: ok/);
+});
+
+test("v0.5 migration guide is linked and covers the bare-run change", () => {
+  assert.match(readme, /\]\(docs\/MIGRATION-0\.5\.md\)/);
+  assert.match(changelog, /\]\(docs\/MIGRATION-0\.5\.md\)/);
+  assert.match(migration, /bare `task`, `issue`, and `pr` mean `--until ready`/);
+  assert.match(migration, /continue.*recorded goal/i);
 });

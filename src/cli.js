@@ -1306,7 +1306,7 @@ export function resolveLanded(cycle, run, cfg, ghDeps, repo) {
   const landedBranch = run.prTarget?.number
     ? (run.prTarget.branch || run.branch)
     : (cycle.status === "pr" || cycle.status === "approved" ? run.branch : integrationBranch);
-  if (!git.gitTry(["remote", "get-url", "origin"], repo).ok) {
+  if (!hasRemote(repo, git.git) || !ghAvailable(ghDeps?.gh)) {
     return { pr: null, expectedHead: git.git(["rev-parse", landedBranch], repo), landing: "local", branch: landedBranch, paths: pathsFor(landedBranch), remoteGate: false };
   }
   if (run.prTarget?.number) {
@@ -2856,7 +2856,7 @@ export async function main(argv, deps = {}) {
       // --json: keep tidying (branch cleanup is a real side effect), but a
       // human-readable print here would land after run.end and break "last
       // line is JSON" (design §13's stdout contract).
-      const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
+      const io = jsonMode || process.exitCode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
       const runStats = results.flatMap((r) => r.runStats || []);
       await finishFn(
         { repo, orchDir, task, merged: mergedBranches, runIds: mergedRunIds, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls },
@@ -3362,7 +3362,7 @@ export async function main(argv, deps = {}) {
       if (!dry) maybeSpawnDocs(finalResult, cfg, { dry, spawn: deps.spawn, quiet: jsonMode }, orchDir);
       if (finalResult.status === "merged" && !dry && !flags["no-tidy"]) {
         const finishFn = deps.finishRun || finishRun;
-        const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
+        const io = jsonMode || process.exitCode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
         await finishFn(
           { repo, orchDir, task: run.task, merged: [activeRun.branch], runIds: [runId], interactive: Boolean(process.stdin.isTTY), runStats: finalResult.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: finalResult.prUrl ? [finalResult.prUrl] : [] },
           { git, io, notify },
