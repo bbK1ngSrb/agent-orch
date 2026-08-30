@@ -501,7 +501,14 @@ export function parse(argv) {
     parsed = parseArgs({ args: argv, allowPositionals: true, options: PARSE_OPTIONS, tokens: true });
   } catch (e) {
     const unknown = /Unknown option '([^']+)'/.exec(e.message);
-    if (unknown) throw usageError(`unknown option ${unknown[1]} (run 'orch help' for usage)`);
+    if (unknown) {
+      // --merge and --pr were removed in v0.5 (P12d) in favour of exact
+      // replacements; name them so the old spelling still teaches the new one.
+      const replacement = unknown[1] === "--merge" ? " — use '--until merged'"
+        : unknown[1] === "--pr" ? " — set 'landing: pr' in .orch/orch.yml"
+        : "";
+      throw usageError(`unknown option ${unknown[1]}${replacement} (run 'orch help' for usage)`);
+    }
     throw usageError(e.message.split(". To ")[0]);
   }
   const { values, positionals, tokens } = parsed;
@@ -2017,6 +2024,8 @@ export async function main(argv, deps = {}) {
   if (command && command !== "__update-check-child" && !COMMANDS[command]) {
     const replacement = command === "review" && rest[0]
       ? ` — use 'orch pr ${rest[0]} --until once'`
+      : command === "update"
+      ? " — use 'orch upgrade'"
       : "";
     throw usageError(`unknown command: ${command}${replacement} (run 'orch help' for usage)`, { showUsage: true });
   }

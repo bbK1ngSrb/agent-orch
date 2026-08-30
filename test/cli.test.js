@@ -6638,6 +6638,27 @@ test("removed review command exits 64 and points to the pr audit spelling", asyn
   );
 });
 
+test("removed update command exits 64 and points to upgrade", async () => {
+  await assert.rejects(
+    () => main(["update"], { preflight() {} }),
+    (e) => e.exit === 64 && e.showUsage === true && /use 'orch upgrade'/.test(e.message),
+  );
+});
+
+test("removed --merge flag exits 64 and points to --until merged", async () => {
+  await assert.rejects(
+    () => main(["pr", "42", "--merge"], { preflight() {} }),
+    (e) => e.exit === 64 && /use '--until merged'/.test(e.message),
+  );
+});
+
+test("removed --pr flag exits 64 and points to the landing config key", async () => {
+  await assert.rejects(
+    () => main(["agent", "add", "widget", "--build", "--pr"], { preflight() {} }),
+    (e) => e.exit === 64 && /landing: pr/.test(e.message),
+  );
+});
+
 // applyRoleOverrides used to throw a plain Error for a lopsided --author(s)/
 // --reviewer(s) pair — a usage mistake, but exit 1 instead of the 64 every
 // other "you typed it wrong" case above gets.
