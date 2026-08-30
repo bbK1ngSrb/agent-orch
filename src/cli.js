@@ -3300,7 +3300,10 @@ export async function main(argv, deps = {}) {
         controller.cycleRoles = cycleRoles;
       }
       const outcome = controller?.outcome || outcomeForResult(result);
-      const exit = controller?.exit ?? exitForResult(result, run.prTarget ? "pr" : command);
+      let exit = controller?.exit ?? exitForResult(result, run.prTarget ? "pr" : command);
+      const resultExit = !controller || controller.outcome === "reached"
+        ? exitForResult(finalResult, run.prTarget ? "pr" : command) : EXIT_CODES.OK;
+      if ((EXIT_CODE_PRIORITY[resultExit] || 0) > (EXIT_CODE_PRIORITY[exit] || 0)) exit = resultExit;
       if (controller) raiseExitCode(exit);
       if (!dry) {
         const resumable = Boolean(controller && (outcome === "stopped-at-cap" || outcome === "wait-timeout"));
@@ -3378,8 +3381,6 @@ export async function main(argv, deps = {}) {
       }
       if (finalResult.status === "escalated" || finalResult.status === "merge-deferred"
           || finalResult.status === "approved" || finalResult.status === "pr") {
-        const resultExit = !controller || controller.outcome === "reached"
-          ? exitForResult(finalResult, run.prTarget ? "pr" : command) : EXIT_CODES.OK;
         if (!controller || resultExit !== EXIT_CODES.OK) raiseExitCode(resultExit);
         if (!dry && (finalResult.status === "escalated" || finalResult.status === "merge-deferred")) {
           commentOnIssue(finalResult, activeRun.branch, closes, deps.githubDeps || githubDeps, orchDir, activeRun.sid);

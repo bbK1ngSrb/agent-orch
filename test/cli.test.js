@@ -4968,6 +4968,63 @@ test("orch continue resumes a ready review through the landing path", async () =
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
+test("orch continue persists action-required for an approved PR resume", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-pr-resume-approved-");
+  const branch = "pr/claude/pr-resume-approved";
+  const sid = "prresumeapproved";
+  gitDep.git(["checkout", "-b", branch], repo);
+  writeFileSync(join(repo, "review.txt"), "review me\n");
+  gitDep.git(["add", "review.txt"], repo);
+  gitDep.git(["commit", "-m", "review fixture"], repo);
+  gitDep.git(["checkout", "main"], repo);
+
+  const orchDir = join(repo, ".orch");
+  const head = gitDep.git(["rev-parse", branch], repo);
+  checkpointDep.record(orchDir, sid, {
+    branch,
+    oid: head,
+    round: 1,
+    stage: "reviewed",
+    decision: "AGREE",
+    reason: "looks good",
+    author: { agent: "claude" },
+    reviewers: [{ agent: "codex" }],
+  });
+  runRecordDep.create(orchDir, {
+    runId: sid,
+    command: "pr",
+    argv: ["pr", "9"],
+    policy: { until: "ready" },
+    prTarget: { number: 9, url: "https://github.com/o/r/pull/9", branch, baseBranch: "main" },
+  });
+
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    process.exitCode = 0;
+    const logs = await runMainInRepo(repo, ["continue", sid, "--json", "--no-tidy"], {
+      cycleDeps: {
+        ...fakeCycleDeps(),
+        finalize: async () => ({ status: "approved", reason: "review passed" }),
+      },
+      githubDeps: () => ({ gh, git: gitDep.git }),
+    });
+    const events = logs.map((line) => JSON.parse(line));
+    const end = events.at(-1);
+    assert.equal(end.event, "run.end");
+    assert.equal(end.outcome, "reached");
+    assert.equal(end.exit, EXIT_CODES.ACTION_REQUIRED);
+    const record = JSON.parse(readFileSync(join(orchDir, "run-records", `${sid}.json`), "utf8"));
+    assert.equal(record.exit, EXIT_CODES.ACTION_REQUIRED);
+    assert.equal(process.exitCode, EXIT_CODES.ACTION_REQUIRED);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 // The schema's own matrix test (schema.test.js) derives its expectations from
 // FLAGS/COMMANDS, so it can't catch a regression in those declarations
 // themselves — delete --allow-large-scope from the schema and that test gets
