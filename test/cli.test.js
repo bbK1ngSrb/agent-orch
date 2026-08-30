@@ -5026,8 +5026,8 @@ test("orch continue persists action-required for an approved PR resume", async (
     assert.equal(end.outcome, "reached");
     // An approved review reports OK. Splitting out a distinct
     // "one human gesture remains" code is deliberately not part of this change
-    // — it needs the orch-pr.yml handler (#619) first, or this repo's own PR
-    // check goes red on the success path.
+    // — the PR-check job has to handle a nonzero success code first (issue
+    // #619), or this repo's own check goes red on the success path.
     assert.equal(end.exit, EXIT_CODES.OK);
     const record = JSON.parse(readFileSync(join(orchDir, "run-records", `${sid}.json`), "utf8"));
     assert.equal(record.exit, EXIT_CODES.OK);

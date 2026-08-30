@@ -7,7 +7,8 @@ export const EXIT_CODES = Object.freeze({
   THROTTLED: 3,
   WAIT_TIMEOUT: 4,
   // 5 is deliberately reserved for ACTION_REQUIRED and emitted by nothing yet:
-  // splitting it out needs the orch-pr.yml handler (#619) and a decision on what
-  // a merge-deferred cycle reports, so it ships separately.
+  // splitting it out first needs this repo's own PR-check workflow to handle a
+  // nonzero success code (see issue #619), plus a decision on what a
+  // merge-deferred cycle reports, so it ships separately.
   BLOCKED: 6,
 });
