@@ -1319,7 +1319,7 @@ test("engine keeps agent and gate timeouts independent (#56/#505)", async () => 
 // not exist; `contains: false` = integration does not contain base (diverged).
 function cycleBaseDeps(calls, { integrationTip = "itip", baseTip = "btip", contains = true } = {}) {
   return {
-    adapters: { get: () => ({ name: "claude", async author() {}, async audit() { return { decision: "AGREE", reason: "ok" }; } }) },
+    adapters: { get: () => ({ name: "claude", async author() {}, async audit(_branch, _worktree, opts) { calls.push(["audit", opts.base]); return { decision: "AGREE", reason: "ok" }; } }) },
     git: {
       createTaskBranch: (_repo, _wt, _branch, base) => calls.push(["createTaskBranch", base]),
       attachExistingBranch() {},
@@ -1376,6 +1376,7 @@ test("integration ahead of base → the cycle is branched from and diffed agains
 
   assert.equal(res.status, "merged");
   assert.deepEqual(calls.find((c) => c[0] === "createTaskBranch"), ["createTaskBranch", "orch/integration"]);
+  assert.deepEqual(calls.find((c) => c[0] === "audit"), ["audit", "orch/integration"]);
   assert.deepEqual(calls.find((c) => c[0] === "scope"), ["scope", "orch/integration"]);
   assert.ok(calls.some((c) => c[0] === "changedFiles" && c[1] === "orch/integration"));
   assert.deepEqual(calls.find((c) => c[0] === "git" && c[1] === "rev-parse" && c[2] !== "--verify"),
@@ -1398,6 +1399,7 @@ for (const [name, over] of [
 
     assert.equal(res.status, "merged");
     assert.deepEqual(calls.find((c) => c[0] === "createTaskBranch"), ["createTaskBranch", "main"]);
+    assert.deepEqual(calls.find((c) => c[0] === "audit"), ["audit", "main"]);
     assert.deepEqual(calls.find((c) => c[0] === "scope"), ["scope", "main"]);
     assert.ok(calls.some((c) => c[0] === "changedFiles" && c[1] === "main"));
     assert.ok(!calls.some((c) => c[0] === "phase" && c[1] === "worktree" && /base /.test(c[2])));
