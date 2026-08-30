@@ -17,6 +17,7 @@ import { askRemedy, canWrite, parseReply } from "../src/remedies/ask.js";
 import { runCycle as executeCycle } from "../src/engine.js";
 import { nextAuthor } from "../src/cli.js";
 import { integrationRepairRemedy, createIntegrationRepairRemedy } from "../src/integration-repair.js";
+import { load } from "../src/config.js";
 import * as git from "../src/git.js";
 import * as runRecord from "../src/run-record.js";
 
@@ -924,6 +925,51 @@ test("integration repair: REMOTE_CONFLICTING audits an ordinary ours resolution 
     git.gitTry(["merge-base", "--is-ancestor", baseTip, integrationTip], remote).ok,
     "the landed integration tip must contain the base tip",
   );
+});
+
+// The tests above hand-build cfg.main.conflictResolution/conflictResolutionResolvers
+// directly, which proves repair() honors those fields but not that an operator's
+// orch.yml `automation.conflictResolvers` actually reaches them. This one runs the
+// real config.js load() pipeline first, so a break in that wiring (e.g. P12e's
+// automation.* -> main.* normalization) fails here even though the fields it
+// produces are shape-correct.
+test("integration repair: automation.conflictResolvers configured in orch.yml reaches the named resolver via load()", async () => {
+  const { repo } = repairFixture();
+  const cfgDir = mkdtempSync(join(tmpdir(), "orch-remedy-cfg-"));
+  mkdirSync(join(cfgDir, ".orch"), { recursive: true });
+  // gemini/grok, not orch.yml's default agents ["claude", "codex"] — proves the
+  // resolver pool that actually ran was read from automation.conflictResolvers,
+  // not a fallback to the default agent rotation.
+  writeFileSync(join(cfgDir, ".orch", "orch.yml"), [
+    "automation:",
+    "  conflictResolution: auto",
+    "  conflictResolvers: [gemini, grok]",
+    "",
+  ].join("\n"));
+  const cfg = load(cfgDir, undefined, { onWarning() {} });
+
+  const calls = [];
+  const adapters = fakeAdapters({
+    gemini: {
+      async author(prompt, wd) {
+        calls.push("author");
+        writeFileSync(join(wd, "shared.txt"), "integration side\n");
+        git.git(["add", "-A"], wd);
+        git.git(["commit", "-m", "resolve conflict"], wd);
+      },
+    },
+    grok: {
+      async audit(branch, wd) {
+        calls.push("audit");
+        return { decision: "AGREE", reason: "reconstructs both sides" };
+      },
+    },
+  });
+
+  const out = await runRepair(repo, { cfg, failureClass: "REMOTE_CONFLICTING", adapters });
+
+  assert.equal(out.cycle?.status, "merged", out.result?.reason);
+  assert.deepEqual(calls, ["author", "audit"], "the orch.yml-configured resolver/reviewer pool must actually run");
 });
 
 test("integration repair: a timed-out resolver gets the stage timeout and releases integration-repair.lock", async () => {

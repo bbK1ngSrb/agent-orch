@@ -57,12 +57,8 @@ test("every declared flag validates on its command, every other flag is refused"
   }
 });
 
-// runConfigWizard (src/config-wizard.js) creates .orch/ and writes orch.yml —
-// `config` is a mutating command. Classifying it `mutates: false` made the
-// generic "--dry has no effect on 'orch config' — it changes nothing"
-// message a lie about a command that does change something.
-test("config is classified as a mutating command", () => {
-  assert.equal(COMMANDS.config.mutates, true);
+test("config is a read-only inspection command", () => {
+  assert.equal(COMMANDS.config.mutates, false);
 });
 
 // `completion install` writes ~/.orch/completion.bash, so it needs --dry like

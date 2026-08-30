@@ -5,7 +5,6 @@ import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { gateTimeoutMs, load, configPath, configReport, parseRoleSpec, parseRoleSpecs } from "./config.js";
-import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import { EXIT_CODES } from "./exit-codes.js";
 import {
@@ -279,7 +278,6 @@ agents:
 # ===================================================================
 test: auto                              # "auto" detects the test command, or set one, e.g. "pytest -q"
 roundCap: 3                             # max review rounds incl. the first, before escalation (positive int); default: 3
-                                        # (reviseCap is the deprecated alias for this key)
 stageTimeout: 25                        # wall-clock cap in minutes for each agent stage;
                                         # 0 disables; default: 25
 gateTimeout: 25                        # wall-clock cap in minutes for the test gate; defaults to stageTimeout
@@ -287,7 +285,7 @@ concurrency: 4                          # max concurrent cycles per repo dir; ov
 baseBranch: main                        # trunk orch reads/diffs/PRs against (e.g. dev if main is deploy-only); default: main
 integrationBranch: orch/integration     # local merge target for no-ff/ff-only; default: orch/integration
 landing: no-ff                          # into integrationBranch: ff-only | no-ff | pr; default: no-ff
-                                        # (pr = skip local integration, open a per-cycle branch PR; was merge:)
+                                        # (pr = skip local integration, open a per-cycle branch PR)
 
 
 # ===================================================================
@@ -330,7 +328,7 @@ scope:
 
 
 # ===================================================================
-# GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> baseBranch)
+# GitHub PR bridge (orch pr <n>; landing: pr; integrationBranch -> baseBranch)
 # ===================================================================
 github:
   mergeMethod: squash                   # gh pr merge strategy for non-integration PRs; default: squash
@@ -347,6 +345,7 @@ automation:
   remedies: null                        # ordered subset of rebase, rotate, reauthor, ask; default: fallback order
   pollSeconds: 30                       # readiness poll interval; default: 30
   ciWaitMinutes: 30                     # readiness wait window; default: 30
+  conflictResolution: manual            # manual | propose | auto; how the persistent PR's conflict repair may act
   conflictResolvers: null               # role specs for integration conflict repair
   conflictAutoPaths:
     - CHANGELOG.md
@@ -356,8 +355,8 @@ automation:
   detachLogDir: .orch/logs              # detached-run log directory; default: .orch/logs
 
 
-# main.autoMerge, github.autoMergePr, main.conflictResolution, and the
-# other v0.4 main.* spellings remain supported with warnings until P12.
+# The v0.4 \`merge\`, \`reviseCap\`, \`main.*\`, and legacy GitHub auto-merge-PR
+# keys are rejected: orch.yml uses the replacement named in the error.
 
 
 # ===================================================================
@@ -2077,7 +2076,7 @@ export async function main(argv, deps = {}) {
 
   // Config inspection is deliberately before update checks, app auth, and
   // preflight: it is a local, non-interactive diagnostic command.
-  if (command === "config" && (flags.check || flags.json)) {
+  if (command === "config") {
     const report = configReport(repo, flags["config-file"]);
     printConfigReport(report, Boolean(flags.json));
     process.exitCode = report.ok ? EXIT_CODES.OK : EXIT_CODES.ERROR;
@@ -2149,23 +2148,6 @@ export async function main(argv, deps = {}) {
       console.log("  file (CLAUDE.md / AGENTS.md / GEMINI.md) at it, e.g. add `@.orch/ORCH.md`,");
       console.log("  or re-run `orch init --link` to wire it in for you.");
     }
-    return;
-  }
-
-  if (command === "config") {
-    // Without --check/--json, retain the interactive wizard until the P12
-    // cutover. ORCH_DRYRUN=1 still plans that write without opening a TTY.
-    if (dryRun) {
-      console.log(`orch (dry): would run the interactive config wizard and write ${flags["config-file"] || join(orchDir, "orch.yml")}`);
-      return;
-    }
-    await runConfigWizard({
-      repo,
-      configFile: flags["config-file"],
-      stdin: deps.stdin || process.stdin,
-      stdout: deps.stdout || process.stdout,
-      inputStart: deps.inputStart,
-    });
     return;
   }
 

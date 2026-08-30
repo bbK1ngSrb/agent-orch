@@ -179,7 +179,7 @@ immediate local usability *and* a deliberate one-PR lag before it's public.
 
 > **Professor's note.** A lot of first-time confusion comes from expecting
 > `orch task` to merge straight to `main`. It deliberately doesn't. If you
-> want that, run it with `--until merged`, or switch to `merge: pr` entirely
+> want that, run it with `--until merged`, or switch to `landing: pr` entirely
 > (Part 3).
 
 ---
@@ -206,28 +206,24 @@ re-run — it won't clobber an existing `.orch/orch.yml`.
 
 ### 2.2 `orch config`
 
-An interactive, one-field-at-a-time wizard for creating or editing
-`.orch/orch.yml`. It walks every key in the config schema, showing the
-current value (or default) and an explanation before you change it.
+Prints the effective, validated configuration for this repo — every setting
+orch will actually use for a run, and the source of each value: a built-in
+default, `.orch/orch.yml`, or a file layered on with `--config-file`. It does
+not write anything; edit `.orch/orch.yml` yourself.
 
 ```bash
 orch config
-orch config --config-file custom.yml   # write somewhere other than .orch/orch.yml
+orch config --check                    # validate only; exit 1 and list problems
+orch config --config-file custom.yml   # report as if this file were layered on
 ```
 
-Unlike hand-editing YAML, the wizard **normalizes** what it writes: it runs
-the same business-rule validation the loader applies at run time (e.g.
-rejecting a `main.conflictResolution` whose only configured resolver is also
-the sole reviewer), and it canonicalizes the deprecated
-`main.autoResolveConflicts` boolean into `main.conflictResolution` before
-saving, so the file it writes never round-trips both the old alias and the
-new field in a way that could silently disagree with itself.
+The schema is closed: an unknown key is an error, not silence, and a key that
+was renamed or removed (e.g. `merge`, `reviseCap`) is reported the same way,
+naming its replacement. `--check` turns this into a gate exit code instead of
+a printed report.
 
-**When to use it:** setting up a repo's config for the first time beyond the
-bare `orch init` scaffold, or changing a field you're not confident editing
-by hand (especially the `main.*` conflict-resolution keys, where the wizard's
-validation catches a broken combination before it's saved instead of after
-the next run fails to load it).
+**When to use it:** to see why a run picked the settings it did, or to
+validate `.orch/orch.yml` (e.g. in CI) before a cycle runs against it.
 
 ### 2.3 `orch task "<change>"`
 
@@ -279,7 +275,7 @@ spend.
 
 **A note on `gh` authentication.** Even the default `no-ff` path (§1.3) ends
 in a `gh` call — `openIntegrationPr` opens or updates the persistent
-integration→main PR after *every* successful merge, not just `merge: pr`
+integration→main PR after *every* successful merge, not just `landing: pr`
 runs. So if your repo has a git remote configured, `orch task`/`orch issue`
 check `gh auth status` up front, the same fail-fast check `orch pr` always
 did (§2.7) — you get one clear "run `gh auth login`" error before any agent
@@ -570,13 +566,13 @@ several cycles are started at once.
 
 **What it cannot promise: where a green cycle lands.** That is the repo's config
 talking, and it answers the same way for an MCP-started and a hand-typed cycle.
-Under the defaults (`integrationBranch: orch/integration` in §5, `main.autoMerge:
-false` in §5.1) the cycle lands on the integration branch and `main` advances
-only when a human merges the standing integration PR — the human checkpoint. A
-repo that points `integrationBranch` at its `baseBranch`, or sets
-`main.autoMerge: true`, has already opted every green cycle out of that
-checkpoint; exposing MCP does not change that, but it does mean the checkpoint is
-not there to rely on. Check both keys before pointing a client at a repo.
+Under the defaults (`integrationBranch: orch/integration` in §5) the cycle
+lands on the integration branch and `main` advances only when a human merges
+the standing integration PR — the human checkpoint, unless it is run to
+completion with `--until merged`. A repo that points `integrationBranch` at
+its `baseBranch` has already opted every green cycle out of that checkpoint;
+exposing MCP does not change that, but it does mean the checkpoint is not
+there to rely on. Check that key before pointing a client at a repo.
 
 **One caveat.** A real cycle takes minutes and the tool call blocks for all of
 it, so a client with a short tool timeout may give up while the cycle keeps
@@ -646,11 +642,10 @@ That is the difference between "nobody read your flag" and "your flag was
 rejected": `orch issue 42 --file wo.json` used to run against the issue body and
 ignore the file, and `orch pr 42 --merge --dry` used to perform a real merge.
 `--dry` is honoured by every command that changes something and refused on the
-read-only ones (`dashboard`, `mcp`), where planning nothing is not a
-meaningful request. `config` changes something too (it writes
-`.orch/orch.yml`), and honours `--dry` like the rest: instead of launching the
-interactive wizard, it prints the path it would write and leaves the file
-untouched.
+read-only ones (`dashboard`, `mcp`, `config`), where planning nothing is not a
+meaningful request. `config` only prints and validates `.orch/orch.yml`; it
+never writes the file, so `--dry` on it is refused with `--dry has no effect
+on 'orch config' — it changes nothing`.
 
 ### 2.14 The protected-path intake refusal
 
@@ -894,12 +889,12 @@ whole system, because it decides whether your changes ever touch `main`
 without a human clicking "merge" on GitHub.
 
 ```yaml
-merge: no-ff     # default
-# merge: ff-only
-# merge: pr
+landing: no-ff     # default
+# landing: ff-only
+# landing: pr
 ```
 
-### 3.1 `merge: no-ff` (the default)
+### 3.1 `landing: no-ff` (the default)
 
 Merges into `orch/integration` with a merge commit (`--no-ff`), even when a
 fast-forward would have been possible. This is what enables **concurrent
@@ -921,7 +916,7 @@ it whenever you want fast local iteration with a single, deliberate PR
 checkpoint before `main` — including when you're running several cycles at
 once.
 
-### 3.2 `merge: ff-only`
+### 3.2 `landing: ff-only`
 
 Same target (`orch/integration`), but requires a fast-forward — no merge
 commit. If a concurrent peer has already advanced `orch/integration` since
@@ -935,19 +930,19 @@ sometimes demoting to a PR instead of always landing locally. Rare in
 practice — most repos are fine with merge commits on an internal integration
 branch nobody reads by hand.
 
-### 3.3 `merge: pr` — per-cycle PR mode
+### 3.3 `landing: pr` — per-cycle PR mode
 
 This is the one to reach for when the complaint is *"I want every orch cycle
 to become its own reviewable PR against `main`, not silently disappear into
 an integration branch."*
 
-With `merge: pr` set, an agreed + green cycle **skips `orch/integration` and
+With `landing: pr` set, an agreed + green cycle **skips `orch/integration` and
 the local merge.lock entirely**. Instead it pushes its own cycle branch and
 opens **its own PR straight to `main`** — one PR per cycle, not one shared
 persistent PR.
 
 ```yaml
-merge: pr
+landing: pr
 ```
 
 ```bash
@@ -956,19 +951,11 @@ orch task "add rate-limit header" --until merged   # → opens and merges its PR
 
 This needs a git remote and the `gh` CLI. Without them, the cycle escalates
 locally the same way ordinary `merge-deferred` does (§3.4) — it does not silently
-merge somewhere else.
+merge somewhere else. Run `orch pr <number> --until merged` against the opened PR to
+merge it once it is green — pinned to the exact reviewed commit OID, so a
+head that moved since review is refused rather than merged unseen.
 
-Existing pre-P12 configs with `github.autoMergePr: true` continue to work with
-a deprecation warning. If enabling native auto-merge fails (for example because
-branch protection is not set up for it), the PR itself still stands. When
-enabling it succeeds, orch also makes one immediate REST merge attempt, using
-the numeric PR number parsed from the creation URL and pinned to the exact reviewed commit OID.
-If that one-shot direct path is not ready, orch leaves the
-PR plus native auto-merge in place; it does not poll or retry it. New runs
-should use `--until merged`, which waits for the PR and completes its merge
-without relying on the deprecated key.
-
-**Consequence you should know:** `merge: pr` does not run orch's
+**Consequence you should know:** `landing: pr` does not run orch's
 `release.autoBump` or CHANGELOG behavior described in §4.1 — those only apply
 to the local integration path. Unless the PR itself carries release-file
 changes, it lands without a version bump.
@@ -990,7 +977,7 @@ formal review), stick with the default `no-ff` two-speed path instead.
 
 ### 3.4 `merge-deferred` (this can happen under *any* merge mode)
 
-Separately from `merge: pr`, **any** cycle — regardless of which `merge:`
+Separately from `landing: pr`, **any** cycle — regardless of which `landing:`
 mode you've configured — can demote when one of these triggers fires:
 
 | Trigger | Meaning |
@@ -1030,7 +1017,7 @@ nothing is actually *wrong* with the work: the peer cycle simply built its
 branch on an integration tip that another cycle was about to move, so merging
 it as-is would merge a stale result. Rather than throw that work away, orch
 parks the cycle in a small on-disk queue (`.orch/deferred/<sid>.json`). This
-applies to the local integration path (`no-ff`/`ff-only`) — under `merge: pr`
+applies to the local integration path (`no-ff`/`ff-only`) — under `landing: pr`
 there is no shared integration tip to collide on or rebase onto, so the
 `overlap` trigger never fires there in the first place.
 
@@ -1071,16 +1058,16 @@ blocking cycle to finish, then check again** before doing anything by hand.
 
 **Takeaway:** `merge-deferred` is not a mode you choose — it's the safety net that
 catches a cycle whenever the fast local path can't complete cleanly, under
-*any* `merge:` setting. `merge: pr` just makes "always a PR" the *primary*
+*any* `landing:` setting. `landing: pr` just makes "always a PR" the *primary*
 path instead of the fallback.
 
 ### 3.5 Decision guide — which merge mode do I actually want?
 
 | You want... | Set |
 |---|---|
-| Fast local iteration, single shared PR gate to `main`, concurrent cycles land without fighting each other | `merge: no-ff` (default) — do nothing |
-| Same as above, but a strictly linear `orch/integration` history (no merge commits), and can tolerate more frequent `merge-deferred` outcomes | `merge: ff-only` |
-| Every cycle becomes its own PR straight to `main`, no shared integration branch, no two-speed lag, branch protection satisfied every time | `merge: pr` |
+| Fast local iteration, single shared PR gate to `main`, concurrent cycles land without fighting each other | `landing: no-ff` (default) — do nothing |
+| Same as above, but a strictly linear `orch/integration` history (no merge commits), and can tolerate more frequent `merge-deferred` outcomes | `landing: ff-only` |
+| Every cycle becomes its own PR straight to `main`, no shared integration branch, no two-speed lag, branch protection satisfied every time | `landing: pr` |
 | Cycles that land locally to still eventually reach `main` without you clicking merge each time | run with `--until merged` |
 
 ---
@@ -1098,7 +1085,7 @@ Off by default: without this flag, a merge lands with no release-file edits
 at all — orch doesn't assume your repo wants a merge-counter bump and a
 CHANGELOG commit on every integrated cycle. With `release.autoBump: true` in
 `.orch/orch.yml`, every cycle that lands via `orch/integration` (i.e. **not**
-`merge: pr`) bumps the merge counter in `package.json` right after the
+`landing: pr`) bumps the merge counter in `package.json` right after the
 post-merge test gate passes, mirrors that into `package-lock.json`, prepends
 a `CHANGELOG.md` entry naming the branch (and issue number, for `orch
 issue`), and commits it all as `chore(release): vX.Y.Z`. See this repo's own
@@ -1282,12 +1269,11 @@ agents:                          # rotation pool when no explicit roles set
 # === Cycle ===
 test: auto                       # or an explicit command, e.g. "pytest -q"
 roundCap: 3                      # max review rounds incl. the first
-                                 # reviseCap is the deprecated alias for this key
 stageTimeout: 25                 # per-stage wall-clock cap, minutes; 0 = off
 concurrency: 4                   # max concurrent cycles per repo dir
 baseBranch: main                 # trunk orch reads/diffs/opens PRs against; e.g. dev if main is deploy-only
 integrationBranch: orch/integration
-merge: no-ff                     # ff-only | no-ff | pr
+landing: no-ff                   # ff-only | no-ff | pr
 
 # === MCP PR merge opt-in ===
 automation:
@@ -1316,20 +1302,6 @@ scope:
 # === GitHub PR bridge ===
 github:
   mergeMethod: squash             # squash | merge | rebase
-  autoMergePr: false
-
-# === Main mirror PR (integrationBranch -> baseBranch) ===
-main:
-  autoMerge: false                # true = orch itself merges the persistent integration PR once its checks are green
-  conflictResolution: manual      # manual | propose | auto
-  # conflictResolutionResolvers:  # default: null; role specs, rotate/fail over per conflict
-  #   - claude
-  autoResolveConflicts: false     # deprecated alias: true = conflictResolution: auto
-  autoResolveConflictPaths:       # whitelisted metadata paths conflictResolution: auto may push
-    - CHANGELOG.md
-    - docs/index.html
-    - package-lock.json
-    - package.json
 
 # === Auto docs-update ===
 docs:
@@ -1363,9 +1335,7 @@ release:
   escalates. The *initial* review is round one, so `roundCap: 3` means three
   reviews and at most two author revisions. Raise it if your reviewers tend to
   converge slowly; lower it to fail fast and escalate to a human sooner. The old
-  name `reviseCap` still works: orch normalises it onto `roundCap` and prints a
-  deprecation warning. If both keys appear in the same file, `roundCap` wins and
-  the conflict is warned about rather than silently resolved.
+  name `reviseCap` was removed in v0.5.0; rename it to `roundCap`.
 - **`stageTimeout`** — kills a stalled author or review stage (whole process
   group, wall-clock, not CPU time) rather than hanging forever on a wedged
   agent CLI. `0` disables it — not recommended in CI. **The environment
@@ -1377,7 +1347,8 @@ release:
   the equivalent of `stageTimeout: 25` is `ORCH_STAGE_TIMEOUT_MS=1500000`.
   Copying `25` across gives you a 25-millisecond cap that kills every stage on
   contact. See §5.2.
-- **`merge`** — see Part 3. This is the big one.
+- **`landing`** — see Part 3. This is the big one. The old name `merge` was
+  renamed to `landing` in v0.5.0 (same values); rename the key.
 - **`cheap`** — `role` is the agent spec `--cheap` forces for one run;
   `paths` auto-routes a `--file`/`orch issue` work order to it *without* the
   flag, when every one of the work order's `suspected_paths` matches a glob
@@ -1397,7 +1368,7 @@ release:
   from a line count is routine hygiene while dropping it from the security
   floor is a security decision that deserves its own explicit opt-in.
 - **`github.mergeMethod`** — only affects PRs orch itself merges via `gh`:
-  `orch pr --merge` and the `merge: pr` per-cycle PRs. It does **not** apply
+  `orch pr --merge` and the `landing: pr` per-cycle PRs. It does **not** apply
   to the persistent `orch/integration → main` PR — that one always uses a
   merge commit, deliberately, so `orch/integration` stays in `main`'s
   ancestry (a squash or rebase would strand the integration branch outside
@@ -1410,25 +1381,20 @@ release:
   always uses a merge commit, the repo must have "Allow merge commits"
   enabled in its GitHub merge-button settings — if a repo only allows
   squash/rebase, this PR can never be merged (by orch or by hand).
-- **Legacy `github.autoMergePr`** — accepted for pre-P12 compatibility with a
-  warning, but new runs should use `--until merged`. In older configs it
-  enables GitHub's *native* auto-merge on PRs orch opens or updates, so they
-  merge themselves once their own required checks pass, with no further orch
-  involvement. If GitHub rejects the request, the PR itself is unaffected.
-  Caveat: if the branch's review requirement is satisfied only via a GitHub
-  ruleset `bypass_actors` grant (rather than a real human approval), GitHub's
-  native auto-merge does not reliably fire — it can stay enabled with
-  `mergeStateStatus: BLOCKED` indefinitely even after checks pass. For the
-  persistent `orch/integration → main` PR, set `main.autoMerge: true` (below)
-  to have orch merge it directly instead of relying on native auto-merge. A
-  one-shot `merge: pr` per-cycle PR gets one immediate, reviewed-OID-pinned
-  direct REST attempt after native auto-merge is armed; if that attempt is too
-  early, nothing re-invokes it later the way the persistent integration PR is
-  re-touched every cycle.
-- **`main.autoMerge`** — opt-in (default `false`). When `true`, every cycle
-  that re-touches the persistent `orch/integration → main` PR checks whether
-  *all* of that PR's status checks are green and, if so, merges it directly
-  via `gh` (a merge commit, same as the mirror model requires). The merge is
+- **The legacy GitHub-native-auto-merge-PR key was removed in v0.5.0** —
+  GitHub's native auto-merge on PRs orch opens or updates is no longer
+  config-driven; use `--until merged` instead. Caveat: if the branch's review
+  requirement is satisfied only via a GitHub ruleset `bypass_actors` grant
+  (rather than a real human approval), GitHub's native auto-merge does not
+  reliably fire — it can stay enabled with `mergeStateStatus: BLOCKED`
+  indefinitely even after checks pass; run `orch pr <number> --until merged` against
+  the persistent `orch/integration → main` PR to have orch merge it directly
+  instead.
+- **The legacy persistent-PR direct-merge key was removed in v0.5.0** —
+  `orch pr <number> --until merged` against the persistent `orch/integration → main`
+  PR is its replacement: when all of that PR's status checks are green, orch
+  merges it directly via
+  `gh` (a merge commit, same as the mirror model requires). The merge is
   pinned to the integration tip this cycle pushed and verified (`sha=` on the
   REST merge endpoint). The persistent PR is designed to accumulate work from
   several cycles: a concurrent peer that lands on `orch/integration` between
@@ -1439,39 +1405,30 @@ release:
   ("not mergeable" — checks pending, review missing, or already merged) stays
   swallowed so a still-pending check is not cycle noise; every other error
   (401/403 auth, a bad PR ref, a network failure) is logged once instead of
-  being hidden behind the same "not ready yet" reading. This
-  is the fallback for when native auto-merge (`github.autoMergePr`) stalls at
-  `BLOCKED` because the review requirement is satisfied only through a ruleset
-  `bypass_actors` grant rather than a human approval. The direct merge runs as
-  whatever `gh` identity orch is authenticated as — an `orch[bot]` installation
-  token if `ORCH_APP_ID`/`ORCH_APP_PRIVATE_KEY` are set, an explicit `GH_TOKEN`
-  if you export one, otherwise your ambient `gh` login — so it only succeeds if
-  *that* actor is itself in the branch's `bypass_actors` list. This is required
-  for bot-authored PRs because GitHub rejects self-approval: the same actor that
-  opened the PR cannot approve its own PR to satisfy a required-review rule. A
-  ruleset bypass means the GitHub approval is bypassed, not recorded;
-  orch's internal author → cross-audit → test-gate is the review that governs
-  the merge. Landing this against a bypass-protected `main` therefore requires
-  granting the merging actor that bypass as an explicit, opt-in step; without
-  it the merge call just fails and orch retries next cycle. It's also a no-op
-  while any check is still pending or failing, and does nothing until a real
-  merge lands to re-open/update the PR. Only affects the integration PR, never
-  `merge: pr`'s per-cycle PRs.
-- **`main.conflictResolution`** — controls what happens when the persistent
-  `orch/integration → main` PR is dirty. `manual` comments for a human,
-  `propose` lets a resolver draft a resolution and posts the reviewer summary
-  without pushing, and `auto` pushes only whitelisted metadata conflicts after
-  the configured test gate passes. Non-whitelisted conflicts are proposed for
-  human approval even when a different reviewer agrees.
-  `main.autoResolveConflicts: true` remains a deprecated alias for `auto`;
-  `false` maps to `manual` when no explicit mode is set.
-- **`main.conflictResolutionResolvers`** — optional role-spec pool for conflict
-  resolution, using the same `"<agent> [model] [effort]"` grammar as authors
-  and reviewers. The pool rotates per conflict and failed resolver attempts
-  restart from the pre-merge tree before the next resolver tries.
-- **`main.autoResolveConflictPaths`** — the glob whitelist `conflictResolution:
-  auto` is allowed to push a resolution for; conflicts touching any other path
-  are always proposed for human approval, regardless of resolver agreement.
+  being hidden behind the same "not ready yet" reading. The direct merge runs
+  as whatever `gh` identity orch is authenticated as — an `orch[bot]`
+  installation token if `ORCH_APP_ID`/`ORCH_APP_PRIVATE_KEY` are set, an
+  explicit `GH_TOKEN` if you export one, otherwise your ambient `gh` login —
+  so it only succeeds if *that* actor is itself in the branch's
+  `bypass_actors` list. This is required for bot-authored PRs because GitHub
+  rejects self-approval: the same actor that opened the PR cannot approve its
+  own PR to satisfy a required-review rule. A ruleset bypass means the
+  GitHub approval is bypassed, not recorded; orch's internal author →
+  cross-audit → test-gate is the review that governs the merge. Landing this
+  against a bypass-protected `main` therefore requires granting the merging
+  actor that bypass as an explicit, opt-in step; without it the merge call
+  just fails and orch retries next cycle. Only affects the integration PR,
+  never `landing: pr`'s per-cycle PRs.
+- **`main.conflictResolution`, `main.autoResolveConflicts`,
+  `main.conflictResolutionResolvers`, and `main.autoResolveConflictPaths` were
+  removed in v0.5.0.** Conflict repair for the persistent integration PR is
+  now the `integration-repair` loop remedy under `--until ready|merged`; it is
+  always active and, unlike `rebase`/`rotate`/`reauthor`/`ask`, cannot be
+  turned off via `automation.remedies`. Use `automation.conflictResolution`
+  (`manual` | `propose` | `auto`, default `manual`) to control how far it may
+  act, and `automation.conflictResolvers` / `automation.conflictAutoPaths` for
+  the resolver pool and whitelisted paths, in place of the old `main.*`
+  spellings.
 - **`release.autoBump`** — opt-in (default `false`). When `true`, every cycle
   that lands via the local integration path gets the §4.1 merge-counter bump +
   CHANGELOG commit. Left off, orch never edits release files — same opt-in
@@ -1511,14 +1468,14 @@ ceremony."**
 ```bash
 orch task "fix the flaky login test"
 ```
-Default `merge: no-ff`. Lands on `orch/integration` immediately, opens/updates
+Default `landing: no-ff`. Lands on `orch/integration` immediately, opens/updates
 the persistent PR to `main`. Merge that PR on GitHub whenever convenient, or
 run the task with `--until merged`.
 
 **"Compliance/branch-protection requires every single change to be its own
 reviewable PR into `main` — no exceptions, no shared integration branch."**
 ```yaml
-merge: pr
+landing: pr
 ```
 ```bash
 orch task "add rate-limit header" --until merged
@@ -1526,7 +1483,7 @@ orch task "add rate-limit header" --until merged
 
 **"I want to run five unrelated fixes in parallel tonight and have them all
 sitting on `main`-ready code by morning, reviewed via a single PR."**
-Keep `merge: no-ff` (default). Launch with explicit disjoint roles so they
+Keep `landing: no-ff` (default). Launch with explicit disjoint roles so they
 don't round-robin into each other:
 ```bash
 orch task "fix bug A" --authors claude --reviewers codex &
@@ -1555,7 +1512,7 @@ orch issue 123
   under the default `no-ff` mode — it merged into `orch/integration` and
   opened/updated a PR to `main`. Check that PR, or run it with
   `--until merged` if orch should complete the remote merge.
-- **"I set `merge: pr` but nothing got merged."** `merge: pr` opens a PR *per
+- **"I set `landing: pr` but nothing got merged."** `landing: pr` opens a PR *per
   cycle* — it still needs either a human to click merge on GitHub, or
   `--until merged` to have orch wait for passing CI and merge it.
 - **"Two cycles I ran at once both ended `merge-deferred` instead of
@@ -1571,7 +1528,7 @@ orch issue 123
 - **"Why didn't my version get bumped?"** The bump is opt-in: set
   `release.autoBump: true` in `.orch/orch.yml` (it's off by default). Even
   then it only happens on the local integration path (`no-ff`/`ff-only`),
-  never under `merge: pr`. A landing outside the local integration path keeps
+  never under `landing: pr`. A landing outside the local integration path keeps
   the existing package version unless it carries its own release-file change.
   For this repo, the next deliberate release update is made by running
   `node scripts/orch-release.js` by hand.

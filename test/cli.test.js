@@ -393,7 +393,7 @@ test("SIGTERM marks a detached run interrupted and releases its lock", { skip: p
 test("--config-file layers a custom yml onto orch.yml for the run (F: config override)", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-cfgfile-"));
   const override = join(d, "custom.yml");
-  writeFileSync(override, "merge: ff-only\n");
+  writeFileSync(override, "landing: ff-only\n");
   const prev = cwd();
   chdir(d);
   let out = "";
@@ -673,9 +673,9 @@ test("orch upgrade --dry reaches the runner and installs nothing", async () => {
 // ORCH_DRYRUN=1 is the env-var equivalent of --dry every other write command
 // honors (see the `dryRun` computation in main()). `upgrade` used to check
 // only `flags.dry`, so ORCH_DRYRUN=1 alone still ran `npm install -g` for
-// real; `config` used to skip the check entirely and always launch the
-// interactive wizard, since --dry isn't even a legal flag on it.
-test("ORCH_DRYRUN=1 is honored by upgrade and config, not just --dry", async () => {
+// real. `config` is read-only now (no wizard, no --dry), so ORCH_DRYRUN=1
+// has nothing to gate there — it must not stop the report from printing.
+test("ORCH_DRYRUN=1 is honored by upgrade, and config ignores it (read-only)", async () => {
   const prev = process.env.ORCH_DRYRUN;
   process.env.ORCH_DRYRUN = "1";
   try {
@@ -693,12 +693,6 @@ test("ORCH_DRYRUN=1 is honored by upgrade and config, not just --dry", async () 
     });
     assert.match(out, /would run `npm install -g @bbk1ng\/agent-orch@latest`/);
 
-    // `config`'s dry-run guard is what stops this from launching the real,
-    // interactive wizard — if it ever regresses, runConfigWizard would run
-    // against process.cwd() for real, which must never be the developer's
-    // actual checkout. A temp dir makes a guard regression merely fail loud
-    // (ENOENT / a hanging prompt in CI) instead of writing the real repo's
-    // own .orch/orch.yml.
     const d = mkdtempSync(join(tmpdir(), "orch-dryrun-config-"));
     const prevCwd = cwd();
     chdir(d);
@@ -706,15 +700,12 @@ test("ORCH_DRYRUN=1 is honored by upgrade and config, not just --dry", async () 
     const prevLog = console.log;
     console.log = (chunk = "") => { logged += `${chunk}\n`; };
     try {
-      await main(["config"], {
-        preflight() {},
-        inputStart: () => assert.fail("config wizard ran despite ORCH_DRYRUN=1"),
-      });
+      await main(["config"], { preflight() {} });
     } finally {
       console.log = prevLog;
       chdir(prevCwd);
     }
-    assert.match(logged, /orch \(dry\): would run the interactive config wizard/);
+    assert.match(logged, /orch config: ok/);
   } finally {
     if (prev === undefined) delete process.env.ORCH_DRYRUN;
     else process.env.ORCH_DRYRUN = prev;
@@ -771,23 +762,13 @@ test("orch task rejects a whitespace-only task text", async () => {
   );
 });
 
-// `config` mutates (runConfigWizard writes orch.yml), so --dry belongs on it
-// like every other write command — it used to be rejected as "not valid with
-// 'orch config'" even though cli.js already had a dry handler for it.
-test("orch config --dry prints the plan and never runs the wizard", async () => {
-  let logged = "";
-  const prevLog = console.log;
-  console.log = (chunk = "") => { logged += `${chunk}\n`; };
-  try {
-    await main(["config", "--dry"], {
-      preflight() {},
-      stdin: {}, stdout: {},
-      inputStart: () => assert.fail("config wizard ran despite --dry"),
-    });
-  } finally {
-    console.log = prevLog;
-  }
-  assert.match(logged, /orch \(dry\): would run the interactive config wizard/);
+// `config` is read-only (it prints/validates orch.yml, never writes it), so
+// --dry is refused on it like every other read-only command.
+test("orch config --dry is refused: config changes nothing to plan", async () => {
+  await assert.rejects(
+    () => main(["config", "--dry"], { preflight() {} }),
+    (e) => e.exit === 64 && /--dry has no effect on 'orch config' — it changes nothing/.test(e.message),
+  );
 });
 
 test("help documents upgrade command and check flag", async () => {
@@ -3076,7 +3057,7 @@ test("agent add validates orch.yml before editing it", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-invalid-"));
   const prev = cwd();
   const file = join(d, ".orch", "orch.yml");
-  const invalid = "agents: [claude]\nmerge: unsafe\n";
+  const invalid = "agents: [claude]\nlanding: unsafe\n";
   chdir(d);
   try {
     mkdirSync(join(d, ".orch"));
@@ -3084,7 +3065,7 @@ test("agent add validates orch.yml before editing it", async () => {
 
     await assert.rejects(
       () => main(["agent", "add", "copilot"]),
-      /orch\.yml: merge must be ff-only, no-ff, or pr/,
+      /orch\.yml: landing must be ff-only, no-ff, or pr/,
     );
     assert.equal(readFileSync(file, "utf8"), invalid);
   } finally {
@@ -3988,10 +3969,8 @@ test("a flag not read by the command is rejected", async () => {
     // drop it, so the run silently used the issue body instead of the file.
     [["issue", "1", "--file", "f"], /--file is not valid with 'orch issue'/],
     // Read-only commands get the sharper message: --dry cannot "plan" a command
-    // that changes nothing. `config` is NOT one of these — runConfigWizard
-    // writes .orch/orch.yml, so it is a mutating command; --dry IS one of its
-    // flags (see "orch config --dry prints the plan..." below) rather than
-    // being rejected outright.
+    // that changes nothing. `config` is one of these too (see "orch config
+    // --dry is refused" below).
     [["dashboard", "--dry"], /--dry has no effect on 'orch dashboard'/],
   ];
   for (const [argv, message] of cases) {

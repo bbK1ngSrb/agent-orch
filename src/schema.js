@@ -78,11 +78,10 @@ export const COMMANDS = {
   init: {
     mutates: true, flags: ["config-file", "dry", "link"],
   },
-  // Mutating: runConfigWizard creates .orch/ and writes orch.yml. `--check`
-  // and `--json` select the non-interactive report path; with neither flag,
-  // cli.js keeps the legacy wizard until the v0.5 cutover.
+  // Read-only: v0.5 removes the interactive configuration wizard. The command
+  // always prints the effective configuration; --check/--json select reports.
   config: {
-    mutates: true, flags: ["config-file", "dry", "check", "json"],
+    mutates: false, flags: ["config-file", "check", "json"],
   },
   agent: {
     mutates: true, flags: [...SUBCOMMAND_FLAGS["agent add"]],
@@ -229,12 +228,12 @@ export const HELP_PAGES = {
     title: "orch config — print the effective, validated configuration.",
     synopsis: ["orch config [options]"],
     about: [
-      "Prints every setting orch will actually use for a run in this repo, with the source of each value: a built-in default, .orch/orch.yml, or a file layered on with --config-file. Reading it answers \"why did that run pick that reviewer\" without reading the code. --check turns it into a gate: it validates instead of printing, and exits 1 listing every unknown key. A key that was renamed or removed is listed under Warnings, with the rename to make, and does not fail the gate. The schema is closed — an unrecognised key is an error, not silence, so a typo like `roudCap` is reported instead of ignored.",
+      "Prints every setting orch will actually use for a run in this repo, with the source of each value: a built-in default, .orch/orch.yml, or a file layered on with --config-file. Reading it answers \"why did that run pick that reviewer\" without reading the code. --check validates instead of printing, and exits 1 listing every unknown or removed key. The schema is closed — a typo is an error, not silence.",
     ],
     args: "Arguments: none.",
     exits: [[0, "valid"], [1, "invalid config (--check)"], [64, "usage error"]],
     examples: ["orch config", "orch config --check"],
-    flagOrder: ["check", "json", "config-file", "dry"],
+    flagOrder: ["check", "json", "config-file"],
     flagHelp: {
       check: "Validate only; exit 1 and list problems.",
       json: "Print the report as one JSON object.",
