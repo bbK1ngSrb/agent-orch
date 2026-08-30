@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- **BREAKING (config):** `orch config` is now read-only — it prints and validates `.orch/orch.yml`; the interactive wizard is removed.
+- **BREAKING (config):** `merge`, `reviseCap`, `main.autoMerge`, `main.conflictResolution`/`main.autoResolveConflicts`, `main.conflictResolutionResolvers`, `main.autoResolveConflictPaths`, and `github.autoMergePr` in `.orch/orch.yml` are now hard errors instead of warnings; rename to `landing`, `roundCap`, or the `automation.*` equivalent.
+
 ## v0.4.372 — 2026-08-30
 - fix: persist post-merge tidy outcomes (closes [#622](https://github.com/bbk1ng/agent-orch/issues/622))
 

@@ -5,17 +5,14 @@ Usage: orch config [options]
 Prints every setting orch will actually use for a run in this repo, with the
 source of each value: a built-in default, .orch/orch.yml, or a file layered on
 with --config-file. Reading it answers "why did that run pick that reviewer"
-without reading the code. --check turns it into a gate: it validates instead of
-printing, and exits 1 listing every unknown key. A key that was renamed or
-removed is listed under Warnings, with the rename to make, and does not fail
-the gate. The schema is closed — an unrecognised key is an error, not silence,
-so a typo like `roudCap` is reported instead of ignored.
+without reading the code. --check validates instead of printing, and exits 1
+listing every unknown or removed key. The schema is closed — a typo is an
+error, not silence.
 
 Options:
   --check                 Validate only; exit 1 and list problems.
   --json                  Print the report as one JSON object.
   --config-file <path>    Layer this YAML file over .orch/orch.yml.
-  --dry                   Plan only: no agent runs, nothing is written.
 
 Arguments: none.
 
