@@ -388,7 +388,7 @@ test-gate is the governing review.
 ## Commands
 - \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
 - \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\`
-- \`orch review <branch>\`           audit an existing branch (no author)
+- \`orch review <branch>\`           audit an existing branch; --until ready opts into landing
 - \`orch continue <sid>\`            resume an interrupted/stalled cycle from its checkpoint
 - \`orch pr <number|branch> [--merge|--until once|ready|merged]\` review (and optionally merge) a PR
 - \`orch release "<entry>"\`         run the version bump + CHANGELOG write by hand; only needed
@@ -2472,7 +2472,7 @@ export async function main(argv, deps = {}) {
       task = null;
       const sid = newSid();
       runs = [{
-        mode, task, until, noMerge: command === "pr", prTarget,
+        mode, task, until, noMerge: command === "pr" || (command === "review" && until === "once"), prTarget,
         allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
         reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
         reviewers,
@@ -3028,16 +3028,18 @@ export async function main(argv, deps = {}) {
     }
 
     const allowLargeScope = Boolean(flags["allow-large-scope"]);
+    const isReviewResume = priorRun?.command === "review";
     const isPrResume = priorRun?.command === "pr";
     const prTarget = priorRun?.prTarget || null;
+    const until = flags.until || priorRun?.policy?.until || "once";
     const run = {
       // Older completed-author checkpoints carry no task, so retain the branch
       // fallback for their changelog label. Author-stage resumes fail above
       // unless they have the original work order and can execute it safely.
-      mode: isPrResume ? "review" : "task", task, authorPrompt, workOrder,
-      until: flags.until || priorRun?.policy?.until || "once",
+      mode: isPrResume || isReviewResume ? "review" : "task", task, authorPrompt, workOrder,
+      until,
       allowLargeScope, branch, sid: resumeSid, resume: true, closes,
-      noMerge: isPrResume, prTarget,
+      noMerge: isPrResume || (isReviewResume && until === "once"), prTarget,
       authorName, author: authorSpec,
       reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
       reviewers,

@@ -14,7 +14,8 @@ Run a cycle:
   issue <number>          The same, from a GitHub issue; closes it on landing.
 
 Review and land:
-  review <branch>         Audit and land an existing branch (superseded by pr).
+  review <branch>         Audit an existing branch; --until ready opts into
+                          landing.
   pr <number|branch>      Audit a pull request or a branch; repair or merge it.
   continue <sid>          Resume an interrupted cycle or a stopped run.
 

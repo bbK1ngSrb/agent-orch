@@ -164,6 +164,10 @@ test("--json is scoped to dashboard, config, and run-controller commands", () =>
       `orch ${command} --json`,
     );
   }
+  assert.throws(
+    () => validate("review", { json: true }),
+    /either goal also opts into landing the branch/,
+  );
 });
 
 test("an out-of-scope flag names the commands where it IS legal", () => {
