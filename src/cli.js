@@ -154,10 +154,12 @@ function outcomeForResult(result) {
 // One rule, and it reads off the outcome the same run persists: a run whose
 // outcome is "stopped-at-cap" escalated, everything else reached its goal.
 // `merge-deferred` lands on ESCALATED through outcomeForResult, which is what
-// its own STOPPED_AT_CAP state already says. An approved `orch pr` review is
-// successful, but leaves exactly one human gesture: merging the PR.
-function exitForResult(result, command = null) {
-  if (command === "pr" && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
+// its own STOPPED_AT_CAP state already says. An approved numeric `orch pr`
+// review is successful, but leaves exactly one human gesture: merging the PR.
+// Branch-target audits are the replacement for the old `orch review` command
+// and remain a clean exit when they finish after one audit pass.
+function exitForResult(result, command = null, prTarget = null) {
+  if (command === "pr" && prTarget?.number && prTarget.ephemeral !== false && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
   return outcomeForResult(result) === "stopped-at-cap" ? EXIT_CODES.ESCALATED : EXIT_CODES.OK;
 }
 // Design §6 terminal states: only the outcomes a single implicit cycle can
@@ -2554,7 +2556,7 @@ export async function main(argv, deps = {}) {
         if (!dry) {
           const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
           let outcome = outcomeForResult(result);
-          let exit = exitForResult(result, command);
+          let exit = exitForResult(result, command, run.prTarget);
           let state = STATE_FOR_OUTCOME[outcome];
           // "merged" landed on the standing integration→main PR; "pr"
           // (merge: pr mode) and "merge-deferred" (demote) each open a
@@ -2761,7 +2763,7 @@ export async function main(argv, deps = {}) {
           finalResult = outputResult(cycleResults[cycleResults.length - 1], controller);
           results[results.length - 1] = finalResult;
           const resultExit = !controller || controller.outcome === "reached"
-            ? exitForResult(finalResult, command) : EXIT_CODES.OK;
+            ? exitForResult(finalResult, command, activeRun.prTarget || run.prTarget) : EXIT_CODES.OK;
           if ((EXIT_CODE_PRIORITY[resultExit] || 0) > (EXIT_CODE_PRIORITY[exit] || 0)) exit = resultExit;
           if (resultExit !== EXIT_CODES.OK) raiseExitCode(resultExit);
           if (finalResult.prUrl && !controller?.land) {
@@ -2828,7 +2830,7 @@ export async function main(argv, deps = {}) {
           // `--dry` writes no run record and (design §4) never polls readiness —
           // still emit run.end under --json so the event stream isn't silently
           // truncated after run.start.
-          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result, command), usage: result.usage || {}, dry: true });
+          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result, command, run.prTarget), usage: result.usage || {}, dry: true });
         }
         if (!jsonMode) console.log(summaryLine(finalResult, activeRun.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (finalResult.status === "merged" && run.mode === "task") {
@@ -3312,9 +3314,9 @@ export async function main(argv, deps = {}) {
         controller.cycleRoles = cycleRoles;
       }
       const outcome = controller?.outcome || outcomeForResult(result);
-      let exit = controller?.exit ?? exitForResult(result, run.prTarget ? "pr" : command);
+      let exit = controller?.exit ?? exitForResult(result, run.prTarget ? "pr" : command, run.prTarget);
       const resultExit = !controller || controller.outcome === "reached"
-        ? exitForResult(finalResult, run.prTarget ? "pr" : command) : EXIT_CODES.OK;
+        ? exitForResult(finalResult, run.prTarget ? "pr" : command, run.prTarget) : EXIT_CODES.OK;
       if ((EXIT_CODE_PRIORITY[resultExit] || 0) > (EXIT_CODE_PRIORITY[exit] || 0)) exit = resultExit;
       if (controller) raiseExitCode(exit);
       if (!dry) {

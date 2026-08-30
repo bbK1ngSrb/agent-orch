@@ -2272,7 +2272,7 @@ test("a one-agent pool keeps task and pr role selection usable", async () => {
   const branch = "pr/claude/one-agent-review";
   gitDep.git(["branch", branch], reviewRepo);
   writeFileSync(join(reviewRepo, "orch.yml"), "agents: [claude]\n");
-  const reviewLogs = await runMainInRepoPreserveExit(reviewRepo, ["pr", branch, "--until", "once"], { finishRun: async () => {} });
+  const reviewLogs = await runMainInRepo(reviewRepo, ["pr", branch, "--until", "once"], { finishRun: async () => {} });
   assert.match(reviewLogs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
@@ -2307,7 +2307,7 @@ test("pr --reviewer uses the requested reviewer end to end", async () => {
       async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "" }; },
     }),
   };
-  const logs = await runMainInRepoPreserveExit(repo, ["pr", branch, "--until", "once", "--reviewer", "claude"], { cycleDeps, finishRun: async () => {} });
+  const logs = await runMainInRepo(repo, ["pr", branch, "--until", "once", "--reviewer", "claude"], { cycleDeps, finishRun: async () => {} });
   assert.deepEqual(auditCalls, ["claude"]);
   assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
@@ -3590,7 +3590,7 @@ test("pr accepts a branch target and rejects a missing branch", async () => {
   await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
 });
 
-test("orch pr reports an approved review as action required", async () => {
+test("orch pr branch audit reports an approved review as success", async () => {
   const savedExitCode = process.exitCode;
   process.exitCode = 0;
   const repo = initGitRepo("orch-pr-approved-");
@@ -3603,7 +3603,7 @@ test("orch pr reports an approved review as action required", async () => {
       },
     });
     assert.match(logs.join("\n"), /approved/);
-    assert.equal(process.exitCode, EXIT_CODES.ACTION_REQUIRED);
+    assert.equal(process.exitCode, EXIT_CODES.OK);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -4038,15 +4038,6 @@ async function runMainInRepo(repo, argv, deps = {}) {
   } finally {
     console.log = origLog;
     chdir(prev);
-  }
-}
-
-async function runMainInRepoPreserveExit(repo, argv, deps = {}) {
-  const saved = process.exitCode;
-  try {
-    return await runMainInRepo(repo, argv, deps);
-  } finally {
-    process.exitCode = saved;
   }
 }
 
@@ -4880,7 +4871,7 @@ test("completed review cycle clears its checkpoint (no false interrupted entry)"
   };
   try {
     process.exitCode = 0;
-    await runMainInRepoPreserveExit(repo, ["pr", "pr/claude/some-fix", "--until", "once"], { cycleDeps });
+    await runMainInRepo(repo, ["pr", "pr/claude/some-fix", "--until", "once"], { cycleDeps });
   } finally {
     process.exitCode = 0;
   }
@@ -5301,7 +5292,7 @@ test("orch pr sends explicit plural reviewer overrides to both auditors", async 
     },
   };
 
-  await runMainInRepoPreserveExit(repo, ["pr", branch, "--until", "once", "--reviewers", "claude,codex"], {
+  await runMainInRepo(repo, ["pr", branch, "--until", "once", "--reviewers", "claude,codex"], {
     cycleDeps, finishRun: async () => {},
   });
 
@@ -5324,7 +5315,7 @@ test("orch pr permits an explicitly requested reviewer who authored the branch",
       }),
     },
   };
-  const logs = await runMainInRepoPreserveExit(repo, ["pr", branch, "--until", "once", "--reviewer", "claude"], {
+  const logs = await runMainInRepo(repo, ["pr", branch, "--until", "once", "--reviewer", "claude"], {
     cycleDeps, finishRun: async () => {},
   });
 
@@ -5348,7 +5339,7 @@ test("orch pr permits an explicitly configured reviewer who authored the branch"
       }),
     },
   };
-  const logs = await runMainInRepoPreserveExit(repo, ["pr", branch, "--until", "once"], { cycleDeps, finishRun: async () => {} });
+  const logs = await runMainInRepo(repo, ["pr", branch, "--until", "once"], { cycleDeps, finishRun: async () => {} });
 
   assert.deepEqual(auditCalls, ["codex"]);
   assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
