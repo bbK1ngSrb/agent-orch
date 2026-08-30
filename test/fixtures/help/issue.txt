@@ -30,7 +30,6 @@ Options:
                           escalates at the security floor.
   --allow-large-scope     Sanction a deliberately large review slice.
   --no-tidy               Keep the task branch and worktree after landing.
-  --no-banner             Hide the run banner.
   --detach                Run in the background; print pid, log and runId.
   --dry                   Plan only: no agent runs, nothing is written.
   --json                  Print one JSON event per line; no prose.

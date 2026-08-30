@@ -39,7 +39,6 @@ export const FLAGS = {
   check: { type: "boolean", help: "Validate or report the current state." },
   link: { type: "boolean", help: "Link .orch/ORCH.md from the agent doc files." },
   build: { type: "boolean", help: "Scaffold a missing adapter through a cycle." },
-  "no-banner": { type: "boolean", help: "Hide the run banner." },
   "no-tidy": { type: "boolean", help: "Keep task branches and worktrees after landing." },
   detach: { type: "boolean", help: "Run in the background; print pid, log and runId." },
   json: { type: "boolean", help: "Print one JSON event per line; no prose." },
@@ -59,7 +58,7 @@ export const GLOBAL_FLAGS = ["help", "version"];
 
 // Flags shared by the commands that run an author/review/test cycle.
 const RUN_FLAGS = [
-  "config-file", "dry", "no-tidy", "no-banner", "detach", "until",
+  "config-file", "dry", "no-tidy", "detach", "until",
   "allow-large-scope", "author", "authors", "reviewer", "reviewers",
 ];
 
@@ -97,7 +96,7 @@ export const COMMANDS = {
     // already, and `continue` resumes that run rather than starting a new one —
     // accepting the flag and ignoring it is the exact lie this schema removes.
     // --reviewer(s) IS honoured (see the `continue` handler in cli.js).
-    mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-banner", "author", "authors"].includes(f)), "json"],
+    mutates: true, flags: [...RUN_FLAGS.filter((f) => !["author", "authors"].includes(f)), "json"],
   },
   // No --author/--authors: pr audits an existing PR/branch, it never assigns
   // an author. applyRoleOverrides is called with allowReviewerOnly, so a
@@ -271,7 +270,7 @@ export const HELP_PAGES = {
     examples: ["orch task \"add input validation\" --until once", "orch task --file work-order.json --cheap"],
     flagOrder: [
       "until", "from", "author", "authors", "reviewer", "reviewers", "cheap", "file",
-      "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "detach",
+      "allow-protected", "allow-large-scope", "no-tidy", "detach",
       "dry", "json", "config-file",
     ],
     flagHelp: {
@@ -300,7 +299,7 @@ export const HELP_PAGES = {
     examples: ["orch issue 42", "orch issue 42 --until merged --reviewer \"codex gpt-5.6-sol high\""],
     flagOrder: [
       "until", "from", "author", "authors", "reviewer", "reviewers", "cheap",
-      "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "detach",
+      "allow-protected", "allow-large-scope", "no-tidy", "detach",
       "dry", "json", "config-file",
     ],
     flagHelp: {
@@ -396,7 +395,7 @@ export const HELP_PAGES = {
   mcp: {
     title: "orch mcp — serve orch as an MCP server over stdio.",
     synopsis: ["orch mcp"],
-    about: ["Speaks the Model Context Protocol on stdin/stdout so an AI client can run cycles as tools instead of shelling out. Because stdout is the protocol transport here, nothing else may print on it — this command deliberately skips the update banner every other command may show. Each cycle the server spawns authenticates on its own. The server runs until stdin closes."],
+    about: ["Speaks the Model Context Protocol on stdin/stdout so an AI client can run cycles as tools instead of shelling out. Because stdout is the protocol transport here, nothing else may print on it. Each cycle the server spawns authenticates on its own. The server runs until stdin closes."],
     args: "Arguments: none.",
     exits: [[0, "the client disconnected"], [1, "the transport failed"], [64, "usage error"]],
     examples: ["orch mcp"],

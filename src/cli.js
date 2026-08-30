@@ -48,7 +48,7 @@ import { redact, publicSummary } from "./redact.js";
 import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dashboard.js";
 import { FALLBACK_BIN_DIRS, resolveAgentBin } from "./agent-bin.js";
 import { BASH_COMPLETION, installCompletion } from "./completion.js";
-import { visWidth, paint, C, box, colorEnabled } from "./tui/theme.js";
+import { paint, C, colorEnabled } from "./tui/theme.js";
 import { run as runTui } from "./tui/loop.js";
 import { maybeNotifyUpdate, runUpdateCheckChild } from "./update-check.js";
 import { runUpgrade } from "./upgrade.js";
@@ -57,8 +57,6 @@ import { setProcessSignalCleanup } from "./adapters/cli-adapter.js";
 
 export { slugify };
 export { resolveAgentBin };
-export { visWidth };
-
 const GH_AUTH_RETRY_DELAY_MS = 100;
 const CLI_ROLE_OVERRIDES = Symbol("cliRoleOverrides");
 // A reviewer-only CLI override keeps a YAML author pool rotating, but its
@@ -1417,42 +1415,6 @@ function persistRotationState({ orchDir, sid, runId, run, nextRun, previousAutho
   stores.checkpoint.clear(orchDir, sid);
 }
 
-function roleLabel(spec) {
-  return formatRole(spec, " · ");
-}
-
-function uniqueLabels(specs) {
-  return [...new Set(specs.map(roleLabel))].join(", ");
-}
-
-
-export function runBanner(cfg, runs, opts = {}) {
-  const { color = false, columns } = opts;
-  const lbl = (t) => ({ code: C.label, text: t.padEnd(8) });
-  const rows = [
-    [lbl("agents"), { code: C.agents, text: cfg.agents.join(", ") }],
-  ];
-  for (const r of runs) {
-    const seg = [lbl("author"), { code: C.author, text: roleLabel(r.author) }];
-    if (r.resume) seg.push({ code: C.flag, text: "  ⏳ resume pending" });
-    rows.push(seg);
-  }
-  const reviewers = uniqueLabels(runs.flatMap((r) => r.reviewers || []));
-  rows.push([lbl("review"), { code: C.review, text: reviewers || "-" }]);
-  rows.push([
-    lbl("test"), { code: 0, text: cfg.test },
-    { code: C.label, text: "   merge  " }, { code: 0, text: cfg.merge },
-  ]);
-  return box(` agent-orch ${DISPLAY_VERSION} `, rows, { color, columns });
-}
-
-export function maybePrintRunBanner(cfg, runs, flags, stdout = process.stdout) {
-  if (flags["no-banner"] || !stdout.isTTY) return false;
-  const color = colorEnabled(stdout);
-  stdout.write(`${runBanner(cfg, runs, { color, columns: stdout.columns })}\n`);
-  return true;
-}
-
 function hasEscalationDecision(orchDir, branch, sid, roundCap) {
   try {
     if (existsSync(join(notify.reviewsDir(orchDir, branch), "DECISION.md"))) return true;
@@ -2466,7 +2428,6 @@ export async function main(argv, deps = {}) {
       }];
     }
 
-    if (!jsonMode) maybePrintRunBanner(cfg, runs, flags, deps.stdout);
     if (!dry && runs.some((run) => run.resume)) notify.resetKpi(orchDir);
 
     const results = [];

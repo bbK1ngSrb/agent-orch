@@ -619,7 +619,6 @@ got to. `orch_status` and `orch_plan` return immediately.
   experiment without editing the repo's config.
 - **`--no-tidy`** — skip the post-merge tidy (see §4.5) and leave every
   branch and checkout exactly as the cycle left them.
-- **`--no-banner`** — suppress the startup banner (for scripts and logs).
 - **`--detach`** — run a `task`, `issue`, `continue`, or `pr` in the
   background. The parent prints the child PID and log path, plus the run ID
   once registration is visible; use `orch dashboard` to follow the run.

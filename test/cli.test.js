@@ -8,7 +8,8 @@ import { chdir, cwd } from "node:process";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, ghShell, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, ghShell, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
+import { load as loadConfig } from "../src/config.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -406,8 +407,8 @@ test("--config-file layers a custom yml onto orch.yml for the run (F: config ove
     chdir(prev);
     process.exitCode = 0;
   }
-  const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(plain, /merge\s+ff-only/); // orch.yml default is no-ff; --config-file overrode it
+  assert.equal(out, ""); // the task still runs without a startup banner
+  assert.equal(loadConfig(d, override).merge, "ff-only"); // orch.yml default is no-ff; --config-file overrode it
 });
 
 test("slugify produces a branch-safe slug", () => {
@@ -440,7 +441,7 @@ test("--dry that escalates still writes its brief under .orch (#471 wording)", a
   chdir(d);
   try {
     process.exitCode = 0;
-    await main(["task", "hello world", "--dry", "--config-file", override, "--no-banner"], {
+    await main(["task", "hello world", "--dry", "--config-file", override], {
       stdout: { write() {} },
       dryNoTestGate: true,
     });
@@ -568,20 +569,9 @@ test("--dry skips the GitHub App auth mint", async () => {
   }
 });
 
-test("main prints startup banner for task runs on TTY", async () => {
+test("main prints no startup banner for task runs on TTY", async () => {
   let out = "";
   await runMainCapture(["task", "hello world", "--dry"], {
-    stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
-  });
-  const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(plain, /agent-orch v\d+\.\d+\.\d+/);
-  assert.match(plain, /author\s+claude/);
-  assert.match(plain, /review\s+codex/);
-  assert.match(plain, /test\s+auto/);
-  assert.match(plain, /merge\s+no-ff/);
-
-  out = "";
-  await runMainCapture(["task", "hello world", "--dry", "--no-banner"], {
     stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
   });
   assert.equal(out, "");
@@ -607,9 +597,11 @@ test("parse captures --config-file flag", () => {
   assert.equal(p.flags["config-file"], "custom.yml");
 });
 
-test("parse captures --no-banner flag", () => {
-  const p = parse(["task", "do x", "--no-banner"]);
-  assert.equal(p.flags["no-banner"], true);
+test("removed --no-banner option exits 64", () => {
+  const result = spawnSync(process.execPath, [new URL("../bin/orch.js", import.meta.url).pathname, "task", "do x", "--no-banner"], { encoding: "utf8" });
+  assert.equal(result.status, 64, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /unknown option --no-banner/);
 });
 
 test("parse captures dashboard --check-history flag", () => {
@@ -785,117 +777,6 @@ test("help documents upgrade command and check flag", async () => {
   assert.doesNotMatch(out, /\n\s+--check/);
   const upgrade = await runMainCapture(["upgrade", "--help"]);
   assert.match(upgrade.join("\n"), /--check\s+Report the latest version; install nothing\./);
-});
-
-const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
-
-test("runBanner shows version, agents, per-agent model+effort, test, merge", () => {
-  const cfg = { agents: ["claude", "codex"], test: "npm test", merge: "ff-only" };
-  const banner = stripAnsi(runBanner(cfg, [{
-    author: { agent: "claude", model: "opus", effort: "high" },
-    reviewers: [{ agent: "codex", model: "gpt-5", effort: null }],
-  }]));
-  assert.match(banner, /agent-orch v\d+\.\d+\.\d+/);
-  assert.match(banner, /claude, codex/);            // agents row
-  assert.match(banner, /claude.*opus.*high/);       // author with model + effort
-  assert.match(banner, /codex.*gpt-5/);             // reviewer with model
-  assert.match(banner, /npm test/);
-  assert.match(banner, /ff-only/);
-});
-
-test("runBanner lists each author run and deduplicates reviewers", () => {
-  const cfg = { agents: ["claude", "codex"], test: "auto", merge: "no-ff" };
-  const banner = stripAnsi(runBanner(cfg, [
-    {
-      author: { agent: "claude", model: "opus" },
-      reviewers: [{ agent: "codex", model: "gpt-5" }],
-    },
-    {
-      author: { agent: "codex", model: "gpt-5", effort: "medium" },
-      reviewers: [{ agent: "codex", model: "gpt-5" }, { agent: "claude", model: "opus" }],
-    },
-  ]));
-  const lines = banner.split("\n");
-  const authorLines = lines.filter((l) => /\bauthor\b/.test(l));
-  assert.equal(authorLines.length, 2);
-  assert.match(authorLines[0], /claude.*opus/);
-  assert.match(authorLines[1], /codex.*gpt-5.*medium/);
-
-  const reviewLine = lines.find((l) => /\breview\b/.test(l));
-  assert.ok(reviewLine);
-  assert.equal((reviewLine.match(/codex/g) || []).length, 1);
-  assert.equal((reviewLine.match(/claude/g) || []).length, 1);
-});
-
-test("runBanner shows the resume marker only when a run resumes", () => {
-  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
-  const author = { agent: "claude", model: "opus", effort: "high" };
-  const reviewers = [{ agent: "codex" }];
-  const resuming = stripAnsi(runBanner(cfg, [{ author, reviewers, resume: true }]));
-  const fresh = stripAnsi(runBanner(cfg, [{ author, reviewers, resume: false }]));
-  assert.match(resuming, /resume/);
-  assert.doesNotMatch(fresh, /resume/);
-});
-
-test("runBanner emits ANSI color only when color is on", () => {
-  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
-  const runs = [{ author: { agent: "claude" }, reviewers: [{ agent: "codex" }] }];
-  assert.match(runBanner(cfg, runs, { color: true }), /\x1b\[/);
-  assert.doesNotMatch(runBanner(cfg, runs, { color: false }), /\x1b\[/);
-});
-
-test("runBanner rows stay display-width aligned even with wide glyphs", () => {
-  // U+23F3 (⏳) renders 2 columns; .length-based padding would misalign the
-  // resume row's right border. visWidth must keep every line the same width.
-  const cfg = { agents: ["claude", "codex"], test: "auto", merge: "no-ff" };
-  const lines = runBanner(cfg, [{
-    author: { agent: "claude", model: "opus", effort: "high" },
-    reviewers: [{ agent: "codex", model: "gpt-5" }],
-    resume: true,
-  }]).split("\n");
-  const widths = new Set(lines.map((l) => visWidth(l)));
-  assert.equal(widths.size, 1, `lines misaligned: ${[...widths].join(",")}`);
-});
-
-test("runBanner clamps responsive width and never throws on tiny terminals", () => {
-  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
-  const runs = [{ author: { agent: "claude", model: "opus" }, reviewers: [{ agent: "codex" }] }];
-  const wide = runBanner(cfg, runs, { columns: 400 }).split("\n");
-  assert.ok(visWidth(wide[0]) <= 100, `width not capped: ${visWidth(wide[0])}`);
-  const tiny = runBanner(cfg, runs, { columns: 10 }).split("\n");
-  assert.equal(new Set(tiny.map(visWidth)).size, 1); // still aligned
-});
-
-test("run banner prints only on TTY and respects --no-banner", () => {
-  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
-  const runs = [{ author: { agent: "claude" }, reviewers: [{ agent: "codex" }] }];
-  let out = "";
-  const tty = { isTTY: true, write: (chunk) => { out += chunk; } };
-  assert.equal(maybePrintRunBanner(cfg, runs, {}, tty), true);
-  assert.match(stripAnsi(out), /agent-orch v\d+\.\d+\.\d+/);
-
-  out = "";
-  assert.equal(maybePrintRunBanner(cfg, runs, { "no-banner": true }, tty), false);
-  assert.equal(out, "");
-
-  const notTty = { isTTY: false, write: (chunk) => { out += chunk; } };
-  assert.equal(maybePrintRunBanner(cfg, runs, {}, notTty), false);
-  assert.equal(out, "");
-});
-
-test("runBanner colors the agents row when color is on", () => {
-  const cfg = { agents: ["claude", "codex"], test: "npm test", merge: "no-ff" };
-  const runs = [{ author: "claude", reviewers: ["codex"] }];
-  const out = runBanner(cfg, runs, { color: true, columns: 80 });
-  assert.match(out, /\x1b\[38;5;214mclaude, codex\x1b\[0m/);
-});
-
-test("runBanner emits no ANSI codes when color is off", () => {
-  const cfg = { agents: ["claude"], test: "npm test", merge: "no-ff" };
-  const runs = [{ author: "claude", reviewers: [] }];
-  const out = runBanner(cfg, runs, { color: false, columns: 80 });
-  assert.doesNotMatch(out, /\x1b\[/);
-  assert.match(out, /agent-orch/);
 });
 
 const WORK_ORDER = JSON.stringify({

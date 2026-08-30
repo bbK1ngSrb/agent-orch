@@ -1,5 +1,5 @@
-// Shared terminal color/box-drawing helpers, reused by cli.js (banner,
-// merged-summary), notify.js (phase stream, escalation brief), and
+// Shared terminal color/box-drawing helpers, reused by cli.js (merged-summary),
+// notify.js (phase stream, escalation brief), and
 // dashboard.js. Hand-rolled ANSI (no dependency) — see
 // docs/superpowers/specs/2026-07-06-terminal-reskin-design.md for why.
 
