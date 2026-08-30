@@ -48,4 +48,17 @@ jobs:
           case "$PR" in
             ''|*[!0-9]*) echo "invalid PR number: $PR" >&2; exit 1 ;;
           esac
-          orch pr "$PR"
+          # A step fails when its last command exits nonzero, so this job cannot
+          # read orch's exit code as anything but pass/fail unless we look at it
+          # ourselves. That distinction matters: orch's exit table (src/exit-codes.js)
+          # reserves 5 for ACTION_REQUIRED — the cycle succeeded and approved the PR,
+          # and a human now has to merge it. Letting the default behaviour stand would
+          # turn this job red on exactly the runs that went well (#619). Enumerate the
+          # success codes instead, and let every other code fail the job as before.
+          rc=0
+          orch pr "$PR" || rc=$?
+          case "$rc" in
+            0) echo "orch pr: merged or approved (exit 0)" ;;
+            5) echo "orch pr: approved — a human merge is required (exit 5, ACTION_REQUIRED)" ;;
+            *) echo "orch pr: failed with exit $rc" >&2; exit "$rc" ;;
+          esac
