@@ -4837,7 +4837,7 @@ test("orch review --until ready uses the landing path", async () => {
   assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
-test("orch continue resumes a review without changing the integration tip", async () => {
+test("orch continue resumes a ready review through the landing path", async () => {
   const repo = initGitRepo("orch-review-resume-");
   const branch = "pr/claude/review-resume";
   const sid = "reviewresume";
@@ -4847,6 +4847,8 @@ test("orch continue resumes a review without changing the integration tip", asyn
   gitDep.git(["add", "review.txt"], repo);
   gitDep.git(["commit", "-m", "review fixture"], repo);
   gitDep.git(["checkout", "main"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
 
   const orchDir = join(repo, ".orch");
   checkpointDep.record(orchDir, sid, {
@@ -4863,22 +4865,31 @@ test("orch continue resumes a review without changing the integration tip", asyn
     runId: sid,
     command: "review",
     argv: ["review", branch],
-    policy: { until: "once" },
+    policy: { until: "ready" },
   });
 
   const before = gitDep.git(["rev-parse", "orch/integration"], repo);
   let finalized = false;
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
   const logs = await runMainInRepo(repo, ["continue", sid], {
     cycleDeps: {
       ...fakeCycleDeps(),
-      finalize: async () => { finalized = true; return { status: "merged", reason: "unexpected", sha: "abc" }; },
+      finalize: async (ctx) => {
+        finalized = true;
+        assert.equal(ctx.until, "ready");
+        return { status: "merged", reason: "test", sha: "abc" };
+      },
     },
+    githubDeps: () => ({ gh, git: gitDep.git }),
   });
   const after = gitDep.git(["rev-parse", "orch/integration"], repo);
 
   assert.equal(after, before);
-  assert.equal(finalized, false);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
+  assert.equal(finalized, true);
+  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
 // The schema's own matrix test (schema.test.js) derives its expectations from
