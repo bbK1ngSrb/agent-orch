@@ -122,9 +122,16 @@ export function branchSyncStatus(repo, branch, base = "main") {
 }
 
 // task mode: branch must NOT exist (orch owns it). Fail otherwise.
-export function createTaskBranch(repo, path, branch, base, markerContent = "") {
+export function createTaskBranch(repo, path, branch, base, markerContent = "", expectedBaseSha = null) {
   if (branchExists(repo, branch)) throw new Error(`branch already exists: ${branch}`);
-  git(["worktree", "add", "-b", branch, "--", path, base], repo);
+  const start = expectedBaseSha || base;
+  if (expectedBaseSha) {
+    const current = gitTry(["rev-parse", "--verify", "--quiet", `refs/heads/${base}`], repo);
+    if (!current.ok || current.out.trim() !== expectedBaseSha) {
+      throw new Error(`branch moved before checkout: ${base}`);
+    }
+  }
+  git(["worktree", "add", "-b", branch, "--", path, start], repo);
   // Marker now records the owner so the sweep can spare LIVE peers (no global
   // lock anymore). Empty marker = died before writing = swept (legacy parity).
   writeFileSync(taskMarker(realpathSync(path)), markerContent);

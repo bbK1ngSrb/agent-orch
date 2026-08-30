@@ -144,3 +144,60 @@ test("a cycle branches from orch/integration while it is ahead of main", async (
   assert.equal(existsSync(join(repo, "b.txt")), false);
   assert.equal(git.git(["log", "--oneline", "main"], repo).split("\n").length, 1);
 });
+
+test("--from salvages a branch while reviewing the slice against integration", async () => {
+  const repo = initRepoOn("main");
+  mkdirSync(join(repo, ".orch"), { recursive: true });
+  writeFileSync(join(repo, ".orch", "orch.yml"), "merge: no-ff\ntest: \"true\"\n");
+  git.git(["checkout", "-b", "orch/integration"], repo);
+  writeFileSync(join(repo, "c.txt"), "already integrated\n");
+  git.git(["add", "c.txt"], repo);
+  git.git(["commit", "-m", "integrated earlier"], repo);
+  const integrationTip = git.git(["rev-parse", "orch/integration"], repo);
+  // Cut the salvaged branch from main, NOT from integration: an escalated
+  // branch stops descending from the integration branch as soon as any other
+  // cycle lands, and that non-descendant shape is the whole reason --from
+  // exists. A version of this test that branches off integration would pass
+  // against an ancestry guard that rejects every real salvage.
+  git.git(["checkout", "main"], repo);
+  git.git(["checkout", "-b", "salvaged"], repo);
+  writeFileSync(join(repo, "b.txt"), "salvaged\n");
+  git.git(["add", "b.txt"], repo);
+  git.git(["commit", "-m", "preserve escalated work"], repo);
+  const salvagedTip = git.git(["rev-parse", "salvaged"], repo);
+  git.git(["checkout", "main"], repo);
+
+  const deps = e2eCycleDeps();
+  let created;
+  let auditBase;
+  const create = deps.git.createTaskBranch;
+  deps.git = {
+    ...deps.git,
+    createTaskBranch(...args) {
+      created = { branch: args[2], start: args[3], expected: args[5] };
+      return create(...args);
+    },
+  };
+  const getAdapter = deps.adapters.get;
+  deps.adapters = {
+    get: (name) => {
+      const adapter = getAdapter(name);
+      return {
+        ...adapter,
+        async audit(branch, worktree, opts) {
+          auditBase = opts.base;
+          return adapter.audit(branch, worktree, opts);
+        },
+      };
+    },
+  };
+
+  await runMainInRepo(repo, ["task", "add a line to a.txt", "--from", "salvaged", "--no-tidy"], { cycleDeps: deps });
+
+  assert.equal(created.start, "salvaged");
+  assert.equal(created.expected, salvagedTip);
+  assert.equal(git.git(["merge-base", created.branch, "salvaged"], repo), salvagedTip);
+  assert.equal(auditBase, "orch/integration");
+  assert.deepEqual(git.changedFiles(repo, created.branch, integrationTip).sort(), ["a.txt", "b.txt"]);
+  assert.equal(existsSync(join(repo, "b.txt")), false, "the configured base checkout stays untouched");
+});

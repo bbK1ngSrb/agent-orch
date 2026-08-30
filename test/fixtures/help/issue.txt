@@ -17,6 +17,8 @@ Options:
                                   is green and mergeable; never merge it.
                           merged = also merge the standing PR.
                           (default: once)
+  --from <ref>            Start a fresh cycle from <ref>; it starts at round 1,
+                          and previous cycle rounds do not count.
   --author <spec>         Author seat as "<agent> [model] [effort]".
   --authors <a,b>         Comma-separated author seats; each gets a branch.
   --reviewer <spec>       Reviewer seat as "<agent> [model] [effort]".
