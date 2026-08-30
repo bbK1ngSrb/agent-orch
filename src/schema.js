@@ -22,6 +22,7 @@ export const FLAGS = {
   version: { type: "boolean", help: "Print the version." },
   author: { type: "string", arg: "<spec>", help: 'Author seat as "<agent> [model] [effort]".' },
   authors: { type: "string", arg: "<a,b>", help: "Comma-separated author seats; each gets a branch." },
+  from: { type: "string", arg: "<ref>", help: "Start a fresh cycle from <ref>; it starts at round 1, and previous cycle rounds do not count." },
   reviewer: { type: "string", arg: "<spec>", help: 'Reviewer seat as "<agent> [model] [effort]".' },
   reviewers: { type: "string", arg: "<a,b>", help: "Comma-separated reviewer seats." },
   cheap: { type: "boolean", help: "Fill both seats from cheap.role in orch.yml." },
@@ -93,10 +94,10 @@ export const COMMANDS = {
     mutates: true, flags: [...new Set([...SUBCOMMAND_FLAGS["agent add"], ...SUBCOMMAND_FLAGS["agent build"]])],
   },
   task: {
-    mutates: true, flags: [...RUN_FLAGS, "file", "cheap", "allow-protected", "json"],
+    mutates: true, flags: [...RUN_FLAGS, "from", "file", "cheap", "allow-protected", "json"],
   },
   issue: {
-    mutates: true, flags: [...RUN_FLAGS, "cheap", "allow-protected", "json"],
+    mutates: true, flags: [...RUN_FLAGS, "from", "cheap", "allow-protected", "json"],
   },
   review: {
     // No --author/--authors: review audits an existing branch, whose author is
@@ -203,6 +204,7 @@ const ALLOW_PROTECTED_HELP =
 const FILE_HELP =
   "Read the work order from a JSON file, treating it as untrusted input; takes no positional text.";
 const NO_TIDY_HELP = "Keep the task branch and worktree after landing.";
+const FROM_HELP = "Start a fresh cycle from <ref>; it starts at round 1, and previous cycle rounds do not count.";
 
 // The goal list aligns its `=` column and hangs the wrapped `ready` line under
 // the description, so it reads as three definitions rather than a paragraph.
@@ -272,7 +274,7 @@ export const HELP_PAGES = {
     exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
     examples: ["orch task \"add input validation\" --until once", "orch task --file work-order.json --cheap"],
     flagOrder: [
-      "until", "author", "authors", "reviewer", "reviewers", "cheap", "file",
+      "until", "from", "author", "authors", "reviewer", "reviewers", "cheap", "file",
       "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "detach",
       "dry", "json", "config-file",
     ],
@@ -285,6 +287,7 @@ export const HELP_PAGES = {
         "merged = also merge the standing PR.",
         "(default: once)",
       ),
+      from: FROM_HELP,
       file: FILE_HELP,
       "allow-protected": ALLOW_PROTECTED_HELP,
       "no-tidy": NO_TIDY_HELP,
@@ -300,7 +303,7 @@ export const HELP_PAGES = {
     exits: [[0, "goal reached"], [1, "internal error"], [2, "stopped at the attempt cap"], [3, "blocked, a human must decide"], [4, "asked a human, no answer in time"], [64, "usage error"]],
     examples: ["orch issue 42", "orch issue 42 --until merged --reviewer \"codex gpt-5.6-sol high\""],
     flagOrder: [
-      "until", "author", "authors", "reviewer", "reviewers", "cheap",
+      "until", "from", "author", "authors", "reviewer", "reviewers", "cheap",
       "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "detach",
       "dry", "json", "config-file",
     ],
@@ -313,6 +316,7 @@ export const HELP_PAGES = {
         "merged = also merge the standing PR.",
         "(default: once)",
       ),
+      from: FROM_HELP,
       "allow-protected": ALLOW_PROTECTED_HELP,
       "no-tidy": NO_TIDY_HELP,
     },
