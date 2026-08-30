@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.366 — 2026-08-30
+- fix(test): remove test temp directories on exit, ending the /tmp leak (closes #611)
+
 ## v0.4.365 — 2026-08-29
 - fix(release): oneLine() treats null as empty, restoring the NO_WORK_ORDER fallback (closes #607)
 
