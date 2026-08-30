@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.4.369 — 2026-08-30
+- feat(cycle): add --from branch source
+
 ## v0.4.368 — 2026-08-30
 - fix(cli): make review audit-only by default
 
