@@ -3609,6 +3609,32 @@ test("orch pr branch audit reports an approved review as success", async () => {
   }
 });
 
+test("orch pr numeric target reports an approved review as action required", async () => {
+  const savedExitCode = process.exitCode;
+  process.exitCode = 0;
+  const repo = initGitRepo("orch-pr-approved-numeric-");
+  const { remote } = addOriginWithPeer(repo);
+  gitDep.git(["update-ref", "refs/pull/9/head", "refs/heads/main"], remote);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false,
+    headRefOid: gitDep.git(["rev-parse", "main"], repo), baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["pr", "9", "--until", "once"], {
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      cycleDeps: {
+        ...fakeCycleDeps(),
+        finalize: async () => ({ status: "approved", reason: "review passed" }),
+      },
+    });
+    assert.match(logs.join("\n"), /approved/);
+    assert.equal(process.exitCode, EXIT_CODES.ACTION_REQUIRED);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 test("pr target resolution keeps colleague branches off the push path", () => {
   const repo = initGitRepo("orch-pr-authority-");
   gitDep.git(["branch", "feature/colleague"], repo);

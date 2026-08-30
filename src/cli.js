@@ -159,7 +159,7 @@ function outcomeForResult(result) {
 // Branch-target audits are the replacement for the old `orch review` command
 // and remain a clean exit when they finish after one audit pass.
 function exitForResult(result, command = null, prTarget = null) {
-  if (command === "pr" && prTarget?.number && prTarget.ephemeral !== false && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
+  if (command === "pr" && prTarget?.number && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
   return outcomeForResult(result) === "stopped-at-cap" ? EXIT_CODES.ESCALATED : EXIT_CODES.OK;
 }
 // Design §6 terminal states: only the outcomes a single implicit cycle can
