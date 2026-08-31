@@ -31,9 +31,14 @@
 //     remedies.test.js "rotate re-seats a quota-failed author and preserves a
 //     diverse reviewer"
 //   quota on both pool agents → rotation is not diverse → ask
-//     remedies.test.js "rotate excludes every failed reviewer seat and replaces
-//     the list" (exclusion bookkeeping) and run-controller.test.js's
-//     no-registered-executor path (an unusable remedy stops the run cleanly)
+//     remedies.test.js "two-agent author rotation reports the blocked reviewer
+//     seat" — the pool is genuinely two agents there, so rotation cannot find a
+//     diverse pair and returns terminal without ever calling runCycle. (The
+//     cited test used to be "rotate excludes every failed reviewer seat", which
+//     runs a FIVE-agent pool and therefore exercises replacement, not this
+//     branch.) The terminal `→ ask` handoff itself is still unasserted: that
+//     test ends at a rotateTerminal reason and run-controller.test.js's
+//     no-registered-executor path ends at stopped-at-cap.
 //   repo has no required checks, --until merged → local gate on the exact tip
 //     landing.test.js "mergeStanding gates the exact integration head when no
 //     checks are required"
@@ -56,6 +61,7 @@ import { findPrByHead } from "../src/github.js";
 import { chooseRemedy, classify, TRIGGERS } from "../src/failure.js";
 import * as runRecord from "../src/run-record.js";
 import * as gitDep from "../src/git.js";
+import * as realGate from "../src/gate.js";
 import { main } from "../src/cli.js";
 import * as notify from "../src/notify.js";
 import { isWrite } from "./helpers/fake-gh.js";
@@ -126,21 +132,20 @@ const redCycle = () => ({
 test("crash after `cycle.end`, before classify → resume classifies from record → same remedy", async () => {
   const dir = orchDir("orch-fault-classify-");
   runRecord.create(dir, { runId: "r1", command: "task", argv: [], policy: POLICY });
-
-  // The crash lands between the cycle ending and the classifier choosing what
-  // to do about it, so nothing about the remedy was journaled. All the resumed
-  // process has is the failure the cycle reported and the record on disk.
-  const crashed = await runUntil(POLICY, runRecord.lookup(dir, "r1"), baseDeps({
-    runCycle: async () => redCycle(),
-    remedies: {},
-  }));
+  // The state this crash leaves behind, written directly rather than produced
+  // by a fake run — a run that stops for want of a registered remedy journals
+  // nothing at all, so deriving the record from one would leave it virgin and
+  // the crash would be decorative. The cycle ended and charged its attempt;
+  // the classifier never got to choose, so the failure carries no `remedy`.
+  // That absence is the row: it is what separates this from the journaled
+  // crash below.
   runRecord.update(dir, "r1", {
-    outcome: crashed.outcome, exit: crashed.exit, attempt: crashed.attempt,
-    failures: crashed.failures, retries: crashed.retries,
+    attempt: 1,
+    failures: [{ attempt: 1, class: "TEST_RED", fingerprint: "fp-red" }],
   });
 
   const persisted = runRecord.lookup(dir, "r1");
-  const wouldChoose = chooseRemedy(crashed.failure, persisted, POLICY);
+  const wouldChoose = chooseRemedy({ class: "TEST_RED", fingerprint: "fp-red" }, persisted, POLICY);
 
   const ran = [];
   const resumed = await runUntil(POLICY, persisted, baseDeps({
@@ -151,11 +156,19 @@ test("crash after `cycle.end`, before classify → resume classifies from record
     },
   }));
 
-  assert.equal(crashed.failure.class, "TEST_RED");
+  // `rebase` and not `rotate`: with no remedy journaled there is nothing for
+  // the ladder to skip, because the streak filter keys on the previous
+  // failure's `remedy` (failure.js:216-218). A crash before the classifier
+  // costs an attempt, never a rung.
   assert.equal(wouldChoose.remedy, "rebase");
-  // The choice comes from the record, not from anything the dead process held.
+  // Both remedies are registered, so nothing forces this hand.
   assert.deepEqual(ran, [wouldChoose.remedy]);
   assert.equal(resumed.exit, 0);
+  // What makes the crash load-bearing. The remedy alone would not: a virgin
+  // record picks `rebase` too. The ATTEMPT is what survived — the dead process
+  // charged the first, the resume charges the second and does not re-charge
+  // the one already spent. Hand-computed from the definition: 1 + 1.
+  assert.equal(resumed.attempt, 2, "the crashed attempt is carried, not re-charged");
 });
 
 test("crash after `remedy` journaled, before new cycle → resume starts the cycle once (attempt not double-counted)", async () => {
@@ -382,8 +395,11 @@ test("gate hangs > `gateTimeout` → TEST_RED, lock released", async () => {
   const verdict = { decision: "AGREE", reason: "ok", raw: "" };
   const result = await runCycle({
     task: "hang", branch: "pr/auth/x", authorName: "auth", reviewerName: "rev",
-    cfg: { roundCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: [] }, automation: { gateTimeout: 1 } },
-    orchDir: "/o", repo: "/r", worktree: "/wt",
+    // `gateTimeout` is top-level (config.js:19,108-110); it is minutes, so 0.02
+    // is a 1200 ms budget. A real directory is required — `spawnSync` on a
+    // nonexistent cwd fails instantly and nothing would ever hang.
+    cfg: { roundCap: 3, merge: "ff-only", test: "auto", scope: { maxLines: 0, ignore: [] }, docs: { paths: [] }, gateTimeout: 0.02 },
+    orchDir: "/o", repo: "/r", worktree: mkdtempSync(join(tmpdir(), "orch-fault-hang-")),
   }, {
     adapters: { get: (name) => ({ name, async author() {}, async audit() { return verdict; } }) },
     git: {
@@ -392,13 +408,14 @@ test("gate hangs > `gateTimeout` → TEST_RED, lock released", async () => {
     },
     gate: {
       detect: () => "sleep 60",
-      // The hang is injected as gate.js reports it once its killer has fired:
-      // the configured budget is what the command exceeded, so the fake reads
-      // that budget rather than hard-coding a number the config could drift
-      // from. `pass:false` with no exception is the seam's whole contract.
-      run: (cmd, _repo, opts = {}) => {
-        gateCalls.push({ cmd, timeoutMs: opts.timeoutMs ?? null });
-        return { pass: false, log: `gate: \`${cmd}\` timed out after 1000ms and was killed` };
+      // The hang is real: `sleep 60` is spawned by the real gate, which kills
+      // it with SIGKILL once the budget expires (gate.js:61-73). Nothing here
+      // fabricates the timeout — a fake that returned `pass:false` and wrote
+      // its own "timed out" string would assert only that the test can type.
+      run: (cmd, dir, timeoutMs) => {
+        const gateResult = realGate.run(cmd, dir, timeoutMs);
+        gateCalls.push({ cmd, timeoutMs, log: gateResult.log });
+        return gateResult;
       },
     },
     scope: { count: () => 0 },
@@ -415,6 +432,10 @@ test("gate hangs > `gateTimeout` → TEST_RED, lock released", async () => {
   assert.equal(result.status, "escalated");
   assert.equal(result.class, "TEST_RED");
   assert.equal(gateCalls.length, 1, "the gate ran once");
+  assert.equal(gateCalls[0].timeoutMs, 1200, "the configured budget must reach gate.run");
+  // gate.js writes this line only on the ETIMEDOUT branch (gate.js:71-72), so
+  // it cannot appear unless a SIGKILL actually fired on a live process.
+  assert.match(gateCalls[0].log, /timed out after 1200ms and was killed/);
   assert.match(result.reason || "", /red|test/i);
   assert.equal(reachedMerge, false, "no merge.lock can be left behind by a phase that never ran");
 });
