@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "runId": "i-1",
+  "command": "task",
+  "argv": [],
+  "policy": {
+    "until": "merged",
+    "maxAttempts": 3
+  },
+  "state": "MERGED",
+  "outcome": "reached",
+  "exit": 0,
+  "attempt": 0,
+  "retries": {},
+  "cycles": [],
+  "failures": [],
+  "remedies": [],
+  "excludedAgents": [],
+  "branch": "pr/claude/i",
+  "pr": null,
+  "integration": null,
+  "readiness": {
+    "ready": true,
+    "mergeStateStatus": null,
+    "checks": null,
+    "remoteGate": false
+  },
+  "merge": {
+    "mergeCommit": null,
+    "mergedBy": "orch",
+    "requests": [
+      {
+        "ordinal": 1
+      }
+    ]
+  },
+  "human": null,
+  "detached": null,
+  "lastError": null
+}

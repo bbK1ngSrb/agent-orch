@@ -1224,3 +1224,82 @@ test("guard 2 gets cfg.gateTimeout as a wall-clock cap (#505)", async () => {
   await finalize(ctx(), deps);
   assert.equal(gateArgs[2], 0);
 });
+
+// design §16 / engine H3: a redrive that fails quietly used to be the one
+// terminal path that wrote NOTHING to runs.jsonl — the peer simply vanished
+// from the history. It still must not demote a second time (its first demote
+// PR stands), but it now leaves a `redrive: true` line so the record shows
+// which peer was retried, why it failed, and under whose land.
+test("#529: a quiet redrive dirty-merge records a merge-deferred line (design §16)", async () => {
+  let demoteCalls = 0;
+  const deferredPeer = {
+    sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
+    reviewedSha: "peer-reviewed", rounds: 3, peerSids: ["1"], redriveAttempts: 0, closes: 999,
+  };
+  const { deps, recorded } = baseDeps({
+    inflight: { listLive: () => [], peerPaths: () => [] },
+    github: {
+      ...baseDeps().deps.github,
+      demote: async () => { demoteCalls += 1; return { prUrl: "https://x/pr/1" }; },
+    },
+    git: {
+      ...baseDeps().deps.git,
+      rebaseBranchOnto: () => ({ ok: true, sha: "deadbee" }),
+      mergeInWorktree: (_p, branch) => (branch === "peer-reviewed" || branch === "deadbee"
+        ? { ok: false, reason: "CONFLICT (content): Merge conflict in src/a.js" }
+        : { ok: true, reason: "merged" }),
+    },
+    deferred: {
+      list: () => [deferredPeer],
+      eligibleForRedrive: () => true,
+      blockedByLand: () => true,
+      markAttempt: () => { deferredPeer.redriveAttempts += 1; },
+      remove: () => { throw new Error("must not remove a failed redrive"); },
+    },
+  });
+
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  assert.equal(demoteCalls, 0, "quietFail — the peer's existing demote PR stands");
+  const redrives = recorded.filter((e) => e.redrive);
+  assert.equal(redrives.length, 1);
+  assert.equal(redrives[0].verdict, "merge-deferred");
+  assert.equal(redrives[0].trigger, "dirty-merge");
+  assert.equal(redrives[0].sid, "2");
+  assert.equal(redrives[0].branch, "pr/codex/b-2");
+  assert.equal(redrives[0].rounds, 3);
+  // The PEER's issue, never the redriving cycle's — same rule as the merged line.
+  assert.equal(redrives[0].closes, 999);
+  assert.match(redrives[0].reason, /Merge conflict/);
+});
+
+test("#529: a quiet redrive gate failure records a merge-deferred line (design §16)", async () => {
+  let gateRuns = 0;
+  const deferredPeer = {
+    sid: "2", branch: "pr/codex/b-2", paths: ["src/a.js"], testCmd: "npm test",
+    reviewedSha: "peer-reviewed", rounds: 1, peerSids: ["1"], redriveAttempts: 0, closes: null,
+  };
+  const { deps, recorded } = baseDeps({
+    inflight: { listLive: () => [], peerPaths: () => [] },
+    // The primary land's Guard 2 passes; the redriven peer's does not.
+    gate: { run: () => { gateRuns += 1; return { pass: gateRuns === 1, log: "" }; } },
+    git: {
+      ...baseDeps().deps.git,
+      rebaseBranchOnto: () => ({ ok: true, sha: "deadbee" }),
+    },
+    deferred: {
+      list: () => [deferredPeer],
+      eligibleForRedrive: () => true,
+      blockedByLand: () => true,
+      markAttempt: () => { deferredPeer.redriveAttempts += 1; },
+      remove: () => { throw new Error("must not remove a failed redrive"); },
+    },
+  });
+
+  const r = await finalize(ctx(), deps);
+  assert.equal(r.status, "merged");
+  const redrives = recorded.filter((e) => e.redrive);
+  assert.deepEqual(redrives.map((e) => [e.verdict, e.trigger, e.sid, e.reason]),
+    [["merge-deferred", "integration-test", "2", "post-merge-test-fail"]]);
+  assert.equal(redrives[0].closes, null);
+});

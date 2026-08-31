@@ -8,6 +8,14 @@
 // string (stdout) or {error: "HTTP 404"} (thrown, mirroring execFileSync).
 // Running past the end of the script throws — an unscripted call is a test bug,
 // not a silent empty string.
+// Does this call MUTATE GitHub? Shared with fault-injection tests that script
+// `gh` themselves (a polling loop cannot be driven by an ordered response list)
+// but still need the design §17 clause: at most one create/comment/merge per
+// idempotency key, however many times a crashed run re-enters.
+export const isWrite = ({ args }) => args.some((a) => /^-X$|^--method$/.test(a))
+  || (["pr", "issue", "release"].includes(args[0])
+    && ["create", "merge", "close", "comment", "edit", "review"].includes(args[1]));
+
 export function mkGh(script = []) {
   const calls = [];
   let i = 0;
@@ -22,9 +30,6 @@ export function mkGh(script = []) {
   // Calls that change state on GitHub, as opposed to reads. `gh api -X PUT
   // .../merge` is the one that matters most: a --dry run that reaches it has
   // merged a real PR.
-  gh.writes = () => calls.filter(({ args }) =>
-    args.some((a) => /^-X$|^--method$/.test(a)) ||
-    (["pr", "issue", "release"].includes(args[0]) &&
-      ["create", "merge", "close", "comment", "edit", "review"].includes(args[1])));
+  gh.writes = () => calls.filter(isWrite);
   return gh;
 }

@@ -2571,3 +2571,50 @@ test("ask skips an unverifiable commenter and accepts a later permitted reply", 
   });
   assert.equal(result.cycle.status, "merged");
 });
+
+// design §16 `humanWaitMs`: a run that stops for a person should say how long
+// that person took. Without it the record shows an ask happened but not what it
+// cost, and "median human commands to green" (proposal §7.4) has no companion
+// number for how long a run sat idle waiting for one.
+test("#529: ask records how long the run waited for the human reply", async () => {
+  let now = 0;
+  const gh = (args) => {
+    if (args[0] === "api" && args[1]?.includes("comments") && args.includes("--paginate")) {
+      // The reply only appears on the second poll, so a real wait elapses.
+      return now === 0 ? "[]" : JSON.stringify([{ id: 11, body: "orch: retry 1", user: { login: "maintainer", type: "User" } }]);
+    }
+    if (args[0] === "api" && args[1]?.includes("collaborators")) return JSON.stringify({ permission: "write" });
+    if (args[0] === "api" && args.includes("-X") && args.includes("POST")) return JSON.stringify({ id: 10 });
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const result = await askRemedy({
+    run: { sid: "wait-run", task: "waiting", branch: "pr/codex/waiting" },
+    policy: { until: "ready", maxAttempts: 3, baseMaxAttempts: 3, pollSeconds: 1, humanWaitHours: 1 },
+    failure: { class: "REVIEW_STALEMATE", summary: "no agreement" },
+    record: { runId: "wait-run", attempt: 1, human: { channel: "issue", target: 9 } },
+    deps: { gh, now: () => now, sleep: async () => { now += 90_000; } },
+    runCycle: async () => ({ status: "merged" }),
+  });
+  assert.equal(result.cycle.status, "merged");
+  assert.equal(result.record.human.waitedMs, 90_000);
+});
+
+test("#529: a timed-out ask records the full window it waited", async () => {
+  let now = 0;
+  const gh = (args) => {
+    if (args[0] === "api" && args[1]?.includes("comments") && args.includes("--paginate")) return "[]";
+    if (args[0] === "api" && args.includes("-X") && args.includes("POST")) return JSON.stringify({ id: 10 });
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const result = await askRemedy({
+    run: { sid: "timeout-run", task: "waiting", branch: "pr/codex/waiting" },
+    // A one-second window: the first sleep steps the clock past the deadline.
+    policy: { until: "ready", maxAttempts: 3, pollSeconds: 1, humanWaitHours: 1 / 3600 },
+    failure: { class: "REVIEW_STALEMATE", summary: "no agreement" },
+    record: { runId: "timeout-run", attempt: 1, human: { channel: "issue", target: 9 } },
+    deps: { gh, now: () => now, sleep: async () => { now += 5_000; } },
+    runCycle: async () => ({ status: "merged" }),
+  });
+  assert.equal(result.result.outcome, "wait-timeout");
+  assert.equal(result.record.human.waitedMs, 5_000);
+});

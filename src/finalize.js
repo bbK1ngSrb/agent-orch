@@ -208,6 +208,22 @@ export async function finalize(ctx, deps) {
   }
 }
 
+// A redrive that fails quietly still finished a cycle, so it still owes
+// `runs.jsonl` a line (design §16, engine H3 — previously the only terminal
+// path that wrote nothing at all, leaving the peer's fate untraceable).
+// `redrive: true` distinguishes it from the demote line at the same verdict;
+// like every other non-`merged` line it resets the `kpi.json` streak, which is
+// design §16's stated and accepted cost of making the path visible.
+function recordRedrive(deps, ctx, usage, { trigger, reason }) {
+  deps.notify.recordRun?.(ctx.orchDir, {
+    ts: new Date().toISOString(),
+    branch: ctx.branch, sid: ctx.sid, verdict: "merge-deferred", trigger, reason,
+    rounds: ctx.rounds, redrive: true, closes: ctx.closes ?? null,
+    ...(usage.tokens ? { tokens: usage.tokens } : {}),
+    ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
+  });
+}
+
 // Merge + Guard 2 + record. Caller holds merge.lock and has the integration
 // worktree synced. Shared by the primary land path and Tier-1 peer redrive.
 // `quietFail` (redrive path): on conflict/gate-fail do not demote again — the
@@ -231,6 +247,7 @@ async function landIntoIntegration(ctx, deps, { integration, integrationBranch, 
   if (!m.ok) {
     if (quietFail) {
       const cls = classify(TRIGGERS.LAND_DIRTY_MERGE);
+      recordRedrive(deps, ctx, usage, { trigger: "dirty-merge", reason: m.reason || "conflict" });
       return {
         status: "merge-deferred", trigger: "dirty-merge", reason: m.reason || "conflict",
         class: cls, fingerprint: fingerprint(cls, `dirty-merge: ${conflictPaths(m.reason).sort().join(",")}`),
@@ -253,6 +270,7 @@ async function landIntoIntegration(ctx, deps, { integration, integrationBranch, 
     git.git(["reset", "--hard", preSha], integration); // roll integration back
     if (quietFail) {
       const cls = classify(TRIGGERS.LAND_INTEGRATION_TEST);
+      recordRedrive(deps, ctx, usage, { trigger: "integration-test", reason: "post-merge-test-fail" });
       return {
         status: "merge-deferred", trigger: "integration-test", reason: "post-merge-test-fail",
         class: cls, fingerprint: fingerprint(cls, "integration-test failure"),

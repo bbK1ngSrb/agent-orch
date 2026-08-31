@@ -58,6 +58,9 @@ pnpm-lock.yaml
 !/scripts/install-hooks.js
 # Exception: invoked by tag-release.yml in CI (#409) — untracked would break the job.
 !/scripts/release-tags.js
+# Exception: the CLI v2 success-metric audit (design §16). test/system-v2.test.js
+# imports it, so untracked would break `npm test` on a fresh clone.
+!/scripts/v2-metrics.mjs
 
 # Ignore all local VS Code configurations
 .vscode/*
