@@ -54,6 +54,11 @@ export function inspect({ pr, expectedHead, landing, cfg = {}, required } = {}, 
         ready: true,
         headSha: data.headRefOid,
         mergedBy: "external",
+        // design §16: the compact observation the run record keeps as proof
+        // that a green exit was earned by a real remote read. Checks were
+        // never evaluated on this path — the PR is already merged.
+        mergeStateStatus: data.mergeStateStatus ?? null,
+        checks: null,
         ...(landing === "pr" ? { mergeCommit: data.mergeCommit } : {}),
         warnings: [],
       };
@@ -107,6 +112,8 @@ export function inspect({ pr, expectedHead, landing, cfg = {}, required } = {}, 
     ready: true,
     headSha: data.headRefOid,
     headMoved,
+    mergeStateStatus: data.mergeStateStatus ?? null,
+    checks: checks.state,
     warnings: checks.state === "unknown" ? ["required-checks-unknown"] : [],
     required: req,
   };

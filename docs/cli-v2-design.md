@@ -290,7 +290,9 @@ requests this run has issued — the fault matrix's "ordinal 2").
 costUsd` (plus `resolved` for `--check-history`), `checkpoints/*.json`
 (`branch round stage decision`), and `inflight/*.json` (`pid branch sid`, with
 `ts` stamped by `sid-store.js:writeRecord`). v2 appends fields to `runs.jsonl`
-lines (`runId attempt until outcome exit failureClass`) and to inflight records
+lines (`runId attempt until` plus `remedy failureClass humanWaitMs` on a
+remedy-produced cycle — see §16 for why `outcome` and `exit` are run-record
+fields instead) and to inflight records
 (`detached log runId`) — additive; readers ignore unknown keys. Nothing is
 renamed or removed.
 
@@ -1151,13 +1153,26 @@ release: { autoBump: false }
 
 ## 16. Telemetry / `runs.jsonl` additions
 
+Telemetry lands in two stores, and the split is forced rather than chosen.
+`notify.js` is protected, so v2 may only *stamp extra keys onto* the line
+`notify.recordRun` already writes — it may not add lines, and `runs.jsonl` is
+append-only, so a run-level terminal could only be expressed as a synthetic
+trailing row that no cycle produced. Per-cycle facts therefore go on
+`runs.jsonl`; per-run terminal facts go on the run record
+(`.orch/run-records/<sid>.json`), which `scripts/v2-metrics.mjs` reads
+alongside it.
+
 Every cycle still writes one `runs.jsonl` line via `notify.recordRun`
-(`notify.js:61-65`) with today's fields. Added (all optional, additive):
-`runId`, `attempt`, `until`, `failureClass`, `remedy` (the remedy that produced
-this cycle), `exit` (on the run's last line), `outcome`, `readiness:{ready,
-mergeStateStatus, checks}` (compact), `mergeCommit`, `mergedBy`, `humanWaitMs`,
-`detached`. `redrive` `quietFail` paths (`finalize.js:195,209`) now also write a
-line (`verdict:"merge-deferred", trigger, redrive:true`) — closes engine H3.
+(`notify.js:61-65`) with today's fields. Added there (all optional, additive):
+`runId`, `attempt`, `until`, `detached`, and — on a cycle a remedy produced —
+`remedy`, `failureClass`, `humanWaitMs`. `redrive` `quietFail` paths
+(`finalize.js:195,209`) now also write a line (`verdict:"merge-deferred",
+trigger, redrive:true`) — closes engine H3.
+
+Added on the **run record only**, never on `runs.jsonl`: `outcome`, `exit`,
+`readiness:{ready, mergeStateStatus, checks}` (compact), `mergeCommit` (nested
+under `merge`), and `mergedBy`. These are properties of a run, not of any one
+cycle in it; the run record carries them durably, so nothing is lost.
 Dashboard metrics: `successRate` unaffected. `cleanUnattendedCycles`
 (`kpi.json`, `notify.js:87-95`) is a **consecutive streak** reset by any
 non-`merged`/`pr` verdict and by every `notify.escalate` — so intermediate

@@ -1154,9 +1154,22 @@ export async function resolveIntegrationConflict(ctx, deps = { git, adapters, ga
 // has no issue at all. So the test is the key's PRESENCE, not a non-null value:
 // stamping this run's number over either kind of peer record is exactly the
 // cross-issue false attribution priorStagedBranches exists to prevent.
-export function realDeps({ closes = null } = {}) {
-  const notifyDep = closes
-    ? { ...notify, recordRun: (dir, entry) => notify.recordRun(dir, "closes" in entry ? entry : { ...entry, closes }) }
+// `telemetry` (design §16) is the run-level context a cycle-level writer cannot
+// know: which run this cycle belongs to, which goal it is pursuing, which
+// attempt it is, and which remedy produced it. It is read at write time, not at
+// wiring time, because those last two change as the run loops. Cycle-level keys
+// always win: the entry is the primary record of what happened.
+export function realDeps({ closes = null, telemetry = null } = {}) {
+  const stamp = (entry) => {
+    const run = typeof telemetry === "function" ? telemetry() : telemetry;
+    return {
+      ...(run || {}),
+      ...entry,
+      ...(closes && !("closes" in entry) ? { closes } : {}),
+    };
+  };
+  const notifyDep = closes || telemetry
+    ? { ...notify, recordRun: (dir, entry) => notify.recordRun(dir, stamp(entry)) }
     : notify;
   const ghDeps = {
     gh: ghShell,
@@ -1173,6 +1186,25 @@ export function realDeps({ closes = null } = {}) {
   const finalizeDep = (ctx) => finalize(ctx, { git, gate, lock: { acquireBlocking, releaseLock }, inflight, github: githubDep, notify: notifyDep });
   return { adapters, git, gate, scope, notify: notifyDep, inflight, finalize: finalizeDep, checkpoint, reviewLog };
 }
+// design §16: a cycle started by a remedy should say so in `runs.jsonl`. The
+// run controller owns the loop's attempt/remedy bookkeeping, so rather than
+// threading telemetry through it, the remedy map it is handed records the
+// choice on the way past. A plain free retry (no remedy) reruns the same
+// classified failure, so its stamp deliberately stays on the last remedy.
+export function withRemedyTelemetry(telemetry, remedies) {
+  return Object.fromEntries(Object.entries(remedies).map(([name, run]) => [name, async (context) => {
+    telemetry.remedy = name;
+    telemetry.failureClass = context?.failure?.class ?? null;
+    if (context?.record?.attempt != null) telemetry.attempt = context.record.attempt;
+    const outcome = await run(context);
+    // §16 `humanWaitMs`: `ask` is the only remedy that stops for a person, and
+    // it measures the wait on the record it returns. Lifting it here is what
+    // puts it on the line the cycle it unblocked goes on to write.
+    if (outcome?.record?.human?.waitedMs != null) telemetry.humanWaitMs = outcome.record.human.waitedMs;
+    return outcome;
+  }]));
+}
+
 function dryDeps({ noTestGate = false } = {}) {
   const verdict = { decision: "AGREE", reason: "(dry-run: assumed agree)", raw: "" };
   return {
@@ -2516,7 +2548,17 @@ export async function main(argv, deps = {}) {
       }
       emit({ event: "run.start", runId: run.sid, command, until, policy: runPolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
       try {
-        const cycleDeps = dry ? dryDeps({ noTestGate: deps.dryNoTestGate }) : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes }));
+        // design §16: run-level telemetry stamped onto every runs.jsonl line
+        // this run writes. Mutable — `attempt`, `remedy` and `failureClass`
+        // are rewritten by withRemedyTelemetry() as the loop advances, so the
+        // line a remedy's cycle writes names the remedy that produced it.
+        const telemetry = {
+          runId: priorRecord?.runId || run.sid,
+          until,
+          attempt: priorRecord?.attempt ?? 0,
+          ...(detachedRecord ? { detached: true } : {}),
+        };
+        const cycleDeps = dry ? dryDeps({ noTestGate: deps.dryNoTestGate }) : (deps.cycleDeps || (deps.realDeps || realDeps)({ closes: run.closes, telemetry: () => telemetry }));
         const result = await runCycle(run, cycleDeps);
         results.push(result);
         let finalResult = result;
@@ -2688,7 +2730,7 @@ export async function main(argv, deps = {}) {
               runCycle: async ({ fresh } = {}) => fresh
                 ? freshCycle()
                 : result,
-              remedies: {
+              remedies: withRemedyTelemetry(telemetry, {
                 rebase: createRebaseRemedy({
                   getRun: () => activeRun,
                   deps: cycleDeps,
@@ -2711,7 +2753,7 @@ export async function main(argv, deps = {}) {
                   runCycle: freshCycle,
                   reauthor,
                 }),
-              },
+              }),
               resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
               mergeStanding: (args) => mergeForRun(args, activeRun, cfg, ghDeps, emit),
               gh: ghDeps.gh, git, repo,
@@ -2759,6 +2801,12 @@ export async function main(argv, deps = {}) {
             prTarget: activeRun.prTarget || run.prTarget || null,
             pr,
             ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
+            // design §16 / proposal §7 criterion 2 — the readiness observation
+            // is the record's proof that a green exit was earned remotely.
+            // `mergedBy` rides alongside it because an externally merged PR
+            // under `--until ready` never builds a `merge` object to carry it.
+            ...(controller?.readiness ? { readiness: controller.readiness } : {}),
+            ...(controller?.mergedBy ? { mergedBy: controller.mergedBy } : {}),
             ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
             ...(controller?.merge ? { merge: controller.merge } : {}),
             excludedAgents: controller?.excludedAgents || activeRun.excludedAgents || priorRecord?.excludedAgents || [],
@@ -3111,7 +3159,15 @@ export async function main(argv, deps = {}) {
         excludedAgents: run.excludedAgents,
       });
     }
-    const baseContinueDeps = deps.cycleDeps || realDeps({ closes });
+    // design §16, as on the fresh-run path above. `until` is filled in below,
+    // once the resumed policy has been reconstructed; the stamp reads the
+    // object at write time, so a later assignment still reaches every line.
+    const telemetry = {
+      runId,
+      attempt: priorRun?.attempt ?? 0,
+      ...(detachedRecord ? { detached: true } : {}),
+    };
+    const baseContinueDeps = deps.cycleDeps || realDeps({ closes, telemetry: () => telemetry });
     const continueDeps = !dry && rotationRecorded && existsSync(`${run.worktree}.orch-preserve`)
       ? { ...baseContinueDeps, git: { ...baseContinueDeps.git, pruneWorktree() {} } }
       : baseContinueDeps;
@@ -3124,6 +3180,7 @@ export async function main(argv, deps = {}) {
       }
       : null;
     const resumePolicy = controllerPolicy || resumedRecord?.policy || priorRun?.policy || { until: flags.until || "once" };
+    telemetry.until = resumePolicy.until;
     emit({ event: "run.start", runId, command, until: resumePolicy.until, policy: resumePolicy, cwd: process.cwd(), orchVersion: DISPLAY_VERSION });
     if (priorRun?.outcome === "stopped-at-cap" || priorRun?.outcome === "wait-timeout") {
       emit({ event: "run.resume", runId, previousOutcome: priorRun.outcome, maxAttempts: resumedRecord?.policy?.maxAttempts });
@@ -3257,7 +3314,7 @@ export async function main(argv, deps = {}) {
           policy: controllerPolicy,
         }, {
           runCycle: async ({ fresh } = {}) => fresh ? freshCycle() : result,
-          remedies: {
+          remedies: withRemedyTelemetry(telemetry, {
             rebase: createRebaseRemedy({
               getRun: () => activeRun,
               deps: continueDeps,
@@ -3277,7 +3334,7 @@ export async function main(argv, deps = {}) {
               reauthor,
             }),
             "integration-repair": integrationRepair,
-          },
+          }),
           resolveLanded: (cycle) => resolveLanded(cycle, activeRun, cfg, ghDeps, repo),
           mergeStanding: (args) => mergeForRun(args, activeRun, cfg, ghDeps, emit),
           gh: ghDeps.gh, git, repo, sleep: deps.sleep,
@@ -3312,6 +3369,8 @@ export async function main(argv, deps = {}) {
             branch: activeRun.branch,
             prTarget: activeRun.prTarget || run.prTarget || null,
             excludedAgents: controller?.excludedAgents || run.excludedAgents,
+            ...(controller?.readiness ? { readiness: controller.readiness } : {}),
+            ...(controller?.mergedBy ? { mergedBy: controller.mergedBy } : {}),
             ...(controller?.policy ? { policy: controller.policy } : {}),
             ...(controller?.human ? { human: controller.human } : {}),
             ...(controller?.resumeCommand ? { resumeCommand: controller.resumeCommand } : {}),

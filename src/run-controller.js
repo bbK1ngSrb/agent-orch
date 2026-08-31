@@ -57,6 +57,20 @@ function resolveFailure(failure, record, policy, decision = chooseRemedy(failure
   return { ...terminal("STOPPED_AT_CAP", failure.class), failure };
 }
 
+// design §16 / proposal §7 criterion 2: every exit-0 run must carry, in its
+// record, the remote observation that earned it. Compact on purpose — the full
+// readiness result is a poll-loop internal; this is the durable proof.
+// `remoteGate: false` marks a landing that had no remote to read at all, so an
+// audit can tell "no observation was needed" apart from "none was made".
+function observation(readiness) {
+  return {
+    ready: Boolean(readiness.ready),
+    mergeStateStatus: readiness.mergeStateStatus ?? null,
+    checks: readiness.checks ?? null,
+  };
+}
+const LOCAL_OBSERVATION = { ready: true, mergeStateStatus: null, checks: null, remoteGate: false };
+
 function withRecord(result, record, cycleResults) {
   return {
     ...result,
@@ -170,7 +184,7 @@ export async function runUntil(policy, record = {}, deps) {
     if (land.landing === "base") {
       return withRecord({
         state: policy.until === "merged" ? "MERGED" : "READY", outcome: "reached", exit: EXIT_CODES.OK,
-        headSha: land.expectedHead, cycle, land,
+        headSha: land.expectedHead, readiness: LOCAL_OBSERVATION, cycle, land,
       }, currentRecord, cycleResults);
     }
     if (land.remoteGate === false) {
@@ -187,7 +201,7 @@ export async function runUntil(policy, record = {}, deps) {
         // above because it requires remote proof rather than a local success.
         state: "READY",
         outcome: "reached", exit: EXIT_CODES.OK,
-        headSha: land.expectedHead, cycle, land,
+        headSha: land.expectedHead, readiness: LOCAL_OBSERVATION, cycle, land,
       }, currentRecord, cycleResults);
     }
     if (!land.pr?.number) {
@@ -263,6 +277,8 @@ export async function runUntil(policy, record = {}, deps) {
             state: "MERGED", outcome: "reached", exit: EXIT_CODES.OK,
             warnings: readiness.warnings || [], headSha: mergeResult.headSha || mergeLand.expectedHead,
             headMovedRepins, mergeCommit: mergeResult.mergeCommit,
+            mergedBy: mergeResult.merge?.mergedBy ?? readiness.mergedBy ?? "orch",
+            readiness: observation(readiness),
             merge: mergeResult.merge, cycle, land: mergeLand,
           }, currentRecord, cycleResults);
         }
@@ -283,6 +299,8 @@ export async function runUntil(policy, record = {}, deps) {
       return withRecord({
         state: "READY", outcome: "reached", exit: EXIT_CODES.OK,
         warnings: readiness.warnings || [], headSha: readiness.headSha, headMovedRepins,
+        readiness: observation(readiness),
+        ...(readiness.mergedBy ? { mergedBy: readiness.mergedBy } : {}),
         cycle, land,
       }, currentRecord, cycleResults);
     }

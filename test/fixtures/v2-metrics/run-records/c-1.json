@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "runId": "c-1",
+  "command": "task",
+  "argv": [],
+  "policy": {
+    "until": "ready",
+    "maxAttempts": 3
+  },
+  "state": "STOPPED_AT_CAP",
+  "outcome": "stopped-at-cap",
+  "exit": 2,
+  "attempt": 0,
+  "retries": {},
+  "cycles": [],
+  "failures": [],
+  "remedies": [],
+  "excludedAgents": [],
+  "branch": "pr/claude/x",
+  "pr": null,
+  "integration": null,
+  "readiness": null,
+  "merge": null,
+  "human": null,
+  "detached": null,
+  "lastError": null
+}

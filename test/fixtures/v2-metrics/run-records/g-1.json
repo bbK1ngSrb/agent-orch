@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "runId": "g-1",
+  "command": "task",
+  "argv": [],
+  "policy": {
+    "until": "merged",
+    "maxAttempts": 3
+  },
+  "state": "MERGED",
+  "outcome": "reached",
+  "exit": 0,
+  "attempt": 0,
+  "retries": {},
+  "cycles": [],
+  "failures": [],
+  "remedies": [],
+  "excludedAgents": [],
+  "branch": "pr/claude/x",
+  "pr": null,
+  "integration": null,
+  "readiness": {
+    "ready": true,
+    "mergeStateStatus": "CLEAN",
+    "checks": "green"
+  },
+  "merge": {
+    "mergeCommit": "gggggggggggggggggggggggggggggggggggggggg",
+    "mergedBy": "orch",
+    "verifiedAncestorAt": "2026-08-30T12:00:00.000Z",
+    "requests": [
+      {
+        "ordinal": 1
+      },
+      {
+        "ordinal": 1
+      }
+    ]
+  },
+  "human": null,
+  "detached": null,
+  "lastError": null
+}

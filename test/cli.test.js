@@ -4061,58 +4061,7 @@ async function runMainCapture(argv, deps = {}) {
   }
 }
 
-function initGitRepo(prefix = "orch-main-") {
-  const d = mkdtempSync(join(tmpdir(), prefix));
-  gitDep.git(["init", "-b", "main"], d);
-  gitDep.git(["config", "user.email", "t@t"], d);
-  gitDep.git(["config", "user.name", "t"], d);
-  // core.autocrlf defaults to true on Windows git and rewrites LF to CRLF on
-  // checkout, which would make file-content assertions platform-dependent.
-  gitDep.git(["config", "core.autocrlf", "false"], d);
-  writeFileSync(join(d, "a.txt"), "1\n");
-  gitDep.git(["add", "."], d);
-  gitDep.git(["commit", "-m", "init"], d);
-  return d;
-}
-
-function initGitRepoOn(branch, prefix = "orch-main-") {
-  const d = mkdtempSync(join(tmpdir(), prefix));
-  gitDep.git(["init", "-b", branch], d);
-  gitDep.git(["config", "user.email", "t@t"], d);
-  gitDep.git(["config", "user.name", "t"], d);
-  gitDep.git(["config", "core.autocrlf", "false"], d);
-  writeFileSync(join(d, "a.txt"), "1\n");
-  gitDep.git(["add", "."], d);
-  gitDep.git(["commit", "-m", "init"], d);
-  return d;
-}
-
-function addOriginWithPeer(repo) {
-  const remote = mkdtempSync(join(tmpdir(), "orch-cli-remote-"));
-  gitDep.git(["init", "--bare", "-b", "main"], remote);
-  gitDep.git(["remote", "add", "origin", remote], repo);
-  gitDep.git(["push", "-u", "origin", "main"], repo);
-  const parent = mkdtempSync(join(tmpdir(), "orch-cli-peer-"));
-  const peer = join(parent, "repo");
-  gitDep.git(["clone", remote, peer], parent);
-  gitDep.git(["config", "user.email", "t@t"], peer);
-  gitDep.git(["config", "user.name", "t"], peer);
-  gitDep.git(["config", "core.autocrlf", "false"], peer);
-  return { remote, peer };
-}
-
-function fakeCycleDeps() {
-  const verdict = { decision: "AGREE", reason: "ok", raw: "", usage: { model: "gpt-test-review", tokens: 20 } };
-  return {
-    adapters: { get: (name) => ({ name, async author() { return { usage: { model: "gpt-test-author", tokens: 40 } }; }, async audit() { return verdict; } }) },
-    git: { ...gitDep, changedFiles: () => ["a.txt"] },
-    gate: { detect: () => "true", run: () => ({ pass: true, log: "" }) },
-    scope: { count: () => 0 },
-    notify: { phase() {}, writeRound() {}, escalate() {}, buildDecisionBrief() { return ""; } },
-    inflight: { setPaths() {} },
-    finalize: async () => ({ status: "merged", reason: "test", sha: "abc" }),
-  };
-}
+import { initGitRepo, initGitRepoOn, addOriginWithPeer, fakeCycleDeps } from "./helpers/system-repo.js";
 
 async function runMainInRepo(repo, argv, deps = {}, { injectUntilOnce = true } = {}) {
   const prev = cwd();
@@ -7274,4 +7223,61 @@ test("orch continue resolves and updates the run record when runId differs from 
   assert.equal(record.attempt, 2);
   assert.equal(record.cycles.length, 2);
   assert.equal(record.cycles[1].sid, laterSid);
+});
+
+import { withRemedyTelemetry } from "../src/cli.js";
+
+// design §16: `runs.jsonl` lines are written per CYCLE, by code that has no idea
+// which run, goal or remedy it belongs to. realDeps() stamps that run-level
+// context on the way past, so the history can be read per run — additively, and
+// without touching the protected notify.js writer.
+test("#529: realDeps stamps run-level telemetry onto every runs.jsonl line", () => {
+  const dir = mkdtempSync(join(tmpdir(), "orch-telemetry-"));
+  const telemetry = { runId: "r-1", until: "ready", attempt: 0 };
+  const deps = realDeps({ closes: 42, telemetry: () => telemetry });
+  deps.notify.recordRun(dir, { ts: "t", branch: "b", sid: "s1", verdict: "merged", rounds: 1 });
+  // A later cycle in the same run: the same object, read again at write time.
+  telemetry.attempt = 1;
+  telemetry.remedy = "rebase";
+  telemetry.failureClass = "TEST_RED";
+  deps.notify.recordRun(dir, { ts: "t", branch: "b", sid: "s2", verdict: "merged", rounds: 2 });
+
+  const lines = readFileSync(join(dir, "runs.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((l) => [l.sid, l.runId, l.until, l.attempt, l.remedy ?? null, l.failureClass ?? null]), [
+    ["s1", "r-1", "ready", 0, null, null],
+    ["s2", "r-1", "ready", 1, "rebase", "TEST_RED"],
+  ]);
+  // The existing `closes` fallback still applies, and cycle-level keys still win.
+  assert.equal(lines[0].closes, 42);
+  assert.equal(lines[0].verdict, "merged");
+});
+
+test("#529: a stamped entry never overrides what the cycle itself recorded", () => {
+  const dir = mkdtempSync(join(tmpdir(), "orch-telemetry-clash-"));
+  const deps = realDeps({ telemetry: () => ({ runId: "r-1", attempt: 7, branch: "wrong" }) });
+  deps.notify.recordRun(dir, { ts: "t", branch: "right", sid: "s", verdict: "escalated", rounds: 1 });
+  const line = JSON.parse(readFileSync(join(dir, "runs.jsonl"), "utf8").trim());
+  assert.equal(line.branch, "right");
+  assert.equal(line.attempt, 7);
+});
+
+test("#529: withRemedyTelemetry records which remedy produced the next cycle", async () => {
+  const telemetry = { runId: "r-1", until: "ready", attempt: 0 };
+  const calls = [];
+  const remedies = withRemedyTelemetry(telemetry, {
+    rebase: async (context) => { calls.push(["rebase", context.name]); return { cycle: {} }; },
+    // `ask` is the one remedy that stops for a person; it reports the wait on
+    // the record it hands back (design §16 humanWaitMs).
+    ask: async () => { calls.push(["ask"]); return { record: { human: { waitedMs: 4200 } } }; },
+  });
+
+  await remedies.rebase({ name: "rebase", failure: { class: "TEST_RED" }, record: { attempt: 1 } });
+  assert.deepEqual([telemetry.remedy, telemetry.failureClass, telemetry.attempt], ["rebase", "TEST_RED", 1]);
+  assert.equal(telemetry.humanWaitMs, undefined, "no human was asked, so no wait to report");
+  // A remedy that consumes no attempt must not invent one.
+  await remedies.ask({ name: "ask", failure: { class: "REVIEW_STALEMATE" }, record: { attempt: 1 } });
+  assert.deepEqual([telemetry.remedy, telemetry.failureClass, telemetry.attempt], ["ask", "REVIEW_STALEMATE", 1]);
+  assert.equal(telemetry.humanWaitMs, 4200);
+  // The wrapper is transparent: the executor still receives its own context.
+  assert.deepEqual(calls, [["rebase", "rebase"], ["ask"]]);
 });

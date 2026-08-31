@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "runId": "f-1",
+  "command": "task",
+  "argv": [],
+  "policy": {
+    "until": "ready",
+    "maxAttempts": 3
+  },
+  "state": "READY",
+  "outcome": "reached",
+  "exit": 0,
+  "attempt": 0,
+  "retries": {},
+  "cycles": [],
+  "failures": [],
+  "remedies": [],
+  "excludedAgents": [],
+  "branch": "pr/claude/x",
+  "pr": null,
+  "integration": null,
+  "readiness": {
+    "ready": true,
+    "mergeStateStatus": null,
+    "checks": null,
+    "remoteGate": false
+  },
+  "merge": null,
+  "human": null,
+  "detached": null,
+  "lastError": null
+}

@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "runId": "h-1",
+  "command": "task",
+  "argv": [],
+  "policy": {
+    "until": "merged",
+    "maxAttempts": 3
+  },
+  "state": "MERGED",
+  "outcome": "reached",
+  "exit": 0,
+  "attempt": 0,
+  "retries": {},
+  "cycles": [],
+  "failures": [],
+  "remedies": [],
+  "excludedAgents": [],
+  "branch": "pr/claude/h",
+  "pr": null,
+  "integration": null,
+  "readiness": {
+    "ready": true,
+    "mergeStateStatus": "CLEAN",
+    "checks": "green"
+  },
+  "merge": {
+    "mergeCommit": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+    "mergedBy": "orch",
+    "requests": [
+      {
+        "ordinal": 1
+      }
+    ]
+  },
+  "human": null,
+  "detached": null,
+  "lastError": null
+}
