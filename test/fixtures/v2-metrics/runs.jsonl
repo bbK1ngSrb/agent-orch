@@ -1,0 +1,4 @@
+{"ts": "2026-08-31T06:00:00.000Z", "branch": "pr/claude/x", "sid": "a-1", "verdict": "merged", "rounds": 1, "runId": "a-1", "until": "ready", "attempt": 0, "closes": null}
+{"ts": "2026-08-31T06:05:00.000Z", "branch": "pr/codex/y", "sid": "b-1", "verdict": "merged", "rounds": 2, "runId": "b-1", "until": "merged", "attempt": 1, "remedy": "ask", "closes": 529}
+{"ts": "2026-08-31T06:06:00.000Z", "branch": "pr/codex/peer", "sid": "peer-1", "verdict": "merge-deferred", "trigger": "integration-test", "reason": "post-merge-test-fail", "rounds": 1, "redrive": true, "closes": null, "runId": "b-1", "until": "merged", "attempt": 1}
+{"ts": "2026-08-31T06:10:00.000Z", "branch": "pr/claude/z", "sid": "c-1", "verdict": "escalated", "reason": "stalemate", "rounds": 3, "runId": "c-1", "until": "ready", "attempt": 2}
