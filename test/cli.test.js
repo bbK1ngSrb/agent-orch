@@ -7266,14 +7266,18 @@ test("#529: withRemedyTelemetry records which remedy produced the next cycle", a
   const calls = [];
   const remedies = withRemedyTelemetry(telemetry, {
     rebase: async (context) => { calls.push(["rebase", context.name]); return { cycle: {} }; },
-    ask: async () => { calls.push(["ask"]); return {}; },
+    // `ask` is the one remedy that stops for a person; it reports the wait on
+    // the record it hands back (design §16 humanWaitMs).
+    ask: async () => { calls.push(["ask"]); return { record: { human: { waitedMs: 4200 } } }; },
   });
 
   await remedies.rebase({ name: "rebase", failure: { class: "TEST_RED" }, record: { attempt: 1 } });
   assert.deepEqual([telemetry.remedy, telemetry.failureClass, telemetry.attempt], ["rebase", "TEST_RED", 1]);
+  assert.equal(telemetry.humanWaitMs, undefined, "no human was asked, so no wait to report");
   // A remedy that consumes no attempt must not invent one.
   await remedies.ask({ name: "ask", failure: { class: "REVIEW_STALEMATE" }, record: { attempt: 1 } });
   assert.deepEqual([telemetry.remedy, telemetry.failureClass, telemetry.attempt], ["ask", "REVIEW_STALEMATE", 1]);
+  assert.equal(telemetry.humanWaitMs, 4200);
   // The wrapper is transparent: the executor still receives its own context.
   assert.deepEqual(calls, [["rebase", "rebase"], ["ask"]]);
 });

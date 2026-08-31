@@ -1192,11 +1192,16 @@ export function realDeps({ closes = null, telemetry = null } = {}) {
 // choice on the way past. A plain free retry (no remedy) reruns the same
 // classified failure, so its stamp deliberately stays on the last remedy.
 export function withRemedyTelemetry(telemetry, remedies) {
-  return Object.fromEntries(Object.entries(remedies).map(([name, run]) => [name, (context) => {
+  return Object.fromEntries(Object.entries(remedies).map(([name, run]) => [name, async (context) => {
     telemetry.remedy = name;
     telemetry.failureClass = context?.failure?.class ?? null;
     if (context?.record?.attempt != null) telemetry.attempt = context.record.attempt;
-    return run(context);
+    const outcome = await run(context);
+    // §16 `humanWaitMs`: `ask` is the only remedy that stops for a person, and
+    // it measures the wait on the record it returns. Lifting it here is what
+    // puts it on the line the cycle it unblocked goes on to write.
+    if (outcome?.record?.human?.waitedMs != null) telemetry.humanWaitMs = outcome.record.human.waitedMs;
+    return outcome;
   }]));
 }
 

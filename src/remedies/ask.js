@@ -208,6 +208,11 @@ export async function askRemedy({ failure, record = {}, policy = {}, run, deps =
     return blocked(failure, error?.message || "could not post the GitHub question", record);
   }
 
+  // design §16 `humanWaitMs`: how long the run actually spent waiting on a
+  // person — from the question going up to an answer arriving or the window
+  // closing. Stamped only on the paths where a wait really elapsed, so a run
+  // that never asked has no field rather than a misleading zero.
+  const waited = (h) => ({ ...h, waitedMs: Math.max(0, nowMs(deps) - new Date(h.askedAt).getTime()) });
   const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   let interval = Math.max(1, Number(policy.pollSeconds || 30));
   for (;;) {
@@ -223,7 +228,7 @@ export async function askRemedy({ failure, record = {}, policy = {}, run, deps =
         id: reply.comment.id, user: reply.login, at: reply.comment.created_at || new Date(nowMs(deps)).toISOString(),
         command: reply.reply.command, text: redact(reply.reply.text || ""),
       };
-      human = { ...human, replies: [...human.replies, journal] };
+      human = waited({ ...human, replies: [...human.replies, journal] });
       if (reply.reply.command === "abandon") {
         return blocked(failure, "human requested abandon", { ...record, human }, "human-abandon");
       }
@@ -266,6 +271,7 @@ export async function askRemedy({ failure, record = {}, policy = {}, run, deps =
         // The timeout remains the authoritative outcome even if the optional
         // explanatory comment cannot be posted.
       }
+      human = waited(human);
       return timedOut(failure, runId, human, { ...record, human });
     }
     await sleep(interval * 1000);
