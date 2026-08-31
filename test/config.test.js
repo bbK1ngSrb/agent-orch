@@ -71,7 +71,7 @@ test("empty dir yields defaults", () => {
   const c = load(tmp());
   assert.deepEqual(c.agents, ["claude", "codex"]);
   assert.equal(c.roundCap, 3);
-  assert.equal(c.merge, "no-ff");
+  assert.equal(c.landing, "no-ff");
   assert.equal(c.automation.remedies, null);
   assert.equal(c.scope.maxLines, 0);
 });
@@ -103,7 +103,7 @@ test("v2 landing and automation aliases normalize to the runtime config", () => 
   ].join("\n"));
   const c = load(d);
   assert.equal(c.landing, "ff-only");
-  assert.equal(c.merge, "ff-only");
+  assert.equal(c.merge, "ff-only"); // pre-cutover runtime alias, still branched on by finalize.js/landing.js
   assert.deepEqual(c.main.conflictResolutionResolvers, [
     { agent: "claude", model: "opus", effort: "high" },
     { agent: "codex", model: null, effort: null },
@@ -111,11 +111,32 @@ test("v2 landing and automation aliases normalize to the runtime config", () => 
   assert.deepEqual(c.main.autoResolveConflictPaths, ["src/**"]);
 });
 
-test("--config-file canonical conflict resolvers beat orch.yml v2 aliases", () => {
+test("automation.conflictResolution sets the persistent-PR repair mode", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "automation:\n  conflictResolution: auto\n");
+  const c = load(d);
+  assert.equal(c.main.conflictResolution, "auto");
+  assert.equal(c.main.autoResolveConflicts, true);
+  const bad = tmp();
+  writeFileSync(join(bad, "orch.yml"), "automation:\n  conflictResolution: sometimes\n");
+  assert.throws(() => load(bad), (err) =>
+    err.message === "orch.yml: automation.conflictResolution must be manual, propose, or auto");
+});
+
+test("--config-file conflictResolution beats orch.yml automation.conflictResolution", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "automation:\n  conflictResolution: auto\n");
+  const override = join(d, "custom.yml");
+  writeFileSync(override, "automation:\n  conflictResolution: propose\n");
+  const c = load(d, override, { onWarning() {} });
+  assert.equal(c.main.conflictResolution, "propose");
+});
+
+test("--config-file conflictResolvers beats orch.yml automation.conflictResolvers", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "automation:\n  conflictResolvers: [claude]\n");
   const override = join(d, "custom.yml");
-  writeFileSync(override, "main:\n  conflictResolutionResolvers: [codex]\n");
+  writeFileSync(override, "automation:\n  conflictResolvers: [codex]\n");
   const c = load(d, override, { onWarning() {} });
   assert.deepEqual(c.main.conflictResolutionResolvers, [{ agent: "codex", model: null, effort: null }]);
 });
@@ -129,17 +150,10 @@ test("test and author values are validated as non-empty strings", () => {
   assert.throws(() => load(badAuthor), /author must be a non-empty string/);
 });
 
-test("removed config keys remain valid but report exact replacement warnings", () => {
+test("removed config keys are hard errors with exact replacement messages", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "merge: pr\nmain:\n  autoMerge: true\ngithub:\n  autoMergePr: true\n");
-  const warnings = [];
-  const c = load(d, undefined, { onWarning: (warning) => warnings.push(warning) });
-  assert.equal(c.merge, "pr");
-  assert.deepEqual(warnings, [
-    "orch.yml: 'merge' will be renamed to 'landing' in v0.5.0 (same values). Rename the key.",
-    "orch.yml: 'main.autoMerge' will be removed in v0.5.0; use --until merged for per-run merging.",
-    "orch.yml: 'github.autoMergePr' will be removed in v0.5.0; use --until merged for per-run merging.",
-  ]);
+  assert.throws(() => load(d), /'merge'.*landing/);
 });
 
 test("closed config schema rejects unknown keys but accepts inert v2 keys", () => {
@@ -155,97 +169,82 @@ test("closed config schema rejects unknown keys but accepts inert v2 keys", () =
   assert.doesNotThrow(() => load(valid, undefined, { onWarning() {} }));
 });
 
-test("configReport returns effective values, provenance, and warnings", () => {
+test("configReport returns effective values and removed-key problems", () => {
   const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "stageTimeout: 41\nmerge: no-ff\n");
+  writeFileSync(join(d, "orch.yml"), "stageTimeout: 41\nlanding: no-ff\n");
   const report = configReport(d);
   assert.equal(report.ok, true);
   assert.equal(report.config.gateTimeout, 41);
   assert.equal(report.sources.stageTimeout, "orch.yml");
   assert.equal(report.sources.gateTimeout, "orch.yml");
   assert.equal(report.sources.landing, "orch.yml");
-  assert.equal(report.sources.merge, "orch.yml");
-  assert.match(report.warnings[0], /'merge' will be renamed to 'landing'/);
+  assert.equal(report.config.merge, undefined);
+  assert.equal(report.config.main, undefined);
+  assert.deepEqual(report.problems, []);
 });
 
-test("configReport labels only leaves and keeps aliases on the same source", () => {
+test("configReport labels only canonical leaves", () => {
   const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "landing: pr\nmain:\n  autoMerge: true\n");
+  writeFileSync(join(d, "orch.yml"), "landing: pr\n");
   const report = configReport(d);
   assert.equal(report.sources.main, undefined);
-  assert.equal(report.sources["main.autoMerge"], "orch.yml");
   assert.equal(report.sources.landing, "orch.yml");
-  assert.equal(report.sources.merge, "orch.yml");
+  assert.equal(report.sources.merge, undefined);
 });
 
 test("configReport uses the .orch config path in warning provenance", () => {
   const d = tmp();
   mkdirSync(join(d, ".orch"), { recursive: true });
-  writeFileSync(join(d, ".orch", "orch.yml"), "main:\n  autoMerge: true\n");
+  writeFileSync(join(d, ".orch", "orch.yml"), "landing: pr\n");
   const report = configReport(d);
-  assert.equal(report.sources["main.autoMerge"], ".orch/orch.yml");
-  assert.match(report.warnings[0], /^\.orch\/orch\.yml:/);
+  assert.equal(report.sources.landing, ".orch/orch.yml");
 });
 
 test("configReport provenance follows override precedence across renamed keys", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "landing: ff-only\n");
   const override = join(d, "custom.yml");
-  writeFileSync(override, "merge: pr\n");
+  writeFileSync(override, "landing: pr\n");
   const report = configReport(d, override);
   assert.equal(report.config.landing, "pr");
   assert.equal(report.sources.landing, "--config-file");
-  assert.equal(report.sources.merge, "--config-file");
+  assert.equal(report.sources.merge, undefined);
 });
 
 test("configReport attributes normalized values to the source that supplied them", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), [
     "stageTimeout: 5",
-    "main:",
-    "  conflictResolution: auto",
     "automation:",
-    "  conflictResolvers: [claude, codex]",
-    "  conflictAutoPaths: [CHANGELOG.md]",
+      "  conflictResolvers: [claude, codex]",
+      "  conflictAutoPaths: [CHANGELOG.md]",
     "",
   ].join("\n"));
   const report = configReport(d);
   assert.equal(report.config.gateTimeout, 5);
-  assert.equal(report.config.main.autoResolveConflicts, true);
   assert.equal(report.sources.gateTimeout, "orch.yml");
-  assert.equal(report.sources["main.conflictResolution"], "orch.yml");
-  assert.equal(report.sources["main.autoResolveConflicts"], "orch.yml");
-  assert.equal(report.sources["main.conflictResolutionResolvers"], "orch.yml");
-  assert.equal(report.sources["main.autoResolveConflictPaths"], "orch.yml");
-
-  const alias = tmp();
-  writeFileSync(join(alias, "orch.yml"), "main:\n  autoResolveConflicts: true\n");
-  const aliasReport = configReport(alias);
-  assert.equal(aliasReport.config.main.conflictResolution, "auto");
-  assert.equal(aliasReport.sources["main.conflictResolution"], "orch.yml");
-  assert.equal(aliasReport.sources["main.autoResolveConflicts"], "orch.yml");
+  assert.equal(report.sources["automation.conflictResolvers"], "orch.yml");
+  assert.equal(report.sources["automation.conflictAutoPaths"], "orch.yml");
 });
 
 test("configReport matches loaded conflict resolvers across config layers", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "automation:\n  conflictResolvers: [claude]\n");
   const override = join(d, "custom.yml");
-  writeFileSync(override, "main:\n  conflictResolutionResolvers: [codex]\n");
+  writeFileSync(override, "automation:\n  conflictResolvers: [codex]\n");
   const effective = load(d, override, { onWarning() {} });
   const report = configReport(d, override);
-  assert.deepEqual(report.config.main.conflictResolutionResolvers, effective.main.conflictResolutionResolvers);
-  assert.equal(report.sources["main.conflictResolutionResolvers"], "--config-file");
+  assert.deepEqual(report.config.automation.conflictResolvers, effective.automation.conflictResolvers);
+  assert.equal(report.sources["automation.conflictResolvers"], "--config-file");
 });
 
-test("removed-key warnings name --config-file when that layer supplied the key", () => {
+test("removed-key problems name --config-file when that layer supplied the key", () => {
   const d = tmp();
   const override = join(d, "custom.yml");
   writeFileSync(override, "main:\n  autoMerge: true\n");
-  const warnings = [];
-  load(d, override, { onWarning: (warning) => warnings.push(warning) });
-  assert.deepEqual(warnings, [
-    "--config-file: 'main.autoMerge' will be removed in v0.5.0; use --until merged for per-run merging.",
-  ]);
+  const report = configReport(d, override);
+  assert.equal(report.ok, false);
+  assert.match(report.problems[0], /--config-file: 'main.autoMerge' was removed/);
 });
 
 test("stageTimeout of 0 disables the watchdog; negative/non-integer throws (#56)", () => {
@@ -259,9 +258,9 @@ test("stageTimeout of 0 disables the watchdog; negative/non-integer throws (#56)
 
 test("user orch.yml overrides and deep-merges scope", () => {
   const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "merge: no-ff\nscope:\n  maxLines: 100\n");
+  writeFileSync(join(d, "orch.yml"), "landing: no-ff\nscope:\n  maxLines: 100\n");
   const c = load(d);
-  assert.equal(c.merge, "no-ff");
+  assert.equal(c.landing, "no-ff");
   assert.equal(c.scope.maxLines, 100);
   assert.deepEqual(c.scope.ignore, ["*.lock", "dist/**", "*.snap"]); // default kept
 });
@@ -269,25 +268,25 @@ test("user orch.yml overrides and deep-merges scope", () => {
 test(".orch/orch.yml is read", () => {
   const d = tmp();
   mkdirSync(join(d, ".orch"));
-  writeFileSync(join(d, ".orch", "orch.yml"), "merge: no-ff\n");
-  assert.equal(load(d).merge, "no-ff");
+  writeFileSync(join(d, ".orch", "orch.yml"), "landing: no-ff\n");
+  assert.equal(load(d).landing, "no-ff");
 });
 
 test(".orch/orch.yml takes precedence over bare orch.yml", () => {
   const d = tmp();
   mkdirSync(join(d, ".orch"));
-  writeFileSync(join(d, "orch.yml"), "merge: no-ff\n");
-  writeFileSync(join(d, ".orch", "orch.yml"), "merge: ff-only\n");
-  assert.equal(load(d).merge, "ff-only");
+  writeFileSync(join(d, "orch.yml"), "landing: no-ff\n");
+  writeFileSync(join(d, ".orch", "orch.yml"), "landing: ff-only\n");
+  assert.equal(load(d).landing, "ff-only");
 });
 
 test("load() accepts an override path (--config-file) layered on top of orch.yml", () => {
   const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "merge: no-ff\nscope:\n  maxLines: 100\n");
+  writeFileSync(join(d, "orch.yml"), "landing: no-ff\nscope:\n  maxLines: 100\n");
   const override = join(d, "custom.yml");
-  writeFileSync(override, "merge: ff-only\nscope:\n  maxLines: 200\n");
+  writeFileSync(override, "landing: ff-only\nscope:\n  maxLines: 200\n");
   const c = load(d, override);
-  assert.equal(c.merge, "ff-only");
+  assert.equal(c.landing, "ff-only");
   assert.equal(c.scope.maxLines, 200);
   assert.deepEqual(c.scope.ignore, ["*.lock", "dist/**", "*.snap"]); // default kept
 });
@@ -304,16 +303,16 @@ test("load() throws when --config-file path does not exist", () => {
   assert.throws(() => load(d, join(d, "missing.yml")), /--config-file not found/);
 });
 
-test("invalid merge value throws", () => {
+test("invalid landing value throws", () => {
   const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "merge: rebase-please\n");
-  assert.throws(() => load(d), /merge must be/);
+  writeFileSync(join(d, "orch.yml"), "landing: rebase-please\n");
+  assert.throws(() => load(d), /landing must be/);
 });
 
-test("merge: pr is a valid opt-in for PR-gated merges", () => {
+test("merge is removed even when its value was valid before v0.5", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "merge: pr\n");
-  assert.equal(load(d).merge, "pr");
+  assert.throws(() => load(d), /'merge'.*landing/);
 });
 
 test("integrationBranch defaults to orch/integration; blank value throws", () => {
@@ -351,14 +350,10 @@ test("github.mergeMethod defaults to squash; invalid value throws", () => {
   assert.throws(() => load(d), /github.mergeMethod must be/);
 });
 
-test("github.autoMergePr defaults to false; non-boolean throws", () => {
-  assert.equal(load(tmp()).github.autoMergePr, false);
+test("github.autoMergePr is removed", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "github:\n  autoMergePr: true\n");
-  assert.equal(load(d).github.autoMergePr, true);
-  const bad = tmp();
-  writeFileSync(join(bad, "orch.yml"), "github:\n  autoMergePr: yes\n");
-  assert.throws(() => load(bad), /github.autoMergePr must be a boolean/);
+  assert.throws(() => load(d), /github\.autoMergePr.*removed/);
 });
 
 test("automation.mcpMayMerge defaults to false and validates booleans", () => {
@@ -389,36 +384,10 @@ test("automation.rotateModels defaults to empty and validates model ladders", ()
   assert.throws(() => load(unknown), /automation\.rotateModels\.not-an-adapter.*unknown adapter/);
 });
 
-test("main.autoMerge defaults to false; non-boolean throws", () => {
-  assert.equal(load(tmp()).main.autoMerge, false);
+test("main.autoMerge is removed", () => {
   const d = tmp();
   writeFileSync(join(d, "orch.yml"), "main:\n  autoMerge: true\n");
-  assert.equal(load(d).main.autoMerge, true);
-  const bad = tmp();
-  writeFileSync(join(bad, "orch.yml"), "main:\n  autoMerge: yes\n");
-  assert.throws(() => load(bad), /main.autoMerge must be a boolean/);
-});
-
-test("main.autoResolveConflicts defaults off and validates its scope", () => {
-  const defaults = load(tmp());
-  assert.equal(defaults.main.autoResolveConflicts, false);
-  assert.equal(defaults.main.conflictResolution, "manual");
-  assert.ok(defaults.main.autoResolveConflictPaths.includes("CHANGELOG.md"));
-
-  const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "main:\n  autoResolveConflicts: true\n  autoResolveConflictPaths: [CHANGELOG.md]\n");
-  const c = load(d);
-  assert.equal(c.main.autoResolveConflicts, true);
-  assert.equal(c.main.conflictResolution, "auto");
-  assert.deepEqual(c.main.autoResolveConflictPaths, ["CHANGELOG.md"]);
-
-  const badFlag = tmp();
-  writeFileSync(join(badFlag, "orch.yml"), "main:\n  autoResolveConflicts: yes\n");
-  assert.throws(() => load(badFlag), /main.autoResolveConflicts must be a boolean/);
-
-  const badPaths = tmp();
-  writeFileSync(join(badPaths, "orch.yml"), "main:\n  autoResolveConflictPaths: CHANGELOG.md\n");
-  assert.throws(() => load(badPaths), /main.autoResolveConflictPaths must be an array of strings/);
+  assert.throws(() => load(d), /main\.autoMerge.*removed/);
 });
 
 test("validate keeps its direct-call checks for normalized config objects", () => {
@@ -429,40 +398,42 @@ test("validate keeps its direct-call checks for normalized config objects", () =
   const badResolvers = load(tmp());
   badResolvers.main.conflictResolutionResolvers = [];
   assert.throws(() => validate(badResolvers), /main.conflictResolutionResolvers must be a non-empty list of role specs/);
+
+  const badMode = load(tmp());
+  badMode.main.conflictResolution = "sometimes";
+  assert.throws(() => validate(badMode), (err) =>
+    err.message === "orch.yml: automation.conflictResolution must be manual, propose, or auto");
+
+  const badPaths = load(tmp());
+  badPaths.main.autoResolveConflictPaths = "CHANGELOG.md";
+  assert.throws(() => validate(badPaths), /main.autoResolveConflictPaths must be an array of strings/);
 });
 
-test("main.conflictResolution overrides the deprecated boolean alias", () => {
+test("conflictResolution: propose requires a resolver-distinct reviewer (normalizeMainConfig)", () => {
   const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "main:\n  autoResolveConflicts: false\n  conflictResolution: propose\n  conflictResolutionResolvers: [claude opus high, codex gpt-5 xhigh]\n");
-  const c = load(d);
-  assert.equal(c.main.conflictResolution, "propose");
-  assert.equal(c.main.autoResolveConflicts, true);
-  assert.deepEqual(c.main.conflictResolutionResolvers, [
-    { agent: "claude", model: "opus", effort: "high" },
-    { agent: "codex", model: "gpt-5", effort: "xhigh" },
-  ]);
-
-  const badMode = tmp();
-  writeFileSync(join(badMode, "orch.yml"), "main:\n  conflictResolution: maybe\n");
-  assert.throws(() => load(badMode), /main.conflictResolution must be manual, propose, or auto/);
-
-  const badResolvers = tmp();
-  writeFileSync(join(badResolvers, "orch.yml"), "main:\n  conflictResolutionResolvers: []\n");
-  assert.throws(() => load(badResolvers), /main.conflictResolutionResolvers must be a non-empty list of role specs/);
+  writeFileSync(join(d, "orch.yml"), "agents: [claude]\nautomation:\n  conflictResolution: propose\n");
+  assert.throws(() => load(d), (err) =>
+    err.message === "orch.yml: automation.conflictResolution requires a conflict reviewer that differs from each resolver");
 });
 
-test("reviewer-backed conflict resolution requires a distinct reviewer at config load", () => {
-  const propose = tmp();
-  writeFileSync(join(propose, "orch.yml"), "agents: [claude]\nmain:\n  conflictResolution: propose\n  conflictResolutionResolvers: [claude]\n");
-  assert.throws(() => load(propose), /requires a conflict reviewer/);
+test("main conflict-resolution keys are removed", () => {
+  for (const key of ["autoResolveConflicts", "conflictResolution", "conflictResolutionResolvers", "autoResolveConflictPaths"]) {
+    const d = tmp();
+    writeFileSync(join(d, "orch.yml"), `main:\n  ${key}: ${key.endsWith("Paths") ? "[]" : key.endsWith("Resolvers") ? "[claude]" : key === "conflictResolution" ? "manual" : "true"}\n`);
+    assert.throws(() => load(d), new RegExp(`main\\.${key}.*removed`));
+  }
+});
 
-  const metadataAuto = tmp();
-  writeFileSync(join(metadataAuto, "orch.yml"), "agents: [claude]\nmain:\n  conflictResolution: auto\n  conflictResolutionResolvers: [claude]\n  autoResolveConflictPaths: [CHANGELOG.md]\n");
-  assert.equal(load(metadataAuto).main.conflictResolution, "auto");
+test("removed main.conflictResolution error names its automation.* replacement", () => {
+  const d = tmp();
+  writeFileSync(join(d, "orch.yml"), "main:\n  conflictResolution: manual\n");
+  assert.throws(() => load(d), /use 'automation\.conflictResolution'/);
+});
 
-  const broadAuto = tmp();
-  writeFileSync(join(broadAuto, "orch.yml"), "agents: [claude]\nmain:\n  conflictResolution: auto\n  conflictResolutionResolvers: [claude]\n  autoResolveConflictPaths: []\n");
-  assert.throws(() => load(broadAuto), /requires a conflict reviewer/);
+test("configReport shows automation.conflictResolution's true default (round-trippable)", () => {
+  const r = configReport(tmp());
+  assert.equal(r.config.automation.conflictResolution, "manual");
+  assert.equal(r.sources["automation.conflictResolution"], "default");
 });
 
 test("docs defaults present; off by default", () => {
@@ -617,7 +588,7 @@ test("security.ignore defaults to [] and deep-merges from orch.yml (#334)", () =
   writeFileSync(join(d, "orch.yml"), "security:\n  ignore:\n    - dist/**\n");
   const c = load(d);
   assert.deepEqual(c.security.ignore, ["dist/**"]);
-  assert.equal(c.merge, "no-ff"); // top-level defaults survive the deep-merge
+  assert.equal(c.landing, "no-ff"); // top-level defaults survive the deep-merge
 });
 
 test("security.ignore rejects non-list and empty-string globs (#334)", () => {
@@ -629,62 +600,10 @@ test("security.ignore rejects non-list and empty-string globs (#334)", () => {
   assert.throws(() => load(empty), /security\.ignore must be an array/);
 });
 
-// --- roundCap / reviseCap alias -------------------------------------------
-// `roundCap` counts total review rounds (the initial review is round one).
-// `reviseCap` is the old spelling: still honoured so published orch.yml files
-// keep working, but normalised onto roundCap with a deprecation warning.
-function captureWarnings(fn) {
-  const seen = [];
-  const original = console.warn;
-  console.warn = (...args) => seen.push(args.join(" "));
-  try { return { result: fn(), warnings: seen }; } finally { console.warn = original; }
-}
-
-test("deprecated reviseCap still sets roundCap, with a warning", () => {
-  const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "reviseCap: 7\n");
-  const { result: c, warnings } = captureWarnings(() => load(d));
-  assert.equal(c.roundCap, 7);
-  assert.equal(c.reviseCap, undefined); // normalised away: one source of truth
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /orch: orch\.yml uses deprecated reviseCap/);
-});
-
-test("both keys in one file: roundCap wins and the conflict is warned about", () => {
-  const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "roundCap: 4\nreviseCap: 9\n");
-  const { result: c, warnings } = captureWarnings(() => load(d));
-  assert.equal(c.roundCap, 4);
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /orch: orch\.yml sets both roundCap and reviseCap/);
-});
-
-test("--config-file reviseCap still overrides an orch.yml roundCap", () => {
-  const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "roundCap: 4\n");
-  const override = join(d, "custom.yml");
-  writeFileSync(override, "reviseCap: 2\n");
-  const { result: c, warnings } = captureWarnings(() => load(d, override));
-  assert.equal(c.roundCap, 2); // the layer the operator passed last wins, alias or not
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /orch: --config-file uses deprecated reviseCap/);
-});
-
-test("reviseCap warnings retain both config layer labels", () => {
-  const d = tmp();
-  writeFileSync(join(d, "orch.yml"), "reviseCap: 4\n");
-  const override = join(d, "custom.yml");
-  writeFileSync(override, "reviseCap: 2\n");
-  const { warnings } = captureWarnings(() => load(d, override));
-  assert.equal(warnings.length, 2);
-  assert.match(warnings[0], /orch: orch\.yml uses deprecated reviseCap/);
-  assert.match(warnings[1], /orch: --config-file uses deprecated reviseCap/);
-});
-
 test("a bad value is reported under the key the operator actually wrote", () => {
   const old = tmp();
   writeFileSync(join(old, "orch.yml"), "reviseCap: 0\n");
-  assert.throws(() => captureWarnings(() => load(old)), /reviseCap must be a positive integer/);
+  assert.throws(() => load(old), /reviseCap.*removed/);
   const now = tmp();
   writeFileSync(join(now, "orch.yml"), "roundCap: 0\n");
   assert.throws(() => load(now), /roundCap must be a positive integer/);

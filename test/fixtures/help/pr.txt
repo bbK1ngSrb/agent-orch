@@ -17,9 +17,7 @@ Options:
                           ready = repair the head until it is green and
                                   mergeable; never merge it.
                           merged = merge it once readiness is verified.
-                          (default: once)
-  --merge                 Alias for --until merged; refused next to a different
-                          --until.
+                          (default: ready)
   --reviewer <spec>       Reviewer seat as "<agent> [model] [effort]".
   --reviewers <a,b>       Comma-separated reviewer seats.
   --allow-large-scope     Sanction a deliberately large review slice.

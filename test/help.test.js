@@ -16,10 +16,10 @@
 // deviation, because P12a restructures the pages but deletes nothing (§2 and
 // §2.1 of the spec; deletions are #528's slice):
 //
-//   (a) a §2.1 "not yet landed" row — `--until` still defaults to `once`,
+//   (a) a §2.1 "not yet landed" row — `--until` now defaults to `ready`,
 //       `--max-attempts` does not exist, `config` still takes `--dry`;
-//   (b) a command or flag v0.5 removes that this slice keeps — the `review` and
-//       `update` pages, `agent build`, `pr --merge`, `task/issue --no-banner`;
+//   (b) a command or flag v0.5 removes that this slice keeps — the `update`
+//       page, `agent build`, `pr --merge`;
 //   (c) a wrap point. The spec's §4 blocks are hand-wrapped at widths that vary
 //       between sections (79 in §4.4, 76 in §4.10), so no single algorithmic
 //       width reproduces all of them. The renderer wraps every page at one
@@ -122,7 +122,7 @@ test("an example carrying shell redirection is refused, not silently accepted", 
 // and no page (there is nothing to show), and above all no crash.
 test("a usage error on an internal command exits 64 without crashing the error funnel", () => {
   for (const [argv, expected] of [
-    [["__update-check-child", "--merge"], /--merge is not valid with 'orch __update-check-child'/],
+    [["__update-check-child", "--link"], /--link is not valid with 'orch __update-check-child'/],
     [["__update-check-child", "--dry"], /--dry has no effect on 'orch __update-check-child'/],
   ]) {
     const result = spawnSync(process.execPath, ["bin/orch.js", ...argv], { cwd: root, encoding: "utf8" });

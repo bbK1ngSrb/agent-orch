@@ -74,7 +74,7 @@ function e2eCycleDeps() {
   };
 }
 
-async function runMainInRepo(repo, argv, deps = {}) {
+async function runMainInRepo(repo, argv, deps = {}, { injectUntilOnce = true } = {}) {
   const prev = cwd();
   const savedExitCode = process.exitCode;
   const logs = [];
@@ -83,7 +83,12 @@ async function runMainInRepo(repo, argv, deps = {}) {
   console.log = (...args) => logs.push(args.map(String).join(" "));
   try {
     process.exitCode = 0;
-    await main(argv, { preflight() {}, cycleDeps: e2eCycleDeps(), ...deps });
+    const command = argv[0];
+    // Existing e2e cases assert one-pass behavior. Keep that explicit while
+    // allowing dedicated tests to exercise the bare v0.5 ready default.
+    const testArgv = injectUntilOnce && ["task", "issue", "pr"].includes(command) && !argv.includes("--until")
+      ? [...argv, "--until", "once"] : argv;
+    await main(testArgv, { preflight() {}, cycleDeps: e2eCycleDeps(), ...deps });
     return logs;
   } finally {
     console.log = origLog;
@@ -95,7 +100,7 @@ async function runMainInRepo(repo, argv, deps = {}) {
 test("orch task end-to-end on a repo whose trunk is dev, not main", async () => {
   const repo = initRepoOn("dev");
   mkdirSync(join(repo, ".orch"), { recursive: true });
-  writeFileSync(join(repo, ".orch", "orch.yml"), "baseBranch: dev\nmerge: no-ff\ntest: \"true\"\n");
+  writeFileSync(join(repo, ".orch", "orch.yml"), "baseBranch: dev\nlanding: no-ff\ntest: \"true\"\n");
 
   const logs = await runMainInRepo(repo, ["task", "add a line to a.txt", "--no-tidy"]);
 
@@ -108,7 +113,7 @@ test("orch task end-to-end on a repo whose trunk is dev, not main", async () => 
 test("a cycle branches from orch/integration while it is ahead of main", async () => {
   const repo = initRepoOn("main");
   mkdirSync(join(repo, ".orch"), { recursive: true });
-  writeFileSync(join(repo, ".orch", "orch.yml"), "merge: no-ff\ntest: \"true\"\n");
+  writeFileSync(join(repo, ".orch", "orch.yml"), "landing: no-ff\ntest: \"true\"\n");
   // A commit that lives on integration only — the state an open integration PR
   // leaves behind, and exactly what a main-based cycle used to be blind to.
   git.git(["checkout", "-b", "orch/integration"], repo);
@@ -148,7 +153,7 @@ test("a cycle branches from orch/integration while it is ahead of main", async (
 test("--from salvages a branch while reviewing the slice against integration", async () => {
   const repo = initRepoOn("main");
   mkdirSync(join(repo, ".orch"), { recursive: true });
-  writeFileSync(join(repo, ".orch", "orch.yml"), "merge: no-ff\ntest: \"true\"\n");
+  writeFileSync(join(repo, ".orch", "orch.yml"), "landing: no-ff\ntest: \"true\"\n");
   git.git(["checkout", "-b", "orch/integration"], repo);
   writeFileSync(join(repo, "c.txt"), "already integrated\n");
   git.git(["add", "c.txt"], repo);

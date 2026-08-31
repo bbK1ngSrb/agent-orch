@@ -331,7 +331,7 @@ export function buildIssueComment(result, branch) {
       "next steps:",
       `- full reviewer disagreement (private, not posted here): .orch/reviews/${b}/DECISION.md`,
       `- per-round detail: .orch/reviews/${b}/round-N.md`,
-      `- once resolved: push a fix and \`orch review ${b}\` for a fresh audit, or open a PR manually`,
+      `- once resolved: push a fix and \`orch pr ${b} --until once\` for a fresh audit, or open a PR manually`,
     );
   }
   return lines.join("\n");
@@ -395,13 +395,13 @@ export async function runPr(opts, deps) {
         throw new Error(`orch pr #${pr.number}: could not read CI status before merging: ${e.message}`, { cause: e });
       }
       if (!green) {
-        log(`PR #${pr.number} is approved but its checks are not green — not merging; re-run \`orch pr ${pr.number} --merge\` once CI settles`);
+        log(`PR #${pr.number} is approved but its checks are not green — not merging; re-run \`orch pr ${pr.number} --until merged\` once CI settles`);
         return { ...result, mergeHold: "checks not green" };
       }
       const mergeResult = mergePrHeadBound(String(n), reviewedSha, cfg.github.mergeMethod, deps);
       if (mergeResult.result === "head-moved") {
         throw new Error(
-          `orch pr #${pr.number}: the PR head moved during review — re-run \`orch pr ${pr.number} --merge\` to audit the new head`,
+          `orch pr #${pr.number}: the PR head moved during review — re-run \`orch pr ${pr.number} --until merged\` to audit the new head`,
         );
       }
       if (mergeResult.result !== "merged") {

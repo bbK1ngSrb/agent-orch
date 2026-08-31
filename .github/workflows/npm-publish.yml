@@ -64,7 +64,7 @@ jobs:
         run: orch --version
       - name: check for updates (exercises the npm-spawn resolution path — #311/#313)
         shell: bash
-        run: orch update --check
+        run: orch upgrade --check
       - name: reinstall (update path)
         shell: bash
         run: npm install -g "./$TGZ"

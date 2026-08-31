@@ -46,6 +46,20 @@ test("README documents the `orch` CLI", () => {
   assert.match(readme, /orch agent add <name>/);
 });
 
+test("agent build docs describe the local-only branch, not a pull request", () => {
+  const readmeLine = readme.split("\n").find((line) => line.startsWith("- `orch agent add <name> [--build]`"));
+  assert.ok(readmeLine, "README is missing the agent add command documentation");
+  assert.doesNotMatch(readmeLine, /--pr\b/);
+  assert.doesNotMatch(readmeLine, /merge:\s*pr/i);
+
+  const start = manual.indexOf("### 2.8 `orch agent add <name> [--build]`");
+  const end = manual.indexOf("### 2.9", start);
+  assert.ok(start >= 0 && end > start, "manual is missing the agent add section");
+  const section = manual.slice(start, end);
+  assert.doesNotMatch(section, /--pr\b/);
+  assert.doesNotMatch(section, /merge:\s*pr/i);
+});
+
 test("the manual and README document `orch upgrade` and its override env vars (#461)", () => {
   // `orch upgrade`/`update` shipped with help text and tab-completion but no prose
   // in either long-form doc, so the only way to discover self-update was to run
@@ -117,13 +131,13 @@ test("docs describe integration/base reconciliation for diverged histories (#475
   assert.match(manual, /squash-merge that PR by hand[\s\S]{0,160}repairs the ancestry/);
 });
 
-test("docs explain that `orch pr --merge` pins the reviewed PR head (#421)", () => {
+test("docs explain that `orch pr --until merged` pins the reviewed PR head (#421)", () => {
   // runPr() sends the fetched branch SHA to GitHub's merge endpoint. If a
   // contributor updates the PR during review, GitHub returns 409 and orch asks
   // the operator to audit the new head instead of merging unseen code.
   for (const doc of [readme, manual]) {
     assert.match(doc, /merge request[\s\S]{0,100}pinned|pins[\s\S]{0,100}merge request/i);
-    assert.match(doc, /PR head[\s\S]{0,120}moves[\s\S]{0,160}re-run\s+`orch pr[^`]*--merge`/i);
+    assert.match(doc, /PR head[\s\S]{0,120}moves[\s\S]{0,160}re-run\s+`orch pr[^`]*--until merged`/i);
     assert.match(doc, /new head is audited|agents never saw/i);
   }
 });
@@ -139,7 +153,7 @@ test("docs distinguish local integration from remote merge verification (#445)",
   }
   // The remote ancestor check belongs to the separately pinned `orch pr --merge`
   // path, not to the local integration result.
-  assert.match(manual, /stronger remote verification described in §2\.7[\s\S]{0,180}`orch pr --merge`/);
+  assert.match(manual, /stronger remote verification described in §2\.7[\s\S]{0,180}`orch pr --until merged`/);
 });
 
 test("the manual names the REST merge endpoint `orch pr --merge` uses (#421)", () => {
@@ -179,10 +193,10 @@ test("docs document the dashboard --check-history flag", () => {
 test("the manual scopes --until modes to wired commands (#525)", () => {
   const bullet = manual.match(/^- \*\*`--until <mode>`\*\*[\s\S]*?(?=\n- \*\*)/m);
   assert.ok(bullet, "manual does not document the --until flag");
-  assert.match(bullet[0], /`once` is the default/);
-  assert.match(bullet[0], /`task`, `issue`, `review`, and `pr` support `ready`/);
-  assert.match(bullet[0], /`continue` currently accepts only `--until once`/);
-  assert.match(bullet[0], /On `pr`, `--merge` remains a compatibility\s+alias for `--until merged`/);
+  assert.match(bullet[0], /`ready` is the default/);
+  assert.match(bullet[0], /`task`, `issue`, and `pr` support all/);
+  assert.match(bullet[0], /`continue` inherits the recorded goal/);
+  assert.doesNotMatch(bullet[0], /--merge/);
   assert.doesNotMatch(bullet[0], /only `--until once` .* exists today/);
 });
 
@@ -353,19 +367,14 @@ test("roundCap docs describe total review rounds, not post-DISAGREE revisions on
   // counts the initial review. "author-revise rounds after a DISAGREE" would
   // under-count by one and mislead capacity planning (default 3 → 3 reviews /
   // 2 revisions, not 4 / 3). roundCap is the renamed key (#370); reviseCap is
-  // now only the deprecated alias, so the docs must describe roundCap while
-  // still telling readers reviseCap still works.
+  // now removed, so the docs must describe roundCap without advertising it.
   assert.doesNotMatch(manual, /author-revise rounds happen after a\s+`DISAGREE`/i);
   assert.match(manual, /initial review is round\s+one, so 3 buys 3 reviews and 2 revisions/i);
-  assert.match(manual, /old\s+name `reviseCap` still works/i);
+  assert.doesNotMatch(manual, /old\s+name `reviseCap` still works/i);
   for (const src of [exampleConfig, read("src/cli.js")]) {
     assert.match(src, /roundCap:.*max review rounds incl\. the first/);
     assert.doesNotMatch(src, /roundCap:.*max revise rounds before escalation/);
   }
-  assert.match(
-    read("src/config-wizard.js"),
-    /Maximum review rounds including the first/,
-  );
 });
 
 test("manual documents the empty-diff escalation before each review round", () => {
@@ -459,7 +468,7 @@ test("docs document that the version bump on merge is opt-in via release.autoBum
   }
   // the FAQ answer must point at the flag, not just at merge modes
   const faqStart = manual.indexOf('"Why didn\'t my version get bumped?"');
-  const faq = manual.slice(faqStart, manual.indexOf('"I ran `orch review`', faqStart));
+  const faq = manual.slice(faqStart);
   assert.match(faq, /release\.autoBump/);
 });
 
@@ -474,12 +483,12 @@ test("docs do not promise a fallback bump outside the local integration path", (
   assert.match(manual, /node scripts\/orch-release\.js/);
 });
 
-test("docs document main.autoMerge for the persistent integration PR", () => {
+test("docs document the removed main auto-merge key", () => {
   for (const doc of [readme, manual, exampleConfig]) {
-    assert.match(doc, /main\.autoMerge|autoMerge: false/);
+    assert.doesNotMatch(doc, /main\.autoMerge|autoMerge: false/);
   }
   assert.match(manual, /persistent `orch\/integration → main` PR/);
-  assert.match(readme, /direct merge of that\s+persistent PR/);
+  assert.match(readme, /--until merged/);
 });
 
 test("docs explain main.autoMerge is pinned to the verified integration tip (#422 part 4)", () => {
@@ -498,18 +507,19 @@ test("docs explain main.autoMerge is pinned to the verified integration tip (#42
   assert.match(manual, /sha=/);
 });
 
-test("docs explain merge: pr's one-shot direct fallback (#426)", () => {
+test("docs replace the removed per-cycle merge config spelling", () => {
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /landing: pr/);
+    assert.doesNotMatch(doc, /merge: pr/);
+    assert.doesNotMatch(doc, /github\.autoMergePr/);
+  }
   const sections = [
-    readme.slice(readme.indexOf("**`merge: pr` — per-cycle PR mode."), readme.indexOf("## Version bump on merge")),
-    manual.slice(manual.indexOf("### 3.3 `merge: pr`"), manual.indexOf("### 3.4 `merge-deferred`")),
+    readme.slice(readme.indexOf("**`landing: pr` — per-cycle PR mode."), readme.indexOf("## Version bump on merge")),
+    manual.slice(manual.indexOf("### 3.3 `landing: pr`"), manual.indexOf("### 3.4 `merge-deferred`")),
   ];
   for (const section of sections) {
-    assert.match(section, /one immediate REST\s+merge attempt/i);
-    assert.match(section, /numeric PR (?:id|number)/i);
     assert.match(section, /pinned to the\s+exact reviewed commit OID/i);
-    assert.match(section, /does not poll or\s+retry/i);
   }
-  assert.doesNotMatch(manual, /one-shot[^.]{0,100}has no such fallback/i);
 });
 
 test("docs explain headless self-merge needs bypass or a second reviewer identity", () => {
@@ -673,7 +683,11 @@ test("docs document the automatic redrive of overlap-deferred cycles (#350)", ()
   // finalize() returns on `cfg.merge === "pr"` before the lock, the overlap
   // guard, and deferred.record() — the redrive is local-integration-path only,
   // and §3.4 otherwise reads as "any merge mode".
-  for (const doc of [readme, manual]) assert.match(doc, /`merge: pr`[\s\S]{0,40}no shared/);
+  for (const doc of [readme, manual]) {
+    assert.match(doc, /`landing: pr`/);
+    assert.doesNotMatch(doc, /`merge: pr`/);
+  }
+  for (const doc of [readme, manual]) assert.match(doc, /`landing: pr`[\s\S]{0,40}no shared/);
   // The one-attempt cap is a source constant; docs must not promise retries.
   assert.equal(MAX_REDRIVE_ATTEMPTS, 1);
   for (const doc of [readme, manual]) assert.match(doc, /one automatic attempt/);
@@ -744,7 +758,7 @@ test("the landing page tracks recently shipped surfaces (#403/#335)", () => {
   assert.match(landing, /orch issue &lt;n&gt;/);
   assert.match(landing, /orch continue &lt;sid&gt;/);
   // The section shows a curated subset — printUsage (src/cli.js) dispatches
-  // `config`, `agent add/build`, `completion`, `upgrade`, `version` and `help`
+  // `config`, `agent add`, `completion`, `upgrade`, `version` and `help`
   // on top of these — so neither the eyebrow nor the heading may bill it as the
   // whole surface. A heading that states a count ("Eight commands") is a
   // factual claim about the CLI, and it was wrong; the section must instead

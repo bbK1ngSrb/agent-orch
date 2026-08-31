@@ -65,8 +65,8 @@ An agreed, green, security-clean cycle lands on `orch/integration`, and orch
 opens or updates the single persistent `orch/integration → main` PR. Merge that
 standing PR as the deliberate human checkpoint. Resolve escalations (security
 floor, conflict, or overlap) and re-run the change through orch, or handle them
-at the persistent PR; never force a per-change agent PR. `--merge` applies only
-to `orch pr`, so it does not make an Issue cycle merge to `main`.
+at the persistent PR; never force a per-change agent PR. `--until merged` applies
+only to `orch pr`, so it does not make an Issue cycle merge to `main`.
 
 This rule applies to agent-generated output. A trivial human/owner chore or
 documentation change may still use a direct owner PR.

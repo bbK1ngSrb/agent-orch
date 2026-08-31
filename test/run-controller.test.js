@@ -70,7 +70,7 @@ test("runUntil: only an explicit base landing may succeed without a PR", async (
   assert.equal(mergeCalls, 0);
 
   const base = await runUntil(policy, {}, baseDeps({
-    resolveLanded: () => ({ ...LAND, pr: null, landing: "base" }),
+    resolveLanded: () => ({ ...LAND, pr: null, landing: "base", remoteGate: false }),
   }));
   assert.equal(base.state, "MERGED");
   assert.equal(base.exit, 0);

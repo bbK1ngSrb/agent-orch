@@ -163,7 +163,7 @@ test("runPr fails closed when the PR head moves during review", async () => {
   const deps = makeDeps({ currentHeadSha: "moved456def" });
   await assert.rejects(
     () => runPr({ ...opts, merge: true }, deps),
-    /PR head moved during review.*re-run `orch pr 7 --merge`/,
+    /PR head moved during review.*re-run `orch pr 7 --until merged`/,
   );
   assert.ok(!deps._calls.gh.some((c) => c.args.includes("state,mergeCommit")));
 });
@@ -243,7 +243,7 @@ test("demote opens a PR when a remote and gh are present", async () => {
   const notify = { escalate: () => { throw new Error("should not escalate when PR opens"); } };
   const reviewedSha = "1111111111111111111111111111111111111111";
 
-  const reason = "trigger: overlap\nreview: AGREE after 1 round(s)\nnext action: rerun orch review";
+  const reason = "trigger: overlap\nreview: AGREE after 1 round(s)\nnext action: rerun `orch pr <branch> --until once`";
   const r = await demote({ repo: "/r", orchDir: "/r/.orch", branch: "pr/claude/x-1", reviewedSha, reason }, { gh, git, notify });
   assert.equal(r.prUrl, "https://github.com/o/r/pull/7");
   assert.deepEqual(calls.find((c) => c[0] === "git" && c[1] === "push"),
@@ -253,7 +253,7 @@ test("demote opens a PR when a remote and gh are present", async () => {
   const body = args[args.indexOf("--body") + 1];
   assert.match(body, /Merge deferred by agent-orch/);
   assert.match(body, /trigger: overlap/);
-  assert.match(body, /next action: rerun orch review/);
+  assert.match(body, /next action: rerun `orch pr <branch> --until once`/);
   assert.match(body, /Plain `gh pr merge` can be refused by its bypass-blind precheck/);
   assert.match(body, /gh api -X PUT repos\/\{owner\}\/\{repo\}\/pulls\/<PR-number>\/merge -f merge_method=squash/);
   const edit = calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit");

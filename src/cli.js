@@ -5,7 +5,6 @@ import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { gateTimeoutMs, load, configPath, configReport, parseRoleSpec, parseRoleSpecs } from "./config.js";
-import { runConfigWizard } from "./config-wizard.js";
 import { runCycle } from "./engine.js";
 import { EXIT_CODES } from "./exit-codes.js";
 import {
@@ -49,7 +48,7 @@ import { redact, publicSummary } from "./redact.js";
 import { render as renderDashboard, snapshot as dashboardSnapshot } from "./dashboard.js";
 import { FALLBACK_BIN_DIRS, resolveAgentBin } from "./agent-bin.js";
 import { BASH_COMPLETION, installCompletion } from "./completion.js";
-import { visWidth, paint, C, box, colorEnabled } from "./tui/theme.js";
+import { paint, C, colorEnabled } from "./tui/theme.js";
 import { run as runTui } from "./tui/loop.js";
 import { maybeNotifyUpdate, runUpdateCheckChild } from "./update-check.js";
 import { runUpgrade } from "./upgrade.js";
@@ -58,8 +57,6 @@ import { setProcessSignalCleanup } from "./adapters/cli-adapter.js";
 
 export { slugify };
 export { resolveAgentBin };
-export { visWidth };
-
 const GH_AUTH_RETRY_DELAY_MS = 100;
 const CLI_ROLE_OVERRIDES = Symbol("cliRoleOverrides");
 // A reviewer-only CLI override keeps a YAML author pool rotating, but its
@@ -112,7 +109,7 @@ export function spawnDocsTask(prompt, deps = { spawn }, orchDir) {
     const env = { ...process.env };
     delete env.ORCH_DETACHED;
     delete env.ORCH_DETACH_LOG;
-    deps.spawn(process.execPath, [process.argv[1], "task", tagged],
+    deps.spawn(process.execPath, [process.argv[1], "task", tagged, "--until", "once"],
       { detached: true, stdio, env }).unref();
   } finally {
     if (fd !== undefined) (deps.closeSync || closeSync)(fd);
@@ -141,7 +138,7 @@ function cleanStreakSuffix(orchDir, dry) {
   return `; clean unattended cycles: ${notify.kpi(orchDir).cleanUnattendedCycles}`;
 }
 
-const STATUS_COLOR = { merged: C.ok, escalated: C.fail, "merge-deferred": C.fail, pr: C.warn, demoted: C.warn };
+const STATUS_COLOR = { merged: C.ok, escalated: C.fail, blocked: C.fail, error: C.fail, "wait-timeout": C.fail, "merge-deferred": C.fail, pr: C.warn, demoted: C.warn };
 
 // Maps today's single-cycle result to the run record's outcome/exit (design
 // §5.2/§6). "stopped-at-cap" rather than "blocked": until the run-controller
@@ -154,10 +151,17 @@ function outcomeForResult(result) {
 // One rule, and it reads off the outcome the same run persists: a run whose
 // outcome is "stopped-at-cap" escalated, everything else reached its goal.
 // `merge-deferred` lands on ESCALATED through outcomeForResult, which is what
-// its own STOPPED_AT_CAP state already says. An approved `orch pr` review is
-// successful, but leaves exactly one human gesture: merging the PR.
-function exitForResult(result, command = null) {
-  if (command === "pr" && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
+// its own STOPPED_AT_CAP state already says. An approved numeric `orch pr`
+// review is successful, but leaves exactly one human gesture: merging the PR.
+// Branch-target audits are the replacement for the old `orch review` command
+// and remain a clean exit when they finish after one audit pass.
+// The gate reads how the target was *typed* (`requestedByNumber`), never the
+// resolved `number`: for a branch target that number comes from a best-effort
+// `gh pr list` lookup that `resolvePrTarget` catches and ignores, so gating on
+// it would make a machine-readable exit code depend on whether GitHub happened
+// to be reachable.
+function exitForResult(result, command = null, prTarget = null) {
+  if (command === "pr" && prTarget?.requestedByNumber && result.status === "approved") return EXIT_CODES.ACTION_REQUIRED;
   return outcomeForResult(result) === "stopped-at-cap" ? EXIT_CODES.ESCALATED : EXIT_CODES.OK;
 }
 // Design §6 terminal states: only the outcomes a single implicit cycle can
@@ -272,7 +276,6 @@ agents:
 # ===================================================================
 test: auto                              # "auto" detects the test command, or set one, e.g. "pytest -q"
 roundCap: 3                             # max review rounds incl. the first, before escalation (positive int); default: 3
-                                        # (reviseCap is the deprecated alias for this key)
 stageTimeout: 25                        # wall-clock cap in minutes for each agent stage;
                                         # 0 disables; default: 25
 gateTimeout: 25                        # wall-clock cap in minutes for the test gate; defaults to stageTimeout
@@ -280,7 +283,7 @@ concurrency: 4                          # max concurrent cycles per repo dir; ov
 baseBranch: main                        # trunk orch reads/diffs/PRs against (e.g. dev if main is deploy-only); default: main
 integrationBranch: orch/integration     # local merge target for no-ff/ff-only; default: orch/integration
 landing: no-ff                          # into integrationBranch: ff-only | no-ff | pr; default: no-ff
-                                        # (pr = skip local integration, open a per-cycle branch PR; was merge:)
+                                        # (pr = skip local integration, open a per-cycle branch PR)
 
 
 # ===================================================================
@@ -323,7 +326,7 @@ scope:
 
 
 # ===================================================================
-# GitHub PR bridge (orch pr <n>; merge: pr; integrationBranch -> baseBranch)
+# GitHub PR bridge (orch pr <n>; landing: pr; integrationBranch -> baseBranch)
 # ===================================================================
 github:
   mergeMethod: squash                   # gh pr merge strategy for non-integration PRs; default: squash
@@ -340,6 +343,7 @@ automation:
   remedies: null                        # ordered subset of rebase, rotate, reauthor, ask; default: fallback order
   pollSeconds: 30                       # readiness poll interval; default: 30
   ciWaitMinutes: 30                     # readiness wait window; default: 30
+  conflictResolution: manual            # manual | propose | auto; how the persistent PR's conflict repair may act
   conflictResolvers: null               # role specs for integration conflict repair
   conflictAutoPaths:
     - CHANGELOG.md
@@ -349,8 +353,8 @@ automation:
   detachLogDir: .orch/logs              # detached-run log directory; default: .orch/logs
 
 
-# main.autoMerge, github.autoMergePr, main.conflictResolution, and the
-# other v0.4 main.* spellings remain supported with warnings until P12.
+# The v0.4 \`merge\`, \`reviseCap\`, \`main.*\`, and legacy GitHub auto-merge-PR
+# keys are rejected: orch.yml uses the replacement named in the error.
 
 
 # ===================================================================
@@ -393,17 +397,15 @@ bypass path, GitHub review is bypassed; orch's author -> cross-audit ->
 test-gate is the governing review.
 
 ## Commands
-- \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge
-- \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\`
-- \`orch review <branch>\`           audit an existing branch; --until ready opts into landing
-- \`orch continue <sid>\`            resume an interrupted/stalled cycle from its checkpoint
-- \`orch pr <number|branch> [--merge|--until once|ready|merged]\` review (and optionally merge) a PR
+- \`orch task "<change>" [roles]\`   author → cross-audit → test-gate → merge (bare means \`--until ready\`)
+- \`orch issue <number> [roles]\`    fetch a GitHub issue as a work order, run the cycle, \`Closes #<n>\` (bare means \`--until ready\`)
+- \`orch continue <sid>\`            resume an interrupted/stalled cycle; inherit its recorded goal
+- \`orch pr <number|branch> [--until once|ready|merged]\` review (and optionally merge) a PR
 - \`orch release "<entry>"\`         run the version bump + CHANGELOG write by hand; only needed
                                     in repos that set \`release.autoBump: true\` (default \`false\`)
 - \`orch mcp\`                       serve orch's cycle commands over MCP on stdio, for an AI
                                     client to drive; \`orch_pr\` merge needs automation.mcpMayMerge
-- \`orch agent add <name>\`          add an agent to the rotation pool
-- \`orch agent build <name> [--pr]\` scaffold a missing adapter via orch's own pipeline
+- \`orch agent add <name> [--build]\` add an agent to the rotation pool, or scaffold a missing adapter
 - \`orch dashboard [--json] [--limit <n>] [--check-history]\`
                                     live cycle status, log tail, run history, metrics
                                     (\`--limit\` caps history rows; \`--check-history\`
@@ -417,10 +419,14 @@ set \`cheap.paths\` to auto-route matching \`--file\`/\`orch issue\` work orders
 \`--config-file <path.yml>\` layers a custom YAML file on top of \`orch.yml\` for one run.
 Config and every option live in \`.orch/orch.yml\`.
 
+Bare \`task\`, \`issue\`, and \`pr\` runs pursue \`ready\`; use \`--until once\` for
+one pass. \`continue\` inherits the recorded goal and accepts only an explicit
+\`--until once\` override.
+
 The MCP \`orch_pr\` tool accepts a PR number or branch and \`once\`, \`ready\`, or
 \`merged\`. The \`merged\` mode is refused unless \`automation.mcpMayMerge: true\`
 is explicitly enabled in this repo; when enabled, it uses the same head-bound,
-CI-checked merge path as \`orch pr --merge\`.
+CI-checked merge path as \`orch pr --until merged\`.
 
 A \`task\`/\`issue\` whose work order text names a protected path (orch's own
 guardrail denylist in \`src/intake/allowlist.js\`) is refused at intake, before any
@@ -497,7 +503,14 @@ export function parse(argv) {
     parsed = parseArgs({ args: argv, allowPositionals: true, options: PARSE_OPTIONS, tokens: true });
   } catch (e) {
     const unknown = /Unknown option '([^']+)'/.exec(e.message);
-    if (unknown) throw usageError(`unknown option ${unknown[1]} (run 'orch help' for usage)`);
+    if (unknown) {
+      // --merge and --pr were removed in v0.5 (P12d) in favour of exact
+      // replacements; name them so the old spelling still teaches the new one.
+      const replacement = unknown[1] === "--merge" ? " — use '--until merged'"
+        : unknown[1] === "--pr" ? " — agent add --build stays local-only now; open a PR by hand if you want one"
+        : "";
+      throw usageError(`unknown option ${unknown[1]}${replacement} (run 'orch help' for usage)`);
+    }
     throw usageError(e.message.split(". To ")[0]);
   }
   const { values, positionals, tokens } = parsed;
@@ -1271,6 +1284,7 @@ export function resolvePrTarget({ target, repo, orchDir, baseBranch = "main", un
   return {
     ...pr,
     number: pr?.number ? Number(pr.number) : null,
+    requestedByNumber: /^\d+$/.test(value),
     url: pr?.url || null,
     branch,
     remoteBranch: pr?.headRefName || branch,
@@ -1288,6 +1302,15 @@ export function resolvePrTarget({ target, repo, orchDir, baseBranch = "main", un
 export function resolveLanded(cycle, run, cfg, ghDeps, repo) {
   const baseBranch = cfg.baseBranch || "main";
   const pathsFor = (branch) => cycle.paths ?? git.changedFiles(repo, branch, baseBranch);
+  const integrationBranch = cfg.integrationBranch || "orch/integration";
+  const landedBranch = run.prTarget?.number
+    ? (run.prTarget.branch || run.branch)
+    : (cycle.status === "pr" || cycle.status === "approved" ? run.branch : integrationBranch);
+  const isBaseLanding = integrationBranch === baseBranch
+    && !run.prTarget?.number && cycle.status !== "pr" && cycle.status !== "approved";
+  if (!isBaseLanding && (!hasRemote(repo, git.git) || !ghAvailable(ghDeps?.gh))) {
+    return { pr: null, expectedHead: git.git(["rev-parse", landedBranch], repo), landing: "local", branch: landedBranch, paths: pathsFor(landedBranch), remoteGate: false };
+  }
   if (run.prTarget?.number) {
     const target = run.prTarget;
     const branch = target.branch || run.branch;
@@ -1303,7 +1326,6 @@ export function resolveLanded(cycle, run, cfg, ghDeps, repo) {
     const pr = findPrByHeadSafe(run.branch, baseBranch, ghDeps, cycle.prUrl);
     return { pr, expectedHead: git.git(["rev-parse", run.branch], repo), landing: "pr", branch: run.branch, paths: pathsFor(run.branch) };
   }
-  const integrationBranch = cfg.integrationBranch || "orch/integration";
   if (integrationBranch === baseBranch) {
     return { pr: null, expectedHead: git.git(["rev-parse", integrationBranch], repo), landing: "base", branch: integrationBranch, paths: pathsFor(integrationBranch) };
   }
@@ -1386,6 +1408,19 @@ function mergeVerifiedEvent(runId, controller, cfg) {
 }
 
 function outputResult(result, controller) {
+  const terminalStatus = {
+    BLOCKED: "blocked",
+    STOPPED_AT_CAP: "escalated",
+    WAIT_TIMEOUT: "wait-timeout",
+    ERROR: "error",
+  }[controller?.state];
+  if (terminalStatus && controller?.state !== "MERGED"
+      && ["merged", "approved", "pr"].includes(result?.status)) {
+    const failure = controller.failure || {};
+    const detail = failure.summary || failure.reason || controller.blockedReason || result?.reason || controller.outcome;
+    const reason = controller.blockedReason ? `${controller.blockedReason}: ${detail}` : detail;
+    return { ...result, status: terminalStatus, reason };
+  }
   if (controller?.state !== "MERGED" || result?.status === "merged") return result;
   return { ...result, status: "merged", reason: "head-bound merge verified", mergeCommit: controller.mergeCommit };
 }
@@ -1410,42 +1445,6 @@ function persistRotationState({ orchDir, sid, runId, run, nextRun, previousAutho
     stores.resume.record(orchDir, run.task, nextRun.author, { branch: nextRun.branch, sid });
   }
   stores.checkpoint.clear(orchDir, sid);
-}
-
-function roleLabel(spec) {
-  return formatRole(spec, " · ");
-}
-
-function uniqueLabels(specs) {
-  return [...new Set(specs.map(roleLabel))].join(", ");
-}
-
-
-export function runBanner(cfg, runs, opts = {}) {
-  const { color = false, columns } = opts;
-  const lbl = (t) => ({ code: C.label, text: t.padEnd(8) });
-  const rows = [
-    [lbl("agents"), { code: C.agents, text: cfg.agents.join(", ") }],
-  ];
-  for (const r of runs) {
-    const seg = [lbl("author"), { code: C.author, text: roleLabel(r.author) }];
-    if (r.resume) seg.push({ code: C.flag, text: "  ⏳ resume pending" });
-    rows.push(seg);
-  }
-  const reviewers = uniqueLabels(runs.flatMap((r) => r.reviewers || []));
-  rows.push([lbl("review"), { code: C.review, text: reviewers || "-" }]);
-  rows.push([
-    lbl("test"), { code: 0, text: cfg.test },
-    { code: C.label, text: "   merge  " }, { code: 0, text: cfg.merge },
-  ]);
-  return box(` agent-orch ${DISPLAY_VERSION} `, rows, { color, columns });
-}
-
-export function maybePrintRunBanner(cfg, runs, flags, stdout = process.stdout) {
-  if (flags["no-banner"] || !stdout.isTTY) return false;
-  const color = colorEnabled(stdout);
-  stdout.write(`${runBanner(cfg, runs, { color, columns: stdout.columns })}\n`);
-  return true;
 }
 
 function hasEscalationDecision(orchDir, branch, sid, roundCap) {
@@ -1839,15 +1838,15 @@ export function formatPriorStagedBranches(closes, entries) {
     out.push(`  ${e.branch} — ${e.verdict || "unknown"}${reason ? `: ${reason}` : ""}${hedge}`);
     // NOT `orch continue <sid>`: that needs a checkpoint/inflight record, and
     // both are cleared once a cycle returns — so it cannot resume a run that
-    // already reached a terminal status. `orch review` re-audits the branch.
-    out.push(`    inspect: git log ${e.branch}   re-audit: orch review ${e.branch}`);
+    // already reached a terminal status. `orch pr` re-audits the branch.
+    out.push(`    inspect: git log ${e.branch}   re-audit: orch pr ${e.branch} --until once`);
   }
   out.push("  this run stages a NEW branch. A re-run rotates the author and regenerates the diff, so a security-floor");
   out.push("  escalation repeats only if the fresh diff touches the same protected paths.");
   return out.join("\n");
 }
 
-// `orch agent build <name>` self-bootstraps a missing adapter: a work order
+// `orch agent add <name> --build` self-bootstraps a missing adapter: a work order
 // describing the gap is fed through orch's own author→audit→test pipeline,
 // following the src/adapters/claude.js / codex.js pattern.
 function buildAdapterWorkOrder(name) {
@@ -1878,7 +1877,7 @@ function reportAgentBuildResult(name, result, { withReason = false } = {}) {
   const detail = withReason
     ? ` (${result.reason}) on ${result.branch}`
     : result.branch ? ` on ${result.branch}` : "";
-  console.log(`orch agent build ${name}: ${result.status}${detail}${costSuffix(result)}`);
+  console.log(`orch agent add ${name} --build: ${result.status}${detail}${costSuffix(result)}`);
   if (result.status === "approved") {
     console.log(`orch: review the diff, then \`orch agent add ${name}\` once it's merged into main`);
   }
@@ -1889,10 +1888,8 @@ function reportAgentBuildResult(name, result, { withReason = false } = {}) {
 
 // Runs the build as a normal task-mode cycle, isolated in its own worktree/branch
 // (the same mechanism every `orch task` uses) since orch would be modifying its
-// own source while running. Default: `noMerge` — the result sits on its local
-// branch only (no PR, main untouched) so it can be reviewed before it's trusted.
-// `--pr` instead forces `cfg.merge: "pr"` for this run only (never persisted to
-// orch.yml), so an AGREE+green result opens a PR through the full gate instead.
+// own source while running. The result always sits on its local branch only
+// (no PR, main untouched) so it can be reviewed before it's trusted.
 export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} }) {
   try { adapters.get(name); return { status: "already-registered" }; } catch { /* proceed to build */ }
   const resolved = (deps.resolveAgentBin || resolveAgentBin)(name);
@@ -1901,8 +1898,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
   const wo = buildAdapterWorkOrder(name);
   const task = wo.title;
   const authorPrompt = buildAuthorPrompt(wo);
-  let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags);
-  if (flags.pr) cfg = withConfigUpdate(cfg, { merge: "pr" });
+  const cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags);
   const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
   const preflightFn = deps.preflight || preflight;
   if (!dry) preflightFn(cfg, orchDir);
@@ -1937,7 +1933,7 @@ export async function buildAgent(name, { repo, orchDir, flags = {}, deps = {} })
     mode: "task", task, authorPrompt, workOrder: wo, allowLargeScope: Boolean(flags["allow-large-scope"]),
     branch, sid, resume: isResume, authorName, author: authorSpec,
     reviewerName: reviewerList[0].agent, reviewerNames: reviewerList.map((s) => s.agent),
-    reviewers: reviewerList, noMerge: !flags.pr, excludedAgents: exclusions,
+    reviewers: reviewerList, noMerge: true, excludedAgents: exclusions,
     cfg, orchDir, repo, worktree: join(orchDir, "wt", branch.replace(/\//g, "_")),
   };
 
@@ -2013,7 +2009,12 @@ export async function main(argv, deps = {}) {
   // "__update-check-child" is an internal re-exec target (see below), never
   // typed by a user, so it is exempt rather than added to the schema.
   if (command && command !== "__update-check-child" && !COMMANDS[command]) {
-    throw usageError(`unknown command: ${command} (run 'orch help' for usage)`, { showUsage: true });
+    const replacement = command === "review" && rest[0]
+      ? ` — use 'orch pr ${rest[0]} --until once'`
+      : command === "update"
+      ? " — use 'orch upgrade'"
+      : "";
+    throw usageError(`unknown command: ${command}${replacement} (run 'orch help' for usage)`, { showUsage: true });
   }
 
   // --help/--version describe the tool rather than run it, so they route
@@ -2052,7 +2053,7 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "upgrade" || command === "update") {
+  if (command === "upgrade") {
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
     await runUpgrade({ flags: { ...flags, dry }, stdout: deps.stdout || process.stdout, ...deps.upgradeDeps });
     return;
@@ -2068,7 +2069,7 @@ export async function main(argv, deps = {}) {
 
   // Config inspection is deliberately before update checks, app auth, and
   // preflight: it is a local, non-interactive diagnostic command.
-  if (command === "config" && (flags.check || flags.json)) {
+  if (command === "config") {
     const report = configReport(repo, flags["config-file"]);
     printConfigReport(report, Boolean(flags.json));
     process.exitCode = report.ok ? EXIT_CODES.OK : EXIT_CODES.ERROR;
@@ -2143,35 +2144,7 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "config") {
-    // Without --check/--json, retain the interactive wizard until the P12
-    // cutover. ORCH_DRYRUN=1 still plans that write without opening a TTY.
-    if (dryRun) {
-      console.log(`orch (dry): would run the interactive config wizard and write ${flags["config-file"] || join(orchDir, "orch.yml")}`);
-      return;
-    }
-    await runConfigWizard({
-      repo,
-      configFile: flags["config-file"],
-      stdin: deps.stdin || process.stdin,
-      stdout: deps.stdout || process.stdout,
-      inputStart: deps.inputStart,
-    });
-    return;
-  }
-
   if (command === "agent") {
-    // validatePositionals (schema.js) already guarantees rest[0] is "add" or
-    // "build" and rest[1] (the name) is present before main() gets here.
-    if (rest[0] === "build") {
-      const name = rest[1];
-      const buildFn = deps.buildAgent || buildAgent;
-      const result = await buildFn(name, { repo, orchDir, flags, deps });
-      if (result.status === "already-registered") { console.log(`orch: ${name} already registered`); return; }
-      reportAgentBuildResult(name, result, { withReason: true });
-      return;
-    }
-
     // `orch agent add <name>` appends a known agent to the `agents:` rotation
     // pool in orch.yml, preserving the file's comments. "Known" means orch's
     // adapter code has it (adapters.get succeeds) — that is a different
@@ -2179,7 +2152,7 @@ export async function main(argv, deps = {}) {
     // `agents.includes(name)` check below answers. An unregistered name (no
     // adapter code yet) offers to build it — non-interactively via --build,
     // otherwise via the confirm prompt — and building stops there, exactly
-    // like `agent build`: it scaffolds the adapter, it does not also add it
+    // like `agent add --build`: it scaffolds the adapter, it does not also add it
     // (the printed tip says to re-run `agent add` once it's merged). Once the
     // adapter code exists, --build has nothing left to do, so it falls
     // straight through to the add — it must not be read as "build instead of
@@ -2207,7 +2180,7 @@ export async function main(argv, deps = {}) {
       return;
     }
     // Known adapter: there is nothing left to build. validatePositionals
-    // (schema.js) already refused --pr/the role overrides before main() got
+    // (schema.js) already refused the role overrides before main() got
     // here — they only mean something for a build cycle this path never
     // runs. --build itself stays legal (it just means "skip the confirm
     // prompt", which a known adapter never reaches anyway).
@@ -2241,15 +2214,14 @@ export async function main(argv, deps = {}) {
     return;
   }
 
-  if (command === "task" || command === "review" || command === "issue" || command === "pr") {
+  if (command === "task" || command === "issue" || command === "pr") {
     // D2: reviewer-only is meaningful for task/issue too ("rotate author, force this
     // reviewer"), matching review/continue/pr and the printUsage example.
     let cfg = applyRoleOverrides(load(repo, flags["config-file"]), flags, { allowReviewerOnly: true });
     const dry = Boolean(flags.dry) || process.env.ORCH_DRYRUN === "1";
-    // design §4/§6 (P5): the run controller only drives ready/merged — `once`
-    // (the default) is today's single implicit cycle, byte-for-byte unchanged
-    // below. schema.js already refuses --json without --until ready|merged.
-    const until = flags.until || (command === "pr" && flags.merge ? "merged" : "once");
+    // design §4/§6 (P5): the run controller drives the default `ready` goal;
+    // `once` remains available for an explicit single audit pass.
+    const until = flags.until || "ready";
     const jsonMode = Boolean(flags.json);
     const emit = (event) => { if (jsonMode) console.log(JSON.stringify(event)); };
     if (command === "pr" && dry) {
@@ -2320,7 +2292,7 @@ export async function main(argv, deps = {}) {
       };
     } else {
       reviewBranch = rest[0];
-      if (!reviewBranch) throw usageError(command === "pr" ? "usage: orch pr <number|branch>" : "usage: orch review <branch>");
+      if (!reviewBranch) throw usageError("usage: orch pr <number|branch>");
     }
 
     // §3c intake scan (#394): a task whose text names a protected path almost
@@ -2478,7 +2450,7 @@ export async function main(argv, deps = {}) {
       task = null;
       const sid = newSid();
       runs = [{
-        mode, task, until, noMerge: command === "pr" || (command === "review" && until === "once"), prTarget,
+        mode, task, until, noMerge: command === "pr", prTarget,
         allowLargeScope: Boolean(flags["allow-large-scope"]), branch, sid, authorName, author: { agent: authorName, model: null, effort: null },
         reviewerName: reviewers[0].agent, reviewerNames: reviewers.map((s) => s.agent),
         reviewers,
@@ -2486,7 +2458,6 @@ export async function main(argv, deps = {}) {
       }];
     }
 
-    if (!jsonMode) maybePrintRunBanner(cfg, runs, flags, deps.stdout);
     if (!dry && runs.some((run) => run.resume)) notify.resetKpi(orchDir);
 
     const results = [];
@@ -2552,7 +2523,7 @@ export async function main(argv, deps = {}) {
         if (!dry) {
           const attempt = priorRecord ? priorRecord.attempt + 1 : 0;
           let outcome = outcomeForResult(result);
-          let exit = exitForResult(result, command);
+          let exit = exitForResult(result, command, run.prTarget);
           let state = STATE_FOR_OUTCOME[outcome];
           // "merged" landed on the standing integration→main PR; "pr"
           // (merge: pr mode) and "merge-deferred" (demote) each open a
@@ -2563,7 +2534,7 @@ export async function main(argv, deps = {}) {
           const cycleBranches = [run.branch];
           // design §6/§9 (P5): once the local cycle lands, `ready`/`merged`
           // also wait on the remote standing PR before this run is done —
-          // `once` (bare/default) stops here, unchanged from before P5.
+          // explicit `once` stops here, preserving the one-pass escape hatch.
           if (until !== "once") {
             const record = {
               attempt,
@@ -2759,7 +2730,7 @@ export async function main(argv, deps = {}) {
           finalResult = outputResult(cycleResults[cycleResults.length - 1], controller);
           results[results.length - 1] = finalResult;
           const resultExit = !controller || controller.outcome === "reached"
-            ? exitForResult(finalResult, command) : EXIT_CODES.OK;
+            ? exitForResult(finalResult, command, activeRun.prTarget || run.prTarget) : EXIT_CODES.OK;
           if ((EXIT_CODE_PRIORITY[resultExit] || 0) > (EXIT_CODE_PRIORITY[exit] || 0)) exit = resultExit;
           if (resultExit !== EXIT_CODES.OK) raiseExitCode(resultExit);
           if (finalResult.prUrl && !controller?.land) {
@@ -2826,7 +2797,7 @@ export async function main(argv, deps = {}) {
           // `--dry` writes no run record and (design §4) never polls readiness —
           // still emit run.end under --json so the event stream isn't silently
           // truncated after run.start.
-          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result, command), usage: result.usage || {}, dry: true });
+          emit({ event: "run.end", runId: run.sid, outcome: outcomeForResult(result), exit: exitForResult(result, command, run.prTarget), usage: result.usage || {}, dry: true });
         }
         if (!jsonMode) console.log(summaryLine(finalResult, activeRun.branch, dry, cleanStreakSuffix(orchDir, dry), colorEnabled(process.stdout), run.closes));
         if (finalResult.status === "merged" && run.mode === "task") {
@@ -2890,7 +2861,7 @@ export async function main(argv, deps = {}) {
       const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
       const runStats = results.flatMap((r) => r.runStats || []);
       await finishFn(
-        { repo, orchDir, task, merged: mergedBranches, runIds: mergedRunIds, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls },
+        { repo, orchDir, task, merged: mergedBranches, runIds: mergedRunIds, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls, banner: !process.exitCode },
         { git, io, notify },
       );
     }
@@ -3043,7 +3014,17 @@ export async function main(argv, deps = {}) {
     const allowLargeScope = Boolean(flags["allow-large-scope"]);
     const isReviewResume = priorRun?.command === "review";
     const isPrResume = priorRun?.command === "pr";
-    const prTarget = priorRun?.prTarget || null;
+    // A record written before `requestedByNumber` existed (or by an older
+    // orch) has no such field, and its `number` may have come from the
+    // best-effort branch lookup — so fall back to how the run was actually
+    // invoked, which the record preserves verbatim in `argv`.
+    const prTarget = priorRun?.prTarget
+      ? {
+        ...priorRun.prTarget,
+        requestedByNumber: priorRun.prTarget.requestedByNumber
+          ?? /^\d+$/.test(String(priorRun.argv?.[1] ?? "")),
+      }
+      : null;
     const until = flags.until || priorRun?.policy?.until || "once";
     const run = {
       // Older completed-author checkpoints carry no task, so retain the branch
@@ -3310,9 +3291,9 @@ export async function main(argv, deps = {}) {
         controller.cycleRoles = cycleRoles;
       }
       const outcome = controller?.outcome || outcomeForResult(result);
-      let exit = controller?.exit ?? exitForResult(result, run.prTarget ? "pr" : command);
+      let exit = controller?.exit ?? exitForResult(result, run.prTarget ? "pr" : command, run.prTarget);
       const resultExit = !controller || controller.outcome === "reached"
-        ? exitForResult(finalResult, run.prTarget ? "pr" : command) : EXIT_CODES.OK;
+        ? exitForResult(finalResult, run.prTarget ? "pr" : command, run.prTarget) : EXIT_CODES.OK;
       if ((EXIT_CODE_PRIORITY[resultExit] || 0) > (EXIT_CODE_PRIORITY[exit] || 0)) exit = resultExit;
       if (controller) raiseExitCode(exit);
       if (!dry) {
@@ -3385,7 +3366,7 @@ export async function main(argv, deps = {}) {
         const finishFn = deps.finishRun || finishRun;
         const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
         await finishFn(
-          { repo, orchDir, task: run.task, merged: [activeRun.branch], runIds: [runId], interactive: Boolean(process.stdin.isTTY), runStats: finalResult.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: finalResult.prUrl ? [finalResult.prUrl] : [] },
+          { repo, orchDir, task: run.task, merged: [activeRun.branch], runIds: [runId], interactive: Boolean(process.stdin.isTTY), runStats: finalResult.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: finalResult.prUrl ? [finalResult.prUrl] : [], banner: !process.exitCode },
           { git, io, notify },
         );
       }

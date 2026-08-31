@@ -8,7 +8,7 @@ import { chdir, cwd } from "node:process";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, maybePrintRunBanner, runBanner, visWidth, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, ghShell, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
+import { slugify, nextAuthor, parse, main, preflight, resolveAgentBin, maybeSpawnDocs, spawnDocsTask, applyRoleOverrides, applyCheapOverride, linkOrchDoc, realDeps, buildAgent, summaryLine, appendAgentToBlockList, priorStagedBranches, formatPriorStagedBranches, registerWithConcurrencyCap, raiseExitCode, mergeForRun, resolvePrTarget, resolveLanded, preparePrRepairRun, ghShell, COMMAND_FLAGS, PARSE_OPTIONS } from "../src/cli.js";
 import { existsSync } from "node:fs";
 import * as inflight from "../src/inflight.js";
 import * as adapters from "../src/adapters/index.js";
@@ -70,13 +70,14 @@ function mockSpawn() {
   return { spawn, calls };
 }
 
-test("maybeSpawnDocs spawns once when merged + autoUpdate + !docsOnly", () => {
+test("maybeSpawnDocs spawns one-shot docs task when merged + autoUpdate + !docsOnly", () => {
   const m = mockSpawn();
   const ok = maybeSpawnDocs({ status: "merged", docsOnly: false }, docsCfg, { spawn: m.spawn });
   assert.equal(ok, true);
   assert.equal(m.calls.length, 1);
-  const argv = m.calls[0][1]; // [scriptPath, "task", prompt]
+  const argv = m.calls[0][1]; // [scriptPath, "task", prompt, "--until", "once"]
   assert.equal(argv[1], "task");
+  assert.deepEqual(argv.slice(3), ["--until", "once"]);
   assert.match(argv[2], /update docs$/); // ends with the configured prompt
   assert.match(argv[2], /^auto-docs [0-9a-z]+ /); // leads with a unique stamp
 });
@@ -237,7 +238,7 @@ test("--detach child registers a live run visible to dashboard JSON", async () =
   chdir(repo);
   console.log = (...args) => parentLogs.push(args.map(String).join(" "));
   try {
-    const event = await main(["review", "main", "--detach"], {
+    const event = await main(["pr", "main", "--until", "once", "--detach"], {
       script,
       spawn: (...args) => {
         childProcess = spawn(...args);
@@ -391,23 +392,21 @@ test("SIGTERM marks a detached run interrupted and releases its lock", { skip: p
 });
 
 test("--config-file layers a custom yml onto orch.yml for the run (F: config override)", async () => {
-  const d = mkdtempSync(join(tmpdir(), "orch-cfgfile-"));
+  const d = initGitRepo("orch-cfgfile-");
   const override = join(d, "custom.yml");
-  writeFileSync(override, "merge: ff-only\n");
-  const prev = cwd();
-  chdir(d);
-  let out = "";
-  try {
-    process.exitCode = 0;
-    await main(["task", "hello world", "--dry", "--config-file", override], {
-      stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
-    });
-  } finally {
-    chdir(prev);
-    process.exitCode = 0;
-  }
-  const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(plain, /merge\s+ff-only/); // orch.yml default is no-ff; --config-file overrode it
+  writeFileSync(override, "landing: ff-only\n");
+  const seen = [];
+  await runMainInRepo(d, ["task", "hello world", "--no-tidy", "--config-file", override], {
+    cycleDeps: {
+      ...fakeCycleDeps(),
+      finalize: async (ctx) => {
+        seen.push(ctx.cfg.merge);
+        return { status: "merged", reason: "test", sha: "abc" };
+      },
+    },
+    maybeNotifyUpdate: () => Promise.resolve(),
+  });
+  assert.deepEqual(seen, ["ff-only"]); // the task run received the --config-file override
 });
 
 test("slugify produces a branch-safe slug", () => {
@@ -440,7 +439,7 @@ test("--dry that escalates still writes its brief under .orch (#471 wording)", a
   chdir(d);
   try {
     process.exitCode = 0;
-    await main(["task", "hello world", "--dry", "--config-file", override, "--no-banner"], {
+    await main(["task", "hello world", "--dry", "--until", "once", "--config-file", override], {
       stdout: { write() {} },
       dryNoTestGate: true,
     });
@@ -568,20 +567,9 @@ test("--dry skips the GitHub App auth mint", async () => {
   }
 });
 
-test("main prints startup banner for task runs on TTY", async () => {
+test("main prints no startup banner for task runs on TTY", async () => {
   let out = "";
   await runMainCapture(["task", "hello world", "--dry"], {
-    stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
-  });
-  const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(plain, /agent-orch v\d+\.\d+\.\d+/);
-  assert.match(plain, /author\s+claude/);
-  assert.match(plain, /review\s+codex/);
-  assert.match(plain, /test\s+auto/);
-  assert.match(plain, /merge\s+no-ff/);
-
-  out = "";
-  await runMainCapture(["task", "hello world", "--dry", "--no-banner"], {
     stdout: { isTTY: true, write: (chunk) => { out += chunk; } },
   });
   assert.equal(out, "");
@@ -607,9 +595,11 @@ test("parse captures --config-file flag", () => {
   assert.equal(p.flags["config-file"], "custom.yml");
 });
 
-test("parse captures --no-banner flag", () => {
-  const p = parse(["task", "do x", "--no-banner"]);
-  assert.equal(p.flags["no-banner"], true);
+test("removed --no-banner option exits 64", () => {
+  const result = spawnSync(process.execPath, [new URL("../bin/orch.js", import.meta.url).pathname, "task", "do x", "--no-banner"], { encoding: "utf8" });
+  assert.equal(result.status, 64, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /unknown option --no-banner/);
 });
 
 test("parse captures dashboard --check-history flag", () => {
@@ -645,7 +635,7 @@ test("orch upgrade --check routes through the self-update runner", async () => {
 
 test("orch upgrade --dry reaches the runner and installs nothing", async () => {
   // --dry is consumed by runUpgrade, so the per-command flag guard must allow it
-  // on upgrade/update; a missing table entry would reject a working invocation.
+  // on upgrade; a missing table entry would reject a working invocation.
   let out = "";
   const calls = [];
   const deps = {
@@ -662,20 +652,14 @@ test("orch upgrade --dry reaches the runner and installs nothing", async () => {
   await main(["upgrade", "--dry"], deps);
   assert.deepEqual(calls, [["npm", "view", "@bbk1ng/agent-orch", "version"]]);
   assert.match(out, /would run `npm install -g @bbk1ng\/agent-orch@latest`/);
-
-  out = "";
-  calls.length = 0;
-  await main(["update", "--dry"], deps);
-  assert.deepEqual(calls, [["npm", "view", "@bbk1ng/agent-orch", "version"]]);
-  assert.match(out, /would run/);
 });
 
 // ORCH_DRYRUN=1 is the env-var equivalent of --dry every other write command
 // honors (see the `dryRun` computation in main()). `upgrade` used to check
 // only `flags.dry`, so ORCH_DRYRUN=1 alone still ran `npm install -g` for
-// real; `config` used to skip the check entirely and always launch the
-// interactive wizard, since --dry isn't even a legal flag on it.
-test("ORCH_DRYRUN=1 is honored by upgrade and config, not just --dry", async () => {
+// real. `config` is read-only now (no wizard, no --dry), so ORCH_DRYRUN=1
+// has nothing to gate there — it must not stop the report from printing.
+test("ORCH_DRYRUN=1 is honored by upgrade, and config ignores it (read-only)", async () => {
   const prev = process.env.ORCH_DRYRUN;
   process.env.ORCH_DRYRUN = "1";
   try {
@@ -693,12 +677,6 @@ test("ORCH_DRYRUN=1 is honored by upgrade and config, not just --dry", async () 
     });
     assert.match(out, /would run `npm install -g @bbk1ng\/agent-orch@latest`/);
 
-    // `config`'s dry-run guard is what stops this from launching the real,
-    // interactive wizard — if it ever regresses, runConfigWizard would run
-    // against process.cwd() for real, which must never be the developer's
-    // actual checkout. A temp dir makes a guard regression merely fail loud
-    // (ENOENT / a hanging prompt in CI) instead of writing the real repo's
-    // own .orch/orch.yml.
     const d = mkdtempSync(join(tmpdir(), "orch-dryrun-config-"));
     const prevCwd = cwd();
     chdir(d);
@@ -706,15 +684,12 @@ test("ORCH_DRYRUN=1 is honored by upgrade and config, not just --dry", async () 
     const prevLog = console.log;
     console.log = (chunk = "") => { logged += `${chunk}\n`; };
     try {
-      await main(["config"], {
-        preflight() {},
-        inputStart: () => assert.fail("config wizard ran despite ORCH_DRYRUN=1"),
-      });
+      await main(["config"], { preflight() {} });
     } finally {
       console.log = prevLog;
       chdir(prevCwd);
     }
-    assert.match(logged, /orch \(dry\): would run the interactive config wizard/);
+    assert.match(logged, /orch config: ok/);
   } finally {
     if (prev === undefined) delete process.env.ORCH_DRYRUN;
     else process.env.ORCH_DRYRUN = prev;
@@ -771,23 +746,13 @@ test("orch task rejects a whitespace-only task text", async () => {
   );
 });
 
-// `config` mutates (runConfigWizard writes orch.yml), so --dry belongs on it
-// like every other write command — it used to be rejected as "not valid with
-// 'orch config'" even though cli.js already had a dry handler for it.
-test("orch config --dry prints the plan and never runs the wizard", async () => {
-  let logged = "";
-  const prevLog = console.log;
-  console.log = (chunk = "") => { logged += `${chunk}\n`; };
-  try {
-    await main(["config", "--dry"], {
-      preflight() {},
-      stdin: {}, stdout: {},
-      inputStart: () => assert.fail("config wizard ran despite --dry"),
-    });
-  } finally {
-    console.log = prevLog;
-  }
-  assert.match(logged, /orch \(dry\): would run the interactive config wizard/);
+// `config` is read-only (it prints/validates orch.yml, never writes it), so
+// --dry is refused on it like every other read-only command.
+test("orch config --dry is refused: config changes nothing to plan", async () => {
+  await assert.rejects(
+    () => main(["config", "--dry"], { preflight() {} }),
+    (e) => e.exit === 64 && /--dry has no effect on 'orch config' — it changes nothing/.test(e.message),
+  );
 });
 
 test("help documents upgrade command and check flag", async () => {
@@ -799,122 +764,11 @@ test("help documents upgrade command and check flag", async () => {
   } finally {
     console.log = prevLog;
   }
-  assert.match(out, /upgrade, update/);
+  assert.match(out, /upgrade/);
   assert.match(out, /Options \(valid on every command\):/);
   assert.doesNotMatch(out, /\n\s+--check/);
   const upgrade = await runMainCapture(["upgrade", "--help"]);
   assert.match(upgrade.join("\n"), /--check\s+Report the latest version; install nothing\./);
-});
-
-const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
-
-test("runBanner shows version, agents, per-agent model+effort, test, merge", () => {
-  const cfg = { agents: ["claude", "codex"], test: "npm test", merge: "ff-only" };
-  const banner = stripAnsi(runBanner(cfg, [{
-    author: { agent: "claude", model: "opus", effort: "high" },
-    reviewers: [{ agent: "codex", model: "gpt-5", effort: null }],
-  }]));
-  assert.match(banner, /agent-orch v\d+\.\d+\.\d+/);
-  assert.match(banner, /claude, codex/);            // agents row
-  assert.match(banner, /claude.*opus.*high/);       // author with model + effort
-  assert.match(banner, /codex.*gpt-5/);             // reviewer with model
-  assert.match(banner, /npm test/);
-  assert.match(banner, /ff-only/);
-});
-
-test("runBanner lists each author run and deduplicates reviewers", () => {
-  const cfg = { agents: ["claude", "codex"], test: "auto", merge: "no-ff" };
-  const banner = stripAnsi(runBanner(cfg, [
-    {
-      author: { agent: "claude", model: "opus" },
-      reviewers: [{ agent: "codex", model: "gpt-5" }],
-    },
-    {
-      author: { agent: "codex", model: "gpt-5", effort: "medium" },
-      reviewers: [{ agent: "codex", model: "gpt-5" }, { agent: "claude", model: "opus" }],
-    },
-  ]));
-  const lines = banner.split("\n");
-  const authorLines = lines.filter((l) => /\bauthor\b/.test(l));
-  assert.equal(authorLines.length, 2);
-  assert.match(authorLines[0], /claude.*opus/);
-  assert.match(authorLines[1], /codex.*gpt-5.*medium/);
-
-  const reviewLine = lines.find((l) => /\breview\b/.test(l));
-  assert.ok(reviewLine);
-  assert.equal((reviewLine.match(/codex/g) || []).length, 1);
-  assert.equal((reviewLine.match(/claude/g) || []).length, 1);
-});
-
-test("runBanner shows the resume marker only when a run resumes", () => {
-  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
-  const author = { agent: "claude", model: "opus", effort: "high" };
-  const reviewers = [{ agent: "codex" }];
-  const resuming = stripAnsi(runBanner(cfg, [{ author, reviewers, resume: true }]));
-  const fresh = stripAnsi(runBanner(cfg, [{ author, reviewers, resume: false }]));
-  assert.match(resuming, /resume/);
-  assert.doesNotMatch(fresh, /resume/);
-});
-
-test("runBanner emits ANSI color only when color is on", () => {
-  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
-  const runs = [{ author: { agent: "claude" }, reviewers: [{ agent: "codex" }] }];
-  assert.match(runBanner(cfg, runs, { color: true }), /\x1b\[/);
-  assert.doesNotMatch(runBanner(cfg, runs, { color: false }), /\x1b\[/);
-});
-
-test("runBanner rows stay display-width aligned even with wide glyphs", () => {
-  // U+23F3 (⏳) renders 2 columns; .length-based padding would misalign the
-  // resume row's right border. visWidth must keep every line the same width.
-  const cfg = { agents: ["claude", "codex"], test: "auto", merge: "no-ff" };
-  const lines = runBanner(cfg, [{
-    author: { agent: "claude", model: "opus", effort: "high" },
-    reviewers: [{ agent: "codex", model: "gpt-5" }],
-    resume: true,
-  }]).split("\n");
-  const widths = new Set(lines.map((l) => visWidth(l)));
-  assert.equal(widths.size, 1, `lines misaligned: ${[...widths].join(",")}`);
-});
-
-test("runBanner clamps responsive width and never throws on tiny terminals", () => {
-  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
-  const runs = [{ author: { agent: "claude", model: "opus" }, reviewers: [{ agent: "codex" }] }];
-  const wide = runBanner(cfg, runs, { columns: 400 }).split("\n");
-  assert.ok(visWidth(wide[0]) <= 100, `width not capped: ${visWidth(wide[0])}`);
-  const tiny = runBanner(cfg, runs, { columns: 10 }).split("\n");
-  assert.equal(new Set(tiny.map(visWidth)).size, 1); // still aligned
-});
-
-test("run banner prints only on TTY and respects --no-banner", () => {
-  const cfg = { agents: ["claude"], test: "auto", merge: "no-ff" };
-  const runs = [{ author: { agent: "claude" }, reviewers: [{ agent: "codex" }] }];
-  let out = "";
-  const tty = { isTTY: true, write: (chunk) => { out += chunk; } };
-  assert.equal(maybePrintRunBanner(cfg, runs, {}, tty), true);
-  assert.match(stripAnsi(out), /agent-orch v\d+\.\d+\.\d+/);
-
-  out = "";
-  assert.equal(maybePrintRunBanner(cfg, runs, { "no-banner": true }, tty), false);
-  assert.equal(out, "");
-
-  const notTty = { isTTY: false, write: (chunk) => { out += chunk; } };
-  assert.equal(maybePrintRunBanner(cfg, runs, {}, notTty), false);
-  assert.equal(out, "");
-});
-
-test("runBanner colors the agents row when color is on", () => {
-  const cfg = { agents: ["claude", "codex"], test: "npm test", merge: "no-ff" };
-  const runs = [{ author: "claude", reviewers: ["codex"] }];
-  const out = runBanner(cfg, runs, { color: true, columns: 80 });
-  assert.match(out, /\x1b\[38;5;214mclaude, codex\x1b\[0m/);
-});
-
-test("runBanner emits no ANSI codes when color is off", () => {
-  const cfg = { agents: ["claude"], test: "npm test", merge: "no-ff" };
-  const runs = [{ author: "claude", reviewers: [] }];
-  const out = runBanner(cfg, runs, { color: false, columns: 80 });
-  assert.doesNotMatch(out, /\x1b\[/);
-  assert.match(out, /agent-orch/);
 });
 
 const WORK_ORDER = JSON.stringify({
@@ -1288,6 +1142,126 @@ test("#136: orch task with no remote configured never calls gh, even if gh is in
   await runMainInRepo(repo, ["task", "some task", "--no-tidy"], { githubDeps: () => ({ gh, git: gitDep.git }) });
 });
 
+function latestRunRecord(repo) {
+  const files = readdirSync(join(repo, ".orch", "run-records"));
+  return JSON.parse(readFileSync(join(repo, ".orch", "run-records", files[files.length - 1]), "utf8"));
+}
+
+function unreachablePrGh(calls, command) {
+  return (args) => {
+    calls.push(args);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (command === "issue" && args[0] === "issue" && args[1] === "view") {
+      return JSON.stringify({ number: 52, title: "remote readiness", body: "run the requested change", state: "OPEN" });
+    }
+    if (args[0] === "pr" && args[1] === "list") throw new Error("gh: remote unavailable");
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+}
+
+for (const command of ["task", "issue", "pr"]) {
+  test(`bare ${command} reaches READY without an origin remote`, async () => {
+    const savedExitCode = process.exitCode;
+    const repo = initGitRepo(`orch-bare-${command}-local-`);
+    const calls = [];
+    const gh = command === "issue" ? unreachablePrGh(calls, command) : () => { throw new Error("gh should not be called without origin"); };
+    if (command !== "pr") gitDep.git(["branch", "orch/integration"], repo);
+    if (command === "pr") gitDep.git(["branch", "feature/local"], repo);
+    const argv = command === "task" ? [command, "local-only", "--no-tidy"]
+      : command === "issue" ? [command, "52", "--no-tidy"]
+        : [command, "feature/local"];
+    try {
+      const logs = await runMainInRepo(repo, argv, {
+        githubDeps: () => ({ gh, git: gitDep.git }),
+        maybeNotifyUpdate: async () => {},
+      }, { injectUntilOnce: false });
+      const record = latestRunRecord(repo);
+      assert.equal(record.policy.until, "ready");
+      assert.equal(record.state, "READY");
+      assert.equal(record.exit, 0);
+      assert.equal(calls.filter((args) => args[0] === "pr").length, 0,
+        "a local-only run must not query the PR bridge");
+    } finally {
+      process.exitCode = savedExitCode;
+    }
+  });
+
+  test(`bare ${command} is BLOCKED with a reason when origin exists but PR lookup is unavailable`, async () => {
+    const savedExitCode = process.exitCode;
+    const repo = initGitRepo(`orch-bare-${command}-remote-`);
+    addOriginWithPeer(repo);
+    if (command !== "pr") gitDep.git(["branch", "orch/integration"], repo);
+    if (command === "pr") gitDep.git(["branch", "feature/remote"], repo);
+    const calls = [];
+    const gh = unreachablePrGh(calls, command);
+    const argv = command === "task" ? [command, "remote-only", "--no-tidy"]
+      : command === "issue" ? [command, "52", "--no-tidy"]
+        : [command, "feature/remote"];
+    try {
+      const logs = await runMainInRepo(repo, argv, {
+        githubDeps: () => ({ gh, git: gitDep.git }),
+        maybeNotifyUpdate: async () => {},
+        sleep: async () => {},
+      }, { injectUntilOnce: false });
+      const record = latestRunRecord(repo);
+      assert.equal(record.policy.until, "ready");
+      assert.equal(record.state, "BLOCKED");
+      assert.equal(record.exit, 6);
+      assert.ok(calls.some((args) => args[0] === "pr" && args[1] === "list"));
+      assert.match(logs.join("\n"), /blocked \([^)]*:/, "human output must explain the blocked reason");
+      assert.doesNotMatch(logs.join("\n"), /merged|All done/);
+    } finally {
+      process.exitCode = savedExitCode;
+    }
+  });
+}
+
+test("a remote without gh keeps a ready task local-only", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-bare-no-gh-");
+  addOriginWithPeer(repo);
+  gitDep.git(["branch", "orch/integration"], repo);
+  writeFileSync(join(repo, "orch.yml"), "automation:\n  remedies: []\n");
+  const gh = () => { throw new Error("gh CLI not found"); };
+  let finishCalls = 0;
+  try {
+    const logs = await runMainInRepo(repo, ["task", "local-only"], {
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      finishRun: async () => { finishCalls += 1; },
+      sleep: async () => {},
+    }, { injectUntilOnce: false });
+    const record = latestRunRecord(repo);
+    assert.equal(record.state, "READY");
+    assert.equal(record.exit, 0);
+    assert.equal(finishCalls, 1, "a local landing must still reach post-run cleanup");
+    assert.match(logs.join("\n"), /merged/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("--until merged without a remote is blocked and never claims completion", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-merged-no-remote-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  const finishCalls = [];
+  try {
+    const logs = await runMainInRepo(repo, ["task", "local-only", "--until", "merged"], {
+      githubDeps: () => ({ gh: () => { throw new Error("gh must not be called"); }, git: gitDep.git }),
+      finishRun: async () => { finishCalls.push(true); },
+    }, { injectUntilOnce: false });
+    const record = latestRunRecord(repo);
+    assert.equal(record.state, "BLOCKED");
+    assert.equal(record.exit, 6);
+    assert.equal(process.exitCode, 6);
+    assert.equal(finishCalls.length, 0);
+    assert.doesNotMatch(logs.join("\n"), /All done/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 // P5 acceptance (docs/cli-v2-implementation-plan.md P5): `--until ready --json`
 // waits on the standing integration→base PR after landing and reports the
 // outcome as the last stdout line; bare `orch task` (tested above) is untouched.
@@ -1301,6 +1275,39 @@ function readinessGh(prView) {
     throw new Error(`unexpected gh call: ${args.join(" ")}`);
   };
 }
+
+test("bare orch task runs the ready loop by default", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-bare-ready-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const calls = [];
+  const realGh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  const gh = (args) => { calls.push(args); return realGh(args); };
+  const prev = cwd();
+  const logs = [];
+  const origLog = console.log;
+  chdir(repo);
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    await main(["task", "bare default"], {
+      preflight() {},
+      cycleDeps: fakeCycleDeps(),
+      githubDeps: () => ({ gh, git: gitDep.git }),
+    });
+    assert.ok(calls.some((args) => args[0] === "pr" && args[1] === "view"),
+      "a bare task must poll readiness instead of stopping after one cycle");
+    assert.match(logs.join("\n"), /bare default/);
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+    process.exitCode = savedExitCode;
+  }
+});
 
 test("orch task --until ready --json exits 0 on a green standing PR", async () => {
   const savedExitCode = process.exitCode;
@@ -1736,6 +1743,9 @@ test("orch continue registers a fresh reauthor cycle as authoring", async () => 
 test("orch task --until ready keeps the ask window open for a late retry", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-ask-timeout-");
+  // A remote must exist, or the ready goal takes the local-only shortcut and this
+  // test never reaches the standing-PR readiness path it was written for.
+  addOriginWithPeer(repo);
   mkdirSync(join(repo, ".orch"), { recursive: true });
   writeFileSync(join(repo, ".orch", "orch.yml"), "automation:\n  humanWaitHours: 0.000001\n");
   gitDep.git(["branch", "orch/integration"], repo);
@@ -1745,6 +1755,8 @@ test("orch task --until ready keeps the ask window open for a late retry", async
   let cycleCalls = 0;
   const gh = (args, input) => {
     calls.push({ args, input });
+    if (args[0] === "--version") return "gh version test";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
     if (args[0] === "pr" && args[1] === "list") {
       return args.includes("orch/integration")
         ? JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo) }])
@@ -1819,6 +1831,14 @@ test("orch task --until ready keeps the ask window open for a late retry", async
     assert.equal(resumeEvents[1].outcome, "reached");
     assert.equal(resumeEvents[1].exit, 0);
     assert.equal(cycleCalls, 3, "the late retry must start a fresh cycle");
+    // This test exists to prove the retry reaches READY *through a green standing
+    // PR*. Without a remote the run now takes the local-only readiness shortcut
+    // and gets there without asking GitHub anything — which would leave the
+    // assertions above passing while covering nothing. Pin the gh call itself.
+    assert.ok(
+      calls.some(({ args }) => args[0] === "pr" && args[1] === "view"),
+      "the readiness check must consult the standing PR, not the local shortcut",
+    );
     assert.equal(questionBodies.length, 1, "same-task retry must keep the original question");
     const resumed = JSON.parse(readFileSync(join(dir, `${record.runId}.json`), "utf8"));
     assert.equal(resumed.outcome, "reached");
@@ -1835,8 +1855,11 @@ test("orch task --until ready keeps the ask window open for a late retry", async
 test("orch task --until ready lets a write-permissioned user abandon the run", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-ask-abandon-");
+  addOriginWithPeer(repo);
   gitDep.git(["branch", "orch/integration"], repo);
   const gh = (args) => {
+    if (args[0] === "--version") return "gh version test";
+    if (args[0] === "auth" && args[1] === "status") return "";
     if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false }]);
     if (args[0] === "pr" && args[1] === "view") return JSON.stringify({
       number: 9, state: "CLOSED", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo),
@@ -2262,7 +2285,7 @@ test("nextAuthor rotates the author away from a forced reviewer collision", () =
   assert.deepEqual(r.reviewerNames, ["claude"]);
 });
 
-test("a one-agent pool keeps task and review role selection usable", async () => {
+test("a one-agent pool keeps task and pr role selection usable", async () => {
   const taskRepo = initGitRepo("orch-one-agent-task-");
   writeFileSync(join(taskRepo, "orch.yml"), "agents: [claude]\n");
   const taskLogs = await runMainInRepo(taskRepo, ["task", "one agent task", "--no-tidy"]);
@@ -2272,7 +2295,7 @@ test("a one-agent pool keeps task and review role selection usable", async () =>
   const branch = "pr/claude/one-agent-review";
   gitDep.git(["branch", branch], reviewRepo);
   writeFileSync(join(reviewRepo, "orch.yml"), "agents: [claude]\n");
-  const reviewLogs = await runMainInRepo(reviewRepo, ["review", branch], { finishRun: async () => {} });
+  const reviewLogs = await runMainInRepo(reviewRepo, ["pr", branch, "--until", "once"], { finishRun: async () => {} });
   assert.match(reviewLogs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
@@ -2293,7 +2316,7 @@ test("task --reviewer rotates away from the requested reviewer end to end", asyn
   assert.match(logs.join("\n"), /pr\/codex\/.*: merged/);
 });
 
-test("review --reviewer uses the requested reviewer end to end", async () => {
+test("pr --reviewer uses the requested reviewer end to end", async () => {
   const repo = initGitRepo("orch-reviewer-review-e2e-");
   const branch = "pr/codex/reviewer-regression";
   gitDep.git(["branch", branch], repo);
@@ -2307,7 +2330,7 @@ test("review --reviewer uses the requested reviewer end to end", async () => {
       async audit() { auditCalls.push(name); return { decision: "AGREE", reason: "ok", raw: "" }; },
     }),
   };
-  const logs = await runMainInRepo(repo, ["review", branch, "--reviewer", "claude"], { cycleDeps, finishRun: async () => {} });
+  const logs = await runMainInRepo(repo, ["pr", branch, "--until", "once", "--reviewer", "claude"], { cycleDeps, finishRun: async () => {} });
   assert.deepEqual(auditCalls, ["claude"]);
   assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
@@ -3076,7 +3099,7 @@ test("agent add validates orch.yml before editing it", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-invalid-"));
   const prev = cwd();
   const file = join(d, ".orch", "orch.yml");
-  const invalid = "agents: [claude]\nmerge: unsafe\n";
+  const invalid = "agents: [claude]\nlanding: unsafe\n";
   chdir(d);
   try {
     mkdirSync(join(d, ".orch"));
@@ -3084,7 +3107,7 @@ test("agent add validates orch.yml before editing it", async () => {
 
     await assert.rejects(
       () => main(["agent", "add", "copilot"]),
-      /orch\.yml: merge must be ff-only, no-ff, or pr/,
+      /orch\.yml: landing must be ff-only, no-ff, or pr/,
     );
     assert.equal(readFileSync(file, "utf8"), invalid);
   } finally {
@@ -3104,19 +3127,19 @@ test("agent add rejects an unknown agent", async () => {
   }
 });
 
-test("agent build feeds an adapter work order through the task pipeline (noMerge by default)", async () => {
+test("agent add --build feeds an adapter work order through the task pipeline (noMerge by default)", async () => {
   const d = initGitRepo("orch-agentbuild-");
-  const logs = await runMainInRepo(d, ["agent", "build", "widget"], { resolveAgentBin: () => "/usr/bin/widget" });
+  const logs = await runMainInRepo(d, ["agent", "add", "widget", "--build"], { resolveAgentBin: () => "/usr/bin/widget" });
   assert.match(
     logs.join("\n"),
-    /agent build widget: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/,
+    /agent add widget --build: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/,
   );
 });
 
-test("agent build scaffolds quota detection and environment fields", async () => {
+test("agent add --build scaffolds quota detection and environment fields", async () => {
   const d = initGitRepo("orch-agentbuild-fields-");
   let prompt = "";
-  await runMainInRepo(d, ["agent", "build", "widget"], {
+  await runMainInRepo(d, ["agent", "add", "widget", "--build"], {
     resolveAgentBin: () => "/usr/bin/widget",
     cycleDeps: {
       ...fakeCycleDeps(),
@@ -3134,48 +3157,21 @@ test("agent build scaffolds quota detection and environment fields", async () =>
   assert.doesNotMatch(prompt, /envKeys/);
 });
 
-test("agent build --pr routes the cycle through merge: pr instead of a local-only branch", async () => {
-  const savedExitCode = process.exitCode;
-  // Asserting an exit code of 0 means asserting that nothing raised one, so the
-  // starting value has to be 0 and not whatever a previous test left behind —
-  // otherwise this passes only in batch order and fails when run alone.
-  process.exitCode = 0;
-  const d = initGitRepo("orch-agentbuild-pr-");
-  let seenMerge = null;
-  const deps = {
-    preflight() {},
-    resolveAgentBin: () => "/usr/bin/widget",
-    cycleDeps: {
-      ...fakeCycleDeps(),
-      finalize: async (ctx) => { seenMerge = ctx.cfg.merge; return { status: "pr", reason: "test", prUrl: "https://example/pr/1" }; },
-    },
-  };
-  try {
-    const logs = await runMainInRepo(d, ["agent", "build", "widget", "--pr"], deps);
-    assert.equal(seenMerge, "pr");
-    assert.match(logs.join("\n"), /agent build widget: pr /);
-    // Opening the PR is this command's success case, not a stopped-at-cap run.
-    assert.equal(process.exitCode, EXIT_CODES.OK);
-  } finally {
-    process.exitCode = savedExitCode;
-  }
-});
-
 // buildAgent's dry path is a real stubbed cycle (dryDeps()), not the
 // print-and-return short-circuit most other write commands use for --dry —
 // nothing exercised that end-to-end before: preflight/git-sync/inflight
 // registration must all be skipped, and the run must still report a result.
-test("agent build --dry runs a stubbed dry cycle without preflight, sync, or registration side effects", async () => {
+test("agent add --build --dry runs a stubbed dry cycle without preflight, sync, or registration side effects", async () => {
   const d = initGitRepo("orch-agentbuild-dry-");
-  const logs = await runMainInRepo(d, ["agent", "build", "widget", "--dry"], {
+  const logs = await runMainInRepo(d, ["agent", "add", "widget", "--build", "--dry"], {
     resolveAgentBin: () => "/usr/bin/widget",
     preflight() { assert.fail("preflight ran despite --dry"); },
   });
-  assert.match(logs.join("\n"), /agent build widget: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/);
+  assert.match(logs.join("\n"), /agent add widget --build: approved .* on pr\/[a-z0-9-]+\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/);
   assert.equal(existsSync(join(d, ".orch", "inflight")), false, "dry run must not register an inflight cycle");
 });
 
-test("agent build honors --author/--reviewer role overrides instead of the configured/rotated author", async () => {
+test("agent add --build honors --author/--reviewer role overrides instead of the configured/rotated author", async () => {
   const d = initGitRepo("orch-agentbuild-roles-");
   const authoredBy = [];
   const auditedBy = [];
@@ -3193,7 +3189,7 @@ test("agent build honors --author/--reviewer role overrides instead of the confi
       },
     },
   };
-  const logs = await runMainInRepo(d, ["agent", "build", "widget", "--author", "codex", "--reviewer", "copilot"], deps);
+  const logs = await runMainInRepo(d, ["agent", "add", "widget", "--build", "--author", "codex", "--reviewer", "copilot"], deps);
   assert.deepEqual(authoredBy, ["codex"]);
   assert.deepEqual(auditedBy, ["copilot"]);
   assert.match(logs.join("\n"), /on pr\/codex\/add-widget-adapter-for-orch-\d+-[0-9a-z]+/);
@@ -3202,11 +3198,11 @@ test("agent build honors --author/--reviewer role overrides instead of the confi
 // Regression (codex review of #130's persist-roles PR): `orch task`/`orch pr`
 // pass the resolved author/reviewer specs into inflight.register() so a run
 // that dies before its first checkpoint can still be resumed with the exact
-// same agents/models. `orch agent build` runs its own task-mode cycle through
+// same agents/models. `orch agent add --build` runs its own task-mode cycle through
 // the same runCycle()/inflight machinery but was missing this — a died
 // mid-build recovery would silently re-resolve roles from current rotation
 // instead of reusing what actually authored/reviewed the in-progress build.
-test("agent build persists resolved author/reviewer role specs into the inflight record", async () => {
+test("agent add --build persists resolved author/reviewer role specs into the inflight record", async () => {
   const d = initGitRepo("orch-agentbuild-inflight-");
   const orchDir = join(d, ".orch");
   let seen = null;
@@ -3228,40 +3224,41 @@ test("agent build persists resolved author/reviewer role specs into the inflight
       },
     },
   };
-  await runMainInRepo(d, ["agent", "build", "widget"], deps);
+  await runMainInRepo(d, ["agent", "add", "widget", "--build"], deps);
   assert.ok(seen, "expected an inflight record to exist while the cycle was running");
   assert.equal(seen.author.agent, "claude");
   assert.ok(Array.isArray(seen.reviewers) && seen.reviewers.length > 0);
 });
 
-test("agent build no-ops when the agent is already registered", async () => {
+test("agent add --build no-ops when the agent is already in the rotation pool", async () => {
   const d = initGitRepo("orch-agentbuild-known-");
-  const logs = await runMainInRepo(d, ["agent", "build", "claude"]);
-  assert.match(logs.join("\n"), /already registered/);
+  await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
+  const logs = await runMainInRepo(d, ["agent", "add", "claude", "--build"]);
+  assert.match(logs.join("\n"), /already in agents/);
 });
 
-// `orch agent build <known-adapter>` shares the exact same "nothing left to
-// build" fate as `agent add <known-adapter> --build` above — buildAgent()
-// returns "already-registered" before it ever reads flags.pr/author/reviewer/
+// `orch agent add <known-adapter> --build` shares the exact same "nothing left to
+// build" fate as the normal known-adapter path above — buildAgent()
+// returns "already-registered" before it ever reads flags.author/reviewer/
 // allow-large-scope, so those flags used to validate, run the full dispatch,
 // and get silently dropped instead of refused.
-test("agent build <known-adapter> --pr is a usage error, not a silent drop", async () => {
-  const d = initGitRepo("orch-build-known-pr-");
+test("agent add <known-adapter> --build --author is a usage error, not a silent drop", async () => {
+  const d = initGitRepo("orch-build-known-author-");
   await assert.rejects(
-    () => runMainInRepo(d, ["agent", "build", "claude", "--pr"], {
+    () => runMainInRepo(d, ["agent", "add", "claude", "--build", "--author", "codex"], {
       buildAgent: async () => assert.fail("buildAgent ran — claude's adapter code already exists, nothing to build"),
     }),
-    (e) => e.exit === 64 && /--pr is not valid with 'orch agent build claude'/.test(e.message),
+    (e) => e.exit === 64 && /--author is not valid with 'orch agent add claude'/.test(e.message),
   );
 });
 
-test("agent build <known-adapter> --allow-large-scope is a usage error, not a silent drop", async () => {
+test("agent add <known-adapter> --build --allow-large-scope is a usage error, not a silent drop", async () => {
   const d = initGitRepo("orch-build-known-scope-");
   await assert.rejects(
-    () => runMainInRepo(d, ["agent", "build", "claude", "--allow-large-scope"], {
+    () => runMainInRepo(d, ["agent", "add", "claude", "--build", "--allow-large-scope"], {
       buildAgent: async () => assert.fail("buildAgent ran — claude's adapter code already exists, nothing to build"),
     }),
-    (e) => e.exit === 64 && /--allow-large-scope is not valid with 'orch agent build claude'/.test(e.message),
+    (e) => e.exit === 64 && /--allow-large-scope is not valid with 'orch agent add claude'/.test(e.message),
   );
 });
 
@@ -3269,11 +3266,11 @@ test("agent build <known-adapter> --allow-large-scope is a usage error, not a si
 // variant: the known-adapter check runs in validatePositionals (schema.js),
 // which main() calls immediately after parse() — before the update-check
 // network call.
-test("agent build <known-adapter> --pr is refused before the update-check side effect fires", async () => {
+test("agent add <known-adapter> --build --author is refused before the update-check side effect fires", async () => {
   const d = initGitRepo("orch-build-known-noupdate-");
   let updateChecked = false;
   await assert.rejects(
-    () => runMainInRepo(d, ["agent", "build", "claude", "--pr"], {
+    () => runMainInRepo(d, ["agent", "add", "claude", "--build", "--author", "codex"], {
       maybeNotifyUpdate: () => { updateChecked = true; return Promise.resolve(); },
       buildAgent: async () => assert.fail("buildAgent ran — claude's adapter code already exists, nothing to build"),
     }),
@@ -3313,7 +3310,7 @@ test("agent add offers to build an unregistered agent; accepting delegates to bu
       buildAgent: async (name) => { calledWith = name; return { status: "approved", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }; },
     });
     assert.equal(calledWith, "widget");
-    assert.match(logs.join("\n"), /agent build widget: approved/);
+    assert.match(logs.join("\n"), /agent add widget --build: approved/);
   } finally {
     console.log = origLog;
     chdir(prev);
@@ -3338,7 +3335,7 @@ test("agent add --build skips the confirm prompt and builds", async () => {
       buildAgent: async (name) => { calledWith = name; return { status: "approved", branch: "pr/claude/add-widget-adapter-for-orch-1-abc" }; },
     });
     assert.equal(calledWith, "widget");
-    assert.match(logs.join("\n"), /agent build widget: approved/);
+    assert.match(logs.join("\n"), /agent add widget --build: approved/);
   } finally {
     console.log = origLog;
     chdir(prev);
@@ -3358,7 +3355,7 @@ test("agent <typo> <name> --build is a usage error, not a build", async () => {
       () => main(["agent", "typo", "widget", "--build"], {
         buildAgent: async () => { built = true; return { status: "approved" }; },
       }),
-      /usage: orch agent add <name> \| orch agent build <name>/,
+      /usage: orch agent add <name> \[--build\]/,
     );
     assert.equal(built, false);
   } finally {
@@ -3366,10 +3363,17 @@ test("agent <typo> <name> --build is a usage error, not a build", async () => {
   }
 });
 
+test("agent build is removed and reports the agent add --build usage", async () => {
+  await assert.rejects(
+    () => main(["agent", "build", "widget"], { preflight() {} }),
+    (e) => e.exit === 64 && /usage: orch agent add <name> \[--build\]/.test(e.message),
+  );
+});
+
 // A6+B4: the confirm path used to hardcode `flags: {}`, silently discarding
 // `--dry`/`--config-file` — a confirmed `--dry` build would run a REAL build
 // (real worktree/branch/merge) because the flag never reached buildAgent. It
-// also never set the escalation exit code the direct `agent build <name>`
+// also never set the escalation exit code the direct `agent add <name> --build`
 // sibling sets. Both are asserted here against the same confirm path.
 test("agent add confirm path forwards real flags to buildAgent (A6)", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-build-flags-"));
@@ -3590,7 +3594,7 @@ test("pr accepts a branch target and rejects a missing branch", async () => {
   await assert.rejects(() => runMainCapture(["pr"]), /usage: orch pr <number>/);
 });
 
-test("orch pr reports an approved review as action required", async () => {
+test("orch pr branch audit reports an approved review as success", async () => {
   const savedExitCode = process.exitCode;
   process.exitCode = 0;
   const repo = initGitRepo("orch-pr-approved-");
@@ -3603,7 +3607,77 @@ test("orch pr reports an approved review as action required", async () => {
       },
     });
     assert.match(logs.join("\n"), /approved/);
+    assert.equal(process.exitCode, EXIT_CODES.OK);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch pr numeric target reports an approved review as action required", async () => {
+  const savedExitCode = process.exitCode;
+  process.exitCode = 0;
+  const repo = initGitRepo("orch-pr-approved-numeric-");
+  const { remote } = addOriginWithPeer(repo);
+  gitDep.git(["update-ref", "refs/pull/9/head", "refs/heads/main"], remote);
+  const gh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false,
+    headRefOid: gitDep.git(["rev-parse", "main"], repo), baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  try {
+    const logs = await runMainInRepo(repo, ["pr", "9", "--until", "once"], {
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      cycleDeps: {
+        ...fakeCycleDeps(),
+        finalize: async () => ({ status: "approved", reason: "review passed" }),
+      },
+    });
+    assert.match(logs.join("\n"), /approved/);
     assert.equal(process.exitCode, EXIT_CODES.ACTION_REQUIRED);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("orch pr branch audit exits 0 even when the branch has a discoverable open PR", async () => {
+  // Regression: the approved-audit exit must not depend on a best-effort
+  // `gh pr list` lookup. Same branch target as the test above, but here GitHub
+  // is reachable and does find an open PR for the branch. The exit must still
+  // be OK, not ACTION_REQUIRED — the caller typed a branch, and the code that
+  // reads this exit cannot be allowed to see a different answer depending on
+  // whether the lookup happened to succeed.
+  const savedExitCode = process.exitCode;
+  process.exitCode = 0;
+  const repo = initGitRepo("orch-pr-approved-branch-with-pr-");
+  addOriginWithPeer(repo);
+  gitDep.git(["branch", "feature/x"], repo);
+  const headOid = gitDep.git(["rev-parse", "feature/x"], repo);
+  const gh = (args) => {
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify([{ number: 11, url: "https://github.com/o/r/pull/11", isDraft: false, headRefOid: headOid }]);
+    }
+    if (args[0] === "pr" && args[1] === "view") {
+      return JSON.stringify({
+        number: 11, state: "OPEN", isDraft: false, headRefName: "feature/x", headRefOid: headOid,
+        baseRefName: "main", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+        reviewDecision: null, statusCheckRollup: [], url: "https://github.com/o/r/pull/11",
+      });
+    }
+    if (args[0] === "api") return "[]";
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["pr", "feature/x"], {
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      cycleDeps: {
+        ...fakeCycleDeps(),
+        finalize: async () => ({ status: "approved", reason: "review passed" }),
+      },
+    });
+    assert.match(logs.join("\n"), /approved/);
+    assert.equal(process.exitCode, EXIT_CODES.OK);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -3691,6 +3765,20 @@ test("PR landing derives changed paths when the review cycle omits them", () => 
     repo,
   );
   assert.deepEqual(landed.paths, ["pr.txt"]);
+});
+
+test("base landing does not require a remote or gh bridge", () => {
+  const repo = initGitRepo("orch-base-no-remote-");
+  const landed = resolveLanded(
+    { status: "merged", paths: [] },
+    { branch: "task-1" },
+    { baseBranch: "main", integrationBranch: "main" },
+    { gh: () => { throw new Error("gh must not be called for base landing"); } },
+    repo,
+  );
+
+  assert.equal(landed.landing, "base");
+  assert.equal(landed.expectedHead, gitDep.git(["rev-parse", "main"], repo));
 });
 
 test("PR repair preparation publishes an owned repair branch, not the original head", () => {
@@ -3781,6 +3869,7 @@ test("orch continue restores PR push authority and pushes the owned repair branc
     },
   };
   const gh = (args) => {
+    if (args[0] === "--version") return "gh version test";
     if (args[0] === "pr" && args[1] === "view") {
       const number = String(args[2]);
       return JSON.stringify({
@@ -3881,25 +3970,23 @@ test("resumable numeric PR runs keep their ephemeral source branch for continue"
 
 test("a flag not read by the command is rejected", async () => {
   // Every command declares the flags it actually reads (COMMAND_FLAGS); anything
-  // else parsed and vanished, which reads to a human as "run and merge" (--merge)
-  // or "load this config" (--config-file) while nothing of the sort happens.
-  // Reject loudly instead of dropping it. The check sits ahead of the commands
-  // that return early (version/help/upgrade), or they exit 0 with the flag
-  // dropped — exactly the silent lie the guard exists to prevent.
+  // else parsed and vanished, which reads to a human as "link the agent docs"
+  // (--link) or "load this config" (--config-file) while nothing of the sort
+  // happens. Reject loudly instead of dropping it. The check sits ahead of the
+  // commands that return early (version/help/upgrade), or they exit 0 with the
+  // flag dropped — exactly the silent lie the guard exists to prevent.
   const cases = [
-    [["issue", "42", "--merge"], /--merge is not valid with 'orch issue'/],
-    [["task", "x", "--merge"], /--merge is not valid with 'orch task'/],
-    [["review", "b", "--merge"], /--merge is not valid with 'orch review'/],
-    [["version", "--merge"], /--merge is not valid with 'orch version'/],
-    [["help", "--merge"], /--merge is not valid with 'orch help'/],
-    [["upgrade", "--merge"], /--merge is not valid with 'orch upgrade'/],
-    [["update", "--merge"], /--merge is not valid with 'orch update'/],
-    // ...including on `pr` itself: asking to merge and asking what the tool is
-    // are contradictory requests; neither one silently wins.
-    [["pr", "42", "--merge", "--help"], /--merge cannot be combined with --help on 'orch pr'/],
-    [["pr", "42", "--merge", "-h"], /--merge cannot be combined with --help on 'orch pr'/],
-    [["pr", "42", "--merge", "--version"], /--merge is not valid with 'orch version'/],
-    // ...and the same rule for every other flag, not just --merge. `--dry` is
+    [["issue", "42", "--link"], /--link is not valid with 'orch issue'/],
+    [["task", "x", "--link"], /--link is not valid with 'orch task'/],
+    [["version", "--link"], /--link is not valid with 'orch version'/],
+    [["help", "--link"], /--link is not valid with 'orch help'/],
+    [["upgrade", "--link"], /--link is not valid with 'orch upgrade'/],
+    // ...including on `pr` itself: asking it to reach ready/merged and asking
+    // what the tool is are contradictory requests; neither one silently wins.
+    [["pr", "42", "--until", "ready", "--help"], /--until cannot be combined with --help on 'orch pr'/],
+    [["pr", "42", "--until", "ready", "-h"], /--until cannot be combined with --help on 'orch pr'/],
+    [["pr", "42", "--until", "ready", "--version"], /--until is not valid with 'orch version'/],
+    // ...and the same rule for every other flag, not just --link. `--dry` is
     // legal on `pr`/`release`/`init` (they plan without writing), so the
     // not-read flag exercised here is one those commands genuinely ignore.
     [["pr", "5", "--cheap"], /--cheap is not valid with 'orch pr'/],
@@ -3911,10 +3998,8 @@ test("a flag not read by the command is rejected", async () => {
     // drop it, so the run silently used the issue body instead of the file.
     [["issue", "1", "--file", "f"], /--file is not valid with 'orch issue'/],
     // Read-only commands get the sharper message: --dry cannot "plan" a command
-    // that changes nothing. `config` is NOT one of these — runConfigWizard
-    // writes .orch/orch.yml, so it is a mutating command; --dry IS one of its
-    // flags (see "orch config --dry prints the plan..." below) rather than
-    // being rejected outright.
+    // that changes nothing. `config` is one of these too (see "orch config
+    // --dry is refused" below).
     [["dashboard", "--dry"], /--dry has no effect on 'orch dashboard'/],
   ];
   for (const [argv, message] of cases) {
@@ -3924,15 +4009,11 @@ test("a flag not read by the command is rejected", async () => {
       argv.join(" "),
     );
   }
-  await assert.rejects(
-    () => runMainCapture(["pr", "42", "--merge", "--until", "ready", "--dry"]),
-    (e) => e.exit === 64 && /--merge is an alias for --until merged/.test(e.message),
-  );
   // The message points at where the flag IS legal.
-  await assert.rejects(() => runMainCapture(["issue", "42", "--merge"]), /only with: orch pr/);
+  await assert.rejects(() => runMainCapture(["issue", "42", "--link"]), /only with: orch init/);
   // ...and a flag stays legal where it is actually consumed: `pr` gets past the
   // guard and fails on its own usage check instead.
-  await assert.rejects(() => runMainCapture(["pr", "abc", "--merge"]), /usage: orch pr <number>/);
+  await assert.rejects(() => runMainCapture(["pr", "abc", "--until", "ready"]), /usage: orch pr <number>/);
 });
 
 test("COMMAND_FLAGS only names flags that exist", () => {
@@ -3966,7 +4047,13 @@ async function runMainCapture(argv, deps = {}) {
   const origLog = console.log;
   console.log = (...args) => logs.push(args.map(String).join(" "));
   try {
-    await main(argv, deps);
+    const { injectUntilOnce = true, ...mainDeps } = deps;
+    const command = argv[0];
+    // Existing helper callers describe one-pass behavior. Pin those tests to
+    // it explicitly; new default-goal tests opt out so they exercise bare argv.
+    const testArgv = injectUntilOnce && ["task", "issue", "pr"].includes(command) && !argv.includes("--until")
+      ? [...argv, "--until", "once"] : argv;
+    await main(testArgv, mainDeps);
     return logs;
   } finally {
     console.log = origLog;
@@ -4027,14 +4114,19 @@ function fakeCycleDeps() {
   };
 }
 
-async function runMainInRepo(repo, argv, deps = {}) {
+async function runMainInRepo(repo, argv, deps = {}, { injectUntilOnce = true } = {}) {
   const prev = cwd();
   chdir(repo);
   const logs = [];
   const origLog = console.log;
   console.log = (...args) => logs.push(args.map(String).join(" "));
   try {
-    await main(argv, { preflight() {}, cycleDeps: fakeCycleDeps(), ...deps });
+    const command = argv[0];
+    // Keep pre-existing bare-cycle tests one-pass; callers testing the v0.5
+    // default pass { injectUntilOnce: false } to reach the real ready loop.
+    const testArgv = injectUntilOnce && ["task", "issue", "pr"].includes(command) && !argv.includes("--until")
+      ? [...argv, "--until", "once"] : argv;
+    await main(testArgv, { preflight() {}, cycleDeps: fakeCycleDeps(), ...deps });
     return logs;
   } finally {
     console.log = origLog;
@@ -4410,6 +4502,27 @@ test("#44: a non-merged (escalated) run is not handed to finishRun", async () =>
   try {
     await runMainInRepo(repo, ["task", "some task"], { cycleDeps: escalating, finishRun: async (ctx) => { calls.push(ctx); } });
     assert.equal(calls.length, 0);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("post-run tidy does not print a success banner after a nonzero run", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-mixed-run-banner-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  let finalizations = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async () => finalizations++ === 0
+      ? { status: "merged", reason: "test", sha: "abc" }
+      : { status: "escalated", reason: "second cycle failed", sha: "def" },
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "mixed run", "--until", "once", "--authors", "claude,codex", "--reviewers", "codex,claude"], { cycleDeps });
+    assert.equal(finalizations, 2);
+    assert.equal(process.exitCode, 2, logs.join("\n"));
+    assert.doesNotMatch(logs.join("\n"), /All done/);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -4872,7 +4985,7 @@ test("completed review cycle clears its checkpoint (no false interrupted entry)"
   };
   try {
     process.exitCode = 0;
-    await runMainInRepo(repo, ["review", "pr/claude/some-fix"], { cycleDeps });
+    await runMainInRepo(repo, ["pr", "pr/claude/some-fix", "--until", "once"], { cycleDeps });
   } finally {
     process.exitCode = 0;
   }
@@ -4881,80 +4994,6 @@ test("completed review cycle clears its checkpoint (no false interrupted entry)"
   const dir = join(repo, ".orch", "checkpoints");
   const leftover = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")) : [];
   assert.deepEqual(leftover, []); // ...and the completed run cleared it
-});
-
-// `review` shares task/issue's dry-run mechanism (dryDeps() instead of the
-// real cycle deps), but had no dedicated regression test of its own — every
-// mutating command in the schema needs one, not just the ones this slice
-// touched directly.
-test("orch review --dry never preflights or shells out to a real cycle", async () => {
-  const repo = initGitRepo("orch-review-dry-");
-  gitDep.git(["branch", "pr/claude/some-fix"], repo);
-  const logs = await runMainInRepo(repo, ["review", "pr/claude/some-fix", "--dry"], {
-    preflight() { assert.fail("preflight ran on a dry run"); },
-  });
-  assert.match(logs.join("\n"), /orch \(dry\)/);
-  const dir = join(repo, ".orch", "checkpoints");
-  assert.equal(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")).length : 0, 0);
-});
-
-test("orch review audits by default without changing the integration tip", async () => {
-  const repo = initGitRepo("orch-review-only-");
-  const branch = "pr/claude/review-only";
-  gitDep.git(["branch", "orch/integration"], repo);
-  gitDep.git(["checkout", "-b", branch], repo);
-  writeFileSync(join(repo, "review.txt"), "review me\n");
-  gitDep.git(["add", "review.txt"], repo);
-  gitDep.git(["commit", "-m", "review fixture"], repo);
-  gitDep.git(["checkout", "main"], repo);
-
-  const before = gitDep.git(["rev-parse", "orch/integration"], repo);
-  let finalized = false;
-  const logs = await runMainInRepo(repo, ["review", branch], {
-    cycleDeps: {
-      ...fakeCycleDeps(),
-      finalize: async () => { finalized = true; return { status: "merged", reason: "unexpected", sha: "abc" }; },
-    },
-  });
-  const after = gitDep.git(["rev-parse", "orch/integration"], repo);
-
-  assert.equal(after, before);
-  assert.equal(finalized, false);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
-});
-
-test("orch review --until ready uses the landing path", async () => {
-  const repo = initGitRepo("orch-review-ready-");
-  const branch = "pr/claude/review-ready";
-  gitDep.git(["branch", "orch/integration"], repo);
-  gitDep.git(["checkout", "-b", branch], repo);
-  writeFileSync(join(repo, "review.txt"), "review me\n");
-  gitDep.git(["add", "review.txt"], repo);
-  gitDep.git(["commit", "-m", "review fixture"], repo);
-  gitDep.git(["checkout", "main"], repo);
-  addOriginWithPeer(repo);
-  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
-  const gh = readinessGh({
-    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
-    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
-  });
-
-  let finalized = false;
-  const logs = await runMainInRepo(repo, ["review", branch, "--until", "ready"], {
-    cycleDeps: {
-      ...fakeCycleDeps(),
-      finalize: async (ctx) => {
-        finalized = true;
-        assert.equal(ctx.branch, branch);
-        assert.equal(ctx.until, "ready");
-        return { status: "merged", reason: "test", sha: "abc" };
-      },
-    },
-    githubDeps: () => ({ gh, git: gitDep.git }),
-  });
-
-  assert.equal(finalized, true);
-  assert.match(logs.join("\n"), new RegExp(`${branch}: merged`));
 });
 
 test("orch continue resumes a ready review through the landing path", async () => {
@@ -5341,7 +5380,7 @@ test("orch task fans out explicit plural role overrides into two branches", asyn
   assert.deepEqual(calls.filter(([role]) => role === "author").map(([, name]) => name), ["claude", "codex"]);
 });
 
-test("orch review sends explicit plural reviewer overrides to both auditors", async () => {
+test("orch pr sends explicit plural reviewer overrides to both auditors", async () => {
   const repo = initGitRepo("orch-plural-reviewer-panel-");
   const branch = "pr/gemini/plural-reviewers";
   gitDep.git(["checkout", "-b", branch], repo);
@@ -5367,14 +5406,14 @@ test("orch review sends explicit plural reviewer overrides to both auditors", as
     },
   };
 
-  await runMainInRepo(repo, ["review", branch, "--reviewers", "claude,codex"], {
+  await runMainInRepo(repo, ["pr", branch, "--until", "once", "--reviewers", "claude,codex"], {
     cycleDeps, finishRun: async () => {},
   });
 
   assert.deepEqual(audits.sort(), ["claude", "codex"]);
 });
 
-test("orch review permits an explicitly requested reviewer who authored the branch", async () => {
+test("orch pr permits an explicitly requested reviewer who authored the branch", async () => {
   const repo = initGitRepo("orch-fixed-self-review-");
   const branch = "pr/claude/review-self";
   gitDep.git(["branch", branch], repo);
@@ -5390,7 +5429,7 @@ test("orch review permits an explicitly requested reviewer who authored the bran
       }),
     },
   };
-  const logs = await runMainInRepo(repo, ["review", branch, "--reviewer", "claude"], {
+  const logs = await runMainInRepo(repo, ["pr", branch, "--until", "once", "--reviewer", "claude"], {
     cycleDeps, finishRun: async () => {},
   });
 
@@ -5398,7 +5437,7 @@ test("orch review permits an explicitly requested reviewer who authored the bran
   assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
 });
 
-test("orch review permits an explicitly configured reviewer who authored the branch", async () => {
+test("orch pr permits an explicitly configured reviewer who authored the branch", async () => {
   const repo = initGitRepo("orch-configured-self-review-");
   const branch = "pr/codex/review-self";
   gitDep.git(["branch", branch], repo);
@@ -5414,7 +5453,7 @@ test("orch review permits an explicitly configured reviewer who authored the bra
       }),
     },
   };
-  const logs = await runMainInRepo(repo, ["review", branch], { cycleDeps, finishRun: async () => {} });
+  const logs = await runMainInRepo(repo, ["pr", branch, "--until", "once"], { cycleDeps, finishRun: async () => {} });
 
   assert.deepEqual(auditCalls, ["codex"]);
   assert.match(logs.join("\n"), new RegExp(`${branch}: approved`));
@@ -6414,7 +6453,7 @@ test("orch issue <n> warns about a branch a prior run staged for the same issue 
     const out = logs.join("\n");
     assert.match(out, /issue #52 already has 1 staged branch/);
     assert.match(out, /pr\/claude\/stale-base-9999-0 — escalated/);
-    assert.match(out, /orch review pr\/claude\/stale-base-9999-0/);
+    assert.match(out, /orch pr pr\/claude\/stale-base-9999-0 --until once/);
     assert.doesNotMatch(out, /may belong to another issue/);
   } finally {
     process.exitCode = saved;
@@ -6672,7 +6711,6 @@ test("missing required positional exits 64 like every other usage error", async 
   await assert.rejects(() => main(["release"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["issue", "abc"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["task"], { preflight() {} }), (e) => e.exit === 64);
-  await assert.rejects(() => main(["review"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(() => main(["continue"], { preflight() {} }), (e) => e.exit === 64);
   // This deliberately uses no probe stub: a missing branch is answerable from
   // local git and must remain a usage error in a bare environment.
@@ -6681,10 +6719,38 @@ test("missing required positional exits 64 like every other usage error", async 
     (e) => e.exit === 64 && /branch does not exist/.test(e.message),
   );
   await assert.rejects(() => main(["agent", "add"], { preflight() {} }), (e) => e.exit === 64);
-  await assert.rejects(() => main(["agent", "build"], { preflight() {} }), (e) => e.exit === 64);
+  await assert.rejects(() => main(["agent", "add"], { preflight() {} }), (e) => e.exit === 64);
   await assert.rejects(
     () => main(["agent", "typo", "widget", "--build"], { preflight() {} }),
     (e) => e.exit === 64,
+  );
+});
+
+test("removed review command exits 64 and points to the pr audit spelling", async () => {
+  await assert.rejects(
+    () => main(["review", "feature/x"], { preflight() {} }),
+    (e) => e.exit === 64 && e.showUsage === true && /use 'orch pr feature\/x --until once'/.test(e.message),
+  );
+});
+
+test("removed update command exits 64 and points to upgrade", async () => {
+  await assert.rejects(
+    () => main(["update"], { preflight() {} }),
+    (e) => e.exit === 64 && e.showUsage === true && /use 'orch upgrade'/.test(e.message),
+  );
+});
+
+test("removed --merge flag exits 64 and points to --until merged", async () => {
+  await assert.rejects(
+    () => main(["pr", "42", "--merge"], { preflight() {} }),
+    (e) => e.exit === 64 && /use '--until merged'/.test(e.message),
+  );
+});
+
+test("removed --pr flag exits 64 and points to opening a PR by hand", async () => {
+  await assert.rejects(
+    () => main(["agent", "add", "widget", "--build", "--pr"], { preflight() {} }),
+    (e) => e.exit === 64 && /open a PR by hand/.test(e.message),
   );
 });
 
@@ -6721,26 +6787,23 @@ test("a stray positional argument is a usage error, not silently dropped", async
   await assert.rejects(() => runMainCapture(["version", "extra"]), (e) => e.exit === 64);
 });
 
-// `agent add` and `agent build` used to share one flag list, so `--pr` (only
-// meaningful when a build actually happens) validated on a plain `add`, and
-// `--build` (redundant — the subcommand already says so) validated on
-// `build`. Both silently did nothing, which is the exact "declared but
-// inert" defect this schema exists to remove.
-test("agent add and agent build do not share a flag set", async () => {
+test("agent add owns the complete agent flag surface", async () => {
+  const parsed = parse(["agent", "add", "widget", "--build", "--allow-large-scope", "--author", "claude", "--reviewer", "codex"]);
+  assert.deepEqual(parsed.rest, ["add", "widget"]);
+  assert.equal(parsed.flags.build, true);
+  assert.equal(parsed.flags["allow-large-scope"], true);
+  assert.equal(parsed.flags.author, "claude");
+  assert.equal(parsed.flags.reviewer, "codex");
   await assert.rejects(
-    () => main(["agent", "add", "widget", "--pr"], { preflight() {} }),
-    (e) => e.exit === 64 && /--pr is not valid with 'orch agent add' without --build/.test(e.message),
+    () => main(["agent", "add", "widget", "--allow-large-scope"], { preflight() {} }),
+    (e) => e.exit === 64 && /--allow-large-scope is not valid with 'orch agent add' without --build/.test(e.message),
   );
-  await assert.rejects(
-    () => main(["agent", "build", "widget", "--build"], { preflight() {} }),
-    (e) => e.exit === 64 && /--build is not valid with 'orch agent build'/.test(e.message),
-  );
-  // --pr is legal on `agent add <unregistered> --build` (it reaches buildAgent).
-  const d = mkdtempSync(join(tmpdir(), "orch-add-build-pr-"));
+  // --allow-large-scope is legal on `agent add <unregistered> --build` (it reaches buildAgent).
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-scope-"));
   await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
   let received = null;
-  await runMainInRepo(d, ["agent", "add", "widget", "--build", "--pr"], {
-    buildAgent: async (name, ctx) => { received = ctx.flags.pr; return { status: "approved", branch: "b" }; },
+  await runMainInRepo(d, ["agent", "add", "widget", "--build", "--allow-large-scope"], {
+    buildAgent: async (name, ctx) => { received = ctx.flags["allow-large-scope"]; return { status: "approved", branch: "b" }; },
   });
   assert.equal(received, true);
 });
@@ -6823,22 +6886,22 @@ test("agent add <known-adapter> --build still adds it — code existing isn't th
   assert.match(logs.join("\n"), /added gemini to agents/);
 });
 
-// Third variant of the same bug: `agent add <known-adapter> --build --pr`
-// validates (schema.js allows --pr/role overrides alongside --build), but the
-// known-adapter path never runs a build cycle — so --pr and the role
-// overrides, which only mean something for a build, were silently dropped
-// instead of refused. Fix the routing (reject them once, in the branch that
-// skips the build), not the individual flag.
-test("agent add <known-adapter> --build --pr is a usage error, not a silent drop", async () => {
-  const d = mkdtempSync(join(tmpdir(), "orch-add-build-known-pr-"));
+// Third variant of the same bug: `agent add <known-adapter> --build --author`
+// validates (schema.js allows role overrides alongside --build), but the
+// known-adapter path never runs a build cycle — so --author and the other
+// role overrides, which only mean something for a build, were silently
+// dropped instead of refused. Fix the routing (reject them once, in the
+// branch that skips the build), not the individual flag.
+test("agent add <known-adapter> --build --author is a usage error, not a silent drop", async () => {
+  const d = mkdtempSync(join(tmpdir(), "orch-add-build-known-author-"));
   await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
   const file = join(d, ".orch", "orch.yml");
   const before = readFileSync(file, "utf8");
   await assert.rejects(
-    () => runMainInRepo(d, ["agent", "add", "gemini", "--build", "--pr"], {
+    () => runMainInRepo(d, ["agent", "add", "gemini", "--build", "--author", "codex"], {
       buildAgent: async () => assert.fail("buildAgent ran — gemini's adapter code already exists, nothing to build"),
     }),
-    (e) => e.exit === 64 && /--pr is not valid with 'orch agent add gemini'/.test(e.message),
+    (e) => e.exit === 64 && /--author is not valid with 'orch agent add gemini'/.test(e.message),
   );
   await assert.rejects(
     () => runMainInRepo(d, ["agent", "add", "gemini", "--build", "--reviewer", "codex"], {
@@ -6852,7 +6915,7 @@ test("agent add <known-adapter> --build --pr is a usage error, not a silent drop
 
 // Fourth variant: the round-3 fix's build-only-flags list (cli.js) named
 // pr/author/authors/reviewer/reviewers but left out --allow-large-scope,
-// which SUBCOMMAND_FLAGS["agent build"] declares just as build-only — so
+// which SUBCOMMAND_FLAGS["agent add"] declares just as build-only — so
 // `--allow-large-scope` alone validated, reached the known-adapter branch,
 // and was silently dropped exactly like the flags criterion 19 fixed for.
 test("agent add <known-adapter> --build --allow-large-scope is a usage error, not a silent drop", async () => {
@@ -6873,15 +6936,15 @@ test("agent add <known-adapter> --build --allow-large-scope is a usage error, no
 // cli.js's `agent` dispatch, which main() only reaches after the
 // update-check network call and the GitHub App auth mint. Moving the check
 // into validatePositionals (schema.js), which main() calls immediately after
-// parse(), means a doomed `agent add <known> --build --pr` never fires either
-// side effect — the same "validate before every side effect" property
+// parse(), means a doomed `agent add <known> --build --author` never fires
+// either side effect — the same "validate before every side effect" property
 // criterion 17/20 required elsewhere in this schema.
-test("agent add <known-adapter> --build --pr is refused before the update-check side effect fires", async () => {
+test("agent add <known-adapter> --build --author is refused before the update-check side effect fires", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-add-build-known-noupdate-"));
   await runMainInRepo(d, ["init"], { detectAgents: () => ({ found: [], missing: [] }) });
   let updateChecked = false;
   await assert.rejects(
-    () => runMainInRepo(d, ["agent", "add", "gemini", "--build", "--pr"], {
+    () => runMainInRepo(d, ["agent", "add", "gemini", "--build", "--author", "codex"], {
       maybeNotifyUpdate: () => { updateChecked = true; return Promise.resolve(); },
       buildAgent: async () => assert.fail("buildAgent ran — gemini's adapter code already exists, nothing to build"),
     }),
@@ -6890,9 +6953,9 @@ test("agent add <known-adapter> --build --pr is refused before the update-check 
   assert.equal(updateChecked, false, "update-check must not fire before a usage error is refused");
 });
 
-test("orch pr --merge --dry never preflights, authenticates, or shells out to gh", async () => {
+test("orch pr --until merged --dry never preflights, authenticates, or shells out to gh", async () => {
   const d = mkdtempSync(join(tmpdir(), "orch-pr-dry-"));
-  const logs = await runMainInRepo(d, ["pr", "123", "--merge", "--dry"], {
+  const logs = await runMainInRepo(d, ["pr", "123", "--until", "merged", "--dry"], {
     preflight() { throw new Error("preflight ran"); },
     githubDeps: () => ({ gh: () => { throw new Error("gh ran"); } }),
   });
@@ -7022,6 +7085,7 @@ test("orch continue on a stopped-at-cap record with nothing to reattach refuses 
 // run asked for; `?? 1` only substitutes on `null`/`undefined`.
 test("orch continue on a resumable stopped-at-cap record honors a stored maxAttempts:0", async () => {
   const repo = initGitRepo("orch-continue-maxattempts-");
+  addOriginWithPeer(repo);
   const sid = "deadbeef";
   const branch = `pr/claude/some-fix-${sid}`;
   gitDep.git(["checkout", "-b", branch], repo);

@@ -39,7 +39,6 @@ export const FLAGS = {
   check: { type: "boolean", help: "Validate or report the current state." },
   link: { type: "boolean", help: "Link .orch/ORCH.md from the agent doc files." },
   build: { type: "boolean", help: "Scaffold a missing adapter through a cycle." },
-  "no-banner": { type: "boolean", help: "Hide the run banner." },
   "no-tidy": { type: "boolean", help: "Keep task branches and worktrees after landing." },
   detach: { type: "boolean", help: "Run in the background; print pid, log and runId." },
   json: { type: "boolean", help: "Print one JSON event per line; no prose." },
@@ -48,8 +47,6 @@ export const FLAGS = {
   once: { type: "boolean", label: "--once, --plain", help: "Print the static one-shot instead of the TUI." },
   plain: { type: "boolean", help: null },
   "refresh-ms": { type: "int", arg: "<n>", help: "TUI repaint interval in ms." },
-  merge: { type: "boolean", help: "Merge the approved PR." },
-  pr: { type: "boolean", help: "Open a PR instead of leaving the branch bare." },
 };
 
 // Legal on every command: --help/--version describe the tool rather than run
@@ -59,21 +56,14 @@ export const GLOBAL_FLAGS = ["help", "version"];
 
 // Flags shared by the commands that run an author/review/test cycle.
 const RUN_FLAGS = [
-  "config-file", "dry", "no-tidy", "no-banner", "detach", "until",
+  "config-file", "dry", "no-tidy", "detach", "until",
   "allow-large-scope", "author", "authors", "reviewer", "reviewers",
 ];
 
-// `agent add` and `agent build` are one COMMANDS entry (one positional shape,
-// one help block) but NOT one flag set: --build on `agent build` is redundant
-// (the subcommand already says so), and --pr/author/reviewer overrides only
-// mean something when a build actually happens, which a plain `agent add`
-// never does. This is the declaration `validateAgentArgs` and the completion
-// renderer both read; `COMMANDS.agent.flags` is their union so a flag legal on
-// either subcommand still validates on the bare command name (needed by the
-// generic per-command matrix test, which has no subcommand to key off).
+// `agent add --build` uses one command entry and one positional shape. The
+// build-only flags are accepted only when that switch is present.
 export const SUBCOMMAND_FLAGS = {
-  "agent add": ["config-file", "dry", "build"],
-  "agent build": ["config-file", "dry", "pr", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
+  "agent add": ["config-file", "dry", "build", "allow-large-scope", "author", "authors", "reviewer", "reviewers"],
 };
 
 // Commands. `flags` is what the command actually reads — anything else typed
@@ -85,14 +75,13 @@ export const COMMANDS = {
   init: {
     mutates: true, flags: ["config-file", "dry", "link"],
   },
-  // Mutating: runConfigWizard creates .orch/ and writes orch.yml. `--check`
-  // and `--json` select the non-interactive report path; with neither flag,
-  // cli.js keeps the legacy wizard until the v0.5 cutover.
+  // Read-only: v0.5 removes the interactive configuration wizard. The command
+  // always prints the effective configuration; --check/--json select reports.
   config: {
-    mutates: true, flags: ["config-file", "dry", "check", "json"],
+    mutates: false, flags: ["config-file", "check", "json"],
   },
   agent: {
-    mutates: true, flags: [...new Set([...SUBCOMMAND_FLAGS["agent add"], ...SUBCOMMAND_FLAGS["agent build"]])],
+    mutates: true, flags: [...SUBCOMMAND_FLAGS["agent add"]],
   },
   task: {
     mutates: true, flags: [...RUN_FLAGS, "from", "file", "cheap", "allow-protected", "json"],
@@ -100,31 +89,20 @@ export const COMMANDS = {
   issue: {
     mutates: true, flags: [...RUN_FLAGS, "from", "cheap", "allow-protected", "json"],
   },
-  review: {
-    // No --author/--authors: review audits an existing branch, whose author is
-    // read off the branch name — accepting and ignoring them is the exact lie
-    // this schema exists to remove. --reviewer(s)/--cheap ARE honoured (they
-    // pick who audits). The default review path does not merge; --until ready
-    // or merged opts into the landing path. The --no-tidy exclusion is inherited
-    // from the days this comment claimed review "never merges"; whether it
-    // should therefore be legal here is #528's call, not a help fix.
-    mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-tidy", "author", "authors"].includes(f)), "cheap", "json"],
-  },
   continue: {
     // No --author: the branch's commits were authored by a specific agent
     // already, and `continue` resumes that run rather than starting a new one —
     // accepting the flag and ignoring it is the exact lie this schema removes.
     // --reviewer(s) IS honoured (see the `continue` handler in cli.js).
-    mutates: true, flags: [...RUN_FLAGS.filter((f) => !["no-banner", "author", "authors"].includes(f)), "json"],
+    mutates: true, flags: [...RUN_FLAGS.filter((f) => !["author", "authors"].includes(f)), "json"],
   },
   // No --author/--authors: pr audits an existing PR/branch, it never assigns
   // an author. applyRoleOverrides is called with allowReviewerOnly, so a
   // passed --author would be silently ignored. Accepting the flag would be
   // the exact "nobody read your flag" lie this schema exists to remove.
-  // `--until once|ready|merged` is handled by the unified PR path in cli.js;
-  // `--merge` remains a compatibility alias until the P12 clean break.
+  // `--until once|ready|merged` is handled by the unified PR path in cli.js.
   pr: {
-    mutates: true, flags: ["config-file", "dry", "merge", "until", "detach", "allow-large-scope", "reviewer", "reviewers", "json"],
+    mutates: true, flags: ["config-file", "dry", "until", "detach", "allow-large-scope", "reviewer", "reviewers", "json"],
   },
   release: {
     mutates: true, flags: ["dry"],
@@ -138,7 +116,6 @@ export const COMMANDS = {
   upgrade: {
     mutates: true, flags: ["check", "dry"],
   },
-  update: { mutates: true, flags: ["check", "dry"] }, // alias, documented on upgrade's row
   completion: {
     // `completion install` writes ~/.orch/completion.bash, so it needs --dry
     // like every other mutating command. `completion [bash]` only prints —
@@ -165,16 +142,10 @@ const INTERNAL_COMMANDS = { "__update-check-child": { mutates: false, flags: [] 
 
 // Subcommand words, for completion. Derived nowhere else: these are positional
 // literals, not flags.
-export const SUBCOMMANDS = { agent: ["add", "build"], completion: ["bash", "install"] };
+export const SUBCOMMANDS = { agent: ["add"], completion: ["bash", "install"] };
 
-// Build-only flags: legal on `agent build` (SUBCOMMAND_FLAGS above) but not on
-// `agent add`. They mean something on `add` only while `--build` is about to
-// scaffold a genuinely unregistered adapter; a name orch already has code for
-// never builds regardless of `--build` (see cli.js), so they are always inert
-// there too.
-const AGENT_BUILD_ONLY_FLAGS = SUBCOMMAND_FLAGS["agent build"].filter(
-  (f) => !SUBCOMMAND_FLAGS["agent add"].includes(f),
-);
+// These flags only make sense when `agent add` is also given `--build`.
+const AGENT_BUILD_FLAGS = ["allow-large-scope", "author", "authors", "reviewer", "reviewers"];
 
 export const EXAMPLES = [
   "orch init --link",
@@ -190,7 +161,7 @@ export const EXAMPLES = [
 const HELP_GROUPS = [
   ["Set up a repo", ["init", "config", "agent"]],
   ["Run a cycle", ["task", "issue"]],
-  ["Review and land", ["review", "pr", "continue"]],
+  ["Review and land", ["pr", "continue"]],
   ["Operate", ["dashboard", "mcp"]],
   ["Maintain", ["release", "upgrade", "completion", "version", "help"]],
 ];
@@ -252,12 +223,12 @@ export const HELP_PAGES = {
     title: "orch config — print the effective, validated configuration.",
     synopsis: ["orch config [options]"],
     about: [
-      "Prints every setting orch will actually use for a run in this repo, with the source of each value: a built-in default, .orch/orch.yml, or a file layered on with --config-file. Reading it answers \"why did that run pick that reviewer\" without reading the code. --check turns it into a gate: it validates instead of printing, and exits 1 listing every unknown key. A key that was renamed or removed is listed under Warnings, with the rename to make, and does not fail the gate. The schema is closed — an unrecognised key is an error, not silence, so a typo like `roudCap` is reported instead of ignored.",
+      "Prints every setting orch will actually use for a run in this repo, with the source of each value: a built-in default, .orch/orch.yml, or a file layered on with --config-file. Reading it answers \"why did that run pick that reviewer\" without reading the code. --check validates instead of printing, and exits 1 listing every unknown or removed key. The schema is closed — a typo is an error, not silence.",
     ],
     args: "Arguments: none.",
     exits: [[0, "valid"], [1, "invalid config (--check)"], [64, "usage error"]],
     examples: ["orch config", "orch config --check"],
-    flagOrder: ["check", "json", "config-file", "dry"],
+    flagOrder: ["check", "json", "config-file"],
     flagHelp: {
       check: "Validate only; exit 1 and list problems.",
       json: "Print the report as one JSON object.",
@@ -266,12 +237,12 @@ export const HELP_PAGES = {
   },
   agent: {
     title: "orch agent add — add an agent to the rotation pool.",
-    synopsis: ["orch agent add <name> [options]", "orch agent build <name> [options]"],
+    synopsis: ["orch agent add <name> [options]"],
     about: [
       "Appends <name> to the `agents:` list in .orch/orch.yml, which is the pool the author and reviewer seats rotate through. If orch has no adapter for <name>, `add` alone changes nothing but the config; pass --build to scaffold the adapter through a normal cycle — orch writes its own integration code with the same author, cross-audit and test-gate path any other change goes through. A name orch already has an adapter for never builds, with or without --build.",
-      "A build never merges. An agreed and green adapter stays on its branch for a human to read and land, because code orch wrote that orch will then run as an agent gets a human checkpoint. With --pr that branch is opened as a pull request instead of left bare; it is still yours to merge.",
+      "A build never merges. An agreed and green adapter stays on its branch for a human to read and land, because code orch wrote that orch will then run as an agent gets a human checkpoint.",
     ],
-    args: "Arguments: exactly one <name>, after the add or build subcommand word.",
+    args: "Arguments: exactly one <name>, after the add subcommand word.",
     exits: AGENT_EXITS,
     examples: ["orch agent add codex", "orch agent add mynewagent --build --author \"claude\" --reviewer \"codex\""],
     flagOrder: ["build", "config-file", "dry"],
@@ -280,9 +251,8 @@ export const HELP_PAGES = {
       "config-file": "Read and write this YAML path.",
       dry: "Print the edit and the plan; change nothing.",
       authors: "Comma-separated author seats.",
-      pr: "Open the finished adapter branch as a pull request.",
     },
-    flagGroups: [["Only with --build:", ["author", "authors", "reviewer", "reviewers", "allow-large-scope", "pr"]]],
+    flagGroups: [["Only with --build:", ["author", "authors", "reviewer", "reviewers", "allow-large-scope"]]],
   },
   task: {
     title: "orch task — run one change through a cycle.",
@@ -295,7 +265,7 @@ export const HELP_PAGES = {
     examples: ["orch task \"add input validation\" --until once", "orch task --file work-order.json --cheap"],
     flagOrder: [
       "until", "from", "author", "authors", "reviewer", "reviewers", "cheap", "file",
-      "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "detach",
+      "allow-protected", "allow-large-scope", "no-tidy", "detach",
       "dry", "json", "config-file",
     ],
     flagHelp: {
@@ -305,7 +275,7 @@ export const HELP_PAGES = {
         "ready = loop until the pull request for this change",
         "        is green and mergeable; never merge it.",
         "merged = also merge the standing PR.",
-        "(default: once)",
+        "(default: ready)",
       ),
       from: FROM_HELP,
       file: FILE_HELP,
@@ -324,7 +294,7 @@ export const HELP_PAGES = {
     examples: ["orch issue 42", "orch issue 42 --until merged --reviewer \"codex gpt-5.6-sol high\""],
     flagOrder: [
       "until", "from", "author", "authors", "reviewer", "reviewers", "cheap",
-      "allow-protected", "allow-large-scope", "no-tidy", "no-banner", "detach",
+      "allow-protected", "allow-large-scope", "no-tidy", "detach",
       "dry", "json", "config-file",
     ],
     flagHelp: {
@@ -334,38 +304,11 @@ export const HELP_PAGES = {
         "ready = loop until the pull request for this change",
         "        is green and mergeable; never merge it.",
         "merged = also merge the standing PR.",
-        "(default: once)",
+        "(default: ready)",
       ),
       from: FROM_HELP,
       "allow-protected": ALLOW_PROTECTED_HELP,
       "no-tidy": NO_TIDY_HELP,
-    },
-  },
-  review: {
-    title: "orch review — audit an existing branch without merging it.",
-    synopsis: ["orch review <branch> [options]"],
-    about: [
-      "Audits an existing branch: no author writes a new change first, a reviewer agent examines the diff, and the test gate and deterministic security scan run on it. By default an agreed and green branch is reported without landing; use --until ready (or merged) to opt into landing it on the integration branch.",
-      "`orch pr <branch>` audits the same branch without that local merge, leaving the landing to GitHub. This is the older of the two spellings and is kept for compatibility.",
-    ],
-    notes: ["There is no --author here: this command audits work that already has an author."],
-    args: "Arguments: exactly one branch name.",
-    exits: RUN_EXITS,
-    examples: ["orch review feature/add-retry", "orch review feature/add-retry --reviewer \"codex\""],
-    flagOrder: [
-      "until", "reviewer", "reviewers", "cheap", "allow-large-scope",
-      "no-banner", "detach", "dry", "json", "config-file",
-    ],
-    flagHelp: {
-      until: untilHelp(
-        "What this run pursues: once, ready or merged.",
-        "once  = a single audit, then report.",
-        "ready = land locally, then wait for the standing PR",
-        "        to be green and mergeable; never merge it.",
-        "merged = also merge the standing PR.",
-        "(default: once)",
-      ),
-      cheap: "Fill the reviewer seat from cheap.role in orch.yml.",
     },
   },
   pr: {
@@ -379,7 +322,7 @@ export const HELP_PAGES = {
     exits: RUN_EXITS,
     examples: ["orch pr 42 --until once", "orch pr pr/claude/add-retry --reviewer \"codex\""],
     flagOrder: [
-      "until", "merge", "reviewer", "reviewers", "allow-large-scope", "detach",
+      "until", "reviewer", "reviewers", "allow-large-scope", "detach",
       "dry", "json", "config-file",
     ],
     flagHelp: {
@@ -389,16 +332,15 @@ export const HELP_PAGES = {
         "ready = repair the head until it is green and",
         "        mergeable; never merge it.",
         "merged = merge it once readiness is verified.",
-        "(default: once)",
+        "(default: ready)",
       ),
-      merge: "Alias for --until merged; refused next to a different --until.",
     },
   },
   continue: {
     title: "orch continue — resume an interrupted cycle or a stopped run.",
     synopsis: ["orch continue <sid> [options]"],
     about: [
-      "Every cycle writes a checkpoint keyed by its sid (the run's short id, printed when the run starts and listed by `orch dashboard`). `continue` reads that checkpoint and picks the cycle up where it stopped instead of starting over, so a run killed mid-review does not re-author the change. A run that ended at the attempt cap (exit 2) or waiting on a human (exit 4) resumes here too, with a fresh attempt budget. The seats, work order and goal are taken from the record: a bare `orch continue <sid>` on a run started with --until merged keeps pursuing merged, not the default a fresh run would get. A flag given here overrides the recorded value for this resume only.",
+      "Every cycle writes a checkpoint keyed by its sid (the run's short id, printed when the run starts and listed by `orch dashboard`). `continue` reads that checkpoint and picks the cycle up where it stopped instead of starting over, so a run killed mid-review does not re-author the change. A run that ended at the attempt cap (exit 2) or waiting on a human (exit 4) resumes here too, with a fresh attempt budget. The seats and work order are taken from the record; ready/merged goals are inherited from it, while an explicit `--until once` requests one pass for this resume.",
     ],
     notes: ["There is no --author here: the commits being resumed were written by a specific agent, and this command continues that run rather than starting a new one."],
     args: "Arguments: exactly one sid. A sid never contains '/', '..' or a NUL byte — it is used directly as a store key, so anything else is refused.",
@@ -410,10 +352,9 @@ export const HELP_PAGES = {
     ],
     flagHelp: {
       until: untilHelp(
-        "What this resume pursues. Only once can be typed here",
-        "today; ready and merged are inherited from the run's",
-        "own record, and are refused as an override.",
-        "(default: the goal recorded for the run)",
+        "Request one pass for this resume; ready and merged",
+        "are inherited from the recorded run.",
+        "(default: the recorded run's goal, or once for a legacy sid)",
       ),
       "no-tidy": NO_TIDY_HELP,
     },
@@ -456,20 +397,10 @@ export const HELP_PAGES = {
   upgrade: {
     title: "orch upgrade — self-update the global npm install.",
     synopsis: ["orch upgrade [options]"],
-    about: ["Compares the running version against the published one and reinstalls the global package when it is behind. --check only reports the comparison and installs nothing, which is what a scripted or scheduled caller wants. `orch update` is a second spelling of this command."],
+    about: ["Compares the running version against the published one and reinstalls the global package when it is behind. --check only reports the comparison and installs nothing, which is what a scripted or scheduled caller wants."],
     args: "Arguments: none.",
     exits: [[0, "up to date or upgraded"], [1, "the check or the install failed"], [64, "usage error"]],
     examples: ["orch upgrade --check", "orch upgrade"],
-    flagOrder: ["check", "dry"],
-    flagHelp: { check: "Report the latest version; install nothing.", dry: "Print the install command; run nothing." },
-  },
-  update: {
-    title: "orch update — self-update the global npm install.",
-    synopsis: ["orch update [options]"],
-    about: ["A second spelling of `orch upgrade`, kept for compatibility: it compares the running version against the published one and reinstalls the global package when it is behind. --check only reports the comparison and installs nothing, which is what a scripted or scheduled caller wants."],
-    args: "Arguments: none.",
-    exits: [[0, "up to date or upgraded"], [1, "the check or the install failed"], [64, "usage error"]],
-    examples: ["orch update --check", "orch update"],
     flagOrder: ["check", "dry"],
     flagHelp: { check: "Report the latest version; install nothing.", dry: "Print the install command; run nothing." },
   },
@@ -581,7 +512,7 @@ export function validate(command, flags, { detachedChild = false } = {}) {
   const effective = flags.help && command ? command : flags.version ? "version" : flags.help ? "help" : command;
   const spec = COMMANDS[effective] || INTERNAL_COMMANDS[effective];
   if (!spec) {
-    // No command at all (bare `orch --merge`) used to fall through main()'s
+    // No command at all (bare `orch --dry`) used to fall through main()'s
     // no-command branch and print usage with exit 0 — the flag was silently
     // dropped rather than refused. A flag needs a command to be legal on.
     if (!effective) {
@@ -618,25 +549,21 @@ export function validate(command, flags, { detachedChild = false } = {}) {
     );
   }
   if (flags.help && command) {
-    const action = flags.until && flags.until !== "once" ? "until" : flags.detach ? "detach" : flags.build ? "build" : flags.merge ? "merge" : null;
+    const action = flags.until && flags.until !== "once" ? "until" : flags.detach ? "detach" : flags.build ? "build" : null;
     if (action) throw usageError(`--${action} cannot be combined with --help on 'orch ${command}'`, { helpFor: helpPageFor(command) });
   }
   // --until ready|merged (design docs/cli-v2-design.md §6/§9) drives the run
   // controller. `continue` is still on the legacy path; PRs now share the
   // controller with task/issue/review.
   if (flags.until && flags.until !== "once" && effective === "continue") {
-    throw usageError(`--until ${flags.until} is not yet available with 'orch ${effective}' — only --until once (the default)`);
-  }
-  if (effective === "pr" && flags.merge && flags.until && flags.until !== "merged") {
-    throw usageError(`--merge is an alias for --until merged and cannot be combined with --until ${flags.until}`);
+    throw usageError(`--until ${flags.until} is not yet available with 'orch ${effective}' — only --until once (an explicit one-pass override)`);
   }
   // --json on a run command only makes sense once `--until` puts the run
-  // through the controller's event stream (P5); on the bare/`once` path
-  // there is nothing to stream, so accepting it would be another silent no-op.
-  if (flags.json && ["task", "issue", "review", "pr"].includes(effective) && (!flags.until || flags.until === "once")) {
+  // through the controller's event stream (P5); the explicit `once` path
+  // has nothing to stream, so accepting it would be another silent no-op.
+  if (flags.json && ["task", "issue", "pr"].includes(effective) && flags.until === "once") {
     if (!flags.detach && !detachedChild) {
-      const landing = effective === "review" ? " — either goal also opts into landing the branch" : "";
-      throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged)${landing} — the once path has no event stream to print`);
+      throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged) — the once path has no event stream to print`);
     }
   }
   if (flags.detach && flags.dry) {
@@ -704,11 +631,10 @@ export function validate(command, flags, { detachedChild = false } = {}) {
 // reject exactly the un-quoted phrasing the handler exists to accept.
 const POSITIONAL_ARITY = {
   init: [0, 0], config: [0, 0], dashboard: [0, 0], mcp: [0, 0],
-  upgrade: [0, 0], update: [0, 0], version: [0, 0], help: [0, 1],
+  upgrade: [0, 0], version: [0, 0], help: [0, 1],
   task: [0, Infinity], completion: [0, 1],
   issue: [1, 1, "usage: orch issue <number> [--author ... --reviewer ...]"],
-  review: [1, 1, "usage: orch review <branch>"],
-  continue: [1, 1, "usage: orch continue <sid>"],
+  continue: [1, 1, "usage: orch continue <sid> [--until once]"],
   pr: [1, 1, "usage: orch pr <number> or <branch> [--until once|ready|merged]"],
   release: [1, Infinity, 'usage: orch release "<changelog entry>"'],
   // Internal re-exec target, never typed by a user (see cli.js) — but it still
@@ -779,62 +705,30 @@ export function validatePositionals(command, rest, flags) {
   }
 }
 
-// `agent add` and `agent build` share a positional shape (<name>) but not a
-// flag set (SUBCOMMAND_FLAGS above): --build on `agent build` is redundant
-// (the subcommand already says so), and the flags that only matter for
-// building an adapter (--pr and the author/reviewer overrides — everything
-// "agent build" reads that "agent add" doesn't) are meaningless on a plain
-// `agent add` that never builds anything — accepting them there would
-// silently ignore them, the exact defect this schema exists to remove.
 function validateAgentArgs(rest, flags) {
   const [sub, name, ...extra] = rest;
   if (sub === undefined || !SUBCOMMANDS.agent.includes(sub)) {
-    throw usageError("usage: orch agent add <name> | orch agent build <name> [--pr]");
+    throw usageError("usage: orch agent add <name> [--build]");
   }
   if (!name) {
-    throw usageError(sub === "build" ? "usage: orch agent build <name> [--pr]" : "usage: orch agent add <name> | orch agent build <name> [--pr]");
+    throw usageError("usage: orch agent add <name> [--build]");
   }
   if (extra.length) {
     throw usageError(`'orch agent ${sub}' takes a single <name> argument — got ${extra.length} extra: ${extra.join(" ")}`);
   }
-  if (sub === "build" && flags.build) {
-    throw usageError("--build is not valid with 'orch agent build' — building is what the subcommand already does");
-  }
-  if (sub === "build") {
-    // A name orch already has adapter code for never builds (cli.js's
-    // buildAgent returns "already-registered" before it reads any flag) — so
-    // --pr/the role overrides/--allow-large-scope are inert there, same as on
-    // `agent add`. Plain `orch agent build <known>` (no build-only flags)
-    // stays legal; it just reports "already registered".
-    let known = true;
-    try { getAdapter(name); } catch { known = false; }
-    if (known) {
-      for (const flagName of AGENT_BUILD_ONLY_FLAGS) {
-        if (flags[flagName] !== undefined && flags[flagName] !== false) {
-          throw usageError(`--${flagName} is not valid with 'orch agent build ${name}' — ${name} already has an adapter, so no build runs`);
-        }
-      }
-    }
-  }
-  if (sub === "add") {
-    // A name orch already has adapter code for never builds, `--build` or not
-    // (see cli.js's agent-add handler) — so the build-only flags are invalid
-    // there unconditionally. A genuinely unregistered name only makes them
-    // legal once `--build` is present. Checking this here, before
-    // validatePositionals returns to main(), is what stops `agent add
-    // <known> --build --pr` from minting a GitHub App token and firing the
-    // update-check network call before being refused.
-    let known = true;
-    try { getAdapter(name); } catch { known = false; }
-    if (known || !flags.build) {
-      for (const flagName of AGENT_BUILD_ONLY_FLAGS) {
-        if (flags[flagName] !== undefined && flags[flagName] !== false) {
-          throw usageError(
-            known
-              ? `--${flagName} is not valid with 'orch agent add ${name}' — ${name} already has an adapter, so no build runs (use 'orch agent build ${name} --pr' to rebuild it)`
-              : `--${flagName} is not valid with 'orch agent add' without --build — it only affects the build`,
-          );
-        }
+  // A name orch already has adapter code for never builds, `--build` or not
+  // (see cli.js's agent-add handler). Build-only flags are legal only for an
+  // unregistered name when --build is present.
+  let known = true;
+  try { getAdapter(name); } catch { known = false; }
+  if (known || !flags.build) {
+    for (const flagName of AGENT_BUILD_FLAGS) {
+      if (flags[flagName] !== undefined && flags[flagName] !== false) {
+        throw usageError(
+          known
+            ? `--${flagName} is not valid with 'orch agent add ${name}' — ${name} already has an adapter, so no build runs`
+            : `--${flagName} is not valid with 'orch agent add' without --build — it only affects the build`,
+        );
       }
     }
   }
@@ -857,16 +751,15 @@ function pad(label, width = 24) {
 const GLOBAL_ROWS = {
   init: ["init", "Write a commented .orch/orch.yml and .orch/ORCH.md."],
   config: ["config", "Print the effective, validated config."],
-  agent: ["agent add|build <name>", "Add an agent to the rotation pool; --build scaffolds its adapter."],
+  agent: ["agent add <name>", "Add an agent to the rotation pool; --build scaffolds its adapter."],
   task: ["task \"change\"", "Author, cross-audit, test-gate and land one change."],
   issue: ["issue <number>", "The same, from a GitHub issue; closes it on landing."],
-  review: ["review <branch>", "Audit an existing branch; --until ready opts into landing."],
   pr: ["pr <number|branch>", "Audit a pull request or a branch; repair or merge it."],
   continue: ["continue <sid>", "Resume an interrupted cycle or a stopped run."],
   dashboard: ["dashboard", "Live status TUI; --once prints a static snapshot."],
   mcp: ["mcp", "Serve orch as an MCP server over stdio."],
   release: ["release \"entry\"", "Bump version + CHANGELOG by hand (autoBump repos)."],
-  upgrade: ["upgrade, update", "Self-update the global npm install."],
+  upgrade: ["upgrade", "Self-update the global npm install."],
   completion: ["completion", "Print or install the bash completion script."],
   version: ["version", "Print the version."],
   help: ["help [command]", "This page, or one command's page."],
@@ -994,14 +887,14 @@ export function renderHelp(command = null) {
   const page = HELP_PAGES[command];
   if (!page) throw new Error(`unknown help page: ${command}`);
   const allFlags = orderedFlags(command, page);
-  const groupFlags = command === "agent" ? new Set(AGENT_BUILD_ONLY_FLAGS) : new Set();
+  const groupFlags = command === "agent" ? new Set(AGENT_BUILD_FLAGS) : new Set();
   const mainFlags = allFlags.filter((name) => !groupFlags.has(name));
   const options = mainFlags.length ? ["Options:", ...flagRows(mainFlags, page)] : ["Options: none."];
   if (page.flagGroups) {
     for (const [heading, preferred] of page.flagGroups) {
       const names = [
         ...preferred.filter((name) => groupFlags.has(name)),
-        ...AGENT_BUILD_ONLY_FLAGS.filter((name) => !preferred.includes(name)),
+        ...AGENT_BUILD_FLAGS.filter((name) => !preferred.includes(name)),
       ];
       if (names.length) options.push("", heading, ...flagRows(names, page));
     }

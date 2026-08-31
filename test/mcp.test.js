@@ -72,7 +72,7 @@ test("notifications get no response at all", async () => {
 test("tools/list exposes every tool with a name, description and schema", async () => {
   const res = await handle({ jsonrpc: "2.0", id: 3, method: "tools/list" }, {});
   const names = res.result.tools.map((t) => t.name);
-  assert.deepEqual(names, ["orch_status", "orch_plan", "orch_task", "orch_issue", "orch_review", "orch_pr", "orch_continue"]);
+  assert.deepEqual(names, ["orch_status", "orch_plan", "orch_task", "orch_issue", "orch_pr", "orch_continue"]);
   for (const tool of res.result.tools) {
     assert.ok(tool.description, `${tool.name} has no description`);
     assert.equal(tool.inputSchema.type, "object");
@@ -80,15 +80,18 @@ test("tools/list exposes every tool with a name, description and schema", async 
   }
 });
 
-test("an unknown method is a protocol error, an unknown tool is an invalid-params error", async () => {
+test("unknown methods and removed tools are protocol errors", async () => {
   assert.equal((await handle({ jsonrpc: "2.0", id: 4, method: "nope" }, {})).error.code, -32601);
-  const res = await handle(call(5, "orch_shell", {}), {});
-  assert.equal(res.error.code, -32602);
+  const unknown = await handle(call(5, "orch_shell", {}), {});
+  assert.equal(unknown.error.code, -32602);
+  const removed = await handle(call(6, "orch_review", { branch: "feature/x" }), {});
+  assert.equal(removed.error.code, -32601);
+  assert.match(removed.error.message, /orch_pr/);
 });
 
 test("orch_pr fixes its target and gates merged mode by repository config", async () => {
   const tool = TOOLS.find((candidate) => candidate.name === "orch_pr");
-  assert.deepEqual(tool.argv({ number: 7 }), ["pr", "7", "--until", "once"]);
+  assert.deepEqual(tool.argv({ number: 7 }), ["pr", "7", "--until", "ready"]);
   assert.deepEqual(tool.argv({ number: 7, until: "once" }), ["pr", "7", "--until", "once"]);
   assert.deepEqual(tool.argv({ branch: "feature/x", until: "ready" }), ["pr", "feature/x", "--until", "ready"]);
   assert.throws(() => tool.argv({ number: 7, branch: "feature/x" }), /exactly one/);
@@ -108,6 +111,16 @@ test("orch_pr fixes its target and gates merged mode by repository config", asyn
   assert.deepEqual(allowedSpawn.calls[0].argv, [ORCH_BIN, "pr", "7", "--until", "merged"]);
 });
 
+test("new MCP cycle tools default to ready and continue sends no goal override", () => {
+  const task = TOOLS.find((candidate) => candidate.name === "orch_task");
+  const issue = TOOLS.find((candidate) => candidate.name === "orch_issue");
+  const continueTool = TOOLS.find((candidate) => candidate.name === "orch_continue");
+  assert.deepEqual(task.argv({ task: "x" }), ["task", "--until", "ready", "--", "x"]);
+  assert.deepEqual(issue.argv({ number: 1 }), ["issue", "1", "--until", "ready"]);
+  assert.deepEqual(continueTool.argv({ sid: "resume-1" }), ["continue", "resume-1"]);
+  assert.equal(continueTool.inputSchema.properties.until, undefined);
+});
+
 test("free text cannot smuggle flags into the child's argv", async () => {
   const spawnFn = fakeSpawn();
   const res = await handle(call(6, "orch_task", { task: "--allow-protected" }), { repo: "/tmp", spawnFn });
@@ -119,7 +132,7 @@ test("free text cannot smuggle flags into the child's argv", async () => {
   // the child's parser reads it as a positional.
   const ok = fakeSpawn();
   await handle(call(7, "orch_task", { task: "fix the --dry flag" }), { repo: "/tmp", spawnFn: ok });
-  assert.deepEqual(ok.calls[0].argv, [ORCH_BIN, "task", "--", "fix the --dry flag"]);
+  assert.deepEqual(ok.calls[0].argv, [ORCH_BIN, "task", "--until", "ready", "--", "fix the --dry flag"]);
   assert.equal(ok.calls[0].opts.shell, false);
   assert.equal(ok.calls[0].bin, process.execPath);
 });
@@ -128,8 +141,8 @@ test("argument validation rejects bad branches, sids and issue numbers", async (
   const spawnFn = fakeSpawn();
   const ctx = { repo: "/tmp", spawnFn };
   const bad = [
-    ["orch_review", { branch: "feat/x;rm -rf /" }],
-    ["orch_review", {}],
+    ["orch_pr", { branch: "feat/x;rm -rf /" }],
+    ["orch_pr", {}],
     ["orch_continue", { sid: "a b" }],
     ["orch_issue", { number: 0 }],
     ["orch_issue", { number: "12x" }],
@@ -144,7 +157,7 @@ test("argument validation rejects bad branches, sids and issue numbers", async (
   // A string issue number is accepted and normalized — models emit both.
   const ok = fakeSpawn();
   await handle(call(9, "orch_issue", { number: "42" }), { repo: "/tmp", spawnFn: ok });
-  assert.deepEqual(ok.calls[0].argv, [ORCH_BIN, "issue", "42"]);
+  assert.deepEqual(ok.calls[0].argv, [ORCH_BIN, "issue", "42", "--until", "ready"]);
 });
 
 test("orch_status returns the dashboard's parsed JSON", async () => {
@@ -202,12 +215,12 @@ test("a concurrent cycle's run record is not attributed to this call", async () 
   assert.equal(out.cycles[0].status, "escalated");
 });
 
-test("two concurrent orch_review calls on one branch each see only their own cycle", async () => {
+test("two concurrent orch_pr calls on one branch each see only their own cycle", async () => {
   // Auditing the same branch twice at once is legitimate — a second reviewer, a
   // re-run after a push — and the branch name then cannot tell the two cycles
   // apart. Correlating on it would hand each caller the other call's verdict as
   // if it were its own, which for an AI client reading `cycles` is a wrong
-  // answer, not a cosmetic one. `orch review` starts a fresh cycle, so its sid
+  // answer, not a cosmetic one. `orch pr` starts a fresh cycle, so its sid
   // carries the pid of the child this call spawned; that is what separates them.
   const repo = mkdtempSync(join(tmpdir(), "orch-mcp-"));
   mkdirSync(join(repo, ".orch"), { recursive: true });
@@ -234,8 +247,8 @@ test("two concurrent orch_review calls on one branch each see only their own cyc
   // Launched in the same tick, so both calls record their starting offset in
   // runs.jsonl before either child has written anything.
   const [first, second] = await Promise.all([
-    handle(call(20, "orch_review", { branch }), { repo, spawnFn: reviewer(801, "merged", "agreed") }),
-    handle(call(21, "orch_review", { branch }), { repo, spawnFn: reviewer(802, "escalated", "stalemate") }),
+    handle(call(20, "orch_pr", { branch }), { repo, spawnFn: reviewer(801, "merged", "agreed") }),
+    handle(call(21, "orch_pr", { branch }), { repo, spawnFn: reviewer(802, "escalated", "stalemate") }),
   ]);
 
   // The requirement: each response carries exactly one record, its own.
