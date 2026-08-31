@@ -167,6 +167,12 @@ export async function runUntil(policy, record = {}, deps) {
 
     let land = deps.resolveLanded(cycle);
     if (repinnedHead && land.landing === "standing") land = { ...land, expectedHead: repinnedHead };
+    if (land.landing === "base") {
+      return withRecord({
+        state: policy.until === "merged" ? "MERGED" : "READY", outcome: "reached", exit: EXIT_CODES.OK,
+        headSha: land.expectedHead, cycle, land,
+      }, currentRecord, cycleResults);
+    }
     if (land.remoteGate === false) {
       if (policy.until === "merged") {
         const failure = {
@@ -181,12 +187,6 @@ export async function runUntil(policy, record = {}, deps) {
         // above because it requires remote proof rather than a local success.
         state: "READY",
         outcome: "reached", exit: EXIT_CODES.OK,
-        headSha: land.expectedHead, cycle, land,
-      }, currentRecord, cycleResults);
-    }
-    if (land.landing === "base") {
-      return withRecord({
-        state: policy.until === "merged" ? "MERGED" : "READY", outcome: "reached", exit: EXIT_CODES.OK,
         headSha: land.expectedHead, cycle, land,
       }, currentRecord, cycleResults);
     }

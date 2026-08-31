@@ -3754,6 +3754,20 @@ test("PR landing derives changed paths when the review cycle omits them", () => 
   assert.deepEqual(landed.paths, ["pr.txt"]);
 });
 
+test("base landing does not require a remote or gh bridge", () => {
+  const repo = initGitRepo("orch-base-no-remote-");
+  const landed = resolveLanded(
+    { status: "merged", paths: [] },
+    { branch: "task-1" },
+    { baseBranch: "main", integrationBranch: "main" },
+    { gh: () => { throw new Error("gh must not be called for base landing"); } },
+    repo,
+  );
+
+  assert.equal(landed.landing, "base");
+  assert.equal(landed.expectedHead, gitDep.git(["rev-parse", "main"], repo));
+});
+
 test("PR repair preparation publishes an owned repair branch, not the original head", () => {
   const repo = initGitRepo("orch-pr-repair-");
   const { remote } = addOriginWithPeer(repo);

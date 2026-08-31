@@ -1306,7 +1306,9 @@ export function resolveLanded(cycle, run, cfg, ghDeps, repo) {
   const landedBranch = run.prTarget?.number
     ? (run.prTarget.branch || run.branch)
     : (cycle.status === "pr" || cycle.status === "approved" ? run.branch : integrationBranch);
-  if (!hasRemote(repo, git.git) || !ghAvailable(ghDeps?.gh)) {
+  const isBaseLanding = integrationBranch === baseBranch
+    && !run.prTarget?.number && cycle.status !== "pr" && cycle.status !== "approved";
+  if (!isBaseLanding && (!hasRemote(repo, git.git) || !ghAvailable(ghDeps?.gh))) {
     return { pr: null, expectedHead: git.git(["rev-parse", landedBranch], repo), landing: "local", branch: landedBranch, paths: pathsFor(landedBranch), remoteGate: false };
   }
   if (run.prTarget?.number) {
