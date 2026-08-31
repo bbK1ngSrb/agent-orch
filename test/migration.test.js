@@ -73,3 +73,13 @@ test("v0.5 migration guide is linked and covers the bare-run change", () => {
   assert.match(migration, /bare `task`, `issue`, and `pr` mean `--until ready`/);
   assert.match(migration, /continue.*recorded goal/i);
 });
+
+test("the package version is the v0.5 cutover", () => {
+  // The number is the promise every removal above makes: these are breaking
+  // changes, so the release is 0.5.0 and the documents that quote it have to
+  // agree. docs.test.js checks the landing page's span against this same value.
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.match(pkg.version, /^0\.5\./, `expected a 0.5.x version, got ${pkg.version}`);
+  const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
+  assert.match(changelog, /^## v0\.5\.0/m);
+});

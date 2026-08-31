@@ -2,7 +2,7 @@
 
 See the [v0.5 migration guide](docs/MIGRATION-0.5.md) for the command and configuration changes.
 
-## v0.4.373 — Unreleased
+## v0.5.0 — Unreleased
 - **BREAKING (cli):** remove the legacy `orch review <branch>` command; use `orch pr <branch> --until once` for an audit-only run. The removed `orch_review` MCP tool now returns JSON-RPC `-32601` and names `orch_pr` as its replacement. Two differences to note when migrating: `orch pr` does not accept `--cheap`, so a cheap-role audit must be requested with an explicit `--reviewer` spec instead; and an approved audit of a branch target exits 0, while an approved audit of a numeric PR target exits 5 (ACTION_REQUIRED, one human merge still pending).
 - **BREAKING (cli):** fold `orch agent build <name>` into `orch agent add <name> --build`; the shared adapter-scaffolding pipeline remains available on the new spelling.
 - **BREAKING (config):** `orch config` is now read-only — it prints and validates `.orch/orch.yml`; the interactive wizard is removed.
