@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "runId": "b-1",
+  "runId": "h-1",
   "command": "task",
   "argv": [],
   "policy": {
@@ -16,7 +16,7 @@
   "failures": [],
   "remedies": [],
   "excludedAgents": [],
-  "branch": "pr/claude/x",
+  "branch": "pr/claude/h",
   "pr": null,
   "integration": null,
   "readiness": {
@@ -25,29 +25,15 @@
     "checks": "green"
   },
   "merge": {
-    "mergeCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "mergeCommit": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
     "mergedBy": "orch",
-    "verifiedAncestorAt": "2026-08-30T12:00:00.000Z",
     "requests": [
       {
         "ordinal": 1
-      },
-      {
-        "ordinal": 2
       }
     ]
   },
-  "human": {
-    "channel": "issue",
-    "target": 529,
-    "askCommentId": 1,
-    "replies": [
-      {
-        "id": 2,
-        "command": "retry 2"
-      }
-    ]
-  },
+  "human": null,
   "detached": null,
   "lastError": null
 }

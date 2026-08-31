@@ -27,6 +27,7 @@
   "merge": {
     "mergeCommit": "gggggggggggggggggggggggggggggggggggggggg",
     "mergedBy": "orch",
+    "verifiedAncestorAt": "2026-08-30T12:00:00.000Z",
     "requests": [
       {
         "ordinal": 1

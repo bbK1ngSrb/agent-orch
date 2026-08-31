@@ -232,15 +232,15 @@ test("system: `pr <branch>` reaches ready against the branch's own PR", async ()
 // --- the success-metric audit (proposal §7, scripts/v2-metrics.mjs) ----------
 //
 // The fixture set is hand-built so the expected numbers can be derived from the
-// definitions rather than read off a run: 7 terminal runs, of which 6 reached
-// their goal, 5 of those without a human reply, 4 pursued `--until ready`.
+// definitions rather than read off a run: 8 terminal runs, of which 7 reached
+// their goal, 6 of those without a human reply, 4 pursued `--until ready`.
 
 test("metrics: the fixture set reports more than zero clean unattended runs", () => {
   const report = audit(FIXTURES);
-  assert.equal(report.runs, 7);
-  assert.equal(report.reached, 6);
+  assert.equal(report.runs, 8);
+  assert.equal(report.reached, 7);
   assert.ok(report.cleanUnattended > 0, "the programme's headline metric must be measurable");
-  assert.equal(report.cleanUnattended, 5);
+  assert.equal(report.cleanUnattended, 6);
   // b-1 reached its goal only after a human replied, so it is attended.
   assert.equal(report.readyRuns, 4);
   assert.equal(report.cleanUnattendedReadyRate, 0.75); // 3 of the 4 ready runs
@@ -249,7 +249,10 @@ test("metrics: the fixture set reports more than zero clean unattended runs", ()
 test("metrics: a green exit without evidence is reported as a false ready/merged", () => {
   const report = audit(FIXTURES);
   assert.deepEqual(report.falseReady, ["d-1"]); // exit 0, no readiness observation
-  assert.deepEqual(report.falseMerged, ["e-1"]); // exit 0 under `merged`, no merge commit
+  // e-1: exit 0 under `merged` with no merge object at all. h-1: a merge commit
+  // GitHub reported, but no `verifiedAncestorAt` — orch never proved the commit
+  // is an ancestor of the base, so the green exit is unearned all the same.
+  assert.deepEqual(report.falseMerged.sort(), ["e-1", "h-1"]);
   assert.deepEqual(report.duplicateMergeRequests, ["g-1"]); // ordinals 1,1 — one merge asked twice
   assert.equal(report.localReady, 1); // f-1: no remote gate, not a false ready
   assert.equal(report.redriveCycles, 1);

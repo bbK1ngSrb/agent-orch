@@ -260,10 +260,26 @@ test("crash after `merge` requested, GitHub did not merge → resume requests ag
 // --- remote rows ------------------------------------------------------------
 
 test("`gh` unavailable mid-run → REMOTE_AUTH → 6, record intact", async () => {
+  // MID-run, not at the door: the first readiness poll succeeds (and says
+  // "not ready yet", so the loop keeps going), and `gh` dies only afterwards.
+  // Failing on the very first call would be a different fault — a run that
+  // never had a working channel at all — and would not exercise the thing this
+  // row is for: that progress already made survives the channel dropping.
+  let polls = 0;
   const deps = baseDeps({
-    gh: routingGh([[() => true, () => { const e = new Error("gh: authentication failed (HTTP 401)"); e.stderr = "HTTP 401"; throw e; }]]),
+    gh: routingGh([[() => true, () => {
+      polls += 1;
+      // Poll 1 answers: mergeability not computed yet, so the loop waits and
+      // re-polls. Poll 2 is where the token dies.
+      if (polls === 1) return prView({ mergeable: "UNKNOWN" });
+      const e = new Error("gh: authentication failed (HTTP 401)");
+      e.stderr = "HTTP 401";
+      throw e;
+    }]]),
   });
   const result = await runUntil(POLICY, { attempt: 1, retries: {} }, deps);
+
+  assert.ok(polls > 1, "the channel was working, then it was not");
 
   assert.equal(result.exit, 6);
   assert.equal(result.outcome, "blocked");
@@ -358,7 +374,11 @@ test("gate hangs > `gateTimeout` → TEST_RED, lock released", async () => {
   // engine is where that becomes a classified TEST_RED. A timeout and an
   // honestly failing test are indistinguishable at this seam, and deliberately
   // so — both mean "the tree is not provably green".
-  const released = [];
+  // `merge.lock` is taken inside finalize(), and only there (finalize.js). So
+  // "lock released" is provable at this level as "the merge phase was never
+  // entered": a gate that timed out cannot leave a lock behind it never took.
+  let reachedMerge = false;
+  const gateCalls = [];
   const verdict = { decision: "AGREE", reason: "ok", raw: "" };
   const result = await runCycle({
     task: "hang", branch: "pr/auth/x", authorName: "auth", reviewerName: "rev",
@@ -372,7 +392,14 @@ test("gate hangs > `gateTimeout` → TEST_RED, lock released", async () => {
     },
     gate: {
       detect: () => "sleep 60",
-      run: () => { released.push("gate"); return { pass: false, log: "gate: `sleep 60` timed out after 1000ms and was killed" }; },
+      // The hang is injected as gate.js reports it once its killer has fired:
+      // the configured budget is what the command exceeded, so the fake reads
+      // that budget rather than hard-coding a number the config could drift
+      // from. `pass:false` with no exception is the seam's whole contract.
+      run: (cmd, _repo, opts = {}) => {
+        gateCalls.push({ cmd, timeoutMs: opts.timeoutMs ?? null });
+        return { pass: false, log: `gate: \`${cmd}\` timed out after 1000ms and was killed` };
+      },
     },
     scope: { count: () => 0 },
     notify: {
@@ -382,12 +409,14 @@ test("gate hangs > `gateTimeout` → TEST_RED, lock released", async () => {
     reviewLog: { record() {} },
     inflight: { setPaths() {} },
     // The merge phase must never be reached: it is what holds merge.lock.
-    finalize: async () => { throw new Error("a red gate must not reach the merge phase"); },
+    finalize: async () => { reachedMerge = true; throw new Error("a red gate must not reach the merge phase"); },
   });
 
   assert.equal(result.status, "escalated");
   assert.equal(result.class, "TEST_RED");
-  assert.deepEqual(released, ["gate"]);
+  assert.equal(gateCalls.length, 1, "the gate ran once");
+  assert.match(result.reason || "", /red|test/i);
+  assert.equal(reachedMerge, false, "no merge.lock can be left behind by a phase that never ran");
 });
 
 test("`--until once` + stalemate → exit 2, no remedy events, DECISION.md written", async () => {
