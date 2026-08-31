@@ -1,0 +1,54 @@
+name: 🐞 Bug report
+description: Report a reproducible defect
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        agent-orch is an educational artifact and is currently under a feature freeze —
+        only critical security fixes land. Bug reports are still welcome: a real defect
+        that is parked gets the `frozen` label, and pull requests for parked issues are
+        welcome too.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: The actual behaviour, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal repro
+      description: The smallest command sequence or input that triggers it.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Why it matters
+      description: Impact in plain terms — what breaks, and for whom.
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - low
+        - medium
+        - high
+        - critical
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      value: |
+        - agent-orch version / commit:
+        - Node version:
+        - OS:
+    validations:
+      required: true
