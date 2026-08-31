@@ -170,6 +170,10 @@ test("system: an externally merged standing PR is verified against the base, not
   assert.equal(record.outcome, "reached");
   assert.equal(record.policy.until, "merged");
   assert.equal(record.readiness.ready, true);
+  // Who merged it is part of the proof and must survive into the record: an
+  // externally merged PR under `--until ready` builds no merge object to
+  // carry the field, so it cannot be left to ride inside one.
+  assert.equal(record.mergedBy, "external");
 });
 
 test("system: `--detach` hands the run to a child and returns its identity", async () => {

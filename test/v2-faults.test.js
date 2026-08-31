@@ -117,7 +117,7 @@ function baseDeps(overrides = {}) {
 const redCycle = () => ({
   status: "escalated",
   reason: "AGREE but tests are red — not merging",
-  ...classify(TRIGGERS.TEST_RED) ? { class: classify(TRIGGERS.TEST_RED) } : {},
+  class: classify(TRIGGERS.TEST_RED),
   fingerprint: "fp-red",
 });
 
@@ -432,7 +432,9 @@ test("`--until once` + stalemate → exit 2, no remedy events, DECISION.md writt
 
   assert.equal(record.exit, 2);
   assert.equal(record.policy.until, "once");
-  assert.deepEqual(record.remedies, [], "`once` means one pass: no remedy may run");
+  // A remedy consumes an attempt, so a still-zero attempt counter is the
+  // observable proof that none ran.
+  assert.equal(record.attempt, 0, "`once` means one pass: no remedy may run");
   assert.deepEqual(gh.writes(), [], "nothing may be asked of a human either");
   const decisions = join(repo, ".orch", "reviews", record.branch, "DECISION.md");
   assert.ok(existsSync(decisions), `expected the escalation brief at ${decisions}`);

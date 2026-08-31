@@ -2803,7 +2803,10 @@ export async function main(argv, deps = {}) {
             ...(controller?.land ? { integration: { branch: controller.land.branch, landedSha: controller.headSha || controller.land.expectedHead } } : {}),
             // design §16 / proposal §7 criterion 2 — the readiness observation
             // is the record's proof that a green exit was earned remotely.
+            // `mergedBy` rides alongside it because an externally merged PR
+            // under `--until ready` never builds a `merge` object to carry it.
             ...(controller?.readiness ? { readiness: controller.readiness } : {}),
+            ...(controller?.mergedBy ? { mergedBy: controller.mergedBy } : {}),
             ...(controller?.headMovedRepins != null ? { headMovedRepins: controller.headMovedRepins } : {}),
             ...(controller?.merge ? { merge: controller.merge } : {}),
             excludedAgents: controller?.excludedAgents || activeRun.excludedAgents || priorRecord?.excludedAgents || [],
@@ -3367,6 +3370,7 @@ export async function main(argv, deps = {}) {
             prTarget: activeRun.prTarget || run.prTarget || null,
             excludedAgents: controller?.excludedAgents || run.excludedAgents,
             ...(controller?.readiness ? { readiness: controller.readiness } : {}),
+            ...(controller?.mergedBy ? { mergedBy: controller.mergedBy } : {}),
             ...(controller?.policy ? { policy: controller.policy } : {}),
             ...(controller?.human ? { human: controller.human } : {}),
             ...(controller?.resumeCommand ? { resumeCommand: controller.resumeCommand } : {}),
