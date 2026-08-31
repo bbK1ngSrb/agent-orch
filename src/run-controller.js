@@ -32,6 +32,7 @@ const BLOCKED_REASON = {
   HUMAN_ABANDON: "human-abandon",
   REMOTE_AUTH: "auth",
   REMOTE_MERGE_REJECTED: "merge-rejected",
+  REMOTE_UNKNOWN: "remote-unknown",
 };
 
 const MAX_HEAD_REPINS = 3;
@@ -172,9 +173,30 @@ export async function runUntil(policy, record = {}, deps) {
         headSha: land.expectedHead, cycle, land,
       }, currentRecord, cycleResults);
     }
+    if (land.remoteGate === false) {
+      if (policy.until === "merged") {
+        const failure = {
+          class: "REMOTE_UNKNOWN",
+          summary: "--until merged requires a git remote and the gh CLI to verify the merge",
+          fingerprint: computeFingerprint("REMOTE_UNKNOWN", "--until merged requires a git remote and the gh CLI to verify the merge"),
+        };
+        return withRecord({ ...terminal("BLOCKED", failure.class), failure, cycle, land }, currentRecord, cycleResults);
+      }
+      return withRecord({
+        // With no remote gate, a local landing is READY. `merged` is handled
+        // above because it requires remote proof rather than a local success.
+        state: "READY",
+        outcome: "reached", exit: EXIT_CODES.OK,
+        headSha: land.expectedHead, cycle, land,
+      }, currentRecord, cycleResults);
+    }
     if (!land.pr?.number) {
       // The land landed locally but orch could not find/open its PR.
-      const failure = { class: "REMOTE_UNKNOWN", fingerprint: computeFingerprint("REMOTE_UNKNOWN", "no PR found for the landed branch") };
+      const failure = {
+        class: "REMOTE_UNKNOWN",
+        summary: "could not resolve a PR for the landed branch",
+        fingerprint: computeFingerprint("REMOTE_UNKNOWN", "no PR found for the landed branch"),
+      };
       const outcome = await handleFailure(failure, currentRecord, policy, deps, { cycle, land });
       if (outcome.done) return withRecord({ ...outcome.result, cycle, land }, outcome.record, cycleResults);
       currentRecord = outcome.record;

@@ -193,9 +193,9 @@ test("docs document the dashboard --check-history flag", () => {
 test("the manual scopes --until modes to wired commands (#525)", () => {
   const bullet = manual.match(/^- \*\*`--until <mode>`\*\*[\s\S]*?(?=\n- \*\*)/m);
   assert.ok(bullet, "manual does not document the --until flag");
-  assert.match(bullet[0], /`once` is the default/);
-  assert.match(bullet[0], /`task`, `issue`, and `pr` support `ready`/);
-  assert.match(bullet[0], /`continue` currently accepts only `--until once`/);
+  assert.match(bullet[0], /`ready` is the default/);
+  assert.match(bullet[0], /`task`, `issue`, and `pr` support all/);
+  assert.match(bullet[0], /`continue` inherits the recorded goal/);
   assert.doesNotMatch(bullet[0], /--merge/);
   assert.doesNotMatch(bullet[0], /only `--until once` .* exists today/);
 });

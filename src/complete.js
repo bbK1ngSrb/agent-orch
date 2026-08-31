@@ -15,6 +15,11 @@ export async function finishRun(ctx, deps) {
   const {
     repo, task, merged = [], interactive, docsPending = false, runStats = [],
     integrationBranch = "orch/integration", prUrls = [], orchDir, runIds = [],
+    // A run that ends nonzero must not print a success banner — but the tidy
+    // still ran, and a branch it could not delete is exactly the thing the user
+    // has to act on. Muting `print` hides the warning along with the banner, so
+    // the caller turns the banner off instead.
+    banner = true,
   } = ctx;
   const { git, io } = deps;
 
@@ -63,7 +68,8 @@ export async function finishRun(ctx, deps) {
     });
   }
 
-  io.print(summarize({ task, sha, deleted, leftover, docsPending, runStats, integrationBranch, prUrls }));
+  if (banner) io.print(summarize({ task, sha, deleted, leftover, docsPending, runStats, integrationBranch, prUrls }));
+  else if (leftover.length) io.print(leftoverWarning(leftover));
   return { deleted, leftover };
 }
 
@@ -119,10 +125,13 @@ function summarize({ task, sha, deleted, leftover, docsPending, runStats, integr
     L.push("   and tidied up the same way when it finishes.");
     L.push("");
   }
-  if (leftover.length) {
-    L.push("");
-    L.push("⚠️ Needs your attention — these were left as-is:");
-    for (const br of leftover) L.push(`  • branch "${br}" (kept — it has unmerged changes)`);
-  }
+  if (leftover.length) L.push("", leftoverWarning(leftover));
+  return L.join("\n");
+}
+
+// The one part of the summary a blocked run still needs to say.
+function leftoverWarning(leftover) {
+  const L = ["⚠️ Needs your attention — these were left as-is:"];
+  for (const br of leftover) L.push(`  • branch "${br}" (kept — it has unmerged changes)`);
   return L.join("\n");
 }

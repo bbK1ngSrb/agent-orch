@@ -35,10 +35,8 @@ test("every declared flag validates on its command, every other flag is refused"
       // reviewer-only is meaningful there, author-only isn't) — sampling --author
       // alone would otherwise trip that pairing rule for a reason unrelated to
       // what this matrix checks (does the command accept the flag at all).
-      // --json on task/issue/pr only validates paired with --until ready
-      // (schema.js: there's no event stream to print on the bare/once path) —
-      // sampling --json alone would otherwise trip that pairing rule for a
-      // reason unrelated to what this matrix checks.
+      // --json on task/issue/pr defaults to the ready controller; only an
+      // explicit --until once lacks an event stream.
       const extra = ["task", "issue"].includes(command) && ["author", "authors"].includes(name)
         ? sample("reviewer")
         : ["task", "issue", "pr"].includes(command) && name === "json" ? ["--until", "ready"] : [];
@@ -145,12 +143,13 @@ test("--json is scoped to dashboard, config, and run-controller commands", () =>
       continue;
     }
     if (RUN_CONTROLLED.has(command)) {
-      assert.throws(
-        () => validate(command, { json: true }),
-        (e) => e.exit === 64 && /--json on .* requires --until ready/.test(e.message),
-        `orch ${command} --json (no --until)`,
-      );
+      assert.doesNotThrow(() => validate(command, { json: true }), `orch ${command} --json (implicit ready)`);
       assert.doesNotThrow(() => validate(command, { json: true, until: "ready" }), `orch ${command} --json --until ready`);
+      assert.throws(
+        () => validate(command, { json: true, until: "once" }),
+        (e) => e.exit === 64 && /the once path has no event stream/.test(e.message),
+        `orch ${command} --json --until once`,
+      );
       continue;
     }
     assert.throws(
@@ -214,7 +213,7 @@ test("--max-attempts is not declared — it would be a silent no-op, nothing rea
   );
 });
 
-test("--until ready|merged is available on task/issue/pr; continue is not", () => {
+test("--until ready|merged is available on new cycle commands; continue inherits", () => {
   for (const command of ["task", "issue", "pr"]) {
     assert.doesNotThrow(() => validate(command, { until: "once" }), `${command} once`);
   }

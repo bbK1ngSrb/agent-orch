@@ -70,13 +70,14 @@ function mockSpawn() {
   return { spawn, calls };
 }
 
-test("maybeSpawnDocs spawns once when merged + autoUpdate + !docsOnly", () => {
+test("maybeSpawnDocs spawns one-shot docs task when merged + autoUpdate + !docsOnly", () => {
   const m = mockSpawn();
   const ok = maybeSpawnDocs({ status: "merged", docsOnly: false }, docsCfg, { spawn: m.spawn });
   assert.equal(ok, true);
   assert.equal(m.calls.length, 1);
-  const argv = m.calls[0][1]; // [scriptPath, "task", prompt]
+  const argv = m.calls[0][1]; // [scriptPath, "task", prompt, "--until", "once"]
   assert.equal(argv[1], "task");
+  assert.deepEqual(argv.slice(3), ["--until", "once"]);
   assert.match(argv[2], /update docs$/); // ends with the configured prompt
   assert.match(argv[2], /^auto-docs [0-9a-z]+ /); // leads with a unique stamp
 });
@@ -438,7 +439,7 @@ test("--dry that escalates still writes its brief under .orch (#471 wording)", a
   chdir(d);
   try {
     process.exitCode = 0;
-    await main(["task", "hello world", "--dry", "--config-file", override], {
+    await main(["task", "hello world", "--dry", "--until", "once", "--config-file", override], {
       stdout: { write() {} },
       dryNoTestGate: true,
     });
@@ -1141,6 +1142,126 @@ test("#136: orch task with no remote configured never calls gh, even if gh is in
   await runMainInRepo(repo, ["task", "some task", "--no-tidy"], { githubDeps: () => ({ gh, git: gitDep.git }) });
 });
 
+function latestRunRecord(repo) {
+  const files = readdirSync(join(repo, ".orch", "run-records"));
+  return JSON.parse(readFileSync(join(repo, ".orch", "run-records", files[files.length - 1]), "utf8"));
+}
+
+function unreachablePrGh(calls, command) {
+  return (args) => {
+    calls.push(args);
+    if (args[0] === "--version") return "gh 2";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
+    if (command === "issue" && args[0] === "issue" && args[1] === "view") {
+      return JSON.stringify({ number: 52, title: "remote readiness", body: "run the requested change", state: "OPEN" });
+    }
+    if (args[0] === "pr" && args[1] === "list") throw new Error("gh: remote unavailable");
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+}
+
+for (const command of ["task", "issue", "pr"]) {
+  test(`bare ${command} reaches READY without an origin remote`, async () => {
+    const savedExitCode = process.exitCode;
+    const repo = initGitRepo(`orch-bare-${command}-local-`);
+    const calls = [];
+    const gh = command === "issue" ? unreachablePrGh(calls, command) : () => { throw new Error("gh should not be called without origin"); };
+    if (command !== "pr") gitDep.git(["branch", "orch/integration"], repo);
+    if (command === "pr") gitDep.git(["branch", "feature/local"], repo);
+    const argv = command === "task" ? [command, "local-only", "--no-tidy"]
+      : command === "issue" ? [command, "52", "--no-tidy"]
+        : [command, "feature/local"];
+    try {
+      const logs = await runMainInRepo(repo, argv, {
+        githubDeps: () => ({ gh, git: gitDep.git }),
+        maybeNotifyUpdate: async () => {},
+      }, { injectUntilOnce: false });
+      const record = latestRunRecord(repo);
+      assert.equal(record.policy.until, "ready");
+      assert.equal(record.state, "READY");
+      assert.equal(record.exit, 0);
+      assert.equal(calls.filter((args) => args[0] === "pr").length, 0,
+        "a local-only run must not query the PR bridge");
+    } finally {
+      process.exitCode = savedExitCode;
+    }
+  });
+
+  test(`bare ${command} is BLOCKED with a reason when origin exists but PR lookup is unavailable`, async () => {
+    const savedExitCode = process.exitCode;
+    const repo = initGitRepo(`orch-bare-${command}-remote-`);
+    addOriginWithPeer(repo);
+    if (command !== "pr") gitDep.git(["branch", "orch/integration"], repo);
+    if (command === "pr") gitDep.git(["branch", "feature/remote"], repo);
+    const calls = [];
+    const gh = unreachablePrGh(calls, command);
+    const argv = command === "task" ? [command, "remote-only", "--no-tidy"]
+      : command === "issue" ? [command, "52", "--no-tidy"]
+        : [command, "feature/remote"];
+    try {
+      const logs = await runMainInRepo(repo, argv, {
+        githubDeps: () => ({ gh, git: gitDep.git }),
+        maybeNotifyUpdate: async () => {},
+        sleep: async () => {},
+      }, { injectUntilOnce: false });
+      const record = latestRunRecord(repo);
+      assert.equal(record.policy.until, "ready");
+      assert.equal(record.state, "BLOCKED");
+      assert.equal(record.exit, 6);
+      assert.ok(calls.some((args) => args[0] === "pr" && args[1] === "list"));
+      assert.match(logs.join("\n"), /blocked \([^)]*:/, "human output must explain the blocked reason");
+      assert.doesNotMatch(logs.join("\n"), /merged|All done/);
+    } finally {
+      process.exitCode = savedExitCode;
+    }
+  });
+}
+
+test("a remote without gh keeps a ready task local-only", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-bare-no-gh-");
+  addOriginWithPeer(repo);
+  gitDep.git(["branch", "orch/integration"], repo);
+  writeFileSync(join(repo, "orch.yml"), "automation:\n  remedies: []\n");
+  const gh = () => { throw new Error("gh CLI not found"); };
+  let finishCalls = 0;
+  try {
+    const logs = await runMainInRepo(repo, ["task", "local-only"], {
+      githubDeps: () => ({ gh, git: gitDep.git }),
+      finishRun: async () => { finishCalls += 1; },
+      sleep: async () => {},
+    }, { injectUntilOnce: false });
+    const record = latestRunRecord(repo);
+    assert.equal(record.state, "READY");
+    assert.equal(record.exit, 0);
+    assert.equal(finishCalls, 1, "a local landing must still reach post-run cleanup");
+    assert.match(logs.join("\n"), /merged/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("--until merged without a remote is blocked and never claims completion", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-merged-no-remote-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  const finishCalls = [];
+  try {
+    const logs = await runMainInRepo(repo, ["task", "local-only", "--until", "merged"], {
+      githubDeps: () => ({ gh: () => { throw new Error("gh must not be called"); }, git: gitDep.git }),
+      finishRun: async () => { finishCalls.push(true); },
+    }, { injectUntilOnce: false });
+    const record = latestRunRecord(repo);
+    assert.equal(record.state, "BLOCKED");
+    assert.equal(record.exit, 6);
+    assert.equal(process.exitCode, 6);
+    assert.equal(finishCalls.length, 0);
+    assert.doesNotMatch(logs.join("\n"), /All done/);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
 // P5 acceptance (docs/cli-v2-implementation-plan.md P5): `--until ready --json`
 // waits on the standing integration→base PR after landing and reports the
 // outcome as the last stdout line; bare `orch task` (tested above) is untouched.
@@ -1154,6 +1275,39 @@ function readinessGh(prView) {
     throw new Error(`unexpected gh call: ${args.join(" ")}`);
   };
 }
+
+test("bare orch task runs the ready loop by default", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-bare-ready-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  addOriginWithPeer(repo);
+  const head = gitDep.git(["rev-parse", "orch/integration"], repo);
+  const calls = [];
+  const realGh = readinessGh({
+    number: 9, state: "OPEN", isDraft: false, headRefOid: head, baseRefName: "main",
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, statusCheckRollup: [],
+  });
+  const gh = (args) => { calls.push(args); return realGh(args); };
+  const prev = cwd();
+  const logs = [];
+  const origLog = console.log;
+  chdir(repo);
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  try {
+    await main(["task", "bare default"], {
+      preflight() {},
+      cycleDeps: fakeCycleDeps(),
+      githubDeps: () => ({ gh, git: gitDep.git }),
+    });
+    assert.ok(calls.some((args) => args[0] === "pr" && args[1] === "view"),
+      "a bare task must poll readiness instead of stopping after one cycle");
+    assert.match(logs.join("\n"), /bare default/);
+  } finally {
+    console.log = origLog;
+    chdir(prev);
+    process.exitCode = savedExitCode;
+  }
+});
 
 test("orch task --until ready --json exits 0 on a green standing PR", async () => {
   const savedExitCode = process.exitCode;
@@ -1589,6 +1743,9 @@ test("orch continue registers a fresh reauthor cycle as authoring", async () => 
 test("orch task --until ready keeps the ask window open for a late retry", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-ask-timeout-");
+  // A remote must exist, or the ready goal takes the local-only shortcut and this
+  // test never reaches the standing-PR readiness path it was written for.
+  addOriginWithPeer(repo);
   mkdirSync(join(repo, ".orch"), { recursive: true });
   writeFileSync(join(repo, ".orch", "orch.yml"), "automation:\n  humanWaitHours: 0.000001\n");
   gitDep.git(["branch", "orch/integration"], repo);
@@ -1598,6 +1755,8 @@ test("orch task --until ready keeps the ask window open for a late retry", async
   let cycleCalls = 0;
   const gh = (args, input) => {
     calls.push({ args, input });
+    if (args[0] === "--version") return "gh version test";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
     if (args[0] === "pr" && args[1] === "list") {
       return args.includes("orch/integration")
         ? JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo) }])
@@ -1672,6 +1831,14 @@ test("orch task --until ready keeps the ask window open for a late retry", async
     assert.equal(resumeEvents[1].outcome, "reached");
     assert.equal(resumeEvents[1].exit, 0);
     assert.equal(cycleCalls, 3, "the late retry must start a fresh cycle");
+    // This test exists to prove the retry reaches READY *through a green standing
+    // PR*. Without a remote the run now takes the local-only readiness shortcut
+    // and gets there without asking GitHub anything — which would leave the
+    // assertions above passing while covering nothing. Pin the gh call itself.
+    assert.ok(
+      calls.some(({ args }) => args[0] === "pr" && args[1] === "view"),
+      "the readiness check must consult the standing PR, not the local shortcut",
+    );
     assert.equal(questionBodies.length, 1, "same-task retry must keep the original question");
     const resumed = JSON.parse(readFileSync(join(dir, `${record.runId}.json`), "utf8"));
     assert.equal(resumed.outcome, "reached");
@@ -1688,8 +1855,11 @@ test("orch task --until ready keeps the ask window open for a late retry", async
 test("orch task --until ready lets a write-permissioned user abandon the run", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-ask-abandon-");
+  addOriginWithPeer(repo);
   gitDep.git(["branch", "orch/integration"], repo);
   const gh = (args) => {
+    if (args[0] === "--version") return "gh version test";
+    if (args[0] === "auth" && args[1] === "status") return "";
     if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false }]);
     if (args[0] === "pr" && args[1] === "view") return JSON.stringify({
       number: 9, state: "CLOSED", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo),
@@ -3597,6 +3767,20 @@ test("PR landing derives changed paths when the review cycle omits them", () => 
   assert.deepEqual(landed.paths, ["pr.txt"]);
 });
 
+test("base landing does not require a remote or gh bridge", () => {
+  const repo = initGitRepo("orch-base-no-remote-");
+  const landed = resolveLanded(
+    { status: "merged", paths: [] },
+    { branch: "task-1" },
+    { baseBranch: "main", integrationBranch: "main" },
+    { gh: () => { throw new Error("gh must not be called for base landing"); } },
+    repo,
+  );
+
+  assert.equal(landed.landing, "base");
+  assert.equal(landed.expectedHead, gitDep.git(["rev-parse", "main"], repo));
+});
+
 test("PR repair preparation publishes an owned repair branch, not the original head", () => {
   const repo = initGitRepo("orch-pr-repair-");
   const { remote } = addOriginWithPeer(repo);
@@ -3685,6 +3869,7 @@ test("orch continue restores PR push authority and pushes the owned repair branc
     },
   };
   const gh = (args) => {
+    if (args[0] === "--version") return "gh version test";
     if (args[0] === "pr" && args[1] === "view") {
       const number = String(args[2]);
       return JSON.stringify({
@@ -3862,7 +4047,13 @@ async function runMainCapture(argv, deps = {}) {
   const origLog = console.log;
   console.log = (...args) => logs.push(args.map(String).join(" "));
   try {
-    await main(argv, deps);
+    const { injectUntilOnce = true, ...mainDeps } = deps;
+    const command = argv[0];
+    // Existing helper callers describe one-pass behavior. Pin those tests to
+    // it explicitly; new default-goal tests opt out so they exercise bare argv.
+    const testArgv = injectUntilOnce && ["task", "issue", "pr"].includes(command) && !argv.includes("--until")
+      ? [...argv, "--until", "once"] : argv;
+    await main(testArgv, mainDeps);
     return logs;
   } finally {
     console.log = origLog;
@@ -3923,14 +4114,19 @@ function fakeCycleDeps() {
   };
 }
 
-async function runMainInRepo(repo, argv, deps = {}) {
+async function runMainInRepo(repo, argv, deps = {}, { injectUntilOnce = true } = {}) {
   const prev = cwd();
   chdir(repo);
   const logs = [];
   const origLog = console.log;
   console.log = (...args) => logs.push(args.map(String).join(" "));
   try {
-    await main(argv, { preflight() {}, cycleDeps: fakeCycleDeps(), ...deps });
+    const command = argv[0];
+    // Keep pre-existing bare-cycle tests one-pass; callers testing the v0.5
+    // default pass { injectUntilOnce: false } to reach the real ready loop.
+    const testArgv = injectUntilOnce && ["task", "issue", "pr"].includes(command) && !argv.includes("--until")
+      ? [...argv, "--until", "once"] : argv;
+    await main(testArgv, { preflight() {}, cycleDeps: fakeCycleDeps(), ...deps });
     return logs;
   } finally {
     console.log = origLog;
@@ -4306,6 +4502,27 @@ test("#44: a non-merged (escalated) run is not handed to finishRun", async () =>
   try {
     await runMainInRepo(repo, ["task", "some task"], { cycleDeps: escalating, finishRun: async (ctx) => { calls.push(ctx); } });
     assert.equal(calls.length, 0);
+  } finally {
+    process.exitCode = savedExitCode;
+  }
+});
+
+test("post-run tidy does not print a success banner after a nonzero run", async () => {
+  const savedExitCode = process.exitCode;
+  const repo = initGitRepo("orch-mixed-run-banner-");
+  gitDep.git(["branch", "orch/integration"], repo);
+  let finalizations = 0;
+  const cycleDeps = {
+    ...fakeCycleDeps(),
+    finalize: async () => finalizations++ === 0
+      ? { status: "merged", reason: "test", sha: "abc" }
+      : { status: "escalated", reason: "second cycle failed", sha: "def" },
+  };
+  try {
+    const logs = await runMainInRepo(repo, ["task", "mixed run", "--until", "once", "--authors", "claude,codex", "--reviewers", "codex,claude"], { cycleDeps });
+    assert.equal(finalizations, 2);
+    assert.equal(process.exitCode, 2, logs.join("\n"));
+    assert.doesNotMatch(logs.join("\n"), /All done/);
   } finally {
     process.exitCode = savedExitCode;
   }
@@ -6868,6 +7085,7 @@ test("orch continue on a stopped-at-cap record with nothing to reattach refuses 
 // run asked for; `?? 1` only substitutes on `null`/`undefined`.
 test("orch continue on a resumable stopped-at-cap record honors a stored maxAttempts:0", async () => {
   const repo = initGitRepo("orch-continue-maxattempts-");
+  addOriginWithPeer(repo);
   const sid = "deadbeef";
   const branch = `pr/claude/some-fix-${sid}`;
   gitDep.git(["checkout", "-b", branch], repo);

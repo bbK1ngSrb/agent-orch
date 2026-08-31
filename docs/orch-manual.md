@@ -528,10 +528,10 @@ The tools:
 | --- | --- | --- |
 | `orch_status` | `orch dashboard --json --once` | Read-only; returns the parsed snapshot. Optional `limit`. |
 | `orch_plan` | `orch task --dry` | Plans a cycle — branch, author, reviewers — without calling an agent, touching git or merging anything. Leaves the author rotation where it was; an escalated plan still writes its brief (§2.13). |
-| `orch_task` | `orch task` | Full cycle from a task description. |
-| `orch_issue` | `orch issue <n>` | Full cycle from a GitHub issue. |
-| `orch_pr` | `orch pr <number|branch> --until <mode>` | Audit a PR/branch; `merged` requires `automation.mcpMayMerge: true`. |
-| `orch_continue` | `orch continue <sid>` | Resume from a checkpoint. |
+| `orch_task` | `orch task --until ready` | Full cycle from a task description; `ready` is the default. |
+| `orch_issue` | `orch issue <n> --until ready` | Full cycle from a GitHub issue; `ready` is the default. |
+| `orch_pr` | `orch pr <number|branch> --until <mode>` | Audit a PR/branch; `ready` is the default and `merged` requires `automation.mcpMayMerge: true`. |
+| `orch_continue` | `orch continue <sid>` | Resume from a checkpoint and inherit its recorded goal. |
 
 Every call returns JSON: `ok`, `exitCode`, the `command` that ran, a `cycles`
 array (each with `sid`, `branch`, `status`, `reason`, `prUrl`, `closes`,
@@ -626,11 +626,11 @@ got to. `orch_status` and `orch_plan` return immediately.
   names a protected path, instead of being refused at intake. See §2.14.
 - **`--allow-large-scope`** — explicitly sanction a deliberately large review
   slice for this run. A plain `orch continue <sid>` requires the flag again.
-- **`--until <mode>`** — `once` is the default: run one cycle and stop.
-  `task`, `issue`, and `pr` support `ready` (run the bounded
-  readiness loop) and `merged` (run through readiness and the configured merge
-  path). `continue` currently accepts only `--until once`; `ready` and `merged`
-  are refused there with exit `64`. `--max-attempts` is not declared yet — nothing
+- **`--until <mode>`** — `ready` is the default for new runs: run the bounded
+  readiness loop. `once` runs one cycle and stops; `merged` runs through
+  readiness and the configured merge path. `task`, `issue`, and `pr` support all
+  three goals. `continue` inherits the recorded goal and accepts only an explicit
+  `--until once`; `ready` and `merged` are refused there with exit `64`. `--max-attempts` is not declared yet — nothing
   reads it, so it stays a usage error rather than a silent no-op until the
   retry loop that needs it ships.
 

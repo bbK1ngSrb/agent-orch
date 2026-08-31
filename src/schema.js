@@ -275,7 +275,7 @@ export const HELP_PAGES = {
         "ready = loop until the pull request for this change",
         "        is green and mergeable; never merge it.",
         "merged = also merge the standing PR.",
-        "(default: once)",
+        "(default: ready)",
       ),
       from: FROM_HELP,
       file: FILE_HELP,
@@ -304,7 +304,7 @@ export const HELP_PAGES = {
         "ready = loop until the pull request for this change",
         "        is green and mergeable; never merge it.",
         "merged = also merge the standing PR.",
-        "(default: once)",
+        "(default: ready)",
       ),
       from: FROM_HELP,
       "allow-protected": ALLOW_PROTECTED_HELP,
@@ -332,7 +332,7 @@ export const HELP_PAGES = {
         "ready = repair the head until it is green and",
         "        mergeable; never merge it.",
         "merged = merge it once readiness is verified.",
-        "(default: once)",
+        "(default: ready)",
       ),
     },
   },
@@ -340,7 +340,7 @@ export const HELP_PAGES = {
     title: "orch continue — resume an interrupted cycle or a stopped run.",
     synopsis: ["orch continue <sid> [options]"],
     about: [
-      "Every cycle writes a checkpoint keyed by its sid (the run's short id, printed when the run starts and listed by `orch dashboard`). `continue` reads that checkpoint and picks the cycle up where it stopped instead of starting over, so a run killed mid-review does not re-author the change. A run that ended at the attempt cap (exit 2) or waiting on a human (exit 4) resumes here too, with a fresh attempt budget. The seats, work order and goal are taken from the record: a bare `orch continue <sid>` on a run started with --until merged keeps pursuing merged, not the default a fresh run would get. A flag given here overrides the recorded value for this resume only.",
+      "Every cycle writes a checkpoint keyed by its sid (the run's short id, printed when the run starts and listed by `orch dashboard`). `continue` reads that checkpoint and picks the cycle up where it stopped instead of starting over, so a run killed mid-review does not re-author the change. A run that ended at the attempt cap (exit 2) or waiting on a human (exit 4) resumes here too, with a fresh attempt budget. The seats and work order are taken from the record; ready/merged goals are inherited from it, while an explicit `--until once` requests one pass for this resume.",
     ],
     notes: ["There is no --author here: the commits being resumed were written by a specific agent, and this command continues that run rather than starting a new one."],
     args: "Arguments: exactly one sid. A sid never contains '/', '..' or a NUL byte — it is used directly as a store key, so anything else is refused.",
@@ -352,10 +352,9 @@ export const HELP_PAGES = {
     ],
     flagHelp: {
       until: untilHelp(
-        "What this resume pursues. Only once can be typed here",
-        "today; ready and merged are inherited from the run's",
-        "own record, and are refused as an override.",
-        "(default: the goal recorded for the run)",
+        "Request one pass for this resume; ready and merged",
+        "are inherited from the recorded run.",
+        "(default: the recorded run's goal, or once for a legacy sid)",
       ),
       "no-tidy": NO_TIDY_HELP,
     },
@@ -557,12 +556,12 @@ export function validate(command, flags, { detachedChild = false } = {}) {
   // controller. `continue` is still on the legacy path; PRs now share the
   // controller with task/issue/review.
   if (flags.until && flags.until !== "once" && effective === "continue") {
-    throw usageError(`--until ${flags.until} is not yet available with 'orch ${effective}' — only --until once (the default)`);
+    throw usageError(`--until ${flags.until} is not yet available with 'orch ${effective}' — only --until once (an explicit one-pass override)`);
   }
   // --json on a run command only makes sense once `--until` puts the run
-  // through the controller's event stream (P5); on the bare/`once` path
-  // there is nothing to stream, so accepting it would be another silent no-op.
-  if (flags.json && ["task", "issue", "pr"].includes(effective) && (!flags.until || flags.until === "once")) {
+  // through the controller's event stream (P5); the explicit `once` path
+  // has nothing to stream, so accepting it would be another silent no-op.
+  if (flags.json && ["task", "issue", "pr"].includes(effective) && flags.until === "once") {
     if (!flags.detach && !detachedChild) {
       throw usageError(`--json on 'orch ${effective}' requires --until ready (or merged) — the once path has no event stream to print`);
     }
@@ -635,7 +634,7 @@ const POSITIONAL_ARITY = {
   upgrade: [0, 0], version: [0, 0], help: [0, 1],
   task: [0, Infinity], completion: [0, 1],
   issue: [1, 1, "usage: orch issue <number> [--author ... --reviewer ...]"],
-  continue: [1, 1, "usage: orch continue <sid>"],
+  continue: [1, 1, "usage: orch continue <sid> [--until once]"],
   pr: [1, 1, "usage: orch pr <number> or <branch> [--until once|ready|merged]"],
   release: [1, Infinity, 'usage: orch release "<changelog entry>"'],
   // Internal re-exec target, never typed by a user (see cli.js) — but it still

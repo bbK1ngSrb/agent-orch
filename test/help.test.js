@@ -16,7 +16,7 @@
 // deviation, because P12a restructures the pages but deletes nothing (§2 and
 // §2.1 of the spec; deletions are #528's slice):
 //
-//   (a) a §2.1 "not yet landed" row — `--until` still defaults to `once`,
+//   (a) a §2.1 "not yet landed" row — `--until` now defaults to `ready`,
 //       `--max-attempts` does not exist, `config` still takes `--dry`;
 //   (b) a command or flag v0.5 removes that this slice keeps — the `update`
 //       page, `agent build`, `pr --merge`;
