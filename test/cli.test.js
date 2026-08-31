@@ -7275,3 +7275,56 @@ test("orch continue resolves and updates the run record when runId differs from 
   assert.equal(record.cycles.length, 2);
   assert.equal(record.cycles[1].sid, laterSid);
 });
+
+import { withRemedyTelemetry } from "../src/cli.js";
+
+// design §16: `runs.jsonl` lines are written per CYCLE, by code that has no idea
+// which run, goal or remedy it belongs to. realDeps() stamps that run-level
+// context on the way past, so the history can be read per run — additively, and
+// without touching the protected notify.js writer.
+test("#529: realDeps stamps run-level telemetry onto every runs.jsonl line", () => {
+  const dir = mkdtempSync(join(tmpdir(), "orch-telemetry-"));
+  const telemetry = { runId: "r-1", until: "ready", attempt: 0 };
+  const deps = realDeps({ closes: 42, telemetry: () => telemetry });
+  deps.notify.recordRun(dir, { ts: "t", branch: "b", sid: "s1", verdict: "merged", rounds: 1 });
+  // A later cycle in the same run: the same object, read again at write time.
+  telemetry.attempt = 1;
+  telemetry.remedy = "rebase";
+  telemetry.failureClass = "TEST_RED";
+  deps.notify.recordRun(dir, { ts: "t", branch: "b", sid: "s2", verdict: "merged", rounds: 2 });
+
+  const lines = readFileSync(join(dir, "runs.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((l) => [l.sid, l.runId, l.until, l.attempt, l.remedy ?? null, l.failureClass ?? null]), [
+    ["s1", "r-1", "ready", 0, null, null],
+    ["s2", "r-1", "ready", 1, "rebase", "TEST_RED"],
+  ]);
+  // The existing `closes` fallback still applies, and cycle-level keys still win.
+  assert.equal(lines[0].closes, 42);
+  assert.equal(lines[0].verdict, "merged");
+});
+
+test("#529: a stamped entry never overrides what the cycle itself recorded", () => {
+  const dir = mkdtempSync(join(tmpdir(), "orch-telemetry-clash-"));
+  const deps = realDeps({ telemetry: () => ({ runId: "r-1", attempt: 7, branch: "wrong" }) });
+  deps.notify.recordRun(dir, { ts: "t", branch: "right", sid: "s", verdict: "escalated", rounds: 1 });
+  const line = JSON.parse(readFileSync(join(dir, "runs.jsonl"), "utf8").trim());
+  assert.equal(line.branch, "right");
+  assert.equal(line.attempt, 7);
+});
+
+test("#529: withRemedyTelemetry records which remedy produced the next cycle", async () => {
+  const telemetry = { runId: "r-1", until: "ready", attempt: 0 };
+  const calls = [];
+  const remedies = withRemedyTelemetry(telemetry, {
+    rebase: async (context) => { calls.push(["rebase", context.name]); return { cycle: {} }; },
+    ask: async () => { calls.push(["ask"]); return {}; },
+  });
+
+  await remedies.rebase({ name: "rebase", failure: { class: "TEST_RED" }, record: { attempt: 1 } });
+  assert.deepEqual([telemetry.remedy, telemetry.failureClass, telemetry.attempt], ["rebase", "TEST_RED", 1]);
+  // A remedy that consumes no attempt must not invent one.
+  await remedies.ask({ name: "ask", failure: { class: "REVIEW_STALEMATE" }, record: { attempt: 1 } });
+  assert.deepEqual([telemetry.remedy, telemetry.failureClass, telemetry.attempt], ["ask", "REVIEW_STALEMATE", 1]);
+  // The wrapper is transparent: the executor still receives its own context.
+  assert.deepEqual(calls, [["rebase", "rebase"], ["ask"]]);
+});

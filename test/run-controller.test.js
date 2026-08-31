@@ -526,3 +526,49 @@ test("runUntil: a CI wait that times out is terminal once the attempt cap is alr
   assert.equal(result.failureClass, "REMOTE_CI_TIMEOUT");
   assert.equal(result.exit, 2);
 });
+
+// design §16 / proposal §7 criterion 2: a run that exits 0 must be able to
+// PROVE it read the remote — "zero false ready/merged" is only auditable if the
+// observation that justified the green exit is in the record. Compact by
+// design: `{ready, mergeStateStatus, checks}`, not the whole poll result.
+test("#529: a READY terminal carries the readiness observation it was earned by", async () => {
+  const result = await runUntil(POLICY, {}, baseDeps());
+  assert.deepEqual(result.readiness, { ready: true, mergeStateStatus: "CLEAN", checks: "green" });
+});
+
+test("#529: a landing with no remote gate is marked, not silently unobserved", async () => {
+  const result = await runUntil(POLICY, {}, baseDeps({
+    resolveLanded: () => ({ ...LAND, remoteGate: false }),
+  }));
+  assert.equal(result.exit, 0);
+  // remoteGate:false says "no observation was possible", which an audit must
+  // not confuse with "an observation was skipped".
+  assert.deepEqual(result.readiness, { ready: true, mergeStateStatus: null, checks: null, remoteGate: false });
+});
+
+test("#529: a MERGED terminal carries both the observation and who merged", async () => {
+  const result = await runUntil({ ...POLICY, until: "merged" }, {}, baseDeps({
+    mergeStanding: async () => ({
+      result: "merged", mergeCommit: "c".repeat(40), headSha: HEAD,
+      merge: { requests: [{ ordinal: 1 }], mergedBy: "orch" },
+    }),
+  }));
+  assert.equal(result.state, "MERGED");
+  assert.equal(result.mergedBy, "orch");
+  assert.deepEqual(result.readiness, { ready: true, mergeStateStatus: "CLEAN", checks: "green" });
+});
+
+// An externally merged PR is still a legitimate green exit, but the record has
+// to say so: it was not orch that merged, and no checks were ever evaluated.
+test("#529: an externally merged PR records mergedBy 'external' and no checks", async () => {
+  const result = await runUntil(POLICY, {}, baseDeps({
+    gh: ghFake({
+      number: 9, state: "MERGED", isDraft: false, headRefOid: HEAD, baseRefName: "main",
+      mergeStateStatus: null, mergeCommit: { oid: "d".repeat(40) }, statusCheckRollup: [],
+    }),
+    git: { git: () => "" },
+  }));
+  assert.equal(result.exit, 0);
+  assert.equal(result.mergedBy, "external");
+  assert.deepEqual(result.readiness, { ready: true, mergeStateStatus: null, checks: null });
+});
