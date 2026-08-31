@@ -180,3 +180,28 @@ test("summary omits run statistics when token usage is unmeasured", async () => 
   assert.doesNotMatch(s, /Run statistics:/);
   assert.doesNotMatch(s, /Total: 0 tokens/);
 });
+
+test("banner:false keeps the leftover warning but drops the success summary", async () => {
+  // A run that ends nonzero must not claim success — but the tidy still ran, and
+  // a branch it refused to delete is exactly what the user has to act on. The
+  // earlier fix muted io.print entirely and took the warning down with the
+  // banner, so assert both halves here.
+  const { deps, summary } = mk({
+    git: { deleteBranchSafe: (_r, br) => ({ ok: false, unmerged: true, reason: `unmerged ${br}` }) },
+  });
+  const r = await finishRun(ctx({ banner: false, interactive: false }), deps);
+  assert.deepEqual(r.leftover, ["pr/claude/make-it-nice-1"]);
+  assert.match(summary(), /Needs your attention/);
+  assert.match(summary(), /pr\/claude\/make-it-nice-1/);
+  assert.doesNotMatch(summary(), /All done/);
+  assert.doesNotMatch(summary(), /What happened/);
+});
+
+test("banner:true still prints the whole summary, warning included", async () => {
+  const { deps, summary } = mk({
+    git: { deleteBranchSafe: (_r, br) => ({ ok: false, unmerged: true, reason: `unmerged ${br}` }) },
+  });
+  await finishRun(ctx({ interactive: false }), deps);
+  assert.match(summary(), /All done/);
+  assert.match(summary(), /Needs your attention/);
+});

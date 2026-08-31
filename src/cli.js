@@ -2858,10 +2858,10 @@ export async function main(argv, deps = {}) {
       // --json: keep tidying (branch cleanup is a real side effect), but a
       // human-readable print here would land after run.end and break "last
       // line is JSON" (design §13's stdout contract).
-      const io = jsonMode || process.exitCode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
+      const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
       const runStats = results.flatMap((r) => r.runStats || []);
       await finishFn(
-        { repo, orchDir, task, merged: mergedBranches, runIds: mergedRunIds, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls },
+        { repo, orchDir, task, merged: mergedBranches, runIds: mergedRunIds, interactive: Boolean(process.stdin.isTTY), docsPending, runStats, integrationBranch: cfg.integrationBranch, prUrls, banner: !process.exitCode },
         { git, io, notify },
       );
     }
@@ -3364,9 +3364,9 @@ export async function main(argv, deps = {}) {
       if (!dry) maybeSpawnDocs(finalResult, cfg, { dry, spawn: deps.spawn, quiet: jsonMode }, orchDir);
       if (finalResult.status === "merged" && !dry && !flags["no-tidy"]) {
         const finishFn = deps.finishRun || finishRun;
-        const io = jsonMode || process.exitCode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
+        const io = jsonMode ? { ...realIo(), print: () => {} } : (deps.io || realIo());
         await finishFn(
-          { repo, orchDir, task: run.task, merged: [activeRun.branch], runIds: [runId], interactive: Boolean(process.stdin.isTTY), runStats: finalResult.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: finalResult.prUrl ? [finalResult.prUrl] : [] },
+          { repo, orchDir, task: run.task, merged: [activeRun.branch], runIds: [runId], interactive: Boolean(process.stdin.isTTY), runStats: finalResult.runStats || [], integrationBranch: cfg.integrationBranch, prUrls: finalResult.prUrl ? [finalResult.prUrl] : [], banner: !process.exitCode },
           { git, io, notify },
         );
       }

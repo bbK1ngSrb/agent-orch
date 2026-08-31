@@ -1743,6 +1743,9 @@ test("orch continue registers a fresh reauthor cycle as authoring", async () => 
 test("orch task --until ready keeps the ask window open for a late retry", async () => {
   const savedExitCode = process.exitCode;
   const repo = initGitRepo("orch-ask-timeout-");
+  // A remote must exist, or the ready goal takes the local-only shortcut and this
+  // test never reaches the standing-PR readiness path it was written for.
+  addOriginWithPeer(repo);
   mkdirSync(join(repo, ".orch"), { recursive: true });
   writeFileSync(join(repo, ".orch", "orch.yml"), "automation:\n  humanWaitHours: 0.000001\n");
   gitDep.git(["branch", "orch/integration"], repo);
@@ -1752,6 +1755,8 @@ test("orch task --until ready keeps the ask window open for a late retry", async
   let cycleCalls = 0;
   const gh = (args, input) => {
     calls.push({ args, input });
+    if (args[0] === "--version") return "gh version test";
+    if (args[0] === "auth" && args[1] === "status") return "Logged in";
     if (args[0] === "pr" && args[1] === "list") {
       return args.includes("orch/integration")
         ? JSON.stringify([{ number: 9, url: "https://github.com/o/r/pull/9", isDraft: false, headRefOid: gitDep.git(["rev-parse", "orch/integration"], repo) }])
@@ -1826,6 +1831,14 @@ test("orch task --until ready keeps the ask window open for a late retry", async
     assert.equal(resumeEvents[1].outcome, "reached");
     assert.equal(resumeEvents[1].exit, 0);
     assert.equal(cycleCalls, 3, "the late retry must start a fresh cycle");
+    // This test exists to prove the retry reaches READY *through a green standing
+    // PR*. Without a remote the run now takes the local-only readiness shortcut
+    // and gets there without asking GitHub anything — which would leave the
+    // assertions above passing while covering nothing. Pin the gh call itself.
+    assert.ok(
+      calls.some(({ args }) => args[0] === "pr" && args[1] === "view"),
+      "the readiness check must consult the standing PR, not the local shortcut",
+    );
     assert.equal(questionBodies.length, 1, "same-task retry must keep the original question");
     const resumed = JSON.parse(readFileSync(join(dir, `${record.runId}.json`), "utf8"));
     assert.equal(resumed.outcome, "reached");

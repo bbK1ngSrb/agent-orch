@@ -25,9 +25,12 @@ drives its own releases through orch must migrate `.orch/orch.yml` in the same
 window as the upgrade, or the tool needed to perform the release is the tool
 that the old configuration just broke.
 
-The `continue` rule is intentional: a resumed run must not accept a goal that
-the current resume path cannot apply. To change a future run's goal, start a
-new run with `--until ready` or `--until merged`; to perform one resumed pass,
+The `continue` rule reads as a refusal because it is one: the resume path cannot
+install a new controller policy, so `orch continue <sid> --until ready|merged`
+exits 64 saying that goal "is not yet available" here rather than accepting the
+flag and quietly ignoring it. A recorded `ready`/`merged` goal is still
+inherited by a bare `orch continue <sid>`. To change a future run's goal, start
+a new run with `--until ready` or `--until merged`; to perform one resumed pass,
 use `orch continue <sid> --until once`.
 
 Removed commands and flags fail with usage exit code `64`. Run `orch help`
