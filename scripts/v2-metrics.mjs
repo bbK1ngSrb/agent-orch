@@ -96,10 +96,19 @@ export function audit(dir = ".orch") {
   const falseMerged = [];
   const localReady = [];
   for (const record of green) {
-    const merged = record.policy?.until === "merged";
+    // Anything that landed owes ancestry proof, whatever else it claims. Keyed
+    // on the merge commit as well as the policy because `policy` is nullable
+    // (`run-record.js:29`) and only ever copied forward from a record that
+    // already had one, so a policy-less record must not slip the check.
+    const merged = record.policy?.until === "merged" || Boolean(record.merge?.mergeCommit);
+    // The proof test runs FIRST. A base landing (integration === base) exits 0
+    // with `LOCAL_OBSERVATION`, whose `remoteGate: false` is not a statement
+    // about ancestry — landing.js:262 returns `merged` without verifying any
+    // (#636). Bucketing on that first would let an unproven landing audit
+    // clean, which is the one thing this measure exists to catch.
+    if (merged && !mergeProof(record)) { falseMerged.push(record.runId); continue; }
     if (localOnly(record)) { localReady.push(record.runId); continue; }
     if (!observed(record)) { (merged ? falseMerged : falseReady).push(record.runId); continue; }
-    if (merged && !mergeProof(record)) falseMerged.push(record.runId);
   }
 
   const duplicateMergeRequests = terminal
